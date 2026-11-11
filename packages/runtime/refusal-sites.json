@@ -2286,6 +2286,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_http.c",
+  "function": "scr_http_req_aborted_flag",
+  "message": "AbortSignal support is not linked",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_inspect.c",
   "function": "insp_fmt_fence",
   "message": "",

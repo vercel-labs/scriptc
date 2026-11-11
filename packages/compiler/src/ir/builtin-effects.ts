@@ -353,11 +353,23 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates its status code and headers, and setHeaders
+  // validates the collection's shape, so both throw catchably.
+  "http.resWriteInformation",
+  "http.resSetHeaders",
+  "http.clientSetHeaders",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
+  // The dispose is a close: a close override runs program code inside the
+  // call, and a server that was not running takes the reject path, which
+  // raises ERR_SERVER_NOT_RUNNING before it settles the promise.
+  "http.serverAsyncDispose",
+  // The first read creates the message's AbortSignal; a build without the
+  // abort-signal unit reports SC2020 instead of answering one.
+  "http.reqSignal",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
@@ -435,6 +447,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteDyn",
   "http.resEndDyn",
   "http.resAddTrailers",
+  // pipe() on a write-only outgoing message: with no 'error' listener the
+  // ERR_STREAM_CANNOT_PIPE surfaces as a synchronous throw to the caller.
+  "http.resPipe",
+  "http.clientPipe",
   "http.resFlushHeaders",
   "http.resUncork",
   "http.resWriteHead",
@@ -452,6 +468,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // out (flushHeaders(), a first write, or an Expect header at
   // construction), and setHeader throws Node's name and value checks.
   "http.clientSetHeader",
+  "http.clientSetHeaderDyn",
+  "http.clientAppendHeader",
   "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",

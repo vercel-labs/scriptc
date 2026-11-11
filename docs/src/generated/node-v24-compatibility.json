@@ -34999,9 +34999,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35022,9 +35022,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35045,9 +35045,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35183,9 +35183,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35413,8 +35413,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35436,8 +35436,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35459,8 +35459,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35482,8 +35482,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35505,8 +35505,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35528,8 +35528,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -35551,8 +35551,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -36333,9 +36333,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36885,8 +36885,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -36908,8 +36908,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.",
         "verification": "test-backed"
       }
     },
@@ -37138,9 +37138,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -37759,9 +37759,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38012,7 +38012,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38127,7 +38127,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38150,7 +38150,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38173,7 +38173,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38196,7 +38196,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38219,9 +38219,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38242,7 +38242,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38265,7 +38265,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38288,9 +38288,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38426,7 +38426,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -38495,7 +38495,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -38541,9 +38541,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38587,9 +38587,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38610,7 +38610,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38794,7 +38794,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static header validation is implemented for the tested call shapes.",
         "verification": "test-backed"
       }
@@ -38817,7 +38817,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static header validation is implemented for the tested call shapes.",
         "verification": "test-backed"
       }
@@ -38886,7 +38886,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38909,7 +38909,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38955,7 +38955,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -42842,9 +42842,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

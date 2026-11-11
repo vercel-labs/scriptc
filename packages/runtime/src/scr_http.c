@@ -273,6 +273,9 @@ struct ScrHttpReq {
   /* req.headers as untyped code reads it: built on the first read and
    * kept (+1), so writes to it persist as on Node's cached object */
   struct ScrDyn *headers_view;
+  /* req.signal: created on the first read and aborted when the message is
+   * torn down before it completed (+1). */
+  ScrDyn *signal;
   bool sock_held; /* this request stopped its socket's reads */
   ScrNetLs aborted_ls; /* req.on('aborted') — the h2 compat event */
 };
@@ -339,6 +342,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     free(r->tvalues);
     scr_str_release(r->status_msg);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
+    scr_dyn_release(r->signal);
     scr_net_ls_drop(&r->data_ls);
     scr_net_ls_drop(&r->end_ls);
     scr_net_ls_drop(&r->err_ls);
@@ -1090,8 +1094,11 @@ struct ScrHttpRes {
   bool no_body; /* HEAD request or a 1xx/204/304 status: Node's _hasBody false */
   bool req_cleared;
   ScrNetLs close_ls, timeout_ls;
+  ScrNetLs drain_ls;  /* res.on('drain') — a write answered false and the bytes drained */
+  bool need_drain;    /* Node's kNeedDrain: the next 'drain' fires once writableLength is 0 */
   ScrNetLs finish_ls; /* res.on('finish') — fires deferred once the body went out */
   ScrNetLs prefinish_ls; /* res.on('prefinish') — fires inside end(), once the body is written */
+  ScrNetLs err_ls;     /* res.on('error') — pipe()'s ERR_STREAM_CANNOT_PIPE, the one error this surface emits */
   /* The AsyncLocalStorage context of the end() call (+1, NULL outside a
    * store) once `end_ctx_set`: 'finish', the end() callbacks and 'close'
    * after an end run in it, as Node's do. An http2 compatibility response
@@ -1129,8 +1136,10 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_str_release(r->status_msg);
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
+    scr_net_ls_drop(&r->drain_ls);
     scr_net_ls_drop(&r->finish_ls);
     scr_net_ls_drop(&r->prefinish_ls);
+    scr_net_ls_drop(&r->err_ls);
     scr_net_ls_drop(&r->endcb_ls);
     scr_net_ls_drop(&r->wcb_ls);
     free(r->cork_buf);
@@ -1228,8 +1237,9 @@ void scr_http_res_status_msg_set(ScrHttpRes *r, ScrStr *msg /*borrowed*/) {
 
 /* Outgoing header values keep the type they were set with, like Node's
  * kOutHeaders entries: a string, a number (serialized as String(n)), or
- * an array (one line per element). Each line records its kind; an array
- * is its consecutive same-name LIST lines. */
+ * an array (one line per element). Each line records its element type
+ * (the NUM bit) and whether it belongs to an array (the LIST bit): an
+ * array of one string is still an array to getHeader. */
 enum { SCR_HTTP_HV_STR = 0, SCR_HTTP_HV_NUM = 1, SCR_HTTP_HV_LIST = 2 };
 
 /* getHeader(name)'s first line, as a string (+1), or NULL. */
@@ -1240,18 +1250,24 @@ ScrStr *scr_http_res_get_header(ScrHttpRes *r, ScrStr *name) {
   return NULL;
 }
 
+/* One stored line as the value getHeader answers for it (+1). */
+static ScrDyn *scr_http_out_line(ScrStr *value, uint8_t kind) {
+  if (kind & SCR_HTTP_HV_NUM) return scr_dyn_new_num(strtod(value->data, NULL));
+  return scr_dyn_new_str(value);
+}
+
 /* The checked-dynamic value of one header line group: a number, a string,
- * or an array of the group's strings (+1). */
+ * or an array of the group's values (+1). */
 static ScrDyn *scr_http_out_value(ScrStr *const *names, ScrStr *const *values, const uint8_t *kinds,
                                   size_t count, size_t first) {
   size_t n = 0;
   for (size_t i = first; i < count; i++) n += scr_http_name_eq(names[i], names[first]);
   uint8_t kind = kinds ? kinds[first] : SCR_HTTP_HV_STR;
-  if (n == 1 && kind == SCR_HTTP_HV_NUM) return scr_dyn_new_num(strtod(values[first]->data, NULL));
-  if (n == 1 && kind == SCR_HTTP_HV_STR) return scr_dyn_new_str(values[first]);
+  if (n == 1 && !(kind & SCR_HTTP_HV_LIST)) return scr_http_out_line(values[first], kind);
   ScrDyn *list = scr_dyn_new_arr();
   for (size_t i = first; i < count; i++) {
-    if (scr_http_name_eq(names[i], names[first])) scr_dyn_arr_push(list, scr_dyn_new_str(values[i]));
+    if (scr_http_name_eq(names[i], names[first]))
+      scr_dyn_arr_push(list, scr_http_out_line(values[i], kinds ? kinds[i] : SCR_HTTP_HV_STR));
   }
   return list;
 }
@@ -1290,7 +1306,8 @@ static ScrArr *scr_http_out_header_names(ScrStr **names, size_t count, bool raw)
  * reads every line as a string. */
 static ScrDyn *scr_http_out_headers(ScrStr **names, ScrStr **values, const uint8_t *kinds,
                                     size_t count) {
-  ScrDyn *out = scr_dyn_new_obj();
+  /* Node answers a null-prototype object here (`{ __proto__: null }`). */
+  ScrDyn *out = scr_dyn_new_obj_null_proto();
   for (size_t i = 0; i < count; i++) {
     bool seen = false;
     for (size_t j = 0; j < i && !seen; j++) seen = scr_http_name_eq(names[j], names[i]);
@@ -1473,16 +1490,19 @@ static size_t scr_http_res_insert_value(ScrHttpRes *r, size_t pos, ScrStr *name,
   if (value->kind == SCR_DYN_ARR) {
     size_t n = value->v.arr.len;
     for (size_t i = 0; i < n; i++) {
-      ScrStr *text = scr_http_header_value_text(name, value->v.arr.items[i]);
+      const ScrDyn *element = value->v.arr.items[i];
+      ScrStr *text = scr_http_header_value_text(name, element);
       if (!text) return SIZE_MAX;
-      scr_http_res_insert_header(r, pos + i, name, text, SCR_HTTP_HV_LIST);
+      uint8_t kind = SCR_HTTP_HV_LIST | (element->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR);
+      scr_http_res_insert_header(r, pos + i, name, text, kind);
       scr_str_release(text);
     }
     return n;
   }
   ScrStr *text = scr_http_header_value_text(name, value);
   if (!text) return SIZE_MAX;
-  uint8_t kind = as_list ? SCR_HTTP_HV_LIST : value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+  uint8_t kind = value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+  if (as_list) kind |= SCR_HTTP_HV_LIST;
   scr_http_res_insert_header(r, pos, name, text, kind);
   scr_str_release(text);
   return 1;
@@ -1538,12 +1558,82 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
   size_t last = SIZE_MAX;
   for (size_t i = 0; i < r->nheaders; i++) {
     if (!scr_http_name_eq(r->hnames[i], name)) continue;
-    r->hkinds[i] = SCR_HTTP_HV_LIST;
+    r->hkinds[i] = (uint8_t)(r->hkinds[i] | SCR_HTTP_HV_LIST);
     last = i;
   }
   if (last == SIZE_MAX) scr_http_res_insert_value(r, r->nheaders, name, value, false);
   else scr_http_res_insert_value(r, last + 1, r->hnames[last], value, true);
   scr_dyn_release(value);
+}
+
+/* OutgoingMessage.setHeaders(headers): the argument must be a Headers or a
+ * Map. Node checks for the two method names it needs (keys and get), which
+ * only those two objects in this language have; anything else throws
+ * ERR_INVALID_ARG_TYPE before an entry is read. */
+static bool scr_http_set_headers_source(const ScrDyn *headers) {
+  if (headers != NULL && headers->kind == SCR_DYN_HANDLE &&
+      (headers->v.handle.tag == SCR_DYNH_MAP || headers->v.handle.tag == SCR_DYNH_FETCH_HEADERS))
+    return true;
+  scr_dyn_arg_type_fail("headers", "an instance of Headers or Map", headers);
+  return false;
+}
+
+/* The [name, value] entries of a Headers or Map in the collection's own
+ * order (+1 array of two-element arrays), or NULL with the exception
+ * pending. */
+static ScrDyn *scr_http_set_headers_entries(const ScrDyn *headers) {
+  return scr_dyn_destructure_rest(headers, NULL);
+}
+
+/* Node's set-cookie branch: the key compares EXACTLY (a "Set-Cookie" key is
+ * an ordinary entry), and its values are collected and set once at the end
+ * so a later entry cannot replace them. */
+static bool scr_http_set_headers_is_cookie(const ScrStr *name) {
+  return name->len == 10 && memcmp(name->data, "set-cookie", 10) == 0;
+}
+
+/* res.setHeaders(headers): setHeader per entry, set-cookie last as one
+ * array. */
+void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/) {
+  if (!scr_http_res_headers_unsent(r, "set")) return;
+  if (!scr_http_set_headers_source(headers)) return;
+  ScrDyn *entries = scr_http_set_headers_entries(headers);
+  if (!entries) return;
+  ScrDyn *cookies = NULL;
+  for (size_t i = 0; i < entries->v.arr.len; i++) {
+    ScrDyn *entry = entries->v.arr.items[i];
+    ScrDyn *key = scr_dyn_index_get(entry, 0);
+    ScrDyn *value = scr_dyn_index_get(entry, 1);
+    ScrStr *name = key == NULL ? NULL : scr_dyn_string_coerce_js(key);
+    scr_dyn_release(key);
+    if (value == NULL || name == NULL) {
+      scr_dyn_release(value);
+      break;
+    }
+    if (scr_http_set_headers_is_cookie(name)) {
+      if (cookies == NULL) cookies = scr_dyn_new_arr();
+      ScrDyn *flat = scr_http_header_value_plain(value);
+      if (flat->kind == SCR_DYN_ARR) {
+        for (size_t j = 0; j < flat->v.arr.len; j++)
+          scr_dyn_arr_push(cookies, scr_dyn_retain(flat->v.arr.items[j]));
+        scr_dyn_release(flat);
+      } else {
+        scr_dyn_arr_push(cookies, flat);
+      }
+    } else {
+      scr_http_res_set_header_dyn(r, name, value);
+    }
+    scr_str_release(name);
+    scr_dyn_release(value);
+    if (scr_exc_pending()) break;
+  }
+  if (cookies != NULL && !scr_exc_pending()) {
+    ScrStr *name = scr_str_new("set-cookie", 10);
+    scr_http_res_set_header_dyn(r, name, cookies);
+    scr_str_release(name);
+  }
+  if (cookies != NULL) scr_dyn_release(cookies);
+  scr_dyn_release(entries);
 }
 
 /* Grow-and-append head builder. */
@@ -1793,6 +1883,87 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
   free(b.data);
 }
 
+/* Node's writeInformation(statusCode[, headers]): the general informational
+ * response writer that writeContinue, writeProcessing and writeEarlyHints
+ * call. The status line's reason comes from STATUS_CODES ("unknown" for the
+ * unassigned 1xx codes), `pairs` is the flat [name, value, ...] list the
+ * lowerer packs from the headers argument (empty for the bare form), and
+ * the answer is _writeRaw's boolean, the socket's backpressure flag.
+ * 101 is refused: an informational response never switches protocols, which
+ * is what writeHead(101) and the upgrade path are for. */
+bool scr_http_res_write_information(ScrHttpRes *r, double code, ScrArr *pairs /*borrowed*/) {
+  if (!scr_http_res_informational_h1(r, "writeInformation")) return false;
+  if (!scr_http_headers_unsent(r->head_sent, "write")) return false;
+  char recv[48], msg[176];
+  /* Node's validateInteger checks the range first (a value beyond it, or
+   * NaN straddles it into the integer check: NaN satisfies neither bound). */
+  if (code < 100 || code > 199) {
+    scr_num_received(code, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"statusCode\" is out of range. It must be >= 100 && <= 199. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (!isfinite(code) || trunc(code) != code) {
+    scr_num_received(code, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"statusCode\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  int status = (int)code;
+  if (status == 101) {
+    char number[32];
+    size_t n = scr_f64_to_str(code, number);
+    int len = snprintf(msg, sizeof msg, "Invalid status code: %.*s", (int)n, number);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_HTTP_INVALID_STATUS_CODE");
+    return false;
+  }
+  size_t count = (size_t)scr_arr_len(pairs);
+  if (count % 2 != 0) {
+    static const char bad[] = "The argument 'headers' is invalid.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, bad, sizeof bad - 1, "ERR_INVALID_ARG_VALUE");
+    return false;
+  }
+  ScrHttpBuf b = {NULL, 0, 0};
+  scr_http_buf_str(&b, "HTTP/1.1 ");
+  scr_http_buf_uint(&b, (unsigned long long)status);
+  scr_http_buf_str(&b, " ");
+  scr_http_buf_str(&b, scr_http_reason(status));
+  scr_http_buf_str(&b, "\r\n");
+  /* processInformationHeader: each name, then its value, in argument
+   * order; nothing reaches the socket when one of them is invalid. */
+  for (size_t i = 0; i < count; i += 2) {
+    ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
+    ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
+    scr_http_validate_header_name(name, NULL);
+    if (!scr_exc_pending()) {
+      ScrDyn *wrapped = scr_dyn_new_str(value);
+      scr_http_validate_header_value(name, wrapped);
+      scr_dyn_release(wrapped);
+    }
+    if (scr_exc_pending()) {
+      scr_str_release(name);
+      scr_str_release(value);
+      free(b.data);
+      return false;
+    }
+    scr_http_buf_append(&b, name->data, name->len);
+    scr_http_buf_str(&b, ": ");
+    scr_http_buf_header_value(&b, value);
+    scr_http_buf_str(&b, "\r\n");
+    scr_str_release(name);
+    scr_str_release(value);
+  }
+  scr_http_buf_str(&b, "\r\n");
+  bool ok = true;
+  if (r->sock) ok = scr_net_sock_write_native(r->sock, b.data, b.len);
+  free(b.data);
+  return ok;
+}
+
 static void scr_http_buf_chunk_end(ScrHttpBuf *b, const ScrHttpTrailers *t) {
   scr_http_buf_str(b, "0\r\n");
   for (size_t i = 0; i < t->len; i++) {
@@ -2016,9 +2187,9 @@ static bool scr_http_res_build_head(ScrHttpRes *r, long long body_len, ScrHttpBu
  * the implicit head and the first chunk (and end()'s terminator) to the
  * socket as one write, so a small response is one segment instead of a
  * head segment followed by a body segment. The bytes are unchanged. */
-static void scr_http_res_emit(ScrHttpRes *r, const ScrHttpBuf *head, const char *data,
+static bool scr_http_res_emit(ScrHttpRes *r, const ScrHttpBuf *head, const char *data,
                               size_t len, bool last) {
-  if (!r->sock) return;
+  if (!r->sock) return false;
   if (r->no_body) len = 0;
   ScrNetSlice v[4];
   size_t n = 0;
@@ -2037,8 +2208,9 @@ static void scr_http_res_emit(ScrHttpRes *r, const ScrHttpBuf *head, const char 
   } else if (len > 0) {
     v[n++] = (ScrNetSlice){data, len};
   }
-  scr_net_sock_writev_native(r->sock, v, n);
+  bool ok = scr_net_sock_writev_native(r->sock, v, n);
   free(tail.data);
+  return ok;
 }
 
 /* Writes while corked coalesce here and flush as ONE write when the
@@ -2058,36 +2230,89 @@ static void scr_http_cork_buffer(char **buf, size_t *held_len, size_t *held_cap,
   *held_len += len;
 }
 
-static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
-  if (r->finished) return;
+/* res.writableLength, Node's OutgoingMessage getter: the corked payload
+ * plus its chunk framing (and the still-held head), and the socket's own
+ * pending writes. */
+double scr_http_res_writable_length(ScrHttpRes *r) {
+  double len = (double)r->cork_len;
+  if (r->cork_len > 0) {
+    if (r->chunked) {
+      size_t n = r->cork_len, digits = 1;
+      while (n >= 16) {
+        n >>= 4;
+        digits++;
+      }
+      len += (double)(digits + 4);
+    }
+    if (!r->head_sent) len += (double)r->held_head_len;
+  }
+  if (r->sock != NULL) len += scr_net_sock_writable_length(r->sock);
+  return len;
+}
+
+/* A false write set need_drain: 'drain' fires once writableLength is 0,
+ * at the socket's next drain (Node's socketOnDrain re-emit). */
+static void scr_http_res_check_drain(ScrHttpRes *r);
+
+static void scr_http_res_drain_check_fire(ScrClosure *cb) {
+  ScrHttpRes *r = scr_box_get_ref(cb->caps[0]); /* +1 */
+  scr_http_res_check_drain(r);
+  scr_http_res_release(r);
+}
+
+static void scr_http_res_arm_drain(ScrHttpRes *r) {
+  if (r->sock == NULL) return;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_res_drain_check_fire, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
+  scr_net_sock_on_write_flush(r->sock, cb);
+}
+
+static void scr_http_res_check_drain(ScrHttpRes *r) {
+  if (!r->need_drain || r->finished || r->destroyed) return;
+  if (scr_http_res_writable_length(r) != 0) {
+    scr_http_res_arm_drain(r);
+    return;
+  }
+  r->need_drain = false;
+  scr_net_fire0_this(&r->drain_ls, r, SCR_DYNH_HTTP_RES);
+}
+
+/* write()'s answer: Node's write_ result — the socket's backpressure
+ * boolean (false once the unsent bytes reach writableHighWaterMark), or
+ * for a corked message whether writableLength stayed under it. */
+static bool scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
+  if (r->finished) return false;
   if (r->corked > 0) {
     r->cork_wrote = true;
     /* Node's write_() builds the implicit head even while corked */
     if (!r->head_sent && r->h2_stream == NULL) {
       ScrHttpBuf held = {NULL, 0, 0};
-      if (!scr_http_res_build_head(r, -1, &held)) return;
+      if (!scr_http_res_build_head(r, -1, &held)) return false;
       r->held_head = held.data;
       r->held_head_len = held.len;
       r->held_head_cap = held.cap;
     }
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) return false;
     scr_http_cork_buffer(&r->cork_buf, &r->cork_len, &r->cork_cap, data, len);
-    return;
+    return scr_http_res_writable_length(r) < scr_http_res_writable_high_water_mark(r);
   }
   if (r->h2_stream != NULL) {
     if (!r->head_sent) scr_http_res_send_head(r, -1);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) return false;
     scr_http_h2_ops->write(r->h2_stream, data, len);
-    return;
+    return true;
   }
   /* streaming: the implicit head (chunked unless the user fixed the
    * length) leaves with this first chunk */
   ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
   r->held_head = NULL;
   r->held_head_len = r->held_head_cap = 0;
-  if (!r->head_sent && !scr_http_res_build_head(r, -1, &head)) return;
-  if (!scr_exc_pending()) scr_http_res_emit(r, &head, data, len, false);
+  if (!r->head_sent && !scr_http_res_build_head(r, -1, &head)) return false;
+  bool ok = false;
+  if (!scr_exc_pending()) ok = scr_http_res_emit(r, &head, data, len, false);
   free(head.data);
+  return ok;
 }
 
 /* Node 24.22's write_(): a write with the socket uncorked corks the
@@ -2108,24 +2333,29 @@ static void scr_http_res_autocork(ScrHttpRes *r) {
   scr_next_tick(cb);
 }
 
-void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
+bool scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
   double expected;
   if (r->head_sent && scr_http_res_expected_length(r, &expected) &&
       (double)(r->strict_bytes_written + data->len) > expected) {
     r->strict_bytes_written += data->len;
     scr_http_res_length_mismatch(r, expected);
     r->strict_bytes_written -= data->len;
-    return;
+    return false;
   }
   if (r->strict_content_length) r->strict_bytes_written += data->len;
   scr_http_res_autocork(r);
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
-  scr_http_res_write_raw(r, bytes, data->len);
+  bool ok = scr_http_res_write_raw(r, bytes, data->len);
   scr_str_utf8_end(owned);
+  if (!ok) {
+    r->need_drain = true;
+    scr_http_res_arm_drain(r);
+  }
+  return ok;
 }
 
-void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
+bool scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
   SCR_BYTES_SNAPSHOT(data);
   double expected;
   if (r->head_sent && scr_http_res_expected_length(r, &expected) &&
@@ -2133,11 +2363,17 @@ void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
     r->strict_bytes_written += (data->len * scr_bytes_elem_size(data->elem));
     scr_http_res_length_mismatch(r, expected);
     r->strict_bytes_written -= (data->len * scr_bytes_elem_size(data->elem));
-    return;
+    return false;
   }
   if (r->strict_content_length) r->strict_bytes_written += (data->len * scr_bytes_elem_size(data->elem));
   scr_http_res_autocork(r);
-  scr_http_res_write_raw(r, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  bool ok = scr_http_res_write_raw(r, (const char *)data->data,
+                                   (data->len * scr_bytes_elem_size(data->elem)));
+  if (!ok) {
+    r->need_drain = true;
+    scr_http_res_arm_drain(r);
+  }
+  return ok;
 }
 
 /* res.flushHeaders(): the head goes out NOW (streaming framing — chunked
@@ -2231,6 +2467,8 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
   r->cork_len = r->cork_cap = 0;
   scr_http_res_write_raw(r, held, held_len);
   free(held);
+  /* Node's uncork(): a pending drain whose bytes all left now fires it */
+  if (r->need_drain) scr_http_res_check_drain(r);
 }
 
 static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
@@ -2604,6 +2842,47 @@ void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool onc
     return;
   }
   scr_net_ls_add(&r->prefinish_ls, cb, NULL, once);
+}
+
+/* res.on('drain', cb): a write answered false and every byte the response
+ * held has gone out. */
+void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
+  scr_net_ls_add(&r->drain_ls, cb, NULL, once);
+}
+
+/* res.on('error', cb): the OutgoingMessage error slot. pipe()'s
+ * ERR_STREAM_CANNOT_PIPE is the error this surface emits. */
+void scr_http_res_on_error(ScrHttpRes *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
+  scr_net_ls_add(&r->err_ls, cb, (void *)fn, once);
+}
+
+/* OutgoingMessage.prototype.pipe(): an outgoing message is write-only, so
+ * Node's pipe emits 'error' carrying ERR_STREAM_CANNOT_PIPE ("Cannot pipe,
+ * not readable") to whatever 'error' listeners the message has; with none,
+ * EventEmitter's unhandled 'error' throws it to the caller — the
+ * synchronous throw res.pipe() takes. Shared by the response and the
+ * client request (both OutgoingMessages). */
+static void scr_http_outgoing_cannot_pipe(ScrNetLs *ls, void *self, ScrDynHandleTag tag) {
+  static const char message[] = "Cannot pipe, not readable";
+  ScrStr *msg = scr_str_new(message, sizeof message - 1);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_error_set_code(error, "ERR_STREAM_CANNOT_PIPE");
+  if (ls->n == 0) {
+    scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
+    scr_str_release(msg);
+    return;
+  }
+  /* The typed listener's error parameter: the payload carries the code. */
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = error;
+  scr_net_fire_err_this(ls, msg, self, tag);
+  scr_event_error_payload = saved;
+  scr_error_release(error);
+  scr_str_release(msg);
+}
+
+void scr_http_res_pipe(ScrHttpRes *r) {
+  scr_http_outgoing_cannot_pipe(&r->err_ls, r, SCR_DYNH_HTTP_RES);
 }
 
 /* res.on('finish', cb): fires deferred once the body went out, after the
@@ -4400,11 +4679,21 @@ static void scr_http_conn_eof(void *ctx) {
  * whether or not the response finished: a parser failure can arrive after
  * the handler answered, and Node destroys the socket before the response
  * flushes, so 'finish' never fires. */
+static void scr_http_req_abort_signal(ScrHttpReq *r) {
+  /* A message with no signal yet has nothing to abort (Node creates the
+   * controller lazily too). The abort edge belongs to the abort-signal
+   * unit; a program that leaked a signal onto a message always links it
+   * (the http.reqSignal runtime fact). */
+  if (r->signal != NULL && scr_dyn_signal_abort_fn != NULL)
+    scr_dyn_signal_abort_fn(r->signal);
+}
+
 static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   ScrHttpReq *req = conn->req;
   if (req == NULL || req->end_consumed || req->close_emitted || req->destroyed) return;
   req->destroyed = true;
   req->aborted = true;
+  scr_http_req_abort_signal(req);
   /* the later events queue first: an 'aborted' listener can end the
    * response, which detaches it from the connection and queues the
    * request's 'close'; that response never sends its body */
@@ -4780,6 +5069,24 @@ double scr_http_req_http_version_minor(ScrHttpReq *r) {
   return text[2] - '0';
 }
 bool scr_http_req_aborted_flag(ScrHttpReq *r) { return r->aborted; }
+
+/* req.signal: Node's IncomingMessage abort signal, created on the first
+ * read and aborted by the message teardown (the same signal object comes
+ * back on every read). */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r) {
+  if (r->signal == NULL) {
+    if (scr_dyn_signal_new_fn == NULL) {
+      /* The lowerer's http.reqSignal fact selects the abort-signal unit,
+       * so a linked program always has the factory. */
+      static const char message[] = "AbortSignal support is not linked";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    r->signal = scr_dyn_signal_new_fn();
+    if (r->aborted) scr_http_req_abort_signal(r);
+  }
+  return scr_dyn_retain(r->signal);
+}
 /* An HTTP/1 message is complete once all of it arrived, aborted or not, as
  * Node's IncomingMessage.complete is. */
 bool scr_http_req_complete(ScrHttpReq *r) {
@@ -4792,6 +5099,7 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
   if (r->close_emitted || r->aborted) return;
   r->aborted = true;
+  scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
 }
@@ -4970,7 +5278,9 @@ struct ScrHttpClientReq {
   int default_port; /* the Host header omits it (80 http, 443 https) */
   ScrStr **hnames; /* user headers, verbatim case */
   ScrStr **hvalues;
+  uint8_t *hkinds; /* SCR_HTTP_HV_*: how getHeader answers each line */
   size_t nheaders;
+  size_t cap_headers;
   bool removed_host;
   bool removed_connection;
   bool one_shot;     /* agent: false — Node's throwaway agent, which never keeps alive */
@@ -5060,6 +5370,7 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     }
     free(c->hnames);
     free(c->hvalues);
+    free(c->hkinds);
     scr_http_trailers_clear(&c->trailers);
     free(c->cork_buf);
     free(c->held_head);
@@ -5126,6 +5437,7 @@ static void scr_http_client_unregister(ScrHttpClientReq *c) {
 /* Agent bookkeeping (implementation below, with the Agent unit): the
  * settling client leaves its agent's lists and frees a slot. */
 static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c);
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, struct ScrStr *name /*borrowed, nullable*/);
 static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn);
 static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientReq *c, double hint);
 static double scr_http_response_keep_alive(ScrHttpReq *res, const struct ScrHttpClientReq *c);
@@ -5293,7 +5605,17 @@ ScrArr *scr_http_client_get_raw_header_names(ScrHttpClientReq *c) {
 }
 
 ScrDyn *scr_http_client_get_headers(ScrHttpClientReq *c) {
-  return scr_http_out_headers(c->hnames, c->hvalues, NULL, c->nheaders);
+  return scr_http_out_headers(c->hnames, c->hvalues, c->hkinds, c->nheaders);
+}
+
+/* getHeader(name) as the value was set (a number, string or array), or
+ * undefined when absent (+1). */
+ScrDyn *scr_http_client_get_header_dyn(ScrHttpClientReq *c, ScrStr *name) {
+  for (size_t i = 0; i < c->nheaders; i++) {
+    if (scr_http_name_eq(c->hnames[i], name))
+      return scr_http_out_value(c->hnames, c->hvalues, c->hkinds, c->nheaders, i);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
 }
 
 ScrStr *scr_http_client_method(ScrHttpClientReq *c) { return scr_str_retain(c->method); }
@@ -5320,6 +5642,62 @@ static bool scr_http_client_header_mutable(ScrHttpClientReq *c, const char *op) 
   return scr_http_headers_unsent(c->head_sent, op);
 }
 
+static void scr_http_client_reserve(ScrHttpClientReq *c, size_t need) {
+  if (need <= c->cap_headers) return;
+  size_t cap = c->cap_headers ? c->cap_headers * 2 : 8;
+  while (cap < need) cap *= 2;
+  c->hnames = realloc(c->hnames, cap * sizeof *c->hnames);
+  c->hvalues = realloc(c->hvalues, cap * sizeof *c->hvalues);
+  c->hkinds = realloc(c->hkinds, cap * sizeof *c->hkinds);
+  if (!c->hnames || !c->hvalues || !c->hkinds) scr_http_oom();
+  c->cap_headers = cap;
+}
+
+/* Drops every case-insensitive match; answers the index the first one
+ * held (nheaders when there was none), where setHeader puts the
+ * replacement so the header keeps its place, like Node's key order. */
+static size_t scr_http_client_drop_named(ScrHttpClientReq *c, const ScrStr *name) {
+  size_t w = 0, first = SIZE_MAX;
+  for (size_t i = 0; i < c->nheaders; i++) {
+    if (scr_http_name_eq(c->hnames[i], name)) {
+      if (first == SIZE_MAX) first = w;
+      scr_str_release(c->hnames[i]);
+      scr_str_release(c->hvalues[i]);
+    } else {
+      c->hnames[w] = c->hnames[i];
+      c->hvalues[w] = c->hvalues[i];
+      c->hkinds[w] = c->hkinds[i];
+      w++;
+    }
+  }
+  c->nheaders = w;
+  return first == SIZE_MAX ? w : first;
+}
+
+/* Inserts one line at `pos` (name and value borrowed). */
+static void scr_http_client_insert_header(ScrHttpClientReq *c, size_t pos, ScrStr *name,
+                                          ScrStr *value, uint8_t kind) {
+  scr_http_client_reserve(c, c->nheaders + 1);
+  memmove(c->hnames + pos + 1, c->hnames + pos, (c->nheaders - pos) * sizeof *c->hnames);
+  memmove(c->hvalues + pos + 1, c->hvalues + pos, (c->nheaders - pos) * sizeof *c->hvalues);
+  memmove(c->hkinds + pos + 1, c->hkinds + pos, (c->nheaders - pos) * sizeof *c->hkinds);
+  c->hnames[pos] = scr_str_retain(name);
+  c->hvalues[pos] = scr_str_retain(value);
+  c->hkinds[pos] = kind;
+  c->nheaders++;
+}
+
+/* The bookkeeping a set/remove updates: the Host and Connection headers
+ * the head would otherwise add itself, and the caller-set framing. */
+static void scr_http_client_touch_header(ScrHttpClientReq *c, ScrStr *name, bool present) {
+  if (scr_http_header_name_is(name, "host")) c->removed_host = !present;
+  if (scr_http_header_name_is(name, "connection")) c->removed_connection = !present;
+  c->user_cl = scr_http_client_has_header(c, "content-length") ||
+               scr_http_client_has_header(c, "transfer-encoding");
+}
+
+/* setHeader(name, string): replace-by-name (case-insensitive), Node's
+ * semantics. */
 void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value) {
   if (!scr_http_client_header_mutable(c, "set")) return;
   ScrStr *label = scr_str_new("Header name", 11);
@@ -5330,25 +5708,112 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value
   scr_http_validate_header_value(name, wrapped);
   scr_dyn_release(wrapped);
   if (scr_exc_pending()) return;
+  scr_http_client_insert_header(c, scr_http_client_drop_named(c, name), name, value,
+                                SCR_HTTP_HV_STR);
+  scr_http_client_touch_header(c, name, true);
+}
+
+/* setHeader(name, value) for a number, a string or an array value: the
+ * stored value keeps its type for getHeader/getHeaders, and an array
+ * writes one line per element. */
+void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                    ScrDyn *raw /*borrowed*/) {
+  if (!scr_http_client_header_mutable(c, "set")) return;
+  ScrStr *label = scr_str_new("Header name", 11);
+  scr_http_validate_header_name(name, label);
+  scr_str_release(label);
+  if (scr_exc_pending()) return;
+  ScrDyn *value = scr_http_header_value_plain(raw);
+  if (scr_exc_pending()) {
+    scr_dyn_release(value);
+    return;
+  }
+  bool valid = true;
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  for (size_t i = 0; i < n && valid; i++) {
+    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
+    scr_http_validate_header_value(name, element);
+    valid = !scr_exc_pending();
+  }
+  if (valid) {
+    size_t pos = scr_http_client_drop_named(c, name);
+    if (value->kind == SCR_DYN_ARR) {
+      for (size_t i = 0; i < n; i++) {
+        ScrStr *text = scr_http_header_value_text(name, value->v.arr.items[i]);
+        if (!text) {
+          valid = false;
+          break;
+        }
+        uint8_t kind = SCR_HTTP_HV_LIST |
+                       (value->v.arr.items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR);
+        scr_http_client_insert_header(c, pos + i, name, text, kind);
+        scr_str_release(text);
+      }
+    } else {
+      ScrStr *text = scr_http_header_value_text(name, value);
+      if (text) {
+        uint8_t kind = value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+        scr_http_client_insert_header(c, pos, name, text, kind);
+        scr_str_release(text);
+      } else {
+        valid = false;
+      }
+    }
+    if (valid) scr_http_client_touch_header(c, name, true);
+  }
+  scr_dyn_release(value);
+}
+
+/* appendHeader(name, value): an absent header is set as given; an existing
+ * one becomes an array holding its values followed by the new ones. */
+void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                       ScrDyn *raw /*borrowed*/) {
+  if (!scr_http_client_header_mutable(c, "append")) return;
+  ScrStr *label = scr_str_new("Header name", 11);
+  scr_http_validate_header_name(name, label);
+  scr_str_release(label);
+  if (scr_exc_pending()) return;
+  ScrDyn *value = scr_http_header_value_plain(raw);
+  if (scr_exc_pending()) {
+    scr_dyn_release(value);
+    return;
+  }
+  bool valid = true;
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  for (size_t i = 0; i < n && valid; i++) {
+    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
+    scr_http_validate_header_value(name, element);
+    valid = !scr_exc_pending();
+  }
+  if (!valid) {
+    scr_dyn_release(value);
+    return;
+  }
+  size_t last = SIZE_MAX;
   for (size_t i = 0; i < c->nheaders; i++) {
     if (!scr_http_name_eq(c->hnames[i], name)) continue;
-    scr_str_release(c->hnames[i]);
-    scr_str_release(c->hvalues[i]);
-    c->hnames[i] = scr_str_retain(name);
-    c->hvalues[i] = scr_str_retain(value);
-    goto updated;
+    c->hkinds[i] = (uint8_t)(c->hkinds[i] | SCR_HTTP_HV_LIST);
+    last = i;
   }
-  c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
-  c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
-  if (!c->hnames || !c->hvalues) scr_http_oom();
-  c->hnames[c->nheaders] = scr_str_retain(name);
-  c->hvalues[c->nheaders] = scr_str_retain(value);
-  c->nheaders++;
-updated:
-  if (scr_http_header_name_is(name, "host")) c->removed_host = false;
-  if (scr_http_header_name_is(name, "connection")) c->removed_connection = false;
-  c->user_cl = scr_http_client_has_header(c, "content-length") ||
-               scr_http_client_has_header(c, "transfer-encoding");
+  size_t pos = last == SIZE_MAX ? c->nheaders : last + 1;
+  ScrStr *stored_name = last == SIZE_MAX ? name : c->hnames[last];
+  if (value->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < n; i++) {
+      ScrStr *text = scr_http_header_value_text(name, value->v.arr.items[i]);
+      uint8_t kind = SCR_HTTP_HV_LIST |
+                     (value->v.arr.items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR);
+      scr_http_client_insert_header(c, pos + i, stored_name, text, kind);
+      scr_str_release(text);
+    }
+  } else {
+    ScrStr *text = scr_http_header_value_text(name, value);
+    uint8_t kind = value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+    if (last != SIZE_MAX) kind |= SCR_HTTP_HV_LIST;
+    scr_http_client_insert_header(c, pos, stored_name, text, kind);
+    scr_str_release(text);
+  }
+  scr_http_client_touch_header(c, name, true);
+  scr_dyn_release(value);
 }
 
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
@@ -5361,6 +5826,7 @@ void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
     } else {
       c->hnames[w] = c->hnames[i];
       c->hvalues[w] = c->hvalues[i];
+      c->hkinds[w] = c->hkinds[i];
       w++;
     }
   }
@@ -5369,6 +5835,84 @@ void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
   if (scr_http_header_name_is(name, "connection")) c->removed_connection = true;
   c->user_cl = scr_http_client_has_header(c, "content-length") ||
                scr_http_client_has_header(c, "transfer-encoding");
+}
+
+/* One more line of a name that set_header already stored (an array-valued
+ * header's later elements). The bookkeeping flags were settled by the
+ * first line. */
+static void scr_http_client_append_header_line(ScrHttpClientReq *c, ScrStr *name, ScrStr *value) {
+  c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
+  c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
+  if (!c->hnames || !c->hvalues) scr_http_oom();
+  c->hnames[c->nheaders] = scr_str_retain(name);
+  c->hvalues[c->nheaders] = scr_str_retain(value);
+  c->nheaders++;
+}
+
+/* setHeader for a string, a number, or an array of either: the first value
+ * replaces every line of the name, the rest follow as their own lines
+ * (Node's array-valued header). False with the exception pending. */
+static bool scr_http_client_set_header_values(ScrHttpClientReq *c, ScrStr *name,
+                                              const ScrDyn *value) {
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  bool first = true;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *text = scr_http_header_value_text(
+        name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
+    if (text == NULL) return false;
+    if (first) {
+      first = false;
+      scr_http_client_set_header(c, name, text);
+    } else {
+      scr_http_client_append_header_line(c, name, text);
+    }
+    scr_str_release(text);
+    if (scr_exc_pending()) return false;
+  }
+  return true;
+}
+
+/* request.setHeaders(headers): setHeader per entry, set-cookie last. */
+void scr_http_client_set_headers(ScrHttpClientReq *c, ScrDyn *headers /*borrowed*/) {
+  if (!scr_http_client_header_mutable(c, "set")) return;
+  if (!scr_http_set_headers_source(headers)) return;
+  ScrDyn *entries = scr_http_set_headers_entries(headers);
+  if (!entries) return;
+  ScrDyn *cookies = NULL;
+  for (size_t i = 0; i < entries->v.arr.len; i++) {
+    ScrDyn *entry = entries->v.arr.items[i];
+    ScrDyn *key = scr_dyn_index_get(entry, 0);
+    ScrDyn *value = scr_dyn_index_get(entry, 1);
+    ScrStr *name = key == NULL ? NULL : scr_dyn_string_coerce_js(key);
+    scr_dyn_release(key);
+    if (value == NULL || name == NULL) {
+      scr_dyn_release(value);
+      break;
+    }
+    if (scr_http_set_headers_is_cookie(name)) {
+      if (cookies == NULL) cookies = scr_dyn_new_arr();
+      ScrDyn *flat = scr_http_header_value_plain(value);
+      if (flat->kind == SCR_DYN_ARR) {
+        for (size_t j = 0; j < flat->v.arr.len; j++)
+          scr_dyn_arr_push(cookies, scr_dyn_retain(flat->v.arr.items[j]));
+        scr_dyn_release(flat);
+      } else {
+        scr_dyn_arr_push(cookies, flat);
+      }
+    } else {
+      scr_http_client_set_header_values(c, name, value);
+    }
+    scr_str_release(name);
+    scr_dyn_release(value);
+    if (scr_exc_pending()) break;
+  }
+  if (cookies != NULL && !scr_exc_pending()) {
+    ScrStr *name = scr_str_new("set-cookie", 10);
+    scr_http_client_set_header_values(c, name, cookies);
+    scr_str_release(name);
+  }
+  if (cookies != NULL) scr_dyn_release(cookies);
+  scr_dyn_release(entries);
 }
 
 struct ScrHttpAgent;
@@ -5900,6 +6444,10 @@ void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, Scr
     return;
   }
   scr_net_ls_add(&c->err_ls, cb, (void *)fn, once);
+}
+
+void scr_http_client_pipe(ScrHttpClientReq *c) {
+  scr_http_outgoing_cannot_pipe(&c->err_ls, NULL, 0);
 }
 
 void scr_http_client_on_upgrade(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once) {
@@ -6530,12 +7078,15 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   c->default_port = default_port;
   size_t npairs = (size_t)scr_arr_len(header_pairs);
   if (npairs >= 2) {
-    c->hnames = malloc((npairs / 2) * sizeof *c->hnames);
-    c->hvalues = malloc((npairs / 2) * sizeof *c->hvalues);
-    if (!c->hnames || !c->hvalues) scr_http_oom();
+    c->cap_headers = npairs / 2;
+    c->hnames = malloc(c->cap_headers * sizeof *c->hnames);
+    c->hvalues = malloc(c->cap_headers * sizeof *c->hvalues);
+    c->hkinds = calloc(c->cap_headers, sizeof *c->hkinds);
+    if (!c->hnames || !c->hvalues || !c->hkinds) scr_http_oom();
     for (size_t i = 0; i + 1 < npairs; i += 2) {
       c->hnames[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
       c->hvalues[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      c->hkinds[c->nheaders] = SCR_HTTP_HV_STR;
       c->nheaders++;
     }
   }
@@ -6665,13 +7216,12 @@ ScrHttpClientReq *scr_http_request(ScrStr *host /*borrowed*/, double port,
 
 /* ── the http Agent ──────────────────────────────────────────────────────
  *
- * Options, getName, destroy, and REAL maxSockets accounting over the
- * one-dial-per-request connection model: an over-limit request's socket
- * defers its dial (scr_net_connect_deferred) and queues; a dying
- * active connection frees the slot and starts the next dial. What the
- * runtime cannot express stays a NAMED fence: keep-alive socket POOLING
- * (keepAlive: true) fences at construction — agent.freeSockets is
- * always empty; the runtime does not emulate a pool.
+ * Options, getName, destroy, the maxSockets/maxTotalSockets accounting
+ * over the one-dial-per-request connection model, and keepAlive's
+ * free-socket pool: an over-limit request's socket defers its dial
+ * (scr_net_connect_deferred) and queues; a dying active connection
+ * frees the slot and starts the next dial, and a finished keep-alive
+ * connection returns to the pool for the next request with its name.
  *
  * Ownership: the agent registers (+1, atexit-swept); entries hold their
  * client +1 and the client holds the agent +1 — the cycle breaks when
@@ -6692,6 +7242,7 @@ typedef struct ScrHttpAgent {
   bool fifo;        /* scheduling: 'fifo' takes the oldest free socket, 'lifo' the newest */
   double ka_msecs;
   double max_sockets; /* INFINITY = Node's default */
+  double max_total;   /* maxTotalSockets: caps every socket the agent holds */
   double max_free;
   double timeout_ms; /* < 0 = unset */
   /* without a timeout, how long an idle pooled socket stays open (0 = until
@@ -6814,17 +7365,20 @@ static void scr_http_agent_free_untake(ScrHttpAgent *a, ScrHttpAgentFree *f) {
 }
 
 /* The idle socket closed (or its parser is going away): it leaves the
- * free list. */
+ * free list, and the socket it held no longer counts, so a request queued
+ * behind that limit starts (Node removes the socket at its 'close' too). */
 static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn) {
   for (ScrHttpAgentFree **link = &a->free_socks; *link; link = &(*link)->next) {
     if ((*link)->conn != conn) continue;
     ScrHttpAgentFree *f = *link;
     *link = f->next;
     conn->pool_agent = NULL;
-    scr_str_release(f->name);
+    ScrStr *name = f->name; /* the pump borrows it until the entry is gone */
     scr_str_release(f->pool_key);
     scr_net_sock_release(f->sock);
     free(f);
+    scr_http_agent_pump(a, name);
+    scr_str_release(name);
     return;
   }
   conn->pool_agent = NULL;
@@ -6927,7 +7481,10 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
     return false;
   if (c->agent_ent == NULL) return false;
   ScrStr *name = scr_str_retain(c->agent_ent->name);
-  if ((double)scr_http_agent_free_count(ag, name) >= ag->max_free) {
+  /* Node's free handler pools only while the agent is inside its totals:
+   * a socket beyond maxTotalSockets is destroyed rather than kept. */
+  if ((double)scr_http_agent_free_count(ag, name) >= ag->max_free ||
+      (double)ag->sock_count->n > ag->max_total) {
     scr_str_release(name);
     return false;
   }
@@ -6959,10 +7516,53 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
   return true;
 }
 
-/* The settling/dying client leaves the lists; a freed slot starts the
- * first queued dial for the same name (Node's FIFO). */
+/* Node's Agent.removeSocket once a socket leaves: a queued request starts.
+ * The origin that freed the slot goes first (its own FIFO queue), then the
+ * oldest queued origin, but only when that origin holds no socket at all —
+ * Node inspects just the first queued origin and dials a fresh socket for
+ * it. The queue exists because a limit was hit, so the freed slot is what
+ * the request was waiting for; Node does not re-check the limits here. */
+static void scr_http_agent_pump(ScrHttpAgent *ag, ScrStr *name) {
+  if (ag->destroyed || ag->nqueued == 0) return;
+  ScrHttpAgentEnt *pick = NULL;
+  if (name != NULL) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (e->queued && scr_http_name_same(e->name, name)) {
+        pick = e;
+        break;
+      }
+    }
+  }
+  if (pick == NULL) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (e->queued) {
+        pick = e;
+        break;
+      }
+    }
+    if (pick != NULL && scr_http_agent_active(ag, pick->name) > 0) pick = NULL;
+  }
+  if (pick == NULL) return;
+  ScrHttpAgentFree *f = scr_http_agent_free_take(ag, pick->name, pick->client->pool_key);
+  if (f != NULL) {
+    pick->queued = false;
+    ag->nqueued--;
+    scr_http_client_rebind(pick->client, f, false);
+    return;
+  }
+  if (pick->client->sock == NULL) return;
+  pick->queued = false;
+  ag->nqueued--;
+  scr_http_conn_count(pick->client->conn, ag->sock_count);
+  scr_net_sock_dial_start(pick->client->sock);
+}
+
+/* The settling/dying client leaves the lists; a slot it held starts the
+ * next queued dial (a queued request that dies held no slot, so it does
+ * not). */
 static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c) {
   ScrStr *name = NULL;
+  bool started = false;
   ScrHttpAgentEnt *done = c->agent_ent;
   if (done != NULL) {
 #ifdef SCR_RC_AUDIT
@@ -6986,31 +7586,12 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
     if (done->next) done->next->prev = done->prev;
     else ag->ents_last = done->prev;
     if (done->queued) ag->nqueued--;
+    else started = true;
     name = done->name; /* ownership moves out for the pump below */
     scr_http_client_release(done->client);
     free(done);
   }
-  if (name != NULL && !ag->destroyed && ag->nqueued > 0) {
-    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
-      if (e->queued && e->name->len == name->len &&
-          memcmp(e->name->data, name->data, name->len) == 0) {
-        ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
-        if (f != NULL) {
-          e->queued = false;
-          ag->nqueued--;
-          scr_http_client_rebind(e->client, f, false);
-        } else if (scr_http_agent_active(ag, name) < ag->max_sockets) {
-          e->queued = false;
-          ag->nqueued--;
-          if (e->client->sock) {
-            scr_http_conn_count(e->client->conn, ag->sock_count);
-            scr_net_sock_dial_start(e->client->sock);
-          }
-        }
-        break;
-      }
-    }
-  }
+  if (started) scr_http_agent_pump(ag, name);
   scr_str_release(name);
 }
 
@@ -7041,8 +7622,8 @@ static ScrStr *scr_http_agent_name(const char *host, size_t host_len, const char
 /* A registered agent (+1), the half of new http.Agent(opts) after option
  * validation. */
 static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double ka_msecs,
-                                          double max_sockets, double max_free, double timeout_ms,
-                                          double port, bool fifo) {
+                                          double max_sockets, double max_total, double max_free,
+                                          double timeout_ms, double port, bool fifo) {
   scr_http_install();
   ScrHttpAgent *a = calloc(1, sizeof *a);
   if (!a) scr_http_oom();
@@ -7053,9 +7634,12 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
   a->secure = secure;
   a->keep_alive = keep_alive;
   a->fifo = fifo;
-  a->ka_msecs = ka_msecs >= 0 ? ka_msecs : 1000;
-  a->max_sockets = max_sockets >= 0 ? max_sockets : (double)INFINITY;
-  a->max_free = max_free >= 0 ? max_free : 256;
+  /* Node's option defaults are `||`, so a zero falls back like an omitted
+   * option (-1 is this signature's "not given"). */
+  a->ka_msecs = ka_msecs > 0 ? ka_msecs : 1000;
+  a->max_sockets = max_sockets > 0 ? max_sockets : (double)INFINITY;
+  a->max_total = max_total > 0 ? max_total : (double)INFINITY;
+  a->max_free = max_free > 0 ? max_free : 256;
   a->timeout_ms = timeout_ms;
   /* an agent-options `port` merges under portless request options (Node
    * merges agent options into each connection) — the settable
@@ -7070,8 +7654,10 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
 }
 
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double timeout_ms,
-                            double port /* < 0 = unset */, const ScrDyn *scheduling) {
+                            double max_sockets, double max_total, bool max_total_given,
+                            double max_free, double timeout_ms,
+                            double port /* < 0 = unset */,
+                            const ScrDyn *scheduling) {
   scr_http_install();
   /* Node: options.scheduling || 'lifo', then validateOneOf */
   bool fifo = false;
@@ -7083,7 +7669,20 @@ ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
       return NULL;
     }
   }
-  ScrHttpAgent *a = scr_http_agent_alloc(secure, keep_alive, ka_msecs, max_sockets, max_free,
+  /* Node's validateNumber(this.maxTotalSockets, 'maxTotalSockets', 1), run
+   * before the agent exists; max_total_given keeps an explicit value
+   * (including -1) apart from "option not given". */
+  if (max_total_given && !(max_total >= 1)) {
+    char recv[48], msg[176];
+    scr_num_received(max_total, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"maxTotalSockets\" is out of range. It must be >= 1. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  ScrHttpAgent *a = scr_http_agent_alloc(secure, keep_alive, ka_msecs, max_sockets,
+                                         max_total_given ? max_total : -1, max_free,
                                          timeout_ms, port, fifo);
   ScrDyn *d = scr_dyn_new_handle(a, SCR_DYNH_HTTP_AGENT);
   scr_http_agent_release(a); /* the handle's retain holds it */
@@ -7097,7 +7696,7 @@ static SCR_TL ScrDyn *scr_http_global_agents[2];
 
 const ScrDyn *scr_http_global_agent(bool secure) {
   ScrDyn **slot = &scr_http_global_agents[secure ? 1 : 0];
-  if (*slot == NULL) *slot = scr_http_agent_new(secure, true, -1, -1, -1, 5000, -1, NULL);
+  if (*slot == NULL) *slot = scr_http_agent_new(secure, true, -1, -1, -1, false, -1, 5000, -1, NULL);
   return *slot;
 }
 
@@ -7176,7 +7775,11 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
                                       socket_path ? socket_path->len : 0);
   /* a free pooled socket for the name serves the request right away */
   ScrHttpAgentFree *reuse = ag->keep_alive ? scr_http_agent_free_take(ag, name, pool_key) : NULL;
-  bool queue = reuse == NULL && scr_http_agent_active(ag, name) >= ag->max_sockets;
+  /* Node queues when the name is at maxSockets or the agent holds
+   * maxTotalSockets sockets across every name */
+  bool queue = reuse == NULL &&
+               (scr_http_agent_active(ag, name) >= ag->max_sockets ||
+                (double)ag->sock_count->n >= ag->max_total);
   ScrNetSocket *presock = socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
                           : queue || reuse    ? scr_net_connect_deferred(p, host)
                                               : NULL;
@@ -7297,7 +7900,7 @@ ScrHttpClientReq *scr_http_fetch_request(bool secure, ScrStr *host /*borrowed*/,
                                           ScrStr *pool_key /*borrowed*/) {
   ScrHttpAgent **slot = &scr_http_fetch_agents[secure ? 1 : 0];
   if (*slot == NULL) {
-    *slot = scr_http_agent_alloc(secure, true, -1, -1, -1, -1, -1, false);
+    *slot = scr_http_agent_alloc(secure, true, -1, -1, -1, -1, -1, -1, false);
     (*slot)->idle_ms = 4000;
   }
   return scr_http_request_pooled(*slot, host, port, path, method, 0, header_pairs, false, NULL, NULL,
@@ -7816,9 +8419,10 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_http_res_on_prefinish(r, scr_dyn_listener_closure0(cb), once);
       if (scr_exc_pending()) return NULL;
     } else if (scr_http_dynh_name_is(name, "drain")) {
-      /* This surface never backpressures (write answers true), so Node's
-       * contract says 'drain' never fires — an accepted, never-fired
-       * registration is the consistent answer (SEMANTICS.md). */
+      scr_http_res_on_drain(r, scr_dyn_listener_closure0(cb), once);
+    } else if (scr_http_dynh_name_is(name, "error")) {
+      scr_http_res_on_error(r, scr_dyn_listener_closure_err(cb),
+                            (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
     } else if (scr_http_dynh_name_is(name, "timeout") && r->sock != NULL) {
       /* the socket's idle timer — res.setTimeout's event, Node's delegation */
       scr_net_sock_on_timeout(r->sock, scr_dyn_listener_closure0(cb), once);
@@ -7879,17 +8483,21 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[i]));
       i++;
     }
+    bool ok;
     if (decoded != NULL) {
-      scr_http_res_write_bytes(r, decoded);
+      ok = scr_http_res_write_bytes(r, decoded);
       scr_bytes_release(decoded);
     } else if (chunk->kind == SCR_DYN_STR) {
-      scr_http_res_write_str(r, chunk->v.str);
+      ok = scr_http_res_write_str(r, chunk->v.str);
     } else {
-      scr_http_res_write_bytes(r, chunk->v.bytes);
+      ok = scr_http_res_write_bytes(r, chunk->v.bytes);
     }
-    /* Always-true: this surface buffers without a highWaterMark verdict
-     * (SEMANTICS.md — backpressure is not modeled). */
-    return scr_dyn_new_bool(true);
+    return scr_dyn_new_bool(ok);
+  }
+  if (strcmp(method, "pipe") == 0) {
+    scr_http_res_pipe(r);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "flushHeaders") == 0) {
     scr_http_res_flush_headers(r);
@@ -8319,6 +8927,11 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     }
     return scr_dyn_retain(self);
   }
+  if (strcmp(method, "pipe") == 0) {
+    scr_http_client_pipe(c);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   if (strcmp(method, "end") == 0) {
     const ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
     if (chunk->kind == SCR_DYN_STR) scr_http_client_end_str(c, chunk->v.str);
@@ -8391,9 +9004,10 @@ static ScrDyn *scr_http_dynh_client_get(void *h, const char *key, size_t key_len
     return d;
   }
   if (strcmp(key, "method") == 0) return scr_dyn_new_str(c->method);
+  if (strcmp(key, "reusedSocket") == 0) return scr_dyn_new_bool(c->reused);
   {
     static const char *const known[] = { "aborted", "host", "protocol", "res",
-      "reusedSocket", "maxHeadersCount", "headersSent", "writableFinished", NULL };
+      "maxHeadersCount", "headersSent", "writableFinished", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("ClientRequest", key, NULL);
       return NULL;
@@ -8430,13 +9044,162 @@ static ScrStr *scr_http_dynh_opt_str(const ScrDyn *opts, const char *key) {
   return NULL;
 }
 
+static double scr_http_req_port_value(const ScrDyn *v);
+static bool scr_http_req_truthy(const ScrDyn *v);
+
+static ScrNetSocket *scr_http_dynh_net_socket(const ScrDyn *v) {
+  if (v == NULL || v->kind != SCR_DYN_HANDLE || v->v.handle.tag != SCR_DYNH_NET_SOCKET) return NULL;
+  return (ScrNetSocket *)v->v.handle.ptr;
+}
+
+/* lookupAndConnect's port ladder: a value that is neither a number nor a
+ * string takes ERR_INVALID_ARG_TYPE, a number or string validatePort
+ * rejects takes ERR_SOCKET_BAD_PORT. Answers the integer port, or NAN with
+ * the error pending. */
+static double scr_http_agent_port(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_NUM && v->kind != SCR_DYN_STR) {
+    scr_dyn_prop_type_fail("options.port", "one of type number or string", v);
+    return NAN;
+  }
+  double port = scr_http_req_port_value(v);
+  if (port != port) {
+    char detail[96], msg[192];
+    const char *d = scr_dyn_specific_type(v, detail, sizeof detail);
+    int len = snprintf(msg, sizeof msg, "Port should be >= 0 and < 65536. Received %s.", d);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_SOCKET_BAD_PORT");
+  }
+  return port;
+}
+
+/* Agent.createConnection(options[, callback]): Node's default is
+ * net.createConnection, so the argument normalization is net's — an object
+ * is the options record, a string that does not read as a number is a
+ * Unix-socket path, anything else is the port (a string second argument is
+ * the host) — and the trailing function becomes the socket's 'connect'
+ * listener. An https.Agent's default is tls.connect, whose handshake the
+ * compiled TLS wrap owns; that arm keeps the named refusal. */
+static ScrDyn *scr_http_dynh_agent_connect(ScrHttpAgent *a, ScrDyn *const *args, size_t argc) {
+  if (a->secure) {
+    scr_http_dynh_unsupported("Agent", "createConnection",
+                              "an https.Agent dials through tls.connect, which the compiled TLS wrap provides");
+    return NULL;
+  }
+  const ScrDyn *arg0 = argc > 0 ? args[0] : NULL;
+  ScrDyn *view = NULL;
+  if (arg0 != NULL && arg0->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(arg0);
+    if (view != NULL) arg0 = view;
+  }
+  const ScrDyn *cbarg = argc > 1 && args[argc - 1] != NULL && scr_dyn_is_callable(args[argc - 1])
+                            ? args[argc - 1]
+                            : NULL;
+  const ScrDyn *pathv = NULL; /* a Unix-socket path */
+  const ScrDyn *hostv = NULL; /* a string host; NULL = localhost */
+  ScrNetSocket *s = NULL;
+  bool missing = false;
+  double timeout_ms = 0;
+  bool has_timeout = false;
+  if (arg0 != NULL && arg0->kind == SCR_DYN_OBJ) {
+    const ScrDyn *path = scr_dyn_obj_get(arg0, "path", 4);
+    const ScrDyn *portv = scr_dyn_obj_get(arg0, "port", 4);
+    const ScrDyn *host = scr_dyn_obj_get(arg0, "host", 4);
+    const ScrDyn *timeout = scr_dyn_obj_get(arg0, "timeout", 7);
+    /* Dial options this single-address transport cannot honor name
+     * themselves instead of being dropped. */
+    static const char *const fenced[] = { "family", "localAddress", "localPort", "lookup",
+                                          "autoSelectFamily", "autoSelectFamilyAttemptTimeout" };
+    for (size_t i = 0; i < sizeof fenced / sizeof fenced[0]; i++) {
+      const ScrDyn *v = scr_dyn_obj_get(arg0, fenced[i], strlen(fenced[i]));
+      if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+        scr_http_dynh_unsupported("Agent", "createConnection",
+                                  "this runtime dials one address and does not model family, localAddress, "
+                                  "localPort, lookup, or autoSelectFamily");
+        goto done;
+      }
+    }
+    /* net.connect's wrapper: a truthy timeout goes through setTimeout
+     * before the rest of the options are validated. */
+    if (timeout != NULL && scr_http_req_truthy(timeout)) {
+      if (timeout->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("msecs", "of type number", timeout);
+        goto done;
+      }
+      if (!scr_net_timeout_msecs_valid(timeout->v.num)) goto done;
+      timeout_ms = timeout->v.num;
+      has_timeout = true;
+    }
+    bool have_port = portv != NULL && portv->kind != SCR_DYN_UNDEF;
+    bool have_path = path != NULL && path->kind != SCR_DYN_UNDEF && path->kind != SCR_DYN_NULL;
+    if (!have_port && !have_path) {
+      missing = true;
+      goto done;
+    }
+    if (have_path && scr_http_req_truthy(path)) {
+      if (path->kind != SCR_DYN_STR) {
+        scr_dyn_prop_type_fail("options.path", "of type string", path);
+        goto done;
+      }
+      pathv = path;
+    } else {
+      if (host != NULL && host->kind != SCR_DYN_UNDEF && host->kind != SCR_DYN_NULL) {
+        if (host->kind != SCR_DYN_STR) {
+          scr_dyn_prop_type_fail("options.host", "of type string", host);
+          goto done;
+        }
+        hostv = host;
+      }
+      /* A falsy path with no port dials port 0, as Node's `port |= 0`. */
+      double port = 0;
+      if (have_port) {
+        port = scr_http_agent_port(portv);
+        if (port != port) goto done;
+      }
+      s = scr_net_connect_checked(port, hostv ? hostv->v.str : NULL,
+                                  cbarg ? scr_dyn_listener_closure0(cbarg) : NULL);
+    }
+  } else if (arg0 == NULL || arg0->kind == SCR_DYN_UNDEF) {
+    missing = true;
+  } else if (arg0->kind == SCR_DYN_STR &&
+             !(scr_string_to_number(arg0->v.str) >= 0)) { /* isPipeName: a path */
+    pathv = arg0;
+  } else if (arg0->kind == SCR_DYN_OBJ ||
+             (arg0->kind != SCR_DYN_FUNC && arg0->kind != SCR_DYN_NULL &&
+              scr_dyn_is_object(arg0))) {
+    /* an object without the record's members: Node finds no port or path */
+    missing = true;
+  } else {
+    double port = scr_http_agent_port(arg0);
+    if (port != port) goto done;
+    hostv = argc > 1 && args[1] != NULL && args[1]->kind == SCR_DYN_STR ? args[1] : NULL;
+    s = scr_net_connect_checked(port, hostv ? hostv->v.str : NULL,
+                                cbarg ? scr_dyn_listener_closure0(cbarg) : NULL);
+  }
+  if (pathv != NULL) {
+    s = scr_net_connect_path_checked(pathv->v.str, false,
+                                     cbarg ? scr_dyn_listener_closure0(cbarg) : NULL);
+  }
+  if (s != NULL && has_timeout) scr_net_sock_set_timeout(s, timeout_ms);
+done:
+  scr_dyn_release(view);
+  if (missing) {
+    static const char msg[] = "The \"options\" or \"port\" or \"path\" argument must be specified";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_MISSING_ARGS");
+    return NULL;
+  }
+  if (s == NULL) return NULL; /* the exception is pending */
+  ScrDyn *d = scr_dyn_new_handle(s, SCR_DYNH_NET_SOCKET); /* retains */
+  scr_net_sock_release(s);
+  return d;
+}
+
 static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *method,
                                           ScrDyn *const *args, size_t argc, const char *what) {
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   bool once = false;
   if (scr_http_dynh_reg(method, &once)) {
-    /* Agent events ('free'/'timeout') ride the pooling the runtime does
-     * not have — a named error, never an inert listener. */
+    /* Agent events ('free'/'timeout') are Node's pool bookkeeping
+     * signalling, which this runtime does not emit — a named error,
+     * never an inert listener. */
     const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();
     scr_http_dynh_event_unsupported("Agent", name);
     return NULL;
@@ -8469,6 +9232,49 @@ static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *met
     ScrDyn *d = scr_dyn_new_str(name);
     scr_str_release(name);
     return d;
+  }
+  if (strcmp(method, "createConnection") == 0) {
+    return scr_http_dynh_agent_connect(a, args, argc);
+  }
+  if (strcmp(method, "keepSocketAlive") == 0) {
+    ScrNetSocket *s = argc > 0 ? scr_http_dynh_net_socket(args[0]) : NULL;
+    if (s == NULL) {
+      static const char msg[] = "socket.setKeepAlive is not a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      return NULL;
+    }
+    /* Node's base method: keep the socket alive for keepAliveMsecs, let it
+     * leave the event loop while idle, and idle out after the agent's
+     * timeout (no timeout = clear it, as setTimeout(0) does). The server's
+     * Keep-Alive hint Node's copy also weighs lives on the request's
+     * response, which a socket handed to this method does not carry here. */
+    scr_net_sock_set_keepalive(s, true, a->ka_msecs);
+    scr_net_sock_set_ref(s, false);
+    scr_net_sock_set_timeout(s, a->timeout_ms > 0 ? a->timeout_ms : 0);
+    return scr_dyn_new_bool(true);
+  }
+  if (strcmp(method, "reuseSocket") == 0) {
+    ScrNetSocket *s = argc > 0 ? scr_http_dynh_net_socket(args[0]) : NULL;
+    if (s == NULL) {
+      static const char msg[] = "socket.removeListener is not a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      return NULL;
+    }
+    /* Node writes request.reusedSocket before it refs the socket, so a
+     * request that refuses the write leaves the socket alone. */
+    ScrDyn *req = argc > 1 ? args[1] : scr_dyn_undefined();
+    if (req->kind == SCR_DYN_HANDLE && req->v.handle.tag == SCR_DYNH_HTTP_CLIENT) {
+      ((ScrHttpClientReq *)req->v.handle.ptr)->reused = true;
+    } else {
+      ScrStr *key = scr_str_new("reusedSocket", 12);
+      ScrDyn *yes = scr_dyn_new_bool(true);
+      scr_dyn_key_set(req, key, yes);
+      scr_dyn_release(yes);
+      scr_str_release(key);
+      if (scr_exc_pending()) return NULL;
+    }
+    scr_net_sock_set_ref(s, true);
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "destroy") == 0) {
     scr_http_agent_destroy(a);
@@ -8522,6 +9328,7 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   (void)key_len;
   if (strcmp(key, "maxSockets") == 0) return scr_dyn_new_num(a->max_sockets);
+  if (strcmp(key, "maxTotalSockets") == 0) return scr_dyn_new_num(a->max_total);
   if (strcmp(key, "maxFreeSockets") == 0) return scr_dyn_new_num(a->max_free);
   if (strcmp(key, "keepAlive") == 0) return scr_dyn_new_bool(a->keep_alive);
   if (strcmp(key, "keepAliveMsecs") == 0) return scr_dyn_new_num(a->ka_msecs);
@@ -8567,8 +9374,8 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
   {
     /* the socket hooks are functions in Node: a read must not answer
      * undefined, and an assignment is refused in the setter below */
-    static const char *const known[] = { "options", "maxTotalSockets", "createConnection",
-      "createSocket", "keepSocketAlive", "reuseSocket", NULL };
+    static const char *const known[] = { "options", "createConnection", "createSocket",
+      "keepSocketAlive", "reuseSocket", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("Agent", key, NULL);
       return NULL;
@@ -8581,13 +9388,15 @@ static bool scr_http_dynh_agent_set(void *h, const char *key, size_t key_len, co
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   (void)key_len;
   if (strcmp(key, "defaultPort") == 0 || strcmp(key, "maxSockets") == 0 ||
-      strcmp(key, "maxFreeSockets") == 0 || strcmp(key, "keepAliveMsecs") == 0) {
+      strcmp(key, "maxTotalSockets") == 0 || strcmp(key, "maxFreeSockets") == 0 ||
+      strcmp(key, "keepAliveMsecs") == 0) {
     if (value->kind != SCR_DYN_NUM) {
       scr_dyn_arg_type_fail(key, "of type number", value);
       return true; /* handled: the exception is pending */
     }
     if (strcmp(key, "defaultPort") == 0) a->default_port = value->v.num;
     else if (strcmp(key, "maxSockets") == 0) a->max_sockets = value->v.num;
+    else if (strcmp(key, "maxTotalSockets") == 0) a->max_total = value->v.num;
     else if (strcmp(key, "maxFreeSockets") == 0) a->max_free = value->v.num;
     else a->ka_msecs = value->v.num;
     return true;
@@ -8615,10 +9424,11 @@ void scr_http_dyn_install(void) {
 
 /* Checked-dynamic chunks into TYPED res/client handles — the
  * scr_net_sock_write_dynv story (the static lowering's dyn-data arm). */
-void scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d) {
-  if (d->kind == SCR_DYN_STR) scr_http_res_write_str(r, d->v.str);
-  else if (d->kind == SCR_DYN_BYTES) scr_http_res_write_bytes(r, d->v.bytes);
-  else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d) {
+  if (d->kind == SCR_DYN_STR) return scr_http_res_write_str(r, d->v.str);
+  if (d->kind == SCR_DYN_BYTES) return scr_http_res_write_bytes(r, d->v.bytes);
+  scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+  return false;
 }
 
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d) {

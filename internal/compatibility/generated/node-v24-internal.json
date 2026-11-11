@@ -56367,11 +56367,20 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-connection-hooks.ts",
+          "tests/corpus/http-agent-total-sockets.ts",
           "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-header-values.ts",
+          "tests/corpus/http-incoming-signal.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/http-outgoing-pipe.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/http-server-async-dispose.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-write-information.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -56546,10 +56555,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.agent.createConnection",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-connection-hooks.ts",
+          "tests/corpus/http-agent-total-sockets.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56572,10 +56582,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.agent.keepSocketAlive",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-connection-hooks.ts",
+          "tests/corpus/http-agent-total-sockets.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56598,10 +56609,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.agent.reuseSocket",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-connection-hooks.ts",
+          "tests/corpus/http-agent-total-sockets.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56754,10 +56766,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxTotalSockets",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-connection-hooks.ts",
+          "tests/corpus/http-agent-total-sockets.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57028,10 +57041,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57054,10 +57068,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57080,10 +57095,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaders",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57106,10 +57122,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getRawHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57132,10 +57149,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.hasHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57158,10 +57176,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.removeHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57184,10 +57203,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.setHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58100,10 +58120,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.server",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-async-dispose.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58761,10 +58781,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.getHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58787,10 +58808,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.getHeaders",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/2954-http-outgoing-headers.ts",
+          "tests/corpus/http-header-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59061,10 +59083,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.response.writeInformation",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-write-information.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59774,10 +59796,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.signal",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-incoming-signal.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60072,9 +60094,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.appendHeader",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60210,9 +60233,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.getHeader",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60236,9 +60260,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.getHeaderNames",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60262,9 +60287,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.getHeaders",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60288,9 +60314,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.hasHeader",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60314,8 +60341,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.pipe",
+        "tests": [
+          "tests/corpus/http-outgoing-pipe.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -60337,9 +60367,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.removeHeader",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60363,9 +60394,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.setHeader",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60389,10 +60421,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.outgoingMessage.setHeaders",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-response-writable-length-drain.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60552,9 +60585,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.socket",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60634,9 +60668,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60687,10 +60722,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.writableLength",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-response-writable-length-drain.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60740,10 +60776,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.'drain'",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-response-writable-length-drain.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60766,9 +60803,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
+          "tests/corpus/http-header-values.ts",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -60985,7 +61023,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.validateHeaderName",
         "tests": [
           "tests/corpus/2953-http-header-validation.ts"
@@ -61011,7 +61049,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.validateHeaderValue",
         "tests": [
           "tests/corpus/2953-http-header-validation.ts"
@@ -61090,7 +61128,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.METHODS",
         "tests": [
           "tests/corpus/2974-http-static-module-values.ts"
@@ -61116,7 +61154,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.STATUS_CODES",
         "tests": [
           "tests/corpus/2974-http-static-module-values.ts"
@@ -61168,7 +61206,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.maxHeaderSize",
         "tests": [
           "tests/corpus/2974-http-static-module-values.ts"
@@ -65847,14 +65885,14 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/https-server-async-dispose.ts",
           "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/net-socket-write-rejected.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -65985,10 +66023,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:https.server",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/https-server-async-dispose.ts"
         ]
       },
       "anchorSource": "exact"

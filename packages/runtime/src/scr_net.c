@@ -1510,9 +1510,22 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
  * drops identically to consecutive writes. The peer sees the same bytes
  * in the same order; only the segmenting differs (Node writes these
  * pieces with one writev as well). */
-void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n) {
+/* The native write's answer, as Node's socket.write computes it once the
+ * bytes entered the writable state: false (and need_drain, so the
+ * socket's own 'drain' follows) when the unsent bytes reach the
+ * high-water mark. */
+static bool scr_net_sock_write_answer(ScrNetSocket *s) {
+  ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
+  if (w->wr_ending || w->close_emitted || w->fd < 0) return false;
+  bool ok = w->wpending < SCR_NET_WRITE_HWM;
+  if (!ok) w->need_drain = true;
+  return ok;
+}
+
+bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n) {
 #if defined(_WIN32)
   for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
+  return scr_net_sock_write_answer(s);
 #else
   struct iovec iov[8];
   int cnt = 0;
@@ -1529,7 +1542,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
   }
   if (!immediate || cnt < 2) {
     for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
-    return;
+    return scr_net_sock_write_answer(s);
   }
   s->bytes_written += total; /* accepted bytes, as write_raw counts them */
   struct msghdr msg;
@@ -1550,7 +1563,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
       if (!s->pending_err) s->pending_err = scr_str_new(msg_text, strlen(msg_text));
       s->had_error = true;
       scr_net_sock_close_fd(s);
-      return;
+      return false;
     }
   }
   if ((size_t)sent < total) {
@@ -1566,6 +1579,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
     }
     scr_net_sock_update_write(s);
   }
+  return scr_net_sock_write_answer(s);
 #endif
 }
 
@@ -2488,6 +2502,40 @@ void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/) {
     return;
   }
   scr_net_server_close_direct(s, cb);
+}
+
+/* server[Symbol.asyncDispose](): Node's promisified close. The callback
+ * joins the close list like server.close(cb): running servers fulfill at
+ * 'close', and one that was not running (never listened, or already
+ * closed) rejects with ERR_SERVER_NOT_RUNNING, the same decision
+ * scr_net_server_close_dyn makes at call time. */
+static void scr_net_server_dispose_fulfill(ScrClosure *cb) {
+  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
+  scr_promise_fulfill_void(p);
+  scr_promise_release(p);
+}
+
+static void scr_net_server_dispose_reject(ScrClosure *cb) {
+  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
+  static const char msg[] = "Server is not running.";
+  ScrStr *text = scr_str_new(msg, sizeof msg - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(e, "ERR_SERVER_NOT_RUNNING");
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  scr_promise_reject_pending(p);
+  scr_promise_release(p);
+}
+
+ScrPromise *scr_net_server_async_dispose(ScrNetServer *s) {
+  ScrPromise *p = scr_promise_new();
+  bool running = s->listening && !s->close_emitted;
+  ScrClosure *cb = scr_closure_new(
+      running ? (void *)&scr_net_server_dispose_fulfill : (void *)&scr_net_server_dispose_reject, 1);
+  cb->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(cb->caps[0], scr_promise_retain(p));
+  scr_net_server_close(s, cb); /* takes the closure */
+  return p;
 }
 
 static void scr_net_server_close_http_connections(ScrNetServer *s, bool idle_only) {
@@ -5433,8 +5481,10 @@ void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*b
 
 /* socket.setTimeout(ms[, callback]) as the program calls it: Node's
  * msecs check (a non-negative finite number), then the timer; a callback
- * becomes a once('timeout') listener, and with 0 it is removed. */
-static bool scr_net_timeout_msecs_valid(double ms) {
+ * becomes a once('timeout') listener, and with 0 it is removed. Also the
+ * check a `timeout` option goes through before a dial (net.connect's
+ * wrapper). */
+bool scr_net_timeout_msecs_valid(double ms) {
   if (isfinite(ms) && ms >= 0) return true;
   char recv[48], msg[160];
   scr_num_received(ms, recv);
@@ -5879,8 +5929,9 @@ void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn
 }
 
 /* Raw bytes from the protocol layer (head/framing text). */
-void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
+bool scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
   scr_net_sock_write_raw(s, buf, n);
+  return scr_net_sock_write_answer(s);
 }
 
 /* ── the transport hooks (scr_tls.c) ─────────────────────────────────── */

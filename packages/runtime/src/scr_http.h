@@ -82,6 +82,9 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
+/* message.signal: the per-message AbortSignal, created on first read and
+ * aborted when the message is torn down incomplete (+1). */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r);
 bool scr_http_req_complete(ScrHttpReq *r);
 
 /* Registers the httpReq/httpRes handle-dispatch ops (SCR_DYNH_HTTP_REQ /
@@ -146,17 +149,38 @@ void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *v
  * may throw ERR_HTTP_INVALID_HEADER_VALUE. */
 void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
+/* OutgoingMessage.setHeaders(headers): a Headers or Map value's entries go
+ * through setHeader, every set-cookie value applied last as one array.
+ * Anything else throws ERR_INVALID_ARG_TYPE. */
+void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/);
 void scr_http_res_write_head(ScrHttpRes *r, double status);
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/, ScrArr *values /*borrowed*/);
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* writeInformation(statusCode[, headers]): answers _writeRaw's boolean; may
+ * throw ERR_OUT_OF_RANGE, ERR_HTTP_INVALID_STATUS_CODE,
+ * ERR_HTTP_HEADERS_SENT or a header validation error. */
+bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed*/);
 /* writeHead with a CHECKED-DYNAMIC headers object (borrowed): OBJ
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */
 void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *headers);
-void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
-void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
+/* write(): Node's backpressure boolean (false once the unsent bytes reach
+ * the high-water mark). */
+bool scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
+bool scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
+/* res.writableLength: corked payload + framing + the socket's pending
+ * writes (Node's OutgoingMessage getter). */
+double scr_http_res_writable_length(ScrHttpRes *r);
+/* res.on('drain', cb): fires once a false write's bytes drained. */
+void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
+/* res.on('error', cb): the OutgoingMessage error slot pipe() reports into. */
+void scr_http_res_on_error(ScrHttpRes *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+/* OutgoingMessage.prototype.pipe(): an outgoing message is write-only.
+ * Emits 'error' with ERR_STREAM_CANNOT_PIPE to the message's listeners, or
+ * throws it synchronously when it has none (both messages share it). */
+void scr_http_res_pipe(ScrHttpRes *r);
 void scr_http_res_end(ScrHttpRes *r);
 /* socket.pipe(res): raw source chunks become response body writes; EOF
  * ends the response (the extended-CONNECT bridge leg). Borrows both. */
@@ -165,7 +189,7 @@ void scr_http_res_end_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
 void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
-void scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
+bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
@@ -296,9 +320,17 @@ void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
 void scr_http_client_flush_headers(ScrHttpClientReq *c);
 void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
+/* A number, string or array value: the stored value keeps its type for
+ * getHeader/getHeaders. MAY THROW (invalid name or value). */
+void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
+void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 or NULL */
+ScrDyn *scr_http_client_get_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 */
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
+/* request.setHeaders(headers): the OutgoingMessage implementation over the
+ * client's header lines. */
+void scr_http_client_set_headers(ScrHttpClientReq *c, ScrDyn *headers /*borrowed*/);
 ScrArr *scr_http_client_get_header_names(ScrHttpClientReq *c); /* +1 */
 ScrArr *scr_http_client_get_raw_header_names(ScrHttpClientReq *c); /* +1 */
 ScrDyn *scr_http_client_get_headers(ScrHttpClientReq *c); /* +1 */
@@ -365,6 +397,9 @@ void scr_http_client_on_connect(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, S
  * pool to size. */
 void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+/* OutgoingMessage.prototype.pipe() on the client request: emits 'error'
+ * with ERR_STREAM_CANNOT_PIPE to its listeners, else throws synchronously. */
+void scr_http_client_pipe(ScrHttpClientReq *c);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_upgrade(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
@@ -397,17 +432,19 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * false = the exception is pending and no out-parameter was written. */
 bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
                          ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/);
-/* ── the http Agent (new http.Agent(opts) — option surface, getName, and
- * the maxSockets queue over one-dial-per-request connections; keep-alive
- * POOLING is not modeled: keepAlive: true fences at construction).
+/* ── the http Agent (new http.Agent(opts) — option surface, getName, the
+ * maxSockets/maxTotalSockets queue, and keepAlive's free-socket pool).
  * agent_new answers the SCR_DYNH_HTTP_AGENT handle (+1 dyn) or throws.
- * max_sockets/max_free arrive < 0 for "unset" (Infinity / 256);
+ * max_sockets/max_total/max_free arrive < 0 for "unset" (Infinity / 256;
+ * max_total_given separates an explicit maxTotalSockets from "unset", so
+ * -1 there is Node's validation error, not a sentinel);
  * timeout_ms < 0 = no idle timer. request_agent_ex threads the agent dyn
  * (undefined/null = the default path; false = one-shot with Connection:
  * close; an Agent handle = queue accounting); port < 0 means "no port
  * option" — the agent's (settable) defaultPort, then the scheme's. */
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double timeout_ms,
+                            double max_sockets, double max_total, bool max_total_given,
+                            double max_free, double timeout_ms,
                             double port /* < 0 = unset: the option-merge default */,
                             const ScrDyn *scheduling /* borrowed; NULL = 'lifo' */); /* +1 */
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,

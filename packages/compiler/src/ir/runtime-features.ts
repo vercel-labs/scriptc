@@ -1971,8 +1971,11 @@ const RUNTIME_FEATURE_RULES = {
    * byte for byte. */
   webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
-   * A WritableStream controller's signal is one (scr_webstreams.c). */
-  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
+   * A WritableStream controller's signal is one (scr_webstreams.c), and so
+   * is IncomingMessage.signal (http.reqSignal): the message's signal is a
+   * real AbortSignal, so reading the member links the unit that makes
+   * them. */
+  abortSignal: rule({ prefixes: ["abort.", "webstream."], fns: ["http.reqSignal"] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */

@@ -35,10 +35,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
-  // A listener is added to the request's or the session's list, or dropped
-  // when the request or session is past the event; no listener runs.
+  // The corked payload, its chunk framing and the socket's pending writes,
+  // added up from fields.
+  "http.resWritableLength",
+  // A listener is added to the request's, the response's or the session's
+  // list; no listener runs.
   "http.clientOnConnect",
   "http.clientOnInformation",
+  "http.resOnDrain",
+  "http.resOnError",
+  // Reads one stored header line group and boxes it as a number, string or
+  // array; an absent name is the undefined value. Nothing runs.
+  "http.clientGetHeaderDyn",
   "http2.sessionOnPing",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",

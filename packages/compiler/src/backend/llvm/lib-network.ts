@@ -379,6 +379,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
     e.fn === "http.resOnPrefinish" ||
+    e.fn === "http.resOnDrain" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
@@ -401,6 +402,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
       "http.resOnPrefinish": "scr_http_res_on_prefinish",
+      "http.resOnDrain": "scr_http_res_on_drain",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",
@@ -777,6 +779,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.clientOnResponse" ||
     e.fn === "http.clientOnInformation" ||
     e.fn === "http.clientOnError" ||
+    e.fn === "http.resOnError" ||
     e.fn === "http.reqOnError"
   ) {
     const cbT = e.args[1]!.type;
@@ -800,6 +803,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.clientOnResponse": "scr_http_client_on_response",
       "http.clientOnInformation": "scr_http_client_on_information",
       "http.clientOnError": "scr_http_client_on_error",
+      "http.resOnError": "scr_http_res_on_error",
       "http.reqOnError": "scr_http_req_on_error",
     }[e.fn]!;
     host.declare(`declare void @${adapter}(ptr, ptr)`);

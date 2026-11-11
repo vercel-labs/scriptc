@@ -868,7 +868,7 @@ function publicDetail(tier) {
       source.startsWith("compiler-feature:http.request.setHeader") ||
       source.startsWith("compiler-feature:http.response.getHeader")
     ) {
-      return "Static outgoing header reads and mutations support the tested string-value shapes.";
+      return "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.";
     }
     if (
       /^compiler-feature:http\.(?:path|method|host|protocol|listening|headersSent|writableEnded|complete|httpVersion|url|statusCode)$/.test(
@@ -876,6 +876,13 @@ function publicDetail(tier) {
       )
     ) {
       return "Static HTTP request metadata and message state support the tested lifecycle.";
+    }
+    if (
+      /^compiler-feature:http\.(?:agent\.createConnection|agent\.keepSocketAlive|agent\.reuseSocket|maxTotalSockets)$/.test(
+        source,
+      )
+    ) {
+      return "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.";
     }
     if (/^compiler-feature:http\.response\.write(?:Continue|Processing|EarlyHints)$/.test(source)) {
       return "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.";

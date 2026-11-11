@@ -156,6 +156,17 @@ ScrDyn *scr_crypto_hkdf(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
 ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options);
 ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double keylen,
                                   double n, double r, double p, double maxmem);
+/* The same derivations over values of any type: Node's argument checks, in
+ * its order, for calls whose arguments do not fit the typed signatures
+ * (missing ones read as undefined). */
+ScrDyn *scr_crypto_hkdf_any(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                            ScrDyn *keylen);
+void scr_crypto_hkdf_any_async(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                               ScrDyn *keylen, ScrDyn *callback);
+ScrBytes *scr_crypto_scrypt_any(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                ScrDyn *options);
+void scr_crypto_scrypt_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                 ScrDyn *options, ScrDyn *callback);
 typedef void (*ScrCryptoBytesFn)(ScrClosure *cb, ScrError *error /* borrowed */, ScrBytes *value /* moves */);
 void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                             ScrCryptoBytesFn fn);

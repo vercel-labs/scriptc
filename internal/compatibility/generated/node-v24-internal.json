@@ -19767,11 +19767,14 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
           "tests/corpus/crypto-fips-deprecated.cjs",
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs",
+          "tests/corpus/crypto-module-catalogs.ts",
           "tests/corpus/crypto-rsa-key-types.cjs",
           "tests/corpus/crypto-rsa-padding-errors.ts",
           "tests/corpus/crypto-rsa-recover-padding.ts",
@@ -20121,11 +20124,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20148,11 +20152,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20915,11 +20920,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20942,11 +20948,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20969,11 +20976,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getCipherInfo",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getCipherInfo",
         "tests": [
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7157-crypto-cipher-info-typed.ts"
+          "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20996,10 +21004,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCiphers",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21022,10 +21031,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCurves",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21106,10 +21116,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getHashes",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21226,13 +21237,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdf",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21255,13 +21267,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdfSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21678,13 +21691,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scrypt",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21707,13 +21721,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scryptSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"

@@ -231,6 +231,8 @@ function dynArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc):
 /** Node evaluates a surplus argument for its side effects, then drops it. */
 function dropArg(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrStmt {
   const value = lowerer.lowerExpr(node);
+  // A call that throws (a `never` value) has no value to hold.
+  if (value.type.kind === "void") return { kind: "exprStmt", expr: value, loc };
   const dropped = lowerer.declareHiddenLocal("%cryptoDropped", value.type);
   return { kind: "varDecl", localId: dropped.id, init: value, loc };
 }
@@ -431,8 +433,30 @@ export function lowerCryptoModuleCall(
   }
   if (bi.member === "hkdf" || bi.member === "hkdfSync") {
     const async = bi.member === "hkdf";
-    if (args.length !== (async ? 6 : 5))
-      lowerer.noLowering(`crypto.${bi.member} with ${args.length} arguments`, expr);
+    const expected = async ? 6 : 5;
+    const callbackType =
+      async && args.length === expected ? lowerer.mapTypeOf(lowerer.typeOf(args[5]!)) : undefined;
+    // A missing or surplus argument and a value of another type take Node's
+    // checks at run time, in its order; the derivation's result or failure
+    // reaches a callback in a later macrotask.
+    if (
+      args.length !== expected ||
+      args.some(ts.isSpreadElement) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string" ||
+      !(isKeyObjectValue(lowerer, args[1]!) || isByteInputType(lowerer, args[1])) ||
+      !isByteInputType(lowerer, args[2]) ||
+      !isByteInputType(lowerer, args[3]) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[4]!))?.kind !== "f64" ||
+      (async && (callbackType?.kind !== "func" || callbackType.params.length > 2))
+    ) {
+      return dynCall(
+        lowerer,
+        expr,
+        expected,
+        async ? "crypto.hkdfAnyCb" : "crypto.hkdfAny",
+        async ? VOID : DYN,
+      );
+    }
     const values = [
       cryptoAlgorithm(lowerer, args[0]!),
       isKeyObjectValue(lowerer, args[1]!)
@@ -460,8 +484,31 @@ export function lowerCryptoModuleCall(
   if (bi.member === "scrypt" || bi.member === "scryptSync") {
     const async = bi.member === "scrypt";
     const minimum = async ? 4 : 3;
-    if (args.length < minimum || args.length > minimum + 1)
-      lowerer.noLowering(`crypto.${bi.member} with ${args.length} arguments`, expr);
+    const callbackType =
+      async && args.length === minimum + 1
+        ? lowerer.mapTypeOf(lowerer.typeOf(args[args.length - 1]!))
+        : undefined;
+    // A missing or surplus argument and a value of another type take Node's
+    // checks at run time, in its order: password, salt, keylen, options,
+    // then the callback (a four-argument call whose fourth value is a
+    // function passes it as the callback).
+    if (
+      args.length < minimum ||
+      args.length > minimum + 1 ||
+      args.some(ts.isSpreadElement) ||
+      !isByteInputType(lowerer, args[0]) ||
+      !isByteInputType(lowerer, args[1]) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[2]!))?.kind !== "f64" ||
+      (async && (callbackType?.kind !== "func" || callbackType.params.length > 2))
+    ) {
+      return dynCall(
+        lowerer,
+        expr,
+        async ? 5 : 4,
+        async ? "crypto.scryptAnyCb" : "crypto.scryptAny",
+        async ? VOID : BYTES_U8,
+      );
+    }
     const values = [
       cryptoKdfInput(lowerer, args[0]!),
       cryptoKdfInput(lowerer, args[1]!),
@@ -1578,23 +1625,40 @@ function lowerPrimeCall(
   const form = forms[member];
   if (!form) return null;
   const [fn, min, max, supported] = form;
-  if (args.length < min || args.length > max || args.some(ts.isSpreadElement))
+  if (args.length < min || args.some(ts.isSpreadElement))
     lowerer.noLowering(
       `crypto.${member} with ${args.length} arguments`,
       expr,
       `${supported} is supported`,
     );
-  const values = Array.from({ length: max }, (_, i) => dynArg(lowerer, args[i], loc));
+  // Node reads its arguments by position and ignores the ones after the
+  // last it declares; they still evaluate, in source order.
+  const { stmts, args: values } = dynCallArgs(lowerer, expr, max);
+  const sequence = (result: IrExpr): IrExpr =>
+    stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
   if (fn === "crypto.checkPrimeCb" || fn === "crypto.generatePrimeCb") {
-    const callback = args[args.length - 1];
+    const callback = primeCallback(lowerer, args, max);
     const nullError = callback !== undefined && !takesUndefinedError(lowerer, callback);
     values.push({ kind: "boolLit", value: nullError, type: BOOL, loc });
-    return { kind: "libCall", fn, args: values, type: VOID, loc };
+    return sequence({ kind: "libCall", fn, args: values, type: VOID, loc });
   }
   const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
   const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
-  if (result === null || result.kind === "dyn") return call;
-  return lowerer.coerceInto(expr, call, result);
+  if (result === null || result.kind === "dyn") return sequence(call);
+  return lowerer.coerceInto(expr, sequence(call), result);
+}
+
+/** The callback checkPrime and generatePrime read: a function in the
+ * options position, otherwise the last argument they declare. */
+function primeCallback(
+  lowerer: Lowerer,
+  args: readonly ts.Expression[],
+  max: number,
+): ts.Expression | undefined {
+  const options = args[1];
+  if (options !== undefined && lowerer.mapTypeOf(lowerer.typeOf(options))?.kind === "func")
+    return options;
+  return args[max - 1];
 }
 
 /** The asymmetric-key and signature members (scr_pki.c): checked-dynamic

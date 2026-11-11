@@ -3676,6 +3676,10 @@ function buildLibFnSignatures() {
     "crypto.hashOneshotAny": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.pbkdf2Any": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: BYTES_U8 },
     "crypto.pbkdf2AnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.hkdfAny": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.hkdfAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.scryptAny": { argTypes: [DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.scryptAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
     /** Views of any element kind (the validator checks both are views). */
     "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
     "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },

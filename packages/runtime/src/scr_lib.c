@@ -10813,10 +10813,11 @@ static bool scr_crypto_number_arg(const char *name, const ScrDyn *value, double 
   return true;
 }
 
-/* getArrayBufferOrView for a checked-dynamic argument: a string is its
- * UTF-8 bytes, a view or ArrayBuffer its bytes. +1 or NULL with Node's
- * error pending. */
-static ScrBytes *scr_crypto_bytes_arg(const char *name, const ScrDyn *value) {
+/* getArrayBufferOrView for a checked-dynamic argument with Node's list of
+ * the kinds it accepts: a string is its UTF-8 bytes, a view or
+ * ArrayBuffer its bytes. +1 or NULL with Node's error pending. */
+static ScrBytes *scr_crypto_bytes_arg_expected(const char *name, const ScrDyn *value,
+                                               const char *expected) {
   if (value->kind == SCR_DYN_STR) {
     ScrStr *utf8 = scr_str_new("utf8", 4);
     ScrBytes *bytes = scr_bytes_from_str_checked(value->v.str, utf8);
@@ -10825,10 +10826,19 @@ static ScrBytes *scr_crypto_bytes_arg(const char *name, const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
     return scr_bytes_buffer_source(value);
-  scr_dyn_arg_type_fail(
-      name, "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", value);
+  scr_dyn_arg_type_fail(name, expected, value);
   return NULL;
 }
+
+static ScrBytes *scr_crypto_bytes_arg(const char *name, const ScrDyn *value) {
+  return scr_crypto_bytes_arg_expected(
+      name, value, "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView");
+}
+
+/* hkdf's salt and info are validateByteSource checks: the same kinds, listed
+ * in that validator's order. */
+static const char SCR_CRYPTO_BYTE_SOURCE_EXPECTED[] =
+    "of type string or an instance of ArrayBuffer, TypedArray, DataView, or Buffer";
 
 /* createHash(algorithm, options) over arguments of any type: Node's
  * validateString for the algorithm, then the options checks. */
@@ -11569,12 +11579,16 @@ ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options) {
   return result;
 }
 
-/* hkdf's key: a KeyObject's bytes as a fresh u8 Buffer. */
+/* hkdf's key: a secret KeyObject's bytes as a fresh u8 Buffer.
+ * prepareSecretKey reports a private or public key as the wrong kind. */
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key) {
   size_t len;
   const unsigned char *data = scr_key_object_bytes(key, &len);
   if (!data) {
-    scr_key_object_type_fail("key", key);
+    if (scr_crypto_is_key_object(key))
+      scr_crypto_invalid_key_object_type(key->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
+    else
+      scr_key_object_type_fail("key", key);
     return NULL;
   }
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
@@ -11959,7 +11973,11 @@ ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double ke
   if (maxmem == 0) maxmem = 33554432;
   size_t memory;
   if (!scr_scrypt_params(n, r, p, maxmem, &memory)) return NULL;
-  if (keylen == 0) return scr_bytes_new(SCR_BYTES_U8, 0);
+  if (keylen == 0) {
+    ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+    empty->is_buffer = true; /* Node's derived keys are Buffers */
+    return empty;
+  }
   size_t words = 32 * (size_t)r, block_len = words * sizeof(uint32_t);
   size_t b_len = block_len * (size_t)p;
   ScrBytes *b = scr_crypto_pbkdf2_raw(password->data, password->len * scr_bytes_elem_size(password->elem),
@@ -12013,7 +12031,7 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
     value = scr_scrypt_read_option(options, name);
     if (scr_exc_pending()) return false;
     if (value->kind != SCR_DYN_NUM) {
-      scr_dyn_arg_type_fail(name, "number", value);
+      scr_dyn_arg_type_fail(name, "of type number", value);
       scr_dyn_release(value);
       return false;
     }
@@ -12026,47 +12044,224 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
   return true;
 }
 
+/* scrypt's options bag: Node's defaults in values[N, r, p, maxmem], with the
+ * primary names before their deprecated aliases and the pair conflicts it
+ * reports. False with Node's error pending. */
+static bool scr_crypto_scrypt_options(ScrDyn *options, double values[4]) {
+  if (!options || !scr_dyn_truthy(options)) return true;
+  const char *names[3] = {"N", "r", "p"};
+  const char *aliases[3] = {"cost", "blockSize", "parallelization"};
+  for (size_t i = 0; i < 3; i++) {
+    bool primary, alias;
+    if (!scr_scrypt_option(options, names[i], 4294967295.0, &values[i], &primary)) return false;
+    // Node reads the alias to test presence before checking the conflict.
+    ScrDyn *alias_value = scr_scrypt_read_option(options, aliases[i]);
+    if (scr_exc_pending()) return false;
+    alias = alias_value && alias_value->kind != SCR_DYN_UNDEF;
+    if (primary && alias) {
+      char message[160];
+      int len = snprintf(message, sizeof message, "Option \"%s\" cannot be used in combination with option \"%s\"", names[i], aliases[i]);
+      scr_dyn_release(alias_value);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)len, "ERR_INCOMPATIBLE_OPTION_PAIR");
+      return false;
+    }
+    if (alias) {
+      scr_dyn_release(alias_value);
+      alias_value = scr_scrypt_read_option(options, aliases[i]);
+      if (scr_exc_pending()) return false;
+      if (alias_value->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail(aliases[i], "of type number", alias_value);
+        scr_dyn_release(alias_value);
+        return false;
+      }
+      values[i] = alias_value->v.num;
+      if (!scr_crypto_integer(values[i], aliases[i], 0, 4294967295.0)) {
+        scr_dyn_release(alias_value);
+        return false;
+      }
+    }
+    scr_dyn_release(alias_value);
+  }
+  bool present;
+  return scr_scrypt_option(options, "maxmem", 9007199254740991.0, &values[3], &present);
+}
+
 ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options) {
   if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0)) return NULL;
   double values[4] = {16384, 8, 1, 33554432};
-  if (options && scr_dyn_truthy(options)) {
-    const char *names[3] = {"N", "r", "p"};
-    const char *aliases[3] = {"cost", "blockSize", "parallelization"};
-    for (size_t i = 0; i < 3; i++) {
-      bool primary, alias;
-      if (!scr_scrypt_option(options, names[i], 4294967295.0, &values[i], &primary)) return NULL;
-      // Node reads the alias to test presence before checking the conflict.
-      ScrDyn *alias_value = scr_scrypt_read_option(options, aliases[i]);
-      if (scr_exc_pending()) return NULL;
-      alias = alias_value && alias_value->kind != SCR_DYN_UNDEF;
-      if (primary && alias) {
-        char message[160];
-        int len = snprintf(message, sizeof message, "Option \"%s\" cannot be used in combination with option \"%s\"", names[i], aliases[i]);
-        scr_dyn_release(alias_value);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)len, "ERR_INCOMPATIBLE_OPTION_PAIR");
-        return NULL;
-      }
-      if (alias) {
-        scr_dyn_release(alias_value);
-        alias_value = scr_scrypt_read_option(options, aliases[i]);
-        if (scr_exc_pending()) return NULL;
-        if (alias_value->kind != SCR_DYN_NUM) {
-          scr_dyn_arg_type_fail(aliases[i], "number", alias_value);
-          scr_dyn_release(alias_value);
-          return NULL;
-        }
-        values[i] = alias_value->v.num;
-        if (!scr_crypto_integer(values[i], aliases[i], 0, 4294967295.0)) {
-          scr_dyn_release(alias_value);
-          return NULL;
-        }
-      }
-      scr_dyn_release(alias_value);
-    }
-    bool present;
-    if (!scr_scrypt_option(options, "maxmem", 9007199254740991.0, &values[3], &present)) return NULL;
-  }
+  if (!scr_crypto_scrypt_options(options, values)) return NULL;
   return scr_crypto_scrypt_derive(password, salt, keylen, values[0], values[1], values[2], values[3]);
+}
+
+/* hkdf's ikm over any value: a secret KeyObject's or CryptoKey's bytes, a
+ * string's UTF-8 bytes, or a view's or ArrayBuffer's bytes. +1, or NULL
+ * with Node's error pending. A private or public KeyObject is the wrong
+ * kind of key, as prepareSecretKey reports. */
+static ScrBytes *scr_crypto_hkdf_ikm_arg(const ScrDyn *value) {
+  size_t len;
+  const unsigned char *data = scr_key_object_bytes(value, &len);
+  if (data) {
+    ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(bytes->data, data, len);
+    return bytes;
+  }
+  if (scr_crypto_is_key_object(value)) {
+    if (scr_crypto_reject_asymmetric_secret) scr_crypto_reject_asymmetric_secret(value);
+    else scr_crypto_invalid_key_object_type(value->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
+    return scr_crypto_bytes_arg("ikm", value);
+  scr_dyn_arg_type_fail(
+      "ikm",
+      "of type string or an instance of SecretKeyObject, ArrayBuffer, TypedArray, DataView, or Buffer",
+      value);
+  return NULL;
+}
+
+/* hkdf(digest, ikm, salt, info, length) over any values: Node's checks in
+ * its order, then the derivation (which reports an XOF as "Deriving bits
+ * failed"). */
+ScrDyn *scr_crypto_hkdf_any(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                            ScrDyn *keylen) {
+  ScrDyn *args[5] = {digest, ikm, salt, info, keylen};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  ScrDyn *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrStr *alg = scr_crypto_string_arg("digest", v[0]);
+    ScrBytes *key = alg ? scr_crypto_hkdf_ikm_arg(v[1]) : NULL;
+    ScrBytes *sl =
+        key ? scr_crypto_bytes_arg_expected("salt", v[2], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    ScrBytes *inf =
+        sl ? scr_crypto_bytes_arg_expected("info", v[3], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    double length = 0;
+    if (inf && scr_crypto_number_arg("length", v[4], 0, 9007199254740991.0, &length))
+      result = scr_crypto_hkdf(alg, key, sl, inf, length);
+    scr_bytes_release(inf);
+    scr_bytes_release(sl);
+    scr_bytes_release(key);
+  }
+  scr_crypto_release_args(v, 5);
+  return result;
+}
+
+/* hkdf(digest, ikm, salt, info, length, callback) over any values: Node's
+ * checks in its order — the callback last — then the derivation, whose
+ * result or failure reaches the callback in a later macrotask. A
+ * synchronous failure (a parameter range, the digest) throws instead. */
+void scr_crypto_hkdf_any_async(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                               ScrDyn *keylen, ScrDyn *callback) {
+  ScrDyn *args[6] = {digest, ikm, salt, info, keylen, callback};
+  ScrDyn *v[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  if (scr_crypto_unbox_args(v, args, 6)) {
+    ScrStr *alg = scr_crypto_string_arg("digest", v[0]);
+    ScrBytes *key = alg ? scr_crypto_hkdf_ikm_arg(v[1]) : NULL;
+    ScrBytes *sl =
+        key ? scr_crypto_bytes_arg_expected("salt", v[2], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    ScrBytes *inf =
+        sl ? scr_crypto_bytes_arg_expected("info", v[3], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    double length = 0;
+    if (inf && scr_crypto_number_arg("length", v[4], 0, 9007199254740991.0, &length)) {
+      if (!scr_dyn_is_callable(v[5])) {
+        scr_dyn_arg_type_fail("callback", "of type function", v[5]);
+      } else {
+        ScrBytes *value = scr_crypto_hkdf_bytes(alg, key, sl, inf, length);
+#ifndef SCR_LIB
+        if (!scr_exc_pending()) {
+          ScrDyn *error = NULL, *delivery = NULL;
+          if (value->len == 0) {
+            scr_bytes_release(value);
+            scr_throw_error_msg(SCR_ERR_ERROR, "Deriving bits failed", 20);
+            error = scr_crypto_take_error();
+          } else {
+            error = scr_dyn_new_null();
+            delivery = scr_array_buffer_from_bytes(value);
+            scr_bytes_release(value);
+          }
+          if (scr_crypto_defer_dyn_callback)
+            scr_crypto_defer_dyn_callback(scr_dyn_retain(v[5]), error, delivery);
+        }
+#else
+        /* Library mode compiles without the crypto async unit and its
+         * loop; the async_free gate refuses this callback form before
+         * emission. */
+        if (value) scr_bytes_release(value);
+#endif
+      }
+    }
+    scr_bytes_release(inf);
+    scr_bytes_release(sl);
+    scr_bytes_release(key);
+  }
+  scr_crypto_release_args(v, 6);
+}
+
+/* scrypt(password, salt, keylen[, options]) over any values: Node's checks
+ * — password, salt, keylen, options, then the callback — and the
+ * derivation. */
+ScrBytes *scr_crypto_scrypt_any(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                ScrDyn *options) {
+  ScrDyn *args[4] = {password, salt, keylen, options};
+  ScrDyn *v[4] = {NULL, NULL, NULL, NULL};
+  ScrBytes *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 4)) {
+    ScrBytes *pw = scr_crypto_bytes_arg("password", v[0]);
+    ScrBytes *sl = pw ? scr_crypto_bytes_arg("salt", v[1]) : NULL;
+    double length = 0;
+    if (sl && scr_crypto_number_arg("keylen", v[2], 0, 2147483647.0, &length))
+      result = scr_crypto_scrypt(pw, sl, length, v[3]);
+    scr_bytes_release(sl);
+    scr_bytes_release(pw);
+  }
+  scr_crypto_release_args(v, 4);
+  return result;
+}
+
+/* scrypt(password, salt, keylen[, options], callback) over any values:
+ * Node's checks in its order, then the derivation, whose result reaches
+ * the callback in a later macrotask. A call without a callback takes the
+ * fourth value as the callback and reads no options, as Node swaps them. */
+void scr_crypto_scrypt_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                 ScrDyn *options, ScrDyn *callback) {
+  ScrDyn *args[5] = {password, salt, keylen, options, callback};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrDyn *options_value = v[3], *callback_value = v[4];
+    if (callback_value->kind == SCR_DYN_UNDEF) {
+      callback_value = options_value;
+      options_value = NULL;
+    }
+    ScrBytes *pw = scr_crypto_bytes_arg("password", v[0]);
+    ScrBytes *sl = pw ? scr_crypto_bytes_arg("salt", v[1]) : NULL;
+    double length = 0;
+    if (sl && scr_crypto_number_arg("keylen", v[2], 0, 2147483647.0, &length)) {
+      double values[4] = {16384, 8, 1, 33554432};
+      size_t memory;
+      if (scr_crypto_scrypt_options(options_value, values) &&
+          scr_scrypt_params(values[0], values[1], values[2], values[3], &memory)) {
+        if (!scr_dyn_is_callable(callback_value)) {
+          scr_dyn_arg_type_fail("callback", "of type function", callback_value);
+        } else {
+          ScrBytes *value = scr_crypto_scrypt_derive(pw, sl, length, values[0], values[1],
+                                                     values[2], values[3]);
+#ifndef SCR_LIB
+          if (!scr_exc_pending()) {
+            ScrDyn *delivery = scr_dyn_new_buffer(value);
+            scr_bytes_release(value);
+            if (scr_crypto_defer_dyn_callback)
+              scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), scr_dyn_new_null(),
+                                            delivery);
+          }
+#else
+          if (value) scr_bytes_release(value);
+#endif
+        }
+      }
+    }
+    scr_bytes_release(sl);
+    scr_bytes_release(pw);
+  }
+  scr_crypto_release_args(v, 5);
 }
 
 /* The composed `new crypto.X509Certificate(data).fingerprint` read, fused

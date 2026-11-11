@@ -1755,7 +1755,9 @@ ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options) {
      * value. */
     if (type->kind != SCR_DYN_UNDEF) {
       ScrDyn *init = scr_dyn_new_obj();
-      sw_set(init, "type", type);
+      /* The object owns the reference it is given; this function still
+       * holds (and releases) the caller's, so pass it a retained one. */
+      sw_set(init, "type", scr_dyn_retain(type));
       ScrDyn *args[1] = {init};
       readable = sw_construct_class(SW_CLS_READABLE, args, 1, "ReadableStream");
       scr_dyn_release(init);

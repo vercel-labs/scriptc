@@ -23,6 +23,9 @@ const programs = [
   "tests/corpus/stream-readable-wrap.ts",
   "tests/corpus/stream-cycle-reclamation.ts",
   "tests/corpus/stream-duplex-pair.ts",
+  // Duplex.toWeb on a duplex with its readable side disabled moves the
+  // caller's type option into the temporary readable source.
+  "tests/corpus/stream-duplex-to-web-options.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")("streams under LeakSanitizer", () => {

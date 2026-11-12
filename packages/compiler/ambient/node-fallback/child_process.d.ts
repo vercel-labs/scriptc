@@ -254,6 +254,15 @@ declare module "child_process" {
     cwd?: string;
     windowsHide?: boolean;
     shell?: boolean;
+    /* spawn's deadline and cancellation. timeout kills the child with
+     * killSignal (SIGTERM without one) that many milliseconds after the
+     * launch; an absent, nullish or non-positive timeout arms no timer.
+     * killSignal is a signal name in any case (or a signal number).
+     * signal's abort kills the child the same way and emits an AbortError
+     * (code ABORT_ERR) with the signal's reason as its cause. */
+    timeout?: number;
+    killSignal?: string | number;
+    signal?: AbortSignal;
   }
   export function spawn(command: string, args?: string[], options?: SpawnOptions): ChildProcess;
   export function spawn(command: string, options?: SpawnOptions): ChildProcess;
@@ -339,7 +348,11 @@ declare module "child_process" {
   ): string;
   export function execSync(command: string, options?: ExecSyncOptions): Buffer;
   /* The async pair's options: both captures are decoded as utf8, so the
-   * encoding member keeps the utf8-only type (a non-utf8 name fences). */
+   * encoding member keeps the utf8-only type (a non-utf8 name fences).
+   * `env` REPLACES the child environment, `timeout` is an unsigned-integer
+   * deadline in milliseconds that destroys the capture streams and sends
+   * `killSignal` (a signal name from Node's table, matched without case;
+   * SIGTERM when absent), and `maxBuffer` bounds the capture. */
   export interface ExecAsyncOptions extends Omit<ExecSyncOptions, "encoding"> {
     encoding?: "utf8" | "utf-8";
   }

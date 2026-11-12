@@ -700,6 +700,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
+  // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
+  // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
+  "cp.execFileOpts",
+  // spawn's own: the same validateTimeout and sanitizeKillSignal, plus
+  // validateAbortSignal's ERR_INVALID_ARG_TYPE, before the child starts.
+  "cp.spawnArmed",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).

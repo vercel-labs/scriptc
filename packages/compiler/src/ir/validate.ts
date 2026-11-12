@@ -5393,7 +5393,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd" || e.fn === "cp.execFileOpts") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||

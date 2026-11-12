@@ -1610,7 +1610,13 @@ const RUNTIME_FEATURE_RULES = {
    * own, so a program that never passes those options keeps the default
    * object, byte for byte. */
   childOptionExt: rule({
-    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+    fns: [
+      "cp.spawnSyncExt",
+      "cp.spawnSyncExtEnv",
+      "cp.execFileCwd",
+      "cp.execFileOpts",
+      "cp.spawnArmed",
+    ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
@@ -1960,6 +1966,11 @@ const RUNTIME_FEATURE_RULES = {
       ...ABORT_SIGNAL_LIB_FNS,
     ],
     prefixes: ["event."],
+    // spawn's `signal` option registers through addAbortListener. A call
+    // keeps the slot (the lowering always passes fifteen arguments); an IR
+    // fixture may spell fewer, and an absent one means no signal.
+    libCall: (node) =>
+      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),

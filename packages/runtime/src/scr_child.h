@@ -218,6 +218,22 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 /* Runtime options use the same spawn core; validation and explicit
  * unsupported-option refusals throw before starting a child. Borrows. */
 ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
+/* cp.spawnArmed: the options core plus Node's spawn-side options
+ * (SCR_CHILD_CP_OPTIONS). After the launch checks (validateTimeout,
+ * validateAbortSignal, sanitizeKillSignal — the errors throw before any
+ * process starts), timeout_ms > 0 arms Node's timer: at the deadline the
+ * runtime sends killSignal (SIGTERM without one) and leaves the pipes
+ * alone, unlike exec's timer. signal's abort sends the same signal and
+ * emits Node's AbortError (code ABORT_ERR, cause signal.reason) once,
+ * right after 'spawn' when the signal was already aborted. `add` is
+ * scr_events_add_abort_listener, NULL when the program cannot pass a
+ * signal. kill_signal and signal may be NULL or a checked-dynamic
+ * undefined; timeout_ms 0 = no timer. Borrows. */
+ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_mode,
+                          double err_mode, double out_fd, double err_fd, bool detached,
+                          bool shell, bool has_env, ScrArr *env_pairs, ScrStr *cwd,
+                          double timeout_ms, const ScrDyn *kill_signal, ScrDyn *signal,
+                          ScrAbortAddFn add);
 /* cp.checkArgs: Node's argument checks for the launch that follows it
  * (normalizeSpawnArguments, normalizeExecArgs). A NUL in the file or
  * command, an argument, cwd ("" = absent) or an environment key or value
@@ -240,6 +256,20 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * (SCR_CHILD_CP_OPTIONS), like the spawnSync cwd/input entries. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                             ScrExecFileFn fn, bool shell, ScrStr *cwd);
+/* The same with `env`, `timeout` and `killSignal`, the rest of Node's
+ * exec/execFile option surface for the callback form (SCR_CHILD_CP_OPTIONS).
+ * env_pairs REPLACES the environment when has_env (an empty list with
+ * has_env is Node's `env: {}` — an empty environment), cwd NULL or "" =
+ * the parent's directory, timeout_ms 0 = no deadline. Node's
+ * validateTimeout runs here (a non-integer, negative or NaN value throws
+ * ERR_OUT_OF_RANGE; a value past 2^31-1 warns TimeoutOverflowWarning and
+ * becomes 1ms, as setTimeout does), then the killSignal name resolves
+ * ("" = SIGTERM; unknown names throw ERR_UNKNOWN_SIGNAL). At the deadline
+ * the runtime destroys the capture streams and sends the signal, Node's
+ * exec/execFile kill(); the callback still reports the exit's own status. */
+ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                             ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);
@@ -471,6 +501,7 @@ void scr_children_teardown(void);
 /* Node's signal-name table (scr_lib.c), shared with child.kill: the
  * resolved signal number, or -1 for names outside the table. */
 int scr_signal_from_name(const ScrStr *signal);
+int scr_signal_from_name_ci(const ScrStr *signal);
 /* The reverse walk (spawnSync's result.signal): Node's spelling for the
  * host number, NULL outside the table. Static storage. */
 const char *scr_signal_name(int sig);
@@ -498,6 +529,11 @@ typedef struct ScrLoopChildren {
   bool (*ready)(void);
   bool (*reffed_pending)(void);
   bool (*failed_pending)(void);
+  /* The earliest exec/execFile timeout deadline among running children
+   * (ms on the loop's clock), or -1 while none waits: the loop wakes for
+   * it, and it keeps the loop alive like Node's un-unref'd timeout timer
+   * even when the child itself is unref'd. */
+  double (*next_deadline)(void);
   void (*poll)(void);
   bool (*wait)(double max_wait_ms);
   int (*wake_fd)(void);

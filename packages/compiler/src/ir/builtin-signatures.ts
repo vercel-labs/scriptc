@@ -3358,6 +3358,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
       result: CHILD_T,
     },
+    /** The callback slice with `env`, `timeout` and `killSignal` (the
+     * SCR_CHILD_CP_OPTIONS build): (cmd, argv, callback, shell, cwd,
+     * hasEnv, envPairs, timeoutMs, killSignal). cwd "" = inherit;
+     * envPairs REPLACES the environment when hasEnv (an empty list with
+     * hasEnv is Node's `env: {}`); timeoutMs 0 = no deadline; killSignal
+     * "" = the SIGTERM default, otherwise a signal name resolved by the
+     * runtime. Throws Node's option errors synchronously (validateTimeout's
+     * ERR_OUT_OF_RANGE, sanitizeKillSignal's ERR_UNKNOWN_SIGNAL) before the
+     * child starts. The callback contract is cp.execFile's. */
+    "cp.execFileOpts": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
+      result: CHILD_T,
+    },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).
@@ -3384,6 +3397,34 @@ function buildLibFnSignatures() {
         BOOL,
         arrayOf(STRING),
         STRING,
+      ],
+      result: CHILD_T,
+    },
+    /** spawn's options form with `timeout`, `killSignal` and `signal`
+     * (the SCR_CHILD_CP_OPTIONS build): cp.spawnOpts' arguments, then
+     * timeoutMs (0 = no timer), killSignal and signal as checked-dynamic
+     * values (undefined = absent; killSignal may be a name, matched
+     * without case, or a signal number). Node's launch checks run in its
+     * order — validateTimeout, validateAbortSignal, sanitizeKillSignal —
+     * before the child starts, so unlike cp.spawnOpts this call can throw
+     * synchronously. */
+    "cp.spawnArmed": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+        F64,
+        F64,
+        BOOL,
+        BOOL,
+        BOOL,
+        arrayOf(STRING),
+        STRING,
+        F64,
+        DYN,
+        DYN,
       ],
       result: CHILD_T,
     },

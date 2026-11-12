@@ -15982,12 +15982,13 @@ export class Lowerer {
         return this.checker.getUnknownType();
       }
     }
-    // A checked JS method receives its actual call-site receiver. Its
-    // declaration's inferred class type must not turn property reads back
-    // into native field loads when the method is borrowed by another object.
+    // A member lowered over a dynamic receiver (a checked JS method, or a
+    // static member lowered for a class value's property table) receives
+    // its actual call-site receiver. Its declaration's inferred class type
+    // must not turn property reads back into native field loads when the
+    // member runs for another class value.
     if (
       node.kind === ts.SyntaxKind.ThisKeyword &&
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       this.fnStack.length > 0 &&
       this.resolveThis()?.type.kind === "dyn"
     )

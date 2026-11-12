@@ -67,6 +67,7 @@ import {
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import { runtimeStaticDefines } from "./class-runtime-statics.js";
+import { classStaticsRepresentable, insertClassStaticsInstall } from "./class-static-tables.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -1652,6 +1653,50 @@ export class ClassDynamicDispatch {
   boxedClasses(): ReadonlySet<string> {
     return this.boxed;
   }
+  /** The class values whose static property table this pass installed. */
+  private readonly staticTablesInstalled = new Set<string>();
+
+  /** Installs the static property table of every class value the program
+   * boxes (class-static-tables.ts): a keyed read through `any`, Reflect and
+   * the descriptor APIs answer from it. The table links to the base's and a
+   * slot typed with a class can hold any program descendant, so the program
+   * ancestors and descendants of each boxed class get one too. */
+  private installStaticTables(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.boxedConstructors.size === 0) return false;
+    const candidates = new Map<string, ClassInfo>();
+    const add = (info: ClassInfo | null): void => {
+      if (info) candidates.set(info.def.name, info);
+    };
+    for (const name of this.boxedConstructors) {
+      const info = lowerer.classes.get(name);
+      if (!info) continue;
+      add(info);
+      for (let base = info.base; base; base = base.base) add(base);
+      for (const other of lowerer.classes.values())
+        if (other !== info && lowerer.isSubclassOf(other.def.name, info.def.name)) add(other);
+    }
+    // Ancestors install first: a table links to its base's, so the base's
+    // members are there when an inherited name resolves through it.
+    const depth = (info: ClassInfo): number => {
+      let n = 0;
+      for (let base = info.base; base; base = base.base) n++;
+      return n;
+    };
+    let changed = false;
+    for (const info of [...candidates.values()].sort((left, right) => depth(left) - depth(right))) {
+      if (this.staticTablesInstalled.has(info.def.name)) continue;
+      // A base this pass did not install (an ineligible one, whose fence
+      // stays) leaves the chain incomplete: this class keeps its fence.
+      let ready = true;
+      for (let base = info.base; base; base = base.base)
+        if (!this.staticTablesInstalled.has(base.def.name)) ready = false;
+      if (!ready || !classStaticsRepresentable(lowerer, info)) continue;
+      if (!insertClassStaticsInstall(lowerer, info, functions)) continue;
+      this.staticTablesInstalled.add(info.def.name);
+      changed = true;
+    }
+    return changed;
+  }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -1825,6 +1870,7 @@ export class ClassDynamicDispatch {
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
+    changed = this.installStaticTables(lowerer, functions) || changed;
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);

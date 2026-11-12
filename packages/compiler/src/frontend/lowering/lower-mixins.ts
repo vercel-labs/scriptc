@@ -40,6 +40,7 @@ import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { type IrType } from "../../ir/ir.js";
+import { staticsEvaluationStatementOf } from "../class-statics-position.js";
 import {
   type ClassInfo,
   builtinStreamInfoOf,
@@ -363,6 +364,28 @@ export function mixinResultBindingClassOf(
   return info;
 }
 
+/** The instance type a declaration holds when its initializer constructs
+ * a mixin RESULT binding (`const V = wrap(Base); const made = new V()`).
+ * The checker types the value by the class expression the mixin body
+ * returns — the un-instantiated local class, a different class from every
+ * call site's — while the constructed value IS that call site's
+ * instantiation (V's class object). A binding of such a construction keeps
+ * the instantiation's layout: coercing the value into the local class
+ * would reinterpret one class's instance as another's. Null for every
+ * other declaration. */
+export function mixinInstantiationNewType(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrType | null {
+  if (decl.type !== undefined || !ts.isIdentifier(decl.name) || decl.initializer === undefined)
+    return null;
+  const init = withoutParentheses(decl.initializer);
+  if (!ts.isNewExpression(init) || !ts.isIdentifier(init.expression)) return null;
+  const symbol = lowerer.resolveValueSymbol(init.expression);
+  const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
+  return info?.mixinInstance ? { kind: "object", className: info.def.name } : null;
+}
+
 /** The heart: the ClassInfo a mixin CALL mints — one instantiation per
  * call site, cached by node (idempotent across the discovery/emit passes'
  * repeated demands from heritage clauses, const bindings, and the call
@@ -500,7 +523,7 @@ function instantiateMixinCall(
   // observable ahead of the call). Anything subtler is a named fence,
   // never a reordering.
   if (info.staticFields.length > 0 || (info.staticBlocks?.length ?? 0) > 0) {
-    const holder = staticsEvalStatementOf(call);
+    const holder = staticsEvaluationStatementOf(call);
     if (!holder) {
       lowerer.unsupported(
         "SC1090",
@@ -618,33 +641,4 @@ function pinnedMixinCallPosition(call: ts.CallExpression): boolean {
     return ts.isExpressionWithTypeArguments(p) && ts.isHeritageClause(p.parent);
   }
   return false;
-}
-
-/** The top-level statement whose evaluation IS a statics-bearing mixin
- * call's evaluation point, or null: the path from the call to the source
- * file may cross only parens, enclosing mixin-call argument positions,
- * a sole-declarator top-level variable statement, a bare expression
- * statement, or a top-level class declaration's heritage clause. */
-function staticsEvalStatementOf(call: ts.CallExpression): ts.Statement | null {
-  let n: ts.Node = call;
-  for (let p: ts.Node | undefined = n.parent; p !== undefined; n = p, p = p.parent) {
-    if (ts.isParenthesizedExpression(p)) continue;
-    if (ts.isCallExpression(p) && p.arguments.nodes.length === 1 && p.arguments.nodes[0] === n)
-      continue;
-    if (
-      ts.isVariableDeclaration(p) &&
-      p.initializer === n &&
-      ts.isVariableDeclarationList(p.parent) &&
-      p.parent.declarations.nodes.length === 1 &&
-      ts.isVariableStatement(p.parent.parent) &&
-      ts.isSourceFile(p.parent.parent.parent)
-    ) {
-      return p.parent.parent;
-    }
-    if (ts.isExpressionStatement(p) && ts.isSourceFile(p.parent)) return p;
-    if (ts.isExpressionWithTypeArguments(p) || ts.isHeritageClause(p)) continue;
-    if (ts.isClassDeclaration(p) && ts.isSourceFile(p.parent) && ts.isHeritageClause(n)) return p;
-    return null;
-  }
-  return null;
 }

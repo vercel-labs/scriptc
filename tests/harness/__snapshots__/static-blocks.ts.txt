@@ -1,20 +1,20 @@
-static-blocks.ts:8:16 - error SC1090: 'this' in class static blocks (it names the class — reference the class by name instead) are not supported yet
+static-blocks.ts:16:5 - error SC1090: 'super' in class static blocks (it names the class's base — reference the base class by name instead) are not supported yet
 
-  7 |   static {
-  8 |     const me = this;
-    |                ^~~~
-  9 |   }
+  15 |   static {
+  16 |     super.flag();
+     |     ^~~~~
+  17 |   }
 
-static-blocks.ts:17:3 - error SC1090: auto-accessor fields ('accessor x') are not supported yet
+static-blocks.ts:25:3 - error SC1090: auto-accessor fields ('accessor x') are not supported yet
 
-  16 | class NeverReferenced {
-  17 |   accessor hidden = 1;
+  24 | class NeverReferenced {
+  25 |   accessor hidden = 1;
      |   ^~~~~~~~~~~~~~~~~~~~
-  18 |   static {
+  26 |   static {
 
-static-blocks.ts:33:17 - error SC1090: the static member '#x' of class 'PrivateStatic' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
+static-blocks.ts:41:17 - error SC1090: the static member '#x' of class 'PrivateStatic' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
 
-  32 |   static {
-  33 |     console.log(PrivateStatic.#x);
+  40 |   static {
+  41 |     console.log(PrivateStatic.#x);
      |                 ^~~~~~~~~~~~~~~~
-  34 |   }
+  42 |   }

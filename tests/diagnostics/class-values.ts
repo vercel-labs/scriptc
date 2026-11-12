@@ -49,12 +49,6 @@ someClass.tag = "write";
 // runtime class decides which declaration answers.
 console.log(someClass.tag);
 
-// Local classes with statics still need per-evaluation static storage.
-function make(): unknown {
-  return class { static value = 1; };
-}
-make();
-
 // Statics-bearing class expressions outside a whole-initializer position:
 // their declaration-time code must run exactly where the expression
 // evaluates.

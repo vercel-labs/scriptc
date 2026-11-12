@@ -573,6 +573,27 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   );
 }
 
+/** Whether a bare `C.prototype` read is asserted to `any` or `unknown`
+ * (`(C.prototype as any)`): the cast asks for the value's dynamic form —
+ * the prototype object itself — so a member written through it is an own
+ * property of the prototype, which the instances' checked-dynamic view then
+ * reads. */
+function erasedCastPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  while (
+    ts.isParenthesizedExpression(node.parent) ||
+    ts.isNonNullExpression(node.parent) ||
+    ts.isSatisfiesExpression(node.parent)
+  )
+    node = node.parent;
+  const parent = node.parent;
+  return (
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) &&
+    parent.expression === node &&
+    (lowerer.typeOf(parent).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
+}
+
 /** A module-level JavaScript class named directly (not a class value that
  * may hold a subclass at run time): its prototype has a complete view whose
  * methods accept any receiver. */
@@ -666,6 +687,23 @@ export function lowerClassPrototypeData(
     viewableClass(lowerer, info, expr.expression)
   )
     return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
+  // `(C.prototype as any)`: the prototype object as a dynamic value, the
+  // same one a named prototype write reaches, so a member written through
+  // the cast is what the instances' checked-dynamic view reads.
+  if (name === null && erasedCastPosition(lowerer, expr)) {
+    const value = classPrototypeData(
+      lowerer,
+      info,
+      locOf(expr),
+      info.localClass
+        ? lowerer.lowerExprExpecting(expr.expression, {
+            kind: "classval",
+            className: info.def.name,
+          })
+        : undefined,
+    );
+    if (value !== null) return value;
+  }
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
       "SC1090",

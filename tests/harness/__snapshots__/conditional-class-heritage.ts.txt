@@ -1,0 +1,17 @@
+conditional-class-heritage.ts:13:21 - error SC1090: extending a conditional class value with more than one possible base class is not supported yet
+
+  12 | 
+  13 | class Both extends (pick ? Left : Right) {
+     |                     ^~~~~~~~~~~~~~~~~~~
+  14 |   own = 3;
+
+  hint: a class's instance layout is fixed when it is lowered, so its base must be one class: give both arms a common base (or a factory returning one class) and extend that
+
+conditional-class-heritage.ts:17:14 - error SC2004: uses of 'Both' inherit the blocker on its declaration
+
+  16 | 
+  17 | const both = Both;
+     |              ^~~~
+  18 | console.log(both.name);
+
+  hint: the declaration of 'Both' did not compile — fix the diagnostic reported there and these sites clear with it

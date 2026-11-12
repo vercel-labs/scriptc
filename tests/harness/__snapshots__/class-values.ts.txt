@@ -30,23 +30,16 @@ class-values.ts:50:13 - error SC1090: reading the static member 'tag' through a 
      |             ^~~~~~~~~~~~~
   51 | 
 
-class-values.ts:54:10 - error SC1090: function-local classes with statics, decorators, or generic members are not supported yet
+class-values.ts:55:18 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
 
-  53 | function make(): unknown {
-  54 |   return class { static value = 1; };
-     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~
-  55 | }
-
-class-values.ts:61:18 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
-
-  60 | // evaluates.
-  61 | const pair = [1, class WithStatic { static x = 1; }] as const;
+  54 | // evaluates.
+  55 | const pair = [1, class WithStatic { static x = 1; }] as const;
      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  62 | 
+  56 | 
 
-class-values.ts:81:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
+class-values.ts:75:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
 
-  80 | class OtherThis extends UsesThis {}
-  81 | function self(value: typeof UsesThis): string { return value.self(); }
+  74 | class OtherThis extends UsesThis {}
+  75 | function self(value: typeof UsesThis): string { return value.self(); }
      |                                                        ^~~~~~~~~~
-  82 | console.log(self(OtherThis));
+  76 | console.log(self(OtherThis));

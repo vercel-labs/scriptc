@@ -8526,6 +8526,11 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
    * skip pooling (a request torn down by the caller never reaches this
    * point: its exchange settles through the teardown path). */
   if (ag == NULL || !ag->keep_alive || ag->destroyed || c->aborted) return false;
+  /* Node's agent takes back a live socket only. A request torn down from
+   * its own 'response' callback (fetch abandoning a hop it cannot follow,
+   * a caller calling destroy() before the body ends) has already destroyed
+   * the socket; pooling it would hand the next request a dead connection. */
+  if (c->sock == NULL || scr_net_sock_destroyed(c->sock)) return false;
   if (hint == -2 || !c->ended || conn->len != 0 || scr_http_client_has_header_value(c, "connection", "close"))
     return false;
   if (c->agent_ent == NULL) return false;
@@ -10602,6 +10607,13 @@ bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d) {
 }
 
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d) {
+  /* end(cb): Node's `typeof chunk === 'function'` makes the value the
+   * callback and leaves no chunk. */
+  if (d != NULL && d->kind == SCR_DYN_FUNC) {
+    scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(d));
+    scr_http_res_end(r);
+    return;
+  }
   /* Node's end(): a falsy chunk (undefined, null, "") is no chunk at all —
    * an empty Buffer is an object and stays one. */
   bool has_chunk = d != NULL && scr_dyn_truthy(d);
@@ -10643,6 +10655,13 @@ bool scr_http_client_write_dynv_cb(ScrHttpClientReq *c, const ScrDyn *d, ScrClos
 }
 
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d) {
+  /* end(cb): Node's `typeof chunk === 'function'` makes the value the
+   * callback and leaves no chunk. */
+  if (d != NULL && d->kind == SCR_DYN_FUNC) {
+    scr_http_client_on_end_callback(c, scr_dyn_listener_closure0(d));
+    scr_http_client_end(c);
+    return;
+  }
   if (d->kind == SCR_DYN_STR) scr_http_client_end_str(c, d->v.str);
   else if (d->kind == SCR_DYN_BYTES) scr_http_client_end_bytes(c, d->v.bytes);
   else if (d->kind == SCR_DYN_UNDEF || d->kind == SCR_DYN_NULL) scr_http_client_end(c);
@@ -10671,6 +10690,13 @@ bool scr_http_res_write_dynv_enc_cb(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
 
 void scr_http_res_end_dynv_enc(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
                                ScrStr *enc /*borrowed*/) {
+  /* typeof chunk === 'function': the callback, no chunk — Node's end()
+   * also drops the encoding in that arm. */
+  if (d != NULL && d->kind == SCR_DYN_FUNC) {
+    scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(d));
+    scr_http_res_end(r);
+    return;
+  }
   bool has_chunk = d != NULL && scr_dyn_truthy(d);
   if (has_chunk && r->finished) {
     /* the finished check runs before the chunk's type and encoding */
@@ -10702,6 +10728,13 @@ bool scr_http_client_write_dynv_enc_cb(ScrHttpClientReq *c, const ScrDyn *d /*bo
 
 void scr_http_client_end_dynv_enc(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
                                   ScrStr *enc /*borrowed*/) {
+  /* typeof chunk === 'function': the callback, no chunk — Node's end()
+   * also drops the encoding in that arm. */
+  if (d != NULL && d->kind == SCR_DYN_FUNC) {
+    scr_http_client_on_end_callback(c, scr_dyn_listener_closure0(d));
+    scr_http_client_end(c);
+    return;
+  }
   bool has_chunk = d != NULL && scr_dyn_truthy(d);
   if (has_chunk && (c->ended || c->destroyed || c->close_emitted)) {
     scr_http_client_write_closed(c, NULL);

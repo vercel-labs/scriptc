@@ -599,12 +599,16 @@ function lowerOutgoingWriteEnd(
     const t = mapType(n);
     return t === null || t.kind === "func" || t.kind === "dyn";
   };
-  // end(cb): a leading function-like argument is the callback, not a chunk.
+  // end(cb): Node decides by `typeof chunk === 'function'`, so only a
+  // definitely-function leading argument is the callback. A dynamic value
+  // may be either — it reaches the runtime's chunk entry, which makes the
+  // same typeof decision.
+  const definitelyFunc = (n: ts.Expression): boolean => mapType(n)?.kind === "func";
   let dataNode: ts.Expression | null = null;
   let encNode: ts.Expression | null = null;
   let cbNode: ts.Expression | null = null;
   let i = 0;
-  if (i < args.length && !(name === "end" && funcLike(args[i]!))) dataNode = args[i++]!;
+  if (i < args.length && !(name === "end" && definitelyFunc(args[i]!))) dataNode = args[i++]!;
   if (dataNode !== null && i < args.length) {
     const t = mapType(args[i]!);
     if (t?.kind === "string") encNode = args[i++]!;

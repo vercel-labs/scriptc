@@ -331,6 +331,21 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
                                            ScrClosure *cb /*moves, nullable*/); /* +1 */
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* listen({ path }) for a path the compiler could not decide: Node's
+ * isPipeName over it, ERR_INVALID_ARG_VALUE otherwise with the rendered
+ * options object in the "Received" tail. */
+void scr_net_listen_path_opts(ScrNetServer *s, ScrStr *path /*borrowed*/,
+                              ScrStr *received /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* options.port of server.listen({ port }): a number or a numeric string,
+ * validated as Node's validatePort does. */
+double scr_net_listen_port_validate(const ScrDyn *v, ScrStr *received);
+/* options.host of a TCP listen that is a number or a boolean: Node's
+ * hostname check rejects it with ERR_INVALID_ARG_TYPE. Always throws. */
+ScrStr *scr_net_listen_host_number(double v);
+ScrStr *scr_net_listen_host_bool(bool v);
+/* The inspect text of one listen option value for ERR_INVALID_ARG_VALUE's
+ * "Received" tail. Answers a new string; reads no property. */
+ScrStr *scr_net_option_value_text(const ScrDyn *v);
 void scr_net_sock_dial_start(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
 /* Node's `msecs` contract for a timeout: a non-negative finite number.

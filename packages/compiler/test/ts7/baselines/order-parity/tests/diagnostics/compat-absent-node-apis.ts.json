@@ -99,15 +99,6 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'close' does not exist on type 'Timeout'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 999,
-    "end": 1004
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Property 'timeOrigin' does not exist on type 'Performance'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",

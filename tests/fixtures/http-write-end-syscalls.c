@@ -42,8 +42,9 @@ static void report(int fd) {
   if (path) {
     char line[32];
     int n = snprintf(line, sizeof line, "%d\n", counts[fd]);
-    /* raw syscalls: the shim's own write and close must not count */
-    int out = (int)syscall(SYS_open, path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    /* raw syscalls: the shim's own write and close must not count. openat,
+     * not open: arm64 Linux has no SYS_open. */
+    int out = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (out >= 0) {
       syscall(SYS_write, out, line, (size_t)n);
       syscall(SYS_close, out);

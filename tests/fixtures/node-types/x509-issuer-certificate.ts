@@ -3,7 +3,8 @@
 // issuer chain, so every read answers undefined — through the property type,
 // a held union, a helper, truthiness, equality and `typeof`, while the member
 // stays on the prototype for `in` and Object.hasOwn. A read inside a branch
-// that narrowed the property to undefined keeps the declared union there.
+// that narrowed the property to undefined answers that undefined, and prints
+// as `undefined`.
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -52,6 +53,7 @@ function narrowed(label: string, cert: X509Certificate): void {
       cert.issuerCertificate === undefined,
       typeof cert.issuerCertificate,
     );
+    console.log(label, "narrowed-value", cert.issuerCertificate);
   }
   if (cert.issuerCertificate !== undefined) {
     console.log(label, "narrowed-arm", cert.issuerCertificate.subject.length > 0);

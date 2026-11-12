@@ -3,9 +3,9 @@
 // answers undefined, however it is read: through the property type, a held
 // union, a helper, a truthiness test, a narrowed branch, equality, `typeof`
 // and `??`, and as a prototype member for `in` and Object.hasOwn. Inside a
-// branch a check narrowed the property to undefined, reads still keep the
-// declared union, so equality, `typeof` and argument coercions answer as they
-// do outside it.
+// branch a check narrowed the property to undefined, every read answers that
+// undefined: it prints as `undefined` and keeps no certificate arm, while the
+// receiver still evaluates for its effects.
 import * as crypto from "node:crypto";
 
 const CA = `-----BEGIN CERTIFICATE-----
@@ -130,6 +130,7 @@ function narrowed(label: string, cert: crypto.X509Certificate): void {
       typeof cert.issuerCertificate,
       cert.issuerCertificate === cert.issuerCertificate,
     );
+    console.log(label, "narrowed-value", cert.issuerCertificate);
   }
   if (cert.issuerCertificate == null) {
     console.log(
@@ -170,6 +171,7 @@ function narrowed(label: string, cert: crypto.X509Certificate): void {
       holder.cert.issuerCertificate === undefined,
       typeof holder.cert.issuerCertificate,
     );
+    console.log(label, "narrowed-member-value", holder.cert.issuerCertificate);
   }
 }
 

@@ -21,6 +21,7 @@ import { X509_DER_FIELD, X509_PUBLIC_KEY_FIELD } from "../../type-mapper.js";
 import { keyedHelperName } from "../stable-names.js";
 import { x509RecordCall } from "../lower-classes.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { staleReadMessage } from "../expressions/narrowing.js";
 
 /* node:crypto's X509Certificate members beyond its fields: the methods
@@ -295,11 +296,14 @@ export function lowerX509IssuerCertificate(
   if (site?.kind === "void" || site?.kind === "undefinedT") {
     /* The checker narrowed the read to the undefined arm (`if
      * (cert.issuerCertificate === undefined) { … cert.issuerCertificate … }`):
-     * the getter's answer there is that undefined. The value keeps the
-     * declared union's undefined arm, so equality, `typeof` and argument
-     * coercions see the shape a full read gives, and the receiver still
-     * evaluates for its effects. */
+     * the getter's answer there is that undefined, so the read lowers as the
+     * undefined itself. No certificate arm remains, so every use of it in the
+     * branch — equality, `typeof`, argument coercions and `console.log` —
+     * sees an undefined value. A receiver that must still evaluate rides the
+     * declared union's undefined arm, the one boxed undefined the IR holds. */
     const receiver = lowerer.lowerExpr(access.expression);
+    if (isSafeToDiscard(receiver))
+      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
     const value: IrExpr = {
       kind: "unionWrap",
       unionId: declared.unionId,
@@ -308,15 +312,13 @@ export function lowerX509IssuerCertificate(
       type: declared,
       loc,
     };
-    return receiver.kind === "varRef"
-      ? value
-      : {
-          kind: "seqExpr",
-          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
-          result: value,
-          type: declared,
-          loc,
-        };
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+      result: value,
+      type: declared,
+      loc,
+    };
   }
   if (site === null || (site.kind !== "union" && !isX509Type(lowerer, site))) {
     lowerer.noLowering(

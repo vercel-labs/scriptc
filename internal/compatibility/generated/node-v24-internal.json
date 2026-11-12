@@ -19008,7 +19008,7 @@
           "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
           "tests/corpus/inspect-getters.ts",
-          "tests/diagnostics/compat-absent-lowerings.ts",
+          "tests/harness/console-trace.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -19641,10 +19641,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:console.console.trace",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/harness/console-trace.test.ts"
         ]
       },
       "anchorSource": "exact"

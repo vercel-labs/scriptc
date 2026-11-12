@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compat-webcrypto-modern-params.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type 'ArrayBuffer | ArrayBufferView<ArrayBufferLike>' is not assignable to parameter of type 'readonly number[] | Uint8Array<ArrayBufferLike>'.\n      Type 'ArrayBuffer' is not assignable to type 'readonly number[] | Uint8Array<ArrayBufferLike>'.\n        Type 'ArrayBuffer' is missing the following properties from type 'Uint8Array<ArrayBufferLike>': BYTES_PER_ELEMENT, buffer, byteOffset, copyWithin, and 29 more.",
+   "loc": {
+    "file": "<repo>/tests/corpus/compat-webcrypto-modern-params.ts",
+    "start": 585,
+    "end": 590
+   }
+  }
+ ]
+}

@@ -1453,6 +1453,24 @@
  },
  {
   "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_unsupported",
+  "message": "Mac members other than update() and final() have no lowering on an 'unknown' value; cast the value to Mac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_method_call",
+  "message": "Mac methods called with a receiver other than their own Mac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_new_dyn",
+  "message": "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
   "function": "scr_key_object_invoke",
   "message": "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering",
   "code": "SC2020"

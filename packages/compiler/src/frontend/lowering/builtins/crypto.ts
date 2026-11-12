@@ -7,7 +7,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
-import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES } from "../crypto-tables.js";
+import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES, CRYPTO_MACS } from "../crypto-tables.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import {
   BOOL,
@@ -464,6 +464,28 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "createMac") {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `crypto.createMac with ${args.length} arguments`,
+        expr,
+        "createMac(algorithm, key[, options]) is supported",
+      );
+    }
+    // Every argument goes through Node's normalizeKey and options checks
+    // at run time; a missing key reads as undefined, like createHmac's.
+    return {
+      kind: "libCall",
+      fn: "crypto.macNewDyn",
+      args: [
+        lowerer.lowerExprExpecting(args[0]!, DYN),
+        args[1] ? lowerer.lowerExprExpecting(args[1]!, DYN) : dynUndefinedExpr(loc),
+        args[2] ? lowerer.lowerExprExpecting(args[2]!, DYN) : dynUndefinedExpr(loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
   if (bi.member === "hash") {
     if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -829,10 +851,20 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "secureHeapUsed") {
+    if (expr.arguments.nodes.length !== 0) {
+      lowerer.noLowering(
+        `crypto.secureHeapUsed with ${expr.arguments.nodes.length} arguments`,
+        expr,
+      );
+    }
+    return { kind: "libCall", fn: "crypto.secureHeapUsed", args: [], type: DYN, loc };
+  }
   const LISTS: Record<string, readonly string[] | undefined> = {
     getCiphers: CRYPTO_CIPHERS,
     getHashes: CRYPTO_HASHES,
     getCurves: CRYPTO_CURVES,
+    getMacs: CRYPTO_MACS,
   };
   const list = own(LISTS, bi.member);
   if (bi.member !== "getFips" && list === undefined) return null;

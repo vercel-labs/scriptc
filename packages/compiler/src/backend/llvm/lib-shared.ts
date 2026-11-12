@@ -807,6 +807,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hmacDigestBuffer": "scr_crypto_hash_digest_buffer",
   "crypto.hashNewOpts": "scr_crypto_hash_new_opts",
   "crypto.hmacNewDyn": "scr_crypto_hmac_new_dyn",
+  "crypto.macNewDyn": "scr_crypto_mac_new_dyn",
+  "crypto.secureHeapUsed": "scr_crypto_secure_heap_used",
   "crypto.hashCopyOpts": "scr_crypto_hash_copy_opts",
   "crypto.hashUpdateEnc": "scr_crypto_hash_update_enc",
   "crypto.hmacUpdateEnc": "scr_crypto_hash_update_enc",

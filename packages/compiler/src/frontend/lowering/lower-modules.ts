@@ -125,6 +125,7 @@ import {
   boundIdentifiersOf,
   dynFallbackType,
   newFnCtx,
+  runsWhereWritten,
   staticImportNamespaceType,
 } from "./lowerer.js";
 import {
@@ -4032,19 +4033,21 @@ export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment):
 function markModuleInitFences(lowerer: Lowerer, sf: ts.SourceFile, fencesBefore: number): void {
   for (let i = fencesBefore; i < lowerer.runtimeFences.length; i++) {
     const fence = lowerer.runtimeFences[i]!;
-    if (fence.loc.file !== sf.fileName || runsAfterModuleInit(sf, fence.loc.start)) continue;
+    if (fence.loc.file !== sf.fileName || runsAfterModuleInit(lowerer, sf, fence.loc.start))
+      continue;
     lowerer.runtimeFences[i] = { ...fence, startup: true };
   }
 }
 
 /** Whether the code at `pos` sits in a function or a later-running class
- * member body. */
-function runsAfterModuleInit(sf: ts.SourceFile, pos: number): boolean {
+ * member body. A function that runs where it is written (an IIFE, an array
+ * iteration callback) is module-init code. */
+function runsAfterModuleInit(lowerer: Lowerer, sf: ts.SourceFile, pos: number): boolean {
   let later = false;
   ts.walkPreorder(sf, (node) => {
     if (node.pos > pos || node.end <= pos) return "skip";
     if (
-      ts.isFunctionLike(node) ||
+      (ts.isFunctionLike(node) && !runsWhereWritten(lowerer, node)) ||
       (ts.isPropertyDeclaration(node) &&
         !node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
     ) {

@@ -57,6 +57,7 @@ import {
   TIMER_MODULE_MEMBERS,
 } from "./lower-timers.js";
 import { lowerMockTimersElementCall } from "./lower-test.js";
+import { lowerTimerElementCall } from "./builtins/timers.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { lowerOpenEnumeration } from "./open-enumerations.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -1868,6 +1869,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    // A conditional whole export answers below through a slot; the receiver
+    // check comes first so that path cannot invoke a receiver-dependent
+    // export with no `this`.
+    refuseModuleMemberThis(lowerer, expr, nameId);
     // A module whose whole export is chosen at run time among static export
     // tables (react/index.js): the callee is that module's own slot, which
     // its executed branch filled (conditionalExportMemberCall).
@@ -1879,7 +1884,6 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       loc,
     );
     if (conditional) return conditional;
-    refuseModuleMemberThis(lowerer, expr, nameId);
     const generic = lowerer.genericFnOf(nameId);
     if (generic) return lowerer.lowerGenericCall(expr, generic);
     const sig = lowerer.fnSigOf(nameId);
@@ -2279,6 +2283,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // The element spelling of an unsupported native Web method must fence
   // before lowering the callee into a checked-dynamic keyed read.
   if (ts.isElementAccessExpression(expr.expression)) {
+    const timerHandle = lowerTimerElementCall(lowerer, expr, expr.expression);
+    if (timerHandle) return timerHandle;
     const datePrimitive = lowerDateToPrimitiveCall(lowerer, expr, expr.expression);
     if (datePrimitive) return datePrimitive;
     const timersDispose = lowerMockTimersElementCall(lowerer, expr, expr.expression);

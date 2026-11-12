@@ -3207,6 +3207,47 @@ export function plain(x) { return x + 1; }
     );
   });
 
+  test("a require binding through a conditional whole export is the same named fence", async () => {
+    // `pick.cjs` chooses its whole export when it runs (react/index.js), so
+    // `pick.hello()` reads the member off that module; Node passes the
+    // exports object the branch chose as `this`. The call through the
+    // module's slot has none to pass, so it refuses like a direct call
+    // through the table's own module binding does.
+    const r = await compileAndRun(
+      "conditional-export-require-this",
+      `'use strict';
+const pick = require('./pick.cjs');
+console.log(pick.plain(21));
+console.log(pick.hello());
+`,
+      "cjs",
+      {
+        "pick.cjs": `'use strict';
+if (process.env.PICK_MODE === 'one') {
+  module.exports = require('./one.cjs');
+} else {
+  module.exports = require('./two.cjs');
+}
+`,
+        "one.cjs": `'use strict';
+exports.name = 'one';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+        "two.cjs": `'use strict';
+exports.name = 'two';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("42\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('hello': .*\) is not supported yet \[SC1090 at .*conditional-export-require-this\.cjs:4\]\n$/,
+    );
+  });
+
   test("a namespace import's export that passes this on with apply or call compiles", async () => {
     // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
     // receiver to a function that `dual` returns, which reads it only to

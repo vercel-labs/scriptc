@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/events-on-iterator.ts"
+ ],
+ "diags": []
+}

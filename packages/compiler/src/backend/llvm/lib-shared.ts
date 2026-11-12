@@ -975,7 +975,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // forms are special-cased in emitLibCall).
   "timers.hasRef": "scr_timer_has_ref",
   "timers.immediateHasRef": "scr_immediate_has_ref",
+  "timers.immediateClose": "scr_clear_immediate",
   "timers.clearImmediate": "scr_clear_immediate",
+  // The disposal spelling's void results: the same handle-owned clears as
+  // close(), which Node's [Symbol.dispose]() answers with undefined.
+  "timers.dispose": "scr_clear_interval",
+  "timers.immediateDispose": "scr_clear_immediate",
   // Process event removals (borrowed callbacks: removal is by pointer
   // identity); registration is special-cased above (ownership moves).
   "process.offSignal": "scr_signal_off",
@@ -1179,6 +1184,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.targetListenerCountDyn": "scr_event_target_listener_count_dyn",
   "event.targetGetMax": "scr_event_target_get_max",
   "event.targetSetMax": "scr_event_target_set_max",
+  "event.onceTarget": "scr_events_once_target",
+  "event.onceTargetSignal": "scr_events_once_target_signal",
+  "event.on": "scr_events_on",
+  "event.onEmitter": "scr_events_on_emitter",
   "event.call": "scr_event_obj_call",
   "event.get": "scr_event_obj_get",
   "event.set": "scr_event_obj_set",
@@ -2063,6 +2072,9 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.setTimeoutHandle": "scr_test_mt_set_timeout_handle",
   "timers.setInterval": "scr_test_mt_set_interval",
   "timers.clearTimeout": "scr_test_mt_clear_timeout",
+  "timers.close": "scr_test_mt_close",
+  "timers.dispose": "scr_test_mt_close",
+  "timers.immediateDispose": "scr_test_mt_immediate_close",
   "timers.clearInterval": "scr_test_mt_clear_interval",
   "timers.unref": "scr_test_mt_unref",
   "timers.ref": "scr_test_mt_ref",
@@ -2070,6 +2082,7 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.hasRef": "scr_test_mt_has_ref",
   "timers.setImmediate": "scr_test_mt_set_immediate",
   "timers.clearImmediate": "scr_test_mt_clear_immediate",
+  "timers.immediateClose": "scr_test_mt_immediate_close",
   "timers.immediateUnref": "scr_test_mt_immediate_unref",
   "timers.immediateRef": "scr_test_mt_immediate_ref",
   "timers.immediateHasRef": "scr_test_mt_immediate_has_ref",

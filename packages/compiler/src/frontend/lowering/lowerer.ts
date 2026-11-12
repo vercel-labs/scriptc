@@ -677,6 +677,7 @@ import {
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
+  captureRejectionSymbolValue,
   lowerEmitOverrideSpec,
   type ComputedEventPattern,
   type EmitSpecCtx,
@@ -890,6 +891,7 @@ import {
   lowerFieldCompound,
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
+  isArrayIterationCallback,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -1576,7 +1578,6 @@ export function lowerToIr(
     // something on the way out answered for the error.
     const overLimit = typeWalkOverLimit();
     if (overLimit !== null) return typeWalkBudgetFailure(overLimit, entry);
-    markModuleInitFences(program, result.runtimeFences);
     return result;
   } catch (e) {
     if (!(e instanceof TypeWalkBudgetError)) throw e;
@@ -1630,19 +1631,34 @@ export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
   );
 }
 
+/** Whether `fn` is a function whose body runs when the expression it is
+ * written in evaluates: the callee of that expression's call (an IIFE, a UMD
+ * wrapper) or the callback of an array iteration method
+ * (`parts.map((p) => load(p))`, which calls its callback with each element
+ * before returning). An async or generator body does not: it stops at its
+ * first await, or never starts. A function written anywhere else may run
+ * later. */
+export function runsWhereWritten(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return false;
+  if (ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined) return false;
+  if (fn.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return false;
+  if (isImmediatelyInvokedFunction(fn)) return true;
+  return isArrayIterationCallback(lowerer, fn);
+}
+
 /** Marks the runtime fences in npm package code whose site is module-init
  * code: top-level module code outside every function body, or the body of a
- * function that is called where it is written, at such a place (a UMD
- * wrapper's body runs when its module evaluates). They throw when the module
- * evaluates (ScrDiagnostic.moduleInit). */
-function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
+ * function that runs where it is written, at such a place (a UMD wrapper's
+ * body, or an array iteration callback's, runs when its module evaluates).
+ * They throw when the module evaluates (ScrDiagnostic.moduleInit). */
+function markModuleInitFences(lowerer: Lowerer, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
     if (!isInstalledPackagePath(d.loc.file)) continue;
     // A fence without a source position belongs to synthesized code, such
     // as the global object's lookup (global-values.ts), which runs when the
     // program calls it, not when the module evaluates.
     if (d.loc.start < 0) continue;
-    const sf = program.getSourceFile(d.loc.file);
+    const sf = lowerer.program.getSourceFile(d.loc.file);
     if (sf === undefined) continue;
     let inFunction = false;
     let node: ts.Node | undefined = sf;
@@ -1659,7 +1675,7 @@ function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnosti
       });
       if (next === undefined) break;
       if (
-        (ts.isFunctionLike(next) && !isImmediatelyInvokedFunction(next)) ||
+        (ts.isFunctionLike(next) && !runsWhereWritten(lowerer, next)) ||
         (ts.isPropertyDeclaration(next) &&
           !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
       )
@@ -2261,6 +2277,10 @@ function lowerToIrWithIslands(
     if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
+  // The pass whose result stands holds every fence the build can see: mark
+  // the ones its package's module-init code reaches (the island growth's
+  // sure rule reads them). `covered` below keeps this same fence list.
+  markModuleInitFences(resultLowerer, result.runtimeFences);
   if (options.coverage !== true) return result;
   const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
@@ -23073,11 +23093,19 @@ export class Lowerer {
     if (module === "constants") return null;
     if (module !== null) return { module, member: access.name.text };
     // The events module object IS the EventEmitter class, so the class's
-    // defaultMaxListeners is the module property.
-    if (access.name.text === "defaultMaxListeners" && ts.isIdentifier(access.expression)) {
-      const imported = this.builtinImportOf(access.expression);
+    // defaultMaxListeners and captureRejectionSymbol are module properties.
+    if (
+      access.name.text === "defaultMaxListeners" ||
+      access.name.text === "captureRejectionSymbol"
+    ) {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
       if (imported?.module === "events" && imported.member === "EventEmitter") {
-        return { module: "events", member: "defaultMaxListeners" };
+        return { module: "events", member: access.name.text };
       }
     }
     // The RE-EXPORT FACADE's namespace spelling: `import * as assert from
@@ -23213,6 +23241,11 @@ export class Lowerer {
         type: F64,
         loc,
       };
+    }
+    // events.captureRejectionSymbol: Symbol.for('nodejs.rejection'), the
+    // one symbol the class static and every module spelling answer.
+    if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+      return captureRejectionSymbolValue(loc);
     }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(this, bi.member, loc);

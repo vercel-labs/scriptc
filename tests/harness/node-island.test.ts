@@ -1647,13 +1647,23 @@ test("a host-global fence inside a function body keeps its package native", asyn
 // the statement it holds is the module's export (`module.exports = factory()`),
 // which a build reads from top-level statements only: the package runs in a
 // Node island, and a default import of it is the function it exports. A
-// generator's body does not run at the call, so the same refusal there keeps
-// its package native. Needs no libnode pack for the decision: the island
+// generator's body does not run at the call, and an async body runs no
+// further than its first await, so the same refusal there keeps its package
+// native, as does one in a callback a promise runs later. An array iteration
+// method calls its callback before returning, so a refusal inside one counts
+// as module-init code. Needs no libnode pack for the decision: the island
 // build stops before linking without one.
 test("a refusal in a function called where it is written makes its package a Node island", async () => {
   const dir = join(outDir, "called-where-written");
   rmSync(dir, { recursive: true, force: true });
-  const writePackage = (name: string, type: "module" | "commonjs", body: string[]): void => {
+  const writePackage = (
+    name: string,
+    type: "module" | "commonjs",
+    body: string[],
+    types = type === "commonjs"
+      ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
+      : "export declare function answer(): string;\n",
+  ): void => {
     const at = join(dir, "node_modules", name);
     mkdirSync(at, { recursive: true });
     writeFileSync(
@@ -1661,12 +1671,7 @@ test("a refusal in a function called where it is written makes its package a Nod
       JSON.stringify({ name, version: "1.0.0", type, main: "./index.js", types: "./index.d.ts" }),
     );
     writeFileSync(join(at, "index.js"), [...body, ""].join("\n"));
-    writeFileSync(
-      join(at, "index.d.ts"),
-      type === "commonjs"
-        ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
-        : "export declare function answer(): string;\n",
-    );
+    writeFileSync(join(at, "index.d.ts"), types);
   };
   const entry = (name: string, body: string): string => {
     const file = join(dir, `${name}.mjs`);
@@ -1747,6 +1752,72 @@ test("a refusal in a function called where it is written makes its package a Nod
   // exit status are what this checks.
   const ran = await run(generator.binaryPath, []);
   expect({ stdout: ran.stdout, code: ran.code }).toEqual({ stdout: "native\n", code: 0 });
+
+  // An async body starts at its call but a refusal there follows its first
+  // await, so it rejects a promise instead of throwing where the module
+  // evaluates. The awaited promise never settles, which keeps the refusal
+  // off the path this program takes.
+  writePackage("async-body", "module", [
+    "const pending = (async () => {",
+    "  await new Promise(() => {});",
+    "  new FormData();",
+    "})();",
+    'export function answer() { return typeof pending === "object" ? "native" : "none"; }',
+  ]);
+  const asyncBody = await build(
+    "async-body",
+    'import { answer } from "async-body";\nconsole.log(answer());\n',
+  );
+  if (!asyncBody.ok)
+    expect.unreachable(asyncBody.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  expect(islandNotes(asyncBody)).toEqual([]);
+  expect(await run(asyncBody.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+
+  // An array iteration method calls its callback before returning, so a
+  // refusal in that callback throws while the module evaluates too. This is
+  // the loader shape packages use for a computed require (`["./part"].map(
+  // (p) => load(p))`). A callback a promise runs on a later microtask does
+  // not run at the module's evaluation, so its refusal keeps the package
+  // native.
+  writePackage(
+    "map-loader",
+    "commonjs",
+    [
+      'const { createRequire } = require("node:module");',
+      "const load = createRequire(__filename);",
+      'const [part] = ["./part"].map((p) => load(p));',
+      "exports.answer = function () { return part.value; };",
+    ],
+    "declare const api: { answer(): string };\nexport = api;\n",
+  );
+  writeFileSync(join(dir, "node_modules/map-loader/part.js"), 'exports.value = "island";\n');
+  const mapped = await build(
+    "map-loader",
+    'import api from "map-loader";\nconsole.log(api.answer());\n',
+  );
+  if (mapped.ok) {
+    expect(islandNotes(mapped)).toEqual([
+      expect.stringContaining("'map-loader@1.0.0' runs in a Node island"),
+    ]);
+    if (!skip)
+      expect(await run(mapped.binaryPath, [])).toEqual({
+        stdout: "island\n",
+        stderr: "",
+        code: 0,
+      });
+  } else expect(mapped.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  writePackage("later-callback", "module", [
+    "const later = Promise.resolve().then(() => new FormData());",
+    'export function answer() { return typeof later === "object" ? "native" : "none"; }',
+  ]);
+  const later = await build(
+    "later-callback",
+    'import { answer } from "later-callback";\nconsole.log(answer());\n',
+  );
+  if (!later.ok)
+    expect.unreachable(later.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  expect(islandNotes(later)).toEqual([]);
 }, 300_000);
 
 // Compiling a package natively leaves every other package typed as it is

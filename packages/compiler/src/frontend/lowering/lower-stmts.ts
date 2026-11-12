@@ -632,15 +632,18 @@ function cleanupCall(
     };
   }
   if (value.type.kind === "f64") {
+    // `using` calls the handle's own [Symbol.dispose], which clears the
+    // timer the handle names whether a mock owns it or the loop does; the
+    // global clear functions may be mocked for a different timer API.
     if (stdlibTypeNamed(lowerer, node, "Timeout")) {
       return {
-        call: { kind: "libCall", fn: "timers.clearTimeout", args: [value], type: VOID, loc },
+        call: { kind: "libCall", fn: "timers.dispose", args: [value], type: VOID, loc },
         async: false,
       };
     }
     if (stdlibTypeNamed(lowerer, node, "Immediate")) {
       return {
-        call: { kind: "libCall", fn: "timers.clearImmediate", args: [value], type: VOID, loc },
+        call: { kind: "libCall", fn: "timers.immediateDispose", args: [value], type: VOID, loc },
         async: false,
       };
     }

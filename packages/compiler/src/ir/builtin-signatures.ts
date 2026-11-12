@@ -3730,6 +3730,10 @@ function buildLibFnSignatures() {
      * either one by its outputEncoding. */
     "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
     "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+    /** createMac(algorithm, key[, options]) answers a Mac native handle. */
+    "crypto.macNewDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** crypto.secureHeapUsed() answers Node's no-secure-heap object. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
     "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
     "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },

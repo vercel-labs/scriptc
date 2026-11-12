@@ -1,0 +1,95 @@
+---
+title: "Dual-Run Testing"
+---
+
+Compiled tests should report what the same tests report under Node.js. Dual-run testing runs each test file both ways, once under Node.js and once as the executable scriptc builds, compares the two runs, and fails when they differ. It is opt-in: it runs only when you add the reporter or call the program API. Run it in CI, where a divergence fails the change that introduced it rather than waiting for a user to notice it.
+
+Add both packages as development dependencies:
+
+```console
+$ npm install --save-dev scriptc @scriptc/experimental
+```
+
+Dual-run builds through the `scriptc` command and its executable cache, so the second run of an unchanged file reuses the executable it built the first time. It uses the command named by `SCRIPTC_BIN` when that is set, otherwise the nearest `node_modules/.bin/scriptc` from the working directory upward, otherwise `scriptc` on `PATH`.
+
+## Run a suite with the reporter
+
+Pass the reporter to the Node.js test runner in place of its own. For every test file the runner finds, the reporter builds the file, runs the binary, and compares the two runs. It prints one line per file, shaped like this run on a suite of four files, one of which fails an assertion, one whose report differs, and one whose Node.js output varies between runs:
+
+```console
+$ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+✖ test/format.test.ts (1 passed, 1 failed)
+  ✖ formats thousands: Expected values to be strictly equal: (line 8)
+✔ test/parse.test.ts (2 passed)
+✖ test/point.test.ts "reports a thrown point": native stdout differs at line 15
+@@ stdout line 15
+   
+   test at test/point.test.ts:12:1
+   ✖ reports a thrown point (Xms)
+ -   Point { x: 1, y: 2 }
+ +   [object Object]
+   
+ℹ test/watch.test.ts: the Node run differs between two runs (flaky), not compared
+```
+
+- A `✔` line means every test in the file behaves the same in both runs.
+- A `✖` line that names a test and shows a diff means the compiled binary's output differs from Node.js, and the diff starts at the line where it does.
+- A `✖` line with test counts means Node.js reported a failed test in the file. The failing tests and their messages follow, so the report explains the exit code on its own.
+- A `✖` line without counts is a file Node.js itself could not run, for example because its TypeScript loader rejects the file's syntax; the failure Node.js reported follows, and the file is still compared.
+- An `ℹ` line marks a file whose output differed between two Node.js runs. The reporter does not blame the binary for that, and the comparison does not fail the run.
+
+The runner's exit code is nonzero when a file's reports differ or when a test fails. Files that fail to build are reported with the compiler's diagnostics and also fail the run.
+
+The report does not repeat the test files' own output. Program output appears in a diff when the two runs differ; for the full Node.js report, run the file with `node` directly.
+
+## Compare one file from a test runner
+
+Vitest and jest run JavaScript on Node.js, so scriptc cannot compile them, but they can call the program API. `dualRun` runs one file twice and returns both runs:
+
+```ts:tests/dual-run.test.ts
+import { expect, test } from "vitest";
+import { dualRun } from "@scriptc/experimental/dual-run";
+
+test("compiled serialization matches Node.js", async () => {
+  const result = await dualRun("test/serialize.test.ts");
+  expect(result.diff).toBe("");
+  expect(result.equal).toBe(true);
+});
+```
+
+A failing comparison keeps the first difference in `result.diff`, so `expect(result.diff).toBe("")` prints it in the test failure report. When the file does not compile, `dualRun` rejects with a `DualRunBuildError` whose `stderr` holds the compiler's diagnostics.
+
+## What is compared
+
+Both runs render a Node.js spec report, and the two reports are compared as text, together with the program's output and exit code. The differences that are inherent to the two lanes are normalized before the comparison:
+
+- a duration in a test result line or in the suite summary takes a placeholder, because the runners measure different times;
+- stack frames, the `N lines matching cause stack trace` fold and the property block that follows them are dropped, because they name runner-internal code and objects;
+- stderr is compared only when both runs exit 0, because an uncaught error's report format differs between the two (stdout, the report and the exit code are still compared).
+
+Everything else must match: test names, pass, fail, skip and todo results, assertion messages, the failing-tests section, and the program's own stdout and stderr.
+
+Both lanes run with `TZ=UTC` and `LANG=C`, so dates and collation do not depend on the machine. The Node.js lane also runs with `--experimental-transform-types`, which a compiled program does not need, and with `--disallow-code-generation-from-strings`, the same refusal compiled programs apply to `eval` and `Function`. Node's warnings about the transform flag and about a `.ts` file in a package that does not set `"type": "module"` are turned off, because they carry content the binary never prints, the process id included.
+
+## API
+
+<dl>
+  <dt><code>dualRun(entry, options?)</code></dt>
+  <dd>Runs <code>entry</code> under Node.js and as its compiled executable and returns a promise of <code>{`{ node, native, equal, diff }`}</code>. Each run has <code>stdout</code>, <code>stderr</code> and <code>exitCode</code> (<code>null</code> when a signal ended it). <code>equal</code> is true when the runs match after the normalization above, and <code>diff</code> is the first difference as readable text, <code>""</code> when there is none. Rejects with a <code>DualRunBuildError</code> when the program does not compile.</dd>
+  <dt><code>options.args</code></dt>
+  <dd>Arguments passed to both runs.</dd>
+  <dt><code>options.stdin</code></dt>
+  <dd>A string or <code>Uint8Array</code> written to both runs' standard input, which is closed afterwards.</dd>
+  <dt><code>options.env</code></dt>
+  <dd>Variables added to both runs' environment. An entry set to <code>undefined</code> removes the variable.</dd>
+  <dt><code>options.cwd</code></dt>
+  <dd>Working directory of both runs and of the build. Defaults to the current working directory.</dd>
+  <dt><code>options.timeoutMs</code></dt>
+  <dd>Bound on each run, in milliseconds. Defaults to 120000.</dd>
+  <dt><code>new DualRunBuildError()</code></dt>
+  <dd>The build's <code>entry</code>, <code>cli</code>, <code>stderr</code> and <code>exitCode</code>, and the same text in <code>message</code>.</dd>
+</dl>
+
+## Limits
+
+Dual-run builds native executables, so a suite that runs as WebAssembly under `scriptc run` is not covered, and a compiled program cannot import either module: they spawn processes, so they run under Node.js only. A program whose own Node.js run varies is reported as flaky and not compared, so a suite that depends on timing or on the network needs those inputs deterministic before dual-run can say anything about it. The comparison is also blind to a difference that the normalization removes, such as a duration or a stack frame, and to stderr of a run that exits nonzero.

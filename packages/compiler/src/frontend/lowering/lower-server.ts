@@ -567,12 +567,15 @@ interface OutgoingWriteEndFns {
   writeBytesEncCb: IrLibFn;
   writeDyn: IrLibFn;
   writeDynCb: IrLibFn;
+  writeDynEnc: IrLibFn;
+  writeDynEncCb: IrLibFn;
   end: IrLibFn;
   endStr: IrLibFn;
   endStrEnc: IrLibFn;
   endBytes: IrLibFn;
   endBytesEnc: IrLibFn;
   endDyn: IrLibFn;
+  endDynEnc: IrLibFn;
   onEndCallback: IrLibFn;
 }
 
@@ -670,9 +673,13 @@ function lowerOutgoingWriteEnd(
             : cb !== null
               ? fns.writeBytesCb
               : fns.writeBytes
-          : cb !== null
-            ? fns.writeDynCb
-            : fns.writeDyn;
+          : withEnc
+            ? cb !== null
+              ? fns.writeDynEncCb
+              : fns.writeDynEnc
+            : cb !== null
+              ? fns.writeDynCb
+              : fns.writeDyn;
     const callArgs = [receiver, data!];
     if (enc !== null) callArgs.push(enc);
     if (cb !== null) callArgs.push(cb);
@@ -688,7 +695,9 @@ function lowerOutgoingWriteEnd(
           ? fns.endBytesEnc
           : fns.endBytes
         : kind === "dyn"
-          ? fns.endDyn
+          ? withEnc
+            ? fns.endDynEnc
+            : fns.endDyn
           : fns.end;
   const callArgs: IrExpr[] =
     data === null ? [receiver] : enc === null ? [receiver, data] : [receiver, data, enc];
@@ -3446,7 +3455,37 @@ function lowerNetServerMethodCall(
         "address() takes no arguments",
       );
     }
-    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    // The ambient net.Server#address is the AddressInfo record (the
+    // materialized surface). A caller that asks for Node's real result
+    // type — `string | AddressInfo | null`, the runtime check's advice —
+    // makes the call's CONTEXTUAL type the union, which is what decides
+    // between the path and the record here. Only the positions whose
+    // binding keeps the union adopt it: a `const a: string | AddressInfo
+    // | null = server.address()` is narrowed by tsc to the initializer's
+    // record type, so the local would disagree with the value.
+    const own = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let contextParent: ts.Node | undefined = call;
+    while (contextParent.parent !== undefined && ts.isParenthesizedExpression(contextParent.parent))
+      contextParent = contextParent.parent;
+    const contextPosition = contextParent.parent;
+    const unionKept =
+      contextPosition !== undefined &&
+      (ts.isReturnStatement(contextPosition) ||
+        ts.isCallExpression(contextPosition) ||
+        ts.isNewExpression(contextPosition) ||
+        ts.isArrowFunction(contextPosition));
+    const contextType = unionKept ? lowerer.checker.getContextualType(call) : undefined;
+    const contextual = contextType === undefined ? null : lowerer.mapTypeOf(contextType);
+    const contextualArms =
+      contextual?.kind === "union" ? (lowerer.unions.get(contextual.unionId)?.arms ?? []) : [];
+    const result =
+      own !== null &&
+      isAddressInfoRecord(lowerer, own) &&
+      contextual?.kind === "union" &&
+      contextualArms.some((arm) => arm.kind === "string") &&
+      contextualArms.some((arm) => isAddressInfoRecord(lowerer, arm))
+        ? contextual
+        : own;
     if (result && isAddressInfoRecord(lowerer, result)) {
       const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
       if (unixListenReachable(lowerer)) {
@@ -3503,10 +3542,28 @@ function lowerNetServerMethodCall(
       loc,
     };
     const stringTag = lowerer.armTag(unionId, STRING);
-    let listeningArm: IrExpr = recordArm;
     const stmts: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: receiver, loc }];
+    // No handle: null, like Node — except that a server whose pipe bind
+    // closed answers the path again (Node's address() falls back to the
+    // last _pipeName when there is no handle).
+    let answer: IrExpr = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "net.serverListening", args: [server], type: BOOL, loc },
+      then: recordArm,
+      else_: {
+        kind: "unionWrap",
+        unionId,
+        tag: nullTag,
+        value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+        type: result,
+        loc,
+      },
+      type: result,
+      loc,
+    };
     if (stringTag >= 0 && unixListenReachable(lowerer)) {
-      // Node answers a Unix-socket server's address() with its path.
+      // Node answers a Unix-socket server's address() with its path — while
+      // it listens on the pipe, and after that bind closed.
       const pathLocal = lowerer.declareHiddenLocal("%addressPath", STRING);
       const path = (): IrExpr => varRef(pathLocal.id, STRING, loc);
       stmts.push({
@@ -3515,7 +3572,7 @@ function lowerNetServerMethodCall(
         init: { kind: "libCall", fn: "net.serverUnixPath", args: [server], type: STRING, loc },
         loc,
       });
-      listeningArm = {
+      answer = {
         kind: "ternary",
         cond: {
           kind: "strEq",
@@ -3526,32 +3583,12 @@ function lowerNetServerMethodCall(
           loc,
         },
         then: { kind: "unionWrap", unionId, tag: stringTag, value: path(), type: result, loc },
-        else_: recordArm,
+        else_: answer,
         type: result,
         loc,
       };
     }
-    return {
-      kind: "seqExpr",
-      stmts,
-      result: {
-        kind: "ternary",
-        cond: { kind: "libCall", fn: "net.serverListening", args: [server], type: BOOL, loc },
-        then: listeningArm,
-        else_: {
-          kind: "unionWrap",
-          unionId,
-          tag: nullTag,
-          value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
-          type: result,
-          loc,
-        },
-        type: result,
-        loc,
-      },
-      type: result,
-      loc,
-    };
+    return { kind: "seqExpr", stmts, result: answer, type: result, loc };
   }
   lowerer.noLowering(
     `Server.${name}`,
@@ -3617,11 +3654,22 @@ function unixListenReachable(lowerer: Lowerer): boolean {
       if (arg?.kind === "string") reachable = true;
       else if (ts.isObjectLiteralExpression(argNode)) {
         for (const prop of argNode.properties.nodes) {
-          if (!ts.isPropertyAssignment(prop)) continue;
-          const key =
-            ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
-          if (key !== "path") continue;
-          const pathType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(prop.initializer));
+          // `{ path: value }` and the shorthand `{ path }` (whose value is
+          // the identifier's own type) both reach the options bind.
+          let key: string | null = null;
+          let valueNode: ts.Node | null = null;
+          if (ts.isPropertyAssignment(prop)) {
+            key =
+              ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)
+                ? (prop.name.text ?? null)
+                : null;
+            valueNode = prop.initializer;
+          } else if (ts.isShorthandPropertyAssignment(prop)) {
+            key = prop.name.text ?? null;
+            valueNode = prop.name;
+          }
+          if (key !== "path" || valueNode === null) continue;
+          const pathType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(valueNode));
           const arms =
             pathType?.kind === "union"
               ? (lowerer.unions.get(pathType.unionId)?.arms ?? [])
@@ -8918,6 +8966,32 @@ function lowerHttpClientCall(
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
     const steps: IrStmt[] = [];
+    // auth and servername reach the runtime through a pending slot that the
+    // NEXT request entry point consumes. Node evaluates every options
+    // expression before the request it belongs to exists, so a nested
+    // request built by one of those expressions must not consume the outer
+    // request's pending value: evaluate the argument expressions into
+    // locals first, then install the pending value right before the call.
+    let call = request;
+    if ((auth !== null || servername !== null) && request.kind === "libCall") {
+      call = {
+        ...request,
+        args: request.args.map((arg) => {
+          if (
+            arg.kind === "strLit" ||
+            arg.kind === "numLit" ||
+            arg.kind === "boolLit" ||
+            arg.kind === "unitLit" ||
+            arg.kind === "varRef" ||
+            arg.kind === "closure"
+          )
+            return arg;
+          const argLocal = lowerer.declareHiddenLocal("%requestArg", arg.type);
+          steps.push({ kind: "varDecl", localId: argLocal.id, init: arg, loc });
+          return varRef(argLocal.id, arg.type, loc);
+        }),
+      };
+    }
     if (agentInit !== null && agentLocalId !== null) {
       steps.push({ kind: "varDecl", localId: agentLocalId, init: agentInit, loc });
     }
@@ -8990,7 +9064,7 @@ function lowerHttpClientCall(
         loc,
       });
     }
-    steps.push({ kind: "varDecl", localId: local.id, init: request, loc });
+    steps.push({ kind: "varDecl", localId: local.id, init: call, loc });
     if (maxHeaderSize !== null) {
       steps.push({
         kind: "exprStmt",
@@ -9453,12 +9527,15 @@ function lowerHttpClientMethodCall(
         writeBytesEncCb: "http.clientWriteBytesEncCb",
         writeDyn: "http.clientWriteDyn",
         writeDynCb: "http.clientWriteDynCb",
+        writeDynEnc: "http.clientWriteDynEnc",
+        writeDynEncCb: "http.clientWriteDynEncCb",
         end: "http.clientEnd",
         endStr: "http.clientEndStr",
         endStrEnc: "http.clientEndStrEnc",
         endBytes: "http.clientEndBytes",
         endBytesEnc: "http.clientEndBytesEnc",
         endDyn: "http.clientEndDyn",
+        endDynEnc: "http.clientEndDynEnc",
         onEndCallback: "http.clientOnEndCallback",
       },
       HTTPCLIENTREQ_T,
@@ -10557,12 +10634,15 @@ function lowerHttpResMethodCall(
         writeBytesEncCb: "http.resWriteBytesEncCb",
         writeDyn: "http.resWriteDyn",
         writeDynCb: "http.resWriteDynCb",
+        writeDynEnc: "http.resWriteDynEnc",
+        writeDynEncCb: "http.resWriteDynEncCb",
         end: "http.resEnd",
         endStr: "http.resEndStr",
         endStrEnc: "http.resEndStrEnc",
         endBytes: "http.resEndBytes",
         endBytesEnc: "http.resEndBytesEnc",
         endDyn: "http.resEndDyn",
+        endDynEnc: "http.resEndDynEnc",
         onEndCallback: "http.resOnEndCallback",
       },
       HTTPRES_T,

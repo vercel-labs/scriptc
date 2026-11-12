@@ -787,7 +787,7 @@ static void scr_http_req_destroy_impl(ScrHttpReq *r) {
   /* a message the reader has not finished ('readableEnded' false, or a
    * body still incomplete) is 'aborted' — the flag and the event are set
    * NOW, inside destroy(). */
-  bool aborted = !r->end_consumed || !scr_http_req_complete(r);
+  bool aborted = !r->ended || !scr_http_req_complete(r);
   if (aborted) scr_http_h2_req_aborted(r);
   if (r->destroy_error != NULL) {
     /* the report precedes the close the teardown queues */
@@ -2623,6 +2623,9 @@ static bool scr_http_res_note_write(ScrHttpRes *r) {
  * Node's ERR_UNKNOWN_ENCODING. False = exception pending. */
 static bool scr_http_encode_string(ScrStr *data, ScrStr *enc, ScrBytes **out) {
   *out = NULL;
+  /* Node's write_/end_ only validate a truthy encoding; an empty name is
+   * the default (utf8), as Buffer.from reads it. */
+  if (enc->len == 0) return true;
   char low[10];
   size_t n = enc->len < 9 ? enc->len : 9;
   for (size_t i = 0; i < n; i++) {
@@ -2650,6 +2653,36 @@ static bool scr_http_encode_string(ScrStr *data, ScrStr *enc, ScrBytes **out) {
   *out = scr_bytes_from_str(data, cs);
   scr_str_release(cs);
   return true;
+}
+
+/* Node's write_/end_ encoding slot from a checked-dynamic value: a falsy
+ * value is no encoding at all (the message's default, utf8), a string is
+ * its own name, and a truthy non-string throws ERR_UNKNOWN_ENCODING.
+ * Node's message prints its argument through inspect, which for a
+ * string is the bare string and for a number or boolean is the text
+ * String() gives it — the two cases a call reaches here; an object or
+ * array would print inspect's form ("{}", "[ 1, 2 ]"), where scr_http.c
+ * prints String(value)'s, because the inspect unit is an object of its
+ * own, linked only into programs that use it, while scr_http.c is linked
+ * into programs that do not.
+ * The name (+1) for an encoding the string chunk decodes through, or
+ * NULL with the exception pending (Node's write_/end_ test is
+ * `encoding && !Buffer.isEncoding(encoding)`: a falsy value never fails
+ * it, and neither does the empty name, which decodes as utf8). */
+static ScrStr *scr_http_dyn_encoding(const ScrDyn *enc) {
+  if (!scr_dyn_truthy(enc)) return scr_str_new("utf8", 4);
+  if (enc->kind == SCR_DYN_STR) return scr_str_retain(enc->v.str);
+  ScrStr *text = scr_dyn_to_string(enc, NULL);
+  if (text == NULL) return NULL;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Unknown encoding: ");
+  scr_jb_put_str(&b, text);
+  scr_str_release(text);
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(msg);
+  return NULL;
 }
 
 static bool scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
@@ -3601,8 +3634,11 @@ static void scr_http_proto_sweep(void) {
       ScrHttpReq *req = (ScrHttpReq *)e.h;
       /* destroy(err): the payload IS the message's 'error' (Node keeps the
        * Error's identity; typed listeners read its message, name and
-       * code). No listener exits 1, the unhandled-'error' story. */
-      if (!req->close_emitted && req->destroy_error != NULL) {
+       * code). Node's IncomingMessage swallows the error when no 'error'
+       * listener is attached (its onError callback: "An error is emitted
+       * only if there are listeners"), so there is no unhandled-'error'
+       * exit here — 'aborted' and 'close' alone report the destroy. */
+      if (!req->close_emitted && req->destroy_error != NULL && req->err_ls.n != 0) {
         ScrError *saved = scr_event_error_payload;
         scr_event_error_payload = req->destroy_error;
         scr_net_fire_err_this(&req->err_ls, req->destroy_error->message, req, SCR_DYNH_HTTP_REQ);
@@ -5024,6 +5060,13 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     free(snap);
   }
   if (scr_exc_pending()) return true; /* the loop surfaces it */
+  if (conn->req != NULL && conn->req->aborted) {
+    /* The handler destroyed an unfinished message: Node's parser stops
+     * with the socket instead of reading the body behind the head, so
+     * req.complete never turns true and the buffered bytes are moot. */
+    conn->len = 0;
+    return true;
+  }
   if (late.code != NULL) {
     scr_http_conn_abort_request(conn);
     scr_http_conn_parse_failed(conn, &late);
@@ -9087,20 +9130,13 @@ static bool scr_http_dynh_chunk_ok(const ScrDyn *chunk) { return scr_http_chunk_
 static bool scr_http_dynh_encode(const ScrDyn *chunk, const ScrDyn *enc, ScrBytes **out) {
   *out = NULL;
   /* Node ignores (and does not validate) the encoding of a buffer chunk;
-   * a string chunk decodes through it, unknown names throwing. */
-  if (chunk->kind != SCR_DYN_STR) return true;
-  if (enc->kind == SCR_DYN_STR) return scr_http_encode_string(chunk->v.str, enc->v.str, out);
-  ScrStr *shown = scr_dyn_to_string(enc, NULL); /* Node's template: the value */
-  if (scr_exc_pending()) return false;
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, "Unknown encoding: ");
-  scr_jb_write(&b, shown->data, shown->len);
-  ScrStr *msg = scr_jb_finish(&b);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_UNKNOWN_ENCODING");
-  scr_str_release(msg);
-  scr_str_release(shown);
-  return false;
+   * a string chunk decodes through it, a truthy non-string throwing. */
+  if (chunk->kind != SCR_DYN_STR || enc == NULL) return true;
+  ScrStr *name = scr_http_dyn_encoding(enc);
+  if (name == NULL) return false;
+  bool ok = scr_http_encode_string(chunk->v.str, name, out);
+  scr_str_release(name);
+  return ok;
 }
 
 /* ── IncomingMessage (SCR_DYNH_HTTP_REQ) ─────────────────────────────── */
@@ -9506,9 +9542,13 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       wcb = scr_dyn_listener_closure0(args[i]);
       i++;
     } else {
-      if (i < argc && args[i]->kind != SCR_DYN_UNDEF && scr_dyn_truthy(args[i])) {
-        /* the encoding slot; Node ignores a falsy encoding */
-        enc = args[i++];
+      /* The encoding slot is consumed even when it holds undefined or
+       * another falsy value ('' / 0 / false / null): Node treats those as
+       * "no encoding", and the callback that follows must still be
+       * found. */
+      if (i < argc) {
+        if (scr_dyn_truthy(args[i])) enc = args[i];
+        i++;
       }
       if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
         wcb = scr_dyn_listener_closure0(args[i]);
@@ -10038,7 +10078,13 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
       wcb = scr_dyn_listener_closure0(args[i]);
       i++;
     } else {
-      if (i < argc && args[i]->kind != SCR_DYN_UNDEF && scr_dyn_truthy(args[i])) enc = args[i++];
+      /* The encoding slot is consumed even when it holds undefined or another
+       * falsy value ('' / 0 / false / null): Node treats those as "no
+       * encoding", and the callback that follows must still be found. */
+      if (i < argc) {
+        if (scr_dyn_truthy(args[i])) enc = args[i];
+        i++;
+      }
       if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
         wcb = scr_dyn_listener_closure0(args[i]);
         i++;
@@ -10600,6 +10646,70 @@ void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d) {
   if (d->kind == SCR_DYN_STR) scr_http_client_end_str(c, d->v.str);
   else if (d->kind == SCR_DYN_BYTES) scr_http_client_end_bytes(c, d->v.bytes);
   else if (d->kind == SCR_DYN_UNDEF || d->kind == SCR_DYN_NULL) scr_http_client_end(c);
+  else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+}
+
+/* A checked-dynamic chunk AND an explicit encoding: the string arm decodes
+ * through the encoding (unknown names throwing), the buffer arm ignores it,
+ * which is exactly Node's two write_ arms. */
+bool scr_http_res_write_dynv_enc(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                                 ScrStr *enc /*borrowed*/) {
+  if (!scr_http_chunk_ok(d)) return false;
+  if (d->kind == SCR_DYN_STR) return scr_http_res_write_str_enc(r, d->v.str, enc);
+  return scr_http_res_write_bytes_enc_ignore(r, d->v.bytes, enc);
+}
+
+bool scr_http_res_write_dynv_enc_cb(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  if (!scr_http_chunk_ok(d)) {
+    scr_closure_release(cb);
+    return false;
+  }
+  if (d->kind == SCR_DYN_STR) return scr_http_res_write_str_enc_cb(r, d->v.str, enc, cb);
+  return scr_http_res_write_bytes_enc_ignore_cb(r, d->v.bytes, enc, cb);
+}
+
+void scr_http_res_end_dynv_enc(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                               ScrStr *enc /*borrowed*/) {
+  bool has_chunk = d != NULL && scr_dyn_truthy(d);
+  if (has_chunk && r->finished) {
+    /* the finished check runs before the chunk's type and encoding */
+    scr_http_res_write_closed(r, NULL);
+    return;
+  }
+  if (d->kind == SCR_DYN_STR) scr_http_res_end_str_enc(r, d->v.str, enc);
+  else if (d->kind == SCR_DYN_BYTES) scr_http_res_end_bytes_enc_ignore(r, d->v.bytes, enc);
+  else if (!has_chunk) scr_http_res_end(r);
+  else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+}
+
+bool scr_http_client_write_dynv_enc(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/) {
+  if (!scr_http_chunk_ok(d)) return false;
+  if (d->kind == SCR_DYN_STR) return scr_http_client_write_str_enc(c, d->v.str, enc);
+  return scr_http_client_write_bytes_enc_ignore(c, d->v.bytes, enc);
+}
+
+bool scr_http_client_write_dynv_enc_cb(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                       ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  if (!scr_http_chunk_ok(d)) {
+    scr_closure_release(cb);
+    return false;
+  }
+  if (d->kind == SCR_DYN_STR) return scr_http_client_write_str_enc_cb(c, d->v.str, enc, cb);
+  return scr_http_client_write_bytes_enc_ignore_cb(c, d->v.bytes, enc, cb);
+}
+
+void scr_http_client_end_dynv_enc(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                  ScrStr *enc /*borrowed*/) {
+  bool has_chunk = d != NULL && scr_dyn_truthy(d);
+  if (has_chunk && (c->ended || c->destroyed || c->close_emitted)) {
+    scr_http_client_write_closed(c, NULL);
+    return;
+  }
+  if (d->kind == SCR_DYN_STR) scr_http_client_end_str_enc(c, d->v.str, enc);
+  else if (d->kind == SCR_DYN_BYTES) scr_http_client_end_bytes_enc_ignore(c, d->v.bytes, enc);
+  else if (!has_chunk) scr_http_client_end(c);
   else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
 }
 

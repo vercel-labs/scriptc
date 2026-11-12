@@ -867,11 +867,13 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.resWriteStrEncCb" ||
     e.fn === "http.resWriteBytesEncCb" ||
     e.fn === "http.resWriteDynCb" ||
+    e.fn === "http.resWriteDynEncCb" ||
     e.fn === "http.clientWriteCb" ||
     e.fn === "http.clientWriteBytesCb" ||
     e.fn === "http.clientWriteStrEncCb" ||
     e.fn === "http.clientWriteBytesEncCb" ||
-    e.fn === "http.clientWriteDynCb"
+    e.fn === "http.clientWriteDynCb" ||
+    e.fn === "http.clientWriteDynEncCb"
   ) {
     // write(chunk[, enc], cb): every argument is a reference, the callback
     // (last) moves into the runtime, and the answer is Node's boolean.
@@ -883,11 +885,13 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.resWriteStrEncCb": "scr_http_res_write_str_enc_cb",
       "http.resWriteBytesEncCb": "scr_http_res_write_bytes_enc_ignore_cb",
       "http.resWriteDynCb": "scr_http_res_write_dynv_cb",
+      "http.resWriteDynEncCb": "scr_http_res_write_dynv_enc_cb",
       "http.clientWriteCb": "scr_http_client_write_str_cb",
       "http.clientWriteBytesCb": "scr_http_client_write_bytes_cb",
       "http.clientWriteStrEncCb": "scr_http_client_write_str_enc_cb",
       "http.clientWriteBytesEncCb": "scr_http_client_write_bytes_enc_ignore_cb",
       "http.clientWriteDynCb": "scr_http_client_write_dynv_cb",
+      "http.clientWriteDynEncCb": "scr_http_client_write_dynv_enc_cb",
     }[e.fn]!;
     host.declare(`declare zeroext i1 @${entry}(${args.map(() => "ptr").join(", ")})`);
     const t = B.tmp();

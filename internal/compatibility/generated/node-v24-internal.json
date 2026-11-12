@@ -56373,7 +56373,9 @@
           "tests/corpus/http-agent-bookkeeping.ts",
           "tests/corpus/http-agent-connection-hooks.ts",
           "tests/corpus/http-agent-total-sockets.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
           "tests/corpus/http-client-connect-listener.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
           "tests/corpus/http-client-max-headers-count.ts",
           "tests/corpus/http-client-request-abort.ts",
           "tests/corpus/http-client-request-cork.ts",
@@ -56386,12 +56388,15 @@
           "tests/corpus/http-interim-response-callbacks.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-message-class-surface.ts",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
           "tests/corpus/http-message-properties.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-request-write-after-end-uncaught.ts",
           "tests/corpus/http-response-cork.ts",
           "tests/corpus/http-response-destroy-error.ts",
           "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
           "tests/corpus/http-response-header-forms.ts",
           "tests/corpus/http-response-lifecycle.ts",
           "tests/corpus/http-response-write-after-end-uncaught.ts",
@@ -56405,6 +56410,7 @@
           "tests/corpus/http-server-listen-options.ts",
           "tests/corpus/http-server-malformed-request.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-request-destroy-unlistened.ts",
           "tests/corpus/http-server-timeout-forms.ts",
           "tests/corpus/http-server-upgrade-handshake.ts",
           "tests/corpus/http-set-headers.ts",
@@ -56412,6 +56418,7 @@
           "tests/corpus/http-write-chunk-errors.mjs",
           "tests/corpus/http-write-information.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-address-unix-shorthand.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -58157,7 +58164,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58239,7 +58247,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58323,7 +58337,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61078,7 +61098,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61106,7 +61132,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61134,7 +61166,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61162,7 +61200,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61190,7 +61234,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66078,12 +66128,19 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
           "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/http-server-request-destroy-unlistened.ts",
           "tests/corpus/https-server-async-dispose.ts",
           "tests/corpus/https-server-close-callbacks.ts",
           "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/https-server-timeout-forms.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-address-unix-shorthand.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -66308,7 +66365,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66364,7 +66422,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -66418,7 +66482,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -66504,7 +66574,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66532,7 +66608,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66560,7 +66642,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66588,7 +66676,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66616,7 +66710,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74360,8 +74460,15 @@
           "tests/corpus/compat-net-server-socket.ts",
           "tests/corpus/compat-net-socket-members.mjs",
           "tests/corpus/compat-net-socket-members.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
           "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/http-server-request-destroy-unlistened.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-address-unix-shorthand.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -75009,7 +75116,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75038,7 +75146,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75106,7 +75215,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75135,7 +75245,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75164,7 +75275,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75193,7 +75305,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75222,7 +75335,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75600,7 +75714,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75651,7 +75766,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75680,7 +75796,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75752,7 +75869,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75781,7 +75899,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75891,7 +76010,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75977,7 +76097,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76294,7 +76415,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -76695,7 +76822,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76724,7 +76852,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76753,7 +76882,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76782,7 +76912,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76811,7 +76942,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76840,7 +76972,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76869,7 +77002,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76898,7 +77032,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76927,7 +77062,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76992,7 +77128,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77021,7 +77158,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78520,6 +78658,7 @@
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/http-server-listen-options.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-address-unix-shorthand.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -78836,7 +78975,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98588,6 +98728,12 @@
           "tests/corpus/5889-timers-scheduler-signal.ts",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -99325,7 +99471,13 @@
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/http-client-auth-nested-request.ts",
+          "tests/corpus/http-client-dynamic-write-encoding.mjs",
+          "tests/corpus/http-message-dynamic-chunk-encoding.ts",
+          "tests/corpus/http-outgoing-empty-encoding.ts",
+          "tests/corpus/http-response-dynamic-write-encoding.mjs",
+          "tests/corpus/http-server-request-destroy-unlistened.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99397,6 +99549,7 @@
           "tests/corpus/compat-tls-socket-members.ts",
           "tests/corpus/http-server-listen-options.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-address-unix-shorthand.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -99813,7 +99966,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99847,7 +100001,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99904,7 +100059,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts"
+          "tests/corpus/http-server-listen-options.ts",
+          "tests/corpus/net-server-address-unix-shorthand.ts"
         ]
       },
       "anchorSource": "exact"

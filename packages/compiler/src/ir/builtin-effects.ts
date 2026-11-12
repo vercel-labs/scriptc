@@ -458,7 +458,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
+  "http.resWriteDynEnc",
+  "http.resWriteDynEncCb",
   "http.resEndDyn",
+  "http.resEndDynEnc",
   "http.resAddTrailers",
   // pipe() on a write-only outgoing message: with no 'error' listener the
   // ERR_STREAM_CANNOT_PIPE surfaces as a synchronous throw to the caller.
@@ -485,7 +488,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteDynCb",
   "http.clientWriteDyn",
   "http.clientWriteDynCb",
+  "http.clientWriteDynEnc",
+  "http.clientWriteDynEncCb",
   "http.clientEndDyn",
+  "http.clientEndDynEnc",
   "http.clientAddTrailers",
   // setHeader and removeHeader throw ERR_HTTP_HEADERS_SENT once the head is
   // out (flushHeaders(), a first write, or an Expect header at

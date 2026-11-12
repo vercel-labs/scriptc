@@ -2508,7 +2508,15 @@ function buildLibFnSignatures() {
       argTypes: [HTTPRES_T, DYN, { kind: "func", params: [], ret: VOID }],
       result: BOOL,
     },
+    /** The checked-dynamic chunk with an explicit encoding (the string arm
+     * decodes, the buffer arm ignores it — Node's two write_ arms). */
+    "http.resWriteDynEnc": { argTypes: [HTTPRES_T, DYN, STRING], result: BOOL },
+    "http.resWriteDynEncCb": {
+      argTypes: [HTTPRES_T, DYN, STRING, { kind: "func", params: [], ret: VOID }],
+      result: BOOL,
+    },
     "http.resEndDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http.resEndDynEnc": { argTypes: [HTTPRES_T, DYN, STRING], result: VOID },
     "http.resHeadersSent": { argTypes: [HTTPRES_T], result: BOOL },
     "http.resWritableEnded": { argTypes: [HTTPRES_T], result: BOOL },
     "http.resFlushHeaders": { argTypes: [HTTPRES_T], result: VOID },
@@ -3302,7 +3310,15 @@ function buildLibFnSignatures() {
       argTypes: [HTTPCLIENTREQ_T, DYN, { kind: "func", params: [], ret: VOID }],
       result: BOOL,
     },
+    /** The checked-dynamic chunk with an explicit encoding (the string arm
+     * decodes, the buffer arm ignores it — Node's two write_ arms). */
+    "http.clientWriteDynEnc": { argTypes: [HTTPCLIENTREQ_T, DYN, STRING], result: BOOL },
+    "http.clientWriteDynEncCb": {
+      argTypes: [HTTPCLIENTREQ_T, DYN, STRING, { kind: "func", params: [], ret: VOID }],
+      result: BOOL,
+    },
     "http.clientEndDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
+    "http.clientEndDynEnc": { argTypes: [HTTPCLIENTREQ_T, DYN, STRING], result: VOID },
     "http.clientFlushHeaders": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientAddTrailers": { argTypes: [HTTPCLIENTREQ_T, arrayOf(STRING)], result: VOID },
     "http.clientCork": { argTypes: [HTTPCLIENTREQ_T], result: VOID },

@@ -217,6 +217,13 @@ void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, v
 bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_write_dynv_cb(ScrHttpRes *r, const ScrDyn *d /*borrowed*/, ScrClosure *cb /*moves*/);
+/* The same forms with an explicit encoding (dyn chunk + encoding). */
+bool scr_http_res_write_dynv_enc(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                                 ScrStr *enc /*borrowed*/);
+bool scr_http_res_write_dynv_enc_cb(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/);
+void scr_http_res_end_dynv_enc(ScrHttpRes *r, const ScrDyn *d /*borrowed*/,
+                               ScrStr *enc /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
 bool scr_http_res_send_date(ScrHttpRes *r);
@@ -411,6 +418,13 @@ bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 bool scr_http_client_write_dynv_cb(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
                                    ScrClosure *cb /*moves*/);
+/* The same forms with an explicit encoding (dyn chunk + encoding). */
+bool scr_http_client_write_dynv_enc(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/);
+bool scr_http_client_write_dynv_enc_cb(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                       ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/);
+void scr_http_client_end_dynv_enc(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/,
+                                  ScrStr *enc /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);
 /* req.destroy(err): err (borrowed) becomes the request's 'error'. */

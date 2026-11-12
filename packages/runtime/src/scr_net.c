@@ -499,7 +499,10 @@ struct ScrNetServer {
                         * '::' when bound_v6, else '0.0.0.0' — Node's own
                         * address().address answers) */
   ScrStr *pending_err; /* deferred listen failure */
-  ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close */
+  ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close
+                        * (kept after it, like Node's _pipeName: address()
+                        * with no handle answers the last pipe name) */
+  bool bound_unix;     /* the CURRENT bind is that Unix socket, not a port */
   size_t nconns;
   ScrNetLs conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
   /* 'newListener' (event): Node's meta event, fired before every add */
@@ -2170,6 +2173,7 @@ static bool scr_net_listen_add_cb(ScrNetServer *s, ScrClosure *cb /*moves, nulla
 static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
                                ScrClosure *cb /*moves, nullable*/) {
   if (s->listening) scr_net_listen_again();
+  s->bound_unix = false; /* a port bind replaces any pipe bind */
   if (!scr_net_listen_add_cb(s, cb)) return;
   scr_net_server_capture_listen(s);
   if (s->close_emitted) return;
@@ -2249,6 +2253,7 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
 static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                                      bool ipv6_only, bool reuse_port,
                                      ScrClosure *cb /*moves, nullable*/) {
+  s->bound_unix = false; /* a port bind replaces any pipe bind */
   if (host == NULL || host->len == 0) {
     scr_net_listen_any(s, port, reuse_port, cb);
     return;
@@ -3598,12 +3603,20 @@ ScrNetSocket *scr_net_connect_path(ScrStr *path, bool deferred) {
  * these only there): the Unix-socket path a listening server answers in
  * place of the AddressInfo record (+1, "" for a TCP server), and the check
  * a record-typed address() read makes first. */
+static bool scr_net_server_pipe_address(const ScrNetServer *s) {
+  if (s->unix_path == NULL) return false;
+  /* Node keeps the pipe name after close() and answers it once the
+   * handles are gone (address() falls back to _pipeName), but a later
+   * successful port bind answers its own record. */
+  return s->listening ? s->bound_unix : true;
+}
+
 ScrStr *scr_net_server_unix_path(ScrNetServer *s) {
-  return s->listening && s->unix_path != NULL ? scr_str_retain(s->unix_path) : scr_str_new("", 0);
+  return scr_net_server_pipe_address(s) ? scr_str_retain(s->unix_path) : scr_str_new("", 0);
 }
 
 void scr_net_server_address_check(ScrNetServer *s) {
-  if (!s->listening || s->unix_path == NULL) return;
+  if (!scr_net_server_pipe_address(s)) return;
   static const char msg[] =
       "server.address() of a server listening on a Unix socket is the socket path string; "
       "type the result as string | AddressInfo | null (Node's declaration) to read it";
@@ -3644,6 +3657,7 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
       s->emit_listening = true;
       scr_str_release(s->unix_path);
       s->unix_path = scr_str_retain(path);
+      s->bound_unix = true;
       scr_net_watch_read(fd, s, true);
       scr_net_server_register(s);
       return;

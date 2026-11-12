@@ -160,6 +160,14 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // new PerformanceMark and the PerformanceObserver family: their
+  // callbacks run from an immediate (scr_perf.c).
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",

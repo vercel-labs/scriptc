@@ -155,6 +155,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
   lowerWebStreamNew,
@@ -22484,6 +22485,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??

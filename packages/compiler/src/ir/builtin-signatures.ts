@@ -712,6 +712,28 @@ function buildLibFnSignatures() {
     "perf.entryDetail": { argTypes: [F64], result: DYN },
     "perf.entryKeep": { argTypes: [DYN], result: VOID },
     "perf.entryRef": { argTypes: [F64], result: DYN },
+    /** new PerformanceMark(name, options?): Node's constructor (MAY
+     * THROW) — the mark timings update, the marks buffer does not; the
+     * new entry is view index 0. observerNew(args) constructs a
+     * PerformanceObserver from the call's argument vector and answers the
+     * handle (MAY THROW). The observer methods take the receiver handle:
+     * observe(obs, args) takes observe's argument vector, take(obs) moves
+     * the buffered entries into the view (both answer a count for the
+     * scr_perf_entry_* accessors), disconnect(obs) stops it. listEntries
+     * (list, args, which) selects from a PerformanceObserverEntryList
+     * (which: 0 getEntries, 1 getEntriesByName, 2 getEntriesByType).
+     * observerIs(value, which) and entryIs(value, which) are the
+     * `instanceof` tests for values whose static type is not the class:
+     * observer/list classes 0 and 1, and PerformanceEntry 0,
+     * PerformanceMark 1, PerformanceMeasure 2. */
+    "perf.markNew": { argTypes: [DYN], result: F64 },
+    "perf.observerNew": { argTypes: [DYN], result: DYN },
+    "perf.observerObserve": { argTypes: [DYN, DYN], result: VOID },
+    "perf.observerDisconnect": { argTypes: [DYN], result: VOID },
+    "perf.observerTake": { argTypes: [DYN], result: F64 },
+    "perf.listEntries": { argTypes: [DYN, DYN, F64], result: F64 },
+    "perf.observerIs": { argTypes: [DYN, F64], result: BOOL },
+    "perf.entryIs": { argTypes: [DYN, F64], result: BOOL },
     /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
      * loop's start in performance.now() ms (0 before it), idleTime the idle
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay

@@ -447,19 +447,22 @@ function loadAsJsDirectory(base: string): string | null {
  * declaration twins only. */
 
 /** The conditions 5.9.3's bundler resolution enables for import sites
- * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched). */
-const EXPORT_CONDITIONS = new Set(["types", "import", "default"]);
+ * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched), and
+ * "scriptc": a package's target for the compiled program (a native
+ * implementation beside its JavaScript one), which program.ts passes to the
+ * checker as a custom condition. */
+const EXPORT_CONDITIONS = new Set(["scriptc", "types", "import", "default"]);
 
 /** The bundler condition set minus "types" — what an opted-in --npm-static
  * package resolves with (its declarations are hidden from resolution; the
  * runtime JS is the compile target). Mirrors the types-stripped
  * package.json the tsgo host serves for the same package. */
-const JS_ONLY_CONDITIONS = new Set(["import", "default"]);
-const JS_REQUIRE_CONDITIONS = new Set(["require", "default"]);
+const JS_ONLY_CONDITIONS = new Set(["scriptc", "import", "default"]);
+const JS_REQUIRE_CONDITIONS = new Set(["scriptc", "require", "default"]);
 
 /** Node's ESM runtime conditions. Source-only workspace detection follows
  * the executable branch rather than the checker-only "types" branch. */
-const RUNTIME_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+const RUNTIME_IMPORT_CONDITIONS = new Set(["scriptc", "import", "node", "default"]);
 
 /** package.json "exports" lookup: exact subpath keys, then '*' patterns
  * (longest literal prefix wins), condition objects matched against the

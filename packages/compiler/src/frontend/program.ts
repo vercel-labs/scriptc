@@ -250,6 +250,9 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
   checkJs: true,
   resolveJsonModule: true,
   noEmit: true,
+  // A package's "scriptc" export or import condition names its target for
+  // the compiled program (resolve.ts matches the same condition).
+  customConditions: ["scriptc"],
 };
 
 /** A tsconfig `lib` entry as the tsconfig spells it (`dom`), whichever

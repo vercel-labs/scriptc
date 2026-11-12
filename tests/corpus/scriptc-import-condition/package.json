@@ -1,0 +1,11 @@
+{
+  "name": "scriptc-import-condition",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#register": {
+      "scriptc": "./register-native.ts",
+      "default": "./register.ts"
+    }
+  }
+}

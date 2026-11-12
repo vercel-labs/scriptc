@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/scriptc-import-condition/register-native.ts",
+  "<repo>/tests/corpus/scriptc-import-condition/main.ts"
+ ],
+ "diags": []
+}

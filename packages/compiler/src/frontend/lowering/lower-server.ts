@@ -1003,6 +1003,40 @@ export function lowerNetModuleCall(
     );
   }
   if (bi.member === "connect" || bi.member === "createConnection") {
+    // A JavaScript call site reads its arguments at run time: Node's
+    // normalizeArgs and Socket.prototype.connect ladder walk the values
+    // (the checked-dynamic lane), so a port, host, path, options bag, or
+    // callback whose shape only the run time knows behaves as Node does.
+    // An options literal that spells out a `lookup` keeps the typed lookup
+    // lane, which calls the program's resolver through a compiler-emitted
+    // thunk and dials its answers.
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
+        const props = (args[0] as ts.ObjectLiteralExpression).properties.nodes;
+        const plainKey = (p: ts.Node): string | null =>
+          (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+          (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+            ? p.name.text
+            : null;
+        const typedLookup =
+          props.some((p) => plainKey(p) === "lookup") &&
+          props.some(
+            (p) =>
+              plainKey(p) === "autoSelectFamily" &&
+              ts.isPropertyAssignment(p) &&
+              p.initializer.kind === ts.SyntaxKind.TrueKeyword,
+          ) &&
+          props.some((p) => {
+            if (plainKey(p) !== "port") return false;
+            const value = ts.isPropertyAssignment(p)
+              ? p.initializer
+              : ((p as ts.ShorthandPropertyAssignment).name as ts.Expression);
+            return lowerer.mapTypeOf(lowerer.typeOf(value))?.kind === "f64";
+          });
+        if (typedLookup) return lowerNetConnectOptions(lowerer, expr, bi.member, loc);
+      }
+      return lowerNetConnectDyn(lowerer, expr, bi.member, args, loc);
+    }
     // The options-object form — connect({ port, host?, autoSelectFamily?,
     // lookup? }): portless's createLoopbackConnection. A `lookup` function
     // OVERRIDES resolution: the runtime invokes it as Node does —
@@ -1015,36 +1049,22 @@ export function lowerNetModuleCall(
     if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
       return lowerNetConnectOptions(lowerer, expr, bi.member, loc);
     }
-    // A RUNTIME option bag (a record binding or dyn value — the
-    // invalid-input probes build theirs with computed keys): the
-    // checked-dynamic walk validates Node-order and the compiler-rendered
-    // fence is the post-validation tail.
-    if (args.length === 1 && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-      if (t !== null && (t.kind === "dyn" || t.kind === "record")) {
-        const raw = lowerer.lowerExpr(args[0]!);
-        if (raw.type.kind === "dyn" || lowerer.dynConvertible(raw.type)) {
-          const bag: IrExpr =
-            raw.type.kind === "dyn" ? raw : { kind: "dynFrom", value: raw, type: DYN, loc };
-          return {
-            kind: "libCall",
-            fn: "net.connectOptsChk",
-            args: [
-              bag,
-              ladderFenceExpr(
-                lowerer,
-                `${bi.member} with a runtime options record`,
-                expr,
-                "pass the options as an object literal — port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
-              ),
-            ],
-            type: NETSOCKET_T,
-            loc,
-          };
-        }
-      }
+    // A first argument whose shape only the run time can read — a dynamic
+    // value, a record that may be the options, a union, or a checker
+    // `any`: Node's normalizeArgs reads it (the checked-dynamic lane).
+    const firstT = args.length > 0 ? lowerer.mapTypeOf(lowerer.typeOf(args[0]!)) : null;
+    if (
+      args.length === 0 ||
+      firstT === null ||
+      firstT.kind === "dyn" ||
+      firstT.kind === "jsval" ||
+      firstT.kind === "record" ||
+      firstT.kind === "union" ||
+      (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0
+    ) {
+      return lowerNetConnectDyn(lowerer, expr, bi.member, args, loc);
     }
-    if (args.length < 1 || args.length > 3) {
+    if (args.length > 3) {
       lowerer.noLowering(
         `${bi.member} with ${args.length} arguments`,
         expr,
@@ -1054,7 +1074,7 @@ export function lowerNetModuleCall(
     // connect(path[, connectListener]): a string first argument names a
     // Unix socket, or a localhost port when it reads as a non-negative
     // number (Node's isPipeName, decided at run time).
-    if (lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string") {
+    if (firstT.kind === "string") {
       return lowerNetConnectPath(
         lowerer,
         expr,
@@ -1099,6 +1119,66 @@ export function lowerNetModuleCall(
     "createServer, connect, and createConnection are the lowered net module functions",
     lowerer.resolveValueSymbol(expr.expression as ts.Identifier),
   );
+}
+
+/** A trailing argument of a dynamic net call as Node's normalizeArgs reads
+ * it: a statically function-typed value is the callback. Node calls these
+ * listeners with no arguments, so a zero-parameter closure rides the
+ * native callback slot; a JavaScript closure whose parameters are all
+ * dynamic crosses as a dynamic function value (invoked argument-less, so
+ * each parameter reads undefined, as under Node). Any other function type
+ * stays positional for the run time's own reading. Null when the value is
+ * not statically a function. */
+function peelDynCallListener(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr | null {
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (t === null || t.kind !== "func") return null;
+  if (t.params.length === 0) {
+    return lowerCallbackArg(lowerer, node, what, 0, () => false, "use ()", []).cb;
+  }
+  if (t.params.every((p) => p.kind === "dyn")) {
+    return lowerSocketDynListener(lowerer, node, what);
+  }
+  return null;
+}
+
+/** net.connect / net.createConnection over arguments whose shape only the
+ * run time can read: Node's normalizeArgs and Socket.prototype.connect
+ * ladder walk the values in the runtime (the checked-dynamic lane). A last
+ * argument that is statically a function is the connect listener, and the
+ * runtime reads any other positional function the same way — but a lone
+ * function argument is the port, as normalizeArgs reads it. The
+ * compiler-rendered fence is the post-validation tail: port, host,
+ * autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the
+ * supported options. */
+function lowerNetConnectDyn(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  nodes: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr {
+  const positional: IrExpr[] = [];
+  let cb: IrExpr | null = null;
+  let count = nodes.length;
+  if (count >= 2) {
+    cb = peelDynCallListener(lowerer, nodes[count - 1]!, "connect listeners");
+    if (cb !== null) count--;
+  }
+  for (let i = 0; i < count; i++) positional.push(lowerer.lowerExprExpecting(nodes[i]!, DYN));
+  while (positional.length < 3) positional.push(dynUndefinedExpr(loc));
+  const fence = ladderFenceExpr(
+    lowerer,
+    `${member} with these arguments`,
+    expr,
+    "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+  );
+  return {
+    kind: "libCall",
+    fn: cb === null ? "net.connectDyn" : "net.connectDynCb",
+    args: cb === null ? [...positional, fence] : [...positional, cb, fence],
+    type: NETSOCKET_T,
+    loc,
+  };
 }
 
 /** net.connect / net.createConnection of a Unix socket path (a string
@@ -1188,48 +1268,6 @@ function lowerNetConnectOptions(
 ): IrExpr {
   const args = expr.arguments.nodes;
   const optsNode = args[0] as ts.ObjectLiteralExpression;
-  const isJs = isJsSourceFile(ts.getSourceFileOfNode(expr));
-  // The checked-dynamic option-bag route (JS sources): a literal with
-  // computed keys (the invalid-input probes' spelling) or an objectMode-
-  // trio member rides WHOLE to the runtime walk — Node's Socket-ctor
-  // validation order (the trio's ERR_INVALID_ARG_VALUE first, then
-  // port/host/autoSelectFamily), with the compiler-rendered fence as the
-  // post-validation tail.
-  if (isJs) {
-    const needsBag = optsNode.properties.nodes.some(
-      (p) =>
-        (!ts.isPropertyAssignment(p) && !ts.isShorthandPropertyAssignment(p)) ||
-        (ts.isPropertyAssignment(p) && ts.isComputedPropertyName(p.name)) ||
-        ["objectMode", "readableObjectMode", "writableObjectMode"].includes(
-          (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-            (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
-            ? p.name.text
-            : "",
-        ),
-    );
-    if (needsBag) {
-      const raw = lowerer.lowerExpr(optsNode);
-      if (raw.type.kind === "dyn" || lowerer.dynConvertible(raw.type)) {
-        const bag: IrExpr =
-          raw.type.kind === "dyn" ? raw : { kind: "dynFrom", value: raw, type: DYN, loc };
-        return {
-          kind: "libCall",
-          fn: "net.connectOptsChk",
-          args: [
-            bag,
-            ladderFenceExpr(
-              lowerer,
-              `${member} with these options`,
-              optsNode,
-              "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
-            ),
-          ],
-          type: NETSOCKET_T,
-          loc,
-        };
-      }
-    }
-  }
   // connect({ path }[, connectListener]): the Unix-socket form.
   {
     const keys = optsNode.properties.nodes.map((p) =>
@@ -1306,7 +1344,7 @@ function lowerNetConnectOptions(
       if (host.type.kind !== "string") {
         // A provably-non-string host (the invalid-input probes): Node's
         // lookupAndConnect throws ERR_INVALID_ARG_TYPE at connect time.
-        if (isJs && (host.type.kind === "dyn" || lowerer.dynConvertible(host.type))) {
+        if (host.type.kind === "dyn" || lowerer.dynConvertible(host.type)) {
           optionThrow ??= propThrow("options.host", "of type string", host);
           host = null;
           continue;
@@ -1324,7 +1362,7 @@ function lowerNetConnectOptions(
       if (initializer === null || initializer.kind !== ts.SyntaxKind.TrueKeyword) {
         // A provably-non-boolean value throws Node's validateBoolean
         // ladder instead of fencing.
-        const raw = initializer !== null && isJs ? lowerer.lowerExpr(initializer) : null;
+        const raw = initializer !== null ? lowerer.lowerExpr(initializer) : null;
         if (
           raw !== null &&
           raw.type.kind !== "bool" &&
@@ -1894,13 +1932,6 @@ function lowerNetServerMethodCall(
     return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
   }
   if (name === "listen") {
-    if (args.length > 4) {
-      lowerer.noLowering(
-        `listen with ${args.length} arguments`,
-        call,
-        "the supported form is listen([port][, host][, callback]) — port 0 binds an ephemeral port",
-      );
-    }
     // Node answers the server (`return this` chaining — `const s =
     // http.createServer(...).listen(0)`, `server.listen(0).address()`):
     // statement position keeps the plain void call; a consumed result
@@ -1942,6 +1973,45 @@ function lowerNetServerMethodCall(
       };
     };
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const isJs = isJsSourceFile(ts.getSourceFileOfNode(call));
+    // Node's own argument ladder over values the typed lanes cannot read:
+    // normalizeArgs takes a function FIRST argument as the callback (port
+    // 0), a string second argument as the host, and a function LAST
+    // argument as the callback; the runtime walks that ladder on the
+    // dynamic values. The compiler-rendered fence is the post-validation
+    // tail: port, host, ipv6Only, and reusePort are the supported options.
+    const lowerListenDyn = (nodes: readonly ts.Expression[]): IrExpr => {
+      const positional: IrExpr[] = [];
+      let cb: IrExpr | null = null;
+      let count = nodes.length;
+      if (count >= 1) {
+        cb = peelDynCallListener(lowerer, nodes[count - 1]!, "listen callbacks");
+        if (cb !== null) count--;
+      }
+      for (let i = 0; i < count; i++) positional.push(lowerer.lowerExprExpecting(nodes[i]!, DYN));
+      while (positional.length < 3) positional.push(dynUndefinedExpr(loc));
+      const fence = ladderFenceExpr(
+        lowerer,
+        "listen with a runtime options object or pipe path",
+        call,
+        "pass the port as a number, the path as a string, or the options as an object literal — port, host, ipv6Only, and reusePort are the supported options",
+      );
+      return listenResult(
+        cb === null ? "net.listenDyn" : "net.listenDynCb",
+        cb === null ? [receiver, ...positional, fence] : [receiver, ...positional, cb, fence],
+      );
+    };
+    if (args.length > 4) {
+      // normalizeArgs reads only the first, second, and last arguments;
+      // anything between them is ignored, as the runtime ladder does.
+      if (!isJs)
+        lowerer.noLowering(
+          `listen with ${args.length} arguments`,
+          call,
+          "the supported form is listen([port][, host][, callback]) — port 0 binds an ephemeral port",
+        );
+      return lowerListenDyn(args);
+    }
     // listen() and listen(callback): Node binds an arbitrary unused port
     // (normalizeArgs takes a function first argument as the callback).
     if (args.length === 0) return listenResult("net.listen", [receiver, numLit(0, loc)]);
@@ -1954,16 +2024,11 @@ function lowerNetServerMethodCall(
         first?.kind === "jsval" ||
         (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0);
     if (args.length === 1 && first?.kind === "func") {
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[0]!,
-        "listen callbacks",
-        0,
-        () => false,
-        "use ()",
-        [],
-      );
-      return listenResult("net.listenCb", [receiver, numLit(0, loc), cb]);
+      const peeled = peelDynCallListener(lowerer, args[0]!, "listen callbacks");
+      if (peeled !== null && peeled.type.kind === "func") {
+        return listenResult("net.listenCb", [receiver, numLit(0, loc), peeled]);
+      }
+      return lowerListenDyn(args);
     }
     // listen(cb) with an optional binding, `(() => void) | undefined`: the
     // callback when it is one, and an unused port either way.
@@ -1980,6 +2045,10 @@ function lowerNetServerMethodCall(
         lowerOptionalListenCallback(lowerer, args[0]!, loc),
       ]);
     }
+    // A JavaScript call site's arguments — a port, host, path, or options
+    // object whose shape only the run time knows — walk Node's own ladder
+    // in the runtime.
+    if (isJs) return lowerListenDyn(args);
     // listen(boundSocket[, cb]): a net.BoundSocket is adopted by the
     // server (Node's handle transfer). Node's order: an already-listening
     // server throws ERR_SERVER_ALREADY_LISTEN, the callback joins
@@ -2056,46 +2125,16 @@ function lowerNetServerMethodCall(
         loc,
       };
     };
-    if (args.length === 1 && untyped) {
-      // An untyped single argument: a function is the callback on an
-      // arbitrary port; any other value is the port.
-      const server = lowerer.declareHiddenLocal("%listenServer", NETSERVER_T);
-      const arg = lowerer.declareHiddenLocal("%listenArg", DYN);
-      const serverRef = (): IrExpr => varRef(server.id, NETSERVER_T, loc);
-      const argRef = (): IrExpr => varRef(arg.id, DYN, loc);
-      const listenStmt = (fn: IrLibFn, callArgs: IrExpr[]): IrStmt => ({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn, args: callArgs, type: VOID, loc },
-        loc,
-      });
-      return {
-        kind: "seqExpr",
-        stmts: [
-          { kind: "varDecl", localId: server.id, init: receiver, loc },
-          {
-            kind: "varDecl",
-            localId: arg.id,
-            init: lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN),
-            loc,
-          },
-          {
-            kind: "if",
-            cond: { kind: "dynTest", test: "function", value: argRef(), type: BOOL, loc },
-            then: [
-              listenStmt("net.listenCb", [
-                serverRef(),
-                numLit(0, loc),
-                { kind: "dynCheck", value: argRef(), type: funcOf([], VOID), loc },
-              ]),
-            ],
-            else_: [listenStmt("net.listen", [serverRef(), portOfUntyped(argRef())])],
-            loc,
-          },
-        ],
-        result: serverRef(),
-        type: NETSERVER_T,
-        loc,
-      };
+    // A first argument whose shape only the run time can read — an untyped
+    // value, a union of possible shapes, or a record binding that may hold
+    // the options: Node's normalizeArgs and Server.prototype.listen walk
+    // it. An object literal keeps its typed lane below.
+    if (
+      untyped ||
+      first?.kind === "union" ||
+      (first?.kind === "record" && !ts.isObjectLiteralExpression(args[0]!))
+    ) {
+      return lowerListenDyn(args);
     }
     // The options-object form — listen({ port, host?, ipv6Only?, reusePort? }[, cb]),
     // the portless listenOnProxyInterface shape: host binds that ONE
@@ -2325,6 +2364,22 @@ function lowerNetServerMethodCall(
     // string second argument is the host, a function last argument is the
     // callback, and undefined or null in any of the three is the absent
     // argument (an unused port, every interface, no callback).
+    // A backlog argument (a number anywhere after the port), a non-last
+    // function, or a callback with parameters has no typed lane — Node
+    // reads those in the runtime. The roles come from the argument types
+    // only, so nothing is lowered twice when the call takes that lane.
+    const restNodes = args.slice(1);
+    const lastRest = restNodes.length > 0 ? restNodes[restNodes.length - 1]! : null;
+    const lastRestT = lastRest === null ? null : lowerer.mapTypeOf(lowerer.typeOf(lastRest));
+    if (
+      restNodes.some((node, i) => {
+        const role = listenArgRole(lowerer, node);
+        return role === "number" || (role === "func" && i !== restNodes.length - 1);
+      }) ||
+      (lastRestT !== null && lastRestT.kind === "func" && lastRestT.params.length > 0)
+    ) {
+      return lowerListenDyn(args);
+    }
     const port = untyped
       ? portOfUntyped(lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN))
       : first?.kind === "f64"
@@ -2333,38 +2388,31 @@ function lowerNetServerMethodCall(
           ? lowerListenPort(args[0]!)
           : validatedPort(lowerListenPort(args[0]!));
     const rest = args.slice(1);
-    const refuseBacklog = (node: ts.Expression): never =>
-      lowerer.noLowering("listen with a backlog", node, LISTEN_BACKLOG_HINT);
     // The last argument is the callback unless its type says it is the
     // host; a two-argument call has one slot for both readings.
     let cbNode: ts.Expression | undefined;
     if (rest.length > 0) {
       const lastRole = listenArgRole(lowerer, rest[rest.length - 1]!);
-      if (lastRole === "number") refuseBacklog(rest[rest.length - 1]!);
       if (rest.length > 1 || lastRole !== "string") cbNode = rest.pop();
     }
     // The host is the second argument; a third before the callback is the
     // backlog, which only its absent spelling reaches here.
     let host: IrExpr | null = null;
     if (rest.length > 0) {
-      const hostRole = listenArgRole(lowerer, rest[0]!);
-      if (hostRole === "number") refuseBacklog(rest[0]!);
-      if (hostRole === "func") {
-        lowerer.noLowering(
-          "a listen callback that is not the last argument",
-          rest[0]!,
-          "the supported form is listen([port][, host][, callback])",
-        );
-      }
       host =
         lowerer.mapTypeOf(lowerer.typeOf(rest[0]!))?.kind === "string"
           ? lowerer.lowerExprExpecting(rest[0]!, STRING)
           : listenHostOf(lowerer, lowerer.lowerExpr(rest[0]!), rest[0]!);
     }
     if (rest.length > 1) {
-      if (listenArgRole(lowerer, rest[1]!) !== "unit") refuseBacklog(rest[1]!);
       const backlog = lowerer.lowerExpr(rest[1]!);
-      if (backlog.kind !== "unitLit" && backlog.kind !== "varRef") refuseBacklog(rest[1]!);
+      if (backlog.kind !== "unitLit" && backlog.kind !== "varRef") {
+        lowerer.noLowering(
+          "a listen backlog value that is not a literal or a binding",
+          rest[1]!,
+          "pass a number literal or a number binding (or omit the backlog)",
+        );
+      }
     }
     // The callback: a function, an optional `(() => void) | undefined`
     // binding (the opts entry takes its nullable closure), or the absent

@@ -22,6 +22,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <sys/stat.h> /* fstat: the adopted-fd type audit */
 #include <sys/un.h> /* AF_UNIX: listen(path) and http's socketPath */
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(_AIX) || defined(__sun)
 #include <sys/param.h>
@@ -563,6 +564,10 @@ struct ScrNetServer {
    * body reaches the real close through its bound `origClose` value
    * (scr_net_server_close_direct — never re-consults the override). */
   ScrClosure *close_override;
+  /* listen({ signal }): the abort listener registered on the option's
+   * AbortSignal (NULL without one); it closes the server. Disposed at the
+   * 'close', as Node's `self.once('close', disposable)`. */
+  ScrDyn *abort_dispose;
   /* close-REQUEST order (a global stamp set by close_direct): drained
    * servers settle in ascending order, matching Node's emission order
    * when several close in one turn (the wrapper-closes-inner idiom). */
@@ -621,6 +626,26 @@ struct ScrNetSocket {
   /* peer identity for Node-shaped connect error messages */
   char peer_ip[64];
   int peer_port;
+  /* connect({ localAddress, localPort }): bind(2) before connect(2).
+   * local_ip holds the validated IP literal; local_port is 0 when the
+   * option was absent. */
+  char local_ip[64];
+  bool local_set;
+  int local_port;
+  /* connect({ blockList }): the checked net.BlockList handle (+1, NULL
+   * without one) — the multi-address dial skips every blocked answer. */
+  ScrDyn *block_list;
+  /* connect({ family, hints }): the resolved address family (0 = both)
+   * and the getaddrinfo flags the lookup carries. */
+  int dial_family;
+  int dial_hints;
+  /* connect({ fd }): an adopted descriptor (already checked a socket),
+   * dialed in place of a fresh socket(); -1 without one. */
+  int adopt_fd;
+  /* connect({ signal }): the addAbortListener disposable (+1; NULL
+   * without one), disposed at 'close'. An abort destroys the socket with
+   * Node's AbortError. */
+  ScrDyn *abort_dispose;
   /* remoteAddress, cached at first read like Node's _getpeername — a
    * value read while connected survives destroy; never-read sockets
    * answer undefined after close */
@@ -629,8 +654,10 @@ struct ScrNetSocket {
   bool remote_v6_cache;
   ScrStr *pending_err; /* deferred connect failure */
   /* pending_err's code when its message does not name one (static
-   * storage; NULL = the code the message maps to) */
+   * storage; NULL = the code the message maps to), and its name when the
+   * error is not an Error (Node's AbortError) */
   const char *pending_code;
+  const char *pending_name;
   /* the caller-lookup dial (net.connect with a lookup option): true while
    * the lookup decides; dial_ips holds its answered addresses (+1 each),
    * dialed in order — a connect failure closes the fd and tries
@@ -651,6 +678,8 @@ struct ScrNetSocket {
   /* the in-flight dial chain's LAST failure — surfaced (moved into
    * pending_err) only when the list exhausts; a later success drops it */
   ScrStr *dial_err;
+  /* dial_err's code when its message does not name one (ERR_IP_BLOCKED) */
+  const char *dial_err_code;
   /* a dial that is not the TCP sockaddr path (the Unix-socket connect):
    * scr_net_sock_dial_peer hands the dial to it; unix_path is its target */
   void (*dial_hook)(ScrNetSocket *s);
@@ -858,6 +887,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_als_ctx_release(s->listen_ctx);
     scr_als_ctx_release(s->close_ctx);
     scr_closure_release(s->close_override);
+    scr_dyn_release(s->abort_dispose);
     for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
     scr_dyn_release(s->drop_max_connection);
     scr_dyn_release(s->max_headers_count);
@@ -924,6 +954,8 @@ void scr_net_sock_release(ScrNetSocket *s) {
       free(ev);
     }
     scr_dyn_release(s->attempted);
+    scr_dyn_release(s->block_list);
+    scr_dyn_release(s->abort_dispose);
     scr_net_tunnel_free(s->tunnel);
     free(s->wbuf);
     free(s->wq);
@@ -1023,13 +1055,39 @@ static int scr_net_listen_reuseport(int fd) {
  * SO_REUSEADDR remains first, reuse-port is requested next, and both are
  * complete before bind/listen. The returned errno is the native failure. */
 static int scr_net_bind_listen(int fd, const struct sockaddr *sa, socklen_t salen,
-                               bool reuse_port) {
+                               bool reuse_port, int backlog) {
   scr_net_listen_reuseaddr(fd);
   if (reuse_port && scr_net_listen_reuseport(fd) != 0) return -1;
   scr_net_nonblock(fd);
   int rc = bind(fd, sa, salen);
-  if (rc == 0) rc = listen(fd, 511); /* Node's default backlog */
+  /* Node's listenOnServerFD: `backlog ||= 511` (511 is the kernel's 512) */
+  if (rc == 0) rc = listen(fd, backlog > 0 ? backlog : 511);
   return rc;
+}
+
+/* libuv treats a descriptor whose type it cannot take as an EINVAL: a
+ * non-stream or non-socket fd answers "listen EINVAL: invalid argument".
+ * These two map what the adopted-fd path can surface. */
+static int scr_net_fd_uv_errno(int err) {
+  switch (err) {
+  case EACCES:
+  case EADDRINUSE:
+  case EADDRNOTAVAIL:
+  case ENOSPC:
+  case EPIPE: return err;
+  default: return EINVAL;
+  }
+}
+
+static const char *scr_net_uv_reason(int err) {
+  switch (err) {
+  case EACCES: return "permission denied";
+  case EADDRINUSE: return "address already in use";
+  case EADDRNOTAVAIL: return "address not available";
+  case ENOSPC: return "no space left on device";
+  case EPIPE: return "broken pipe";
+  default: return "invalid argument";
+  }
 }
 
 static const char *scr_net_listen_reason(int err, bool explicit_host) {
@@ -1281,6 +1339,7 @@ static ScrNetSocket *scr_net_sock_new(void) {
   s->kind = SCR_NET_K_SOCKET;
   s->rc = 1;
   s->fd = -1;
+  s->adopt_fd = -1;
   s->autosel = scr_net_get_default_autosel();
   s->attempt_ms = scr_net_get_autosel_timeout();
   s->attempt_timer.kind = SCR_NET_K_ATTEMPT;
@@ -1900,6 +1959,21 @@ static void scr_net_attempt_queue(ScrNetSocket *s, int which, const char *ip, in
                                   const char *err);
 static void scr_net_attempt_fire(ScrNetSocket *s);
 static void scr_net_attempt_cancel(ScrNetSocket *s);
+/* connect({ keepAlive, typeOfService }) and connect({ blockList }) reach
+ * their setters, which live with the socket-option and BlockList units
+ * further down. */
+void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms);
+ScrNetSocket *scr_net_sock_set_tos(ScrNetSocket *s, double tos);
+bool scr_net_is_block_list(const ScrDyn *v);
+/* the dial's blockList filter (defined beside the BlockList unit) */
+static bool scr_net_sock_ip_blocked(ScrNetSocket *s, const char *ip, int family);
+/* the dial's local-address bind (defined with the address chain) */
+static int scr_net_sock_bind_local(ScrNetSocket *s, int fd, int family, char *err, size_t errcap);
+/* the Unix/Windows-pipe listener (defined with the listen path entry) */
+static void scr_net_listen_path_impl(ScrNetServer *s, ScrStr *path, int backlog, ScrClosure *cb);
+/* libuv's spelling of an errno for the adopted-fd listen path */
+static int scr_net_fd_uv_errno(int err);
+static const char *scr_net_uv_reason(int err);
 
 /* Connect completion (write-readiness while connecting). */
 static void scr_net_sock_connect_done(ScrNetSocket *s) {
@@ -1918,6 +1992,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
              s->peer_port);
     scr_str_release(s->dial_err);
     s->dial_err = scr_str_new(msg, strlen(msg));
+    s->dial_err_code = NULL;
     scr_net_attempt_queue(s, SCR_NET_ATTEMPT_FAILED, s->peer_ip, s->attempt_family, msg);
     scr_net_close_fd_raw(s->fd); /* registrations dropped, then the fd */
     s->fd = -1;
@@ -1935,6 +2010,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
       /* the dial chain's LAST address failed asynchronously */
       scr_str_release(s->dial_err);
       s->dial_err = NULL;
+      s->dial_err_code = NULL;
       if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
     } else if (!s->pending_err) {
       s->pending_err = scr_str_new(msg, strlen(msg));
@@ -1948,6 +2024,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
      * failure never surfaces */
     scr_str_release(s->dial_err);
     s->dial_err = NULL;
+    s->dial_err_code = NULL;
   }
   scr_net_sock_apply_tos(s); /* Node's afterConnect re-applies a cached TOS */
   if (s->ka_set) scr_net_keepalive_apply(s); /* and a cached setKeepAlive */
@@ -2214,8 +2291,8 @@ static bool scr_net_listen_add_cb(ScrNetServer *s, ScrClosure *cb /*moves, nulla
  * 'error'); success defers the listen callback ('listening') to the next
  * dispatch pass, Node's next-tick emit. Binds like Node's host-less
  * listen: IPv6 any with dual-stack when the kernel allows, IPv4 fallback. */
-static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
-                               ScrClosure *cb /*moves, nullable*/) {
+static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port, bool ipv6_only,
+                               int backlog, ScrClosure *cb /*moves, nullable*/) {
   if (s->listening) {
     scr_net_listen_again(cb);
     return;
@@ -2231,7 +2308,7 @@ static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
   int fd = socket(AF_INET6, SOCK_STREAM, 0);
   bool v6 = fd >= 0;
   if (v6) {
-    int off = 0;
+    int off = ipv6_only ? 1 : 0;
     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof off);
   } else {
     fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -2247,14 +2324,14 @@ static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
     addr.sin6_family = AF_INET6;
     addr.sin6_addr = in6addr_any;
     addr.sin6_port = htons((uint16_t)p);
-    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port);
+    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port, backlog);
   } else {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons((uint16_t)p);
-    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port);
+    rc = scr_net_bind_listen(fd, (struct sockaddr *)&addr, sizeof addr, reuse_port, backlog);
   }
   if (rc != 0) {
     int err = errno;
@@ -2285,7 +2362,7 @@ static void scr_net_listen_any(ScrNetServer *s, double port, bool reuse_port,
 }
 
 void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/) {
-  scr_net_listen_any(s, port, false, cb);
+  scr_net_listen_any(s, port, false, false, 0, cb);
 }
 
 /* listen({ port, host, ipv6Only, reusePort }) — the explicit-interface bind
@@ -2297,10 +2374,10 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
  * with Node's listen message naming the requested host; a non-IP host is
  * the async getaddrinfo ENOTFOUND (no resolver in this slice). */
 static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
-                                     bool ipv6_only, bool reuse_port,
+                                     bool ipv6_only, bool reuse_port, int backlog,
                                      ScrClosure *cb /*moves, nullable*/) {
   if (host == NULL || host->len == 0) {
-    scr_net_listen_any(s, port, reuse_port, cb);
+    scr_net_listen_any(s, port, reuse_port, ipv6_only, backlog, cb);
     return;
   }
   if (s->listening) {
@@ -2353,7 +2430,7 @@ static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host 
     int only = ipv6_only ? 1 : 0;
     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof only);
   }
-  int rc = scr_net_bind_listen(fd, sa, salen, reuse_port);
+  int rc = scr_net_bind_listen(fd, sa, salen, reuse_port, backlog);
   if (rc != 0) {
     int err = errno;
     close(fd);
@@ -2384,13 +2461,13 @@ static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host 
 
 void scr_net_listen_opts(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                           bool ipv6_only, ScrClosure *cb /*moves, nullable*/) {
-  scr_net_listen_opts_impl(s, port, host, ipv6_only, false, cb);
+  scr_net_listen_opts_impl(s, port, host, ipv6_only, false, 0, cb);
 }
 
 void scr_net_listen_opts_reuse_port(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                                     bool ipv6_only, bool reuse_port,
                                     ScrClosure *cb /*moves, nullable*/) {
-  scr_net_listen_opts_impl(s, port, host, ipv6_only, reuse_port, cb);
+  scr_net_listen_opts_impl(s, port, host, ipv6_only, reuse_port, 0, cb);
 }
 
 double scr_net_server_port(ScrNetServer *s) { return (double)s->port; }
@@ -3061,11 +3138,15 @@ static void scr_net_sock_dial_host(ScrNetSocket *s) {
   s->dial_host = NULL;
   struct addrinfo hints;
   memset(&hints, 0, sizeof hints);
-  hints.ai_family = AF_UNSPEC;
+  /* connect({ family, hints }): the resolver's family and flags; the
+   * default flags are Node's ADDRCONFIG whenever neither was given */
+  hints.ai_family = s->dial_family == 4 ? AF_INET : s->dial_family == 6 ? AF_INET6 : AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = s->dial_hints;
 #ifndef _WIN32
-  hints.ai_flags = AI_ADDRCONFIG;
+  if (s->dial_family == 0 && s->dial_hints == 0) hints.ai_flags = AI_ADDRCONFIG;
 #endif
+  char last_blocked[INET6_ADDRSTRLEN] = "";
   struct addrinfo *res = NULL;
   int rc = getaddrinfo(host->data, NULL, &hints, &res);
   size_t n = 0;
@@ -3086,6 +3167,12 @@ static void scr_net_sock_dial_host(ScrNetSocket *s) {
       out = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof ip);
     }
     if (out == NULL) continue;
+    if (scr_net_sock_ip_blocked(s, ip, ai->ai_family == AF_INET6 ? 6 : 4)) {
+      /* connect({ blockList }): a blocked answer is never dialed — the
+       * last one is the error when none is left */
+      snprintf(last_blocked, sizeof last_blocked, "%s", ip);
+      continue;
+    }
     /* Node's 'lookup' sees every answer under autoSelectFamily, one (the
      * resolver's first) without it — the same single address dialed
      * below. */
@@ -3119,6 +3206,19 @@ static void scr_net_sock_dial_host(ScrNetSocket *s) {
      * resolver's first), so only that one is dialed */
     for (size_t i = 1; i < total; i++) scr_str_release(ips[i]);
     total = 1;
+  }
+  if (total == 0 && last_blocked[0] != '\0') {
+    char msg[160];
+    snprintf(msg, sizeof msg, "IP(%s) is blocked by net.BlockList", last_blocked);
+    free(ips);
+    scr_str_release(host);
+    s->pending_err = scr_str_new(msg, strlen(msg));
+    s->pending_code = "ERR_IP_BLOCKED";
+    s->had_error = true;
+    s->emit_close = true;
+    s->connecting = false;
+    scr_net_work_add(s);
+    return;
   }
   if (total == 0) {
     bool notfound = rc == 0 || rc == EAI_NONAME
@@ -3194,15 +3294,41 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
   int family = sa->sa_family == AF_INET6 ? 6 : 4;
   s->attempt_family = family;
   snprintf(s->attempt_ip, sizeof s->attempt_ip, "%s", h);
-  scr_net_attempt_queue(s, SCR_NET_ATTEMPT, h, family, NULL);
-  int fd = socket(sa->sa_family, SOCK_STREAM, 0);
-  if (fd < 0) {
-    fputs("scriptc: socket() failed\n", stderr);
-    abort();
+  if (scr_net_sock_ip_blocked(s, h, family)) {
+    char msg[160];
+    snprintf(msg, sizeof msg, "IP(%s) is blocked by net.BlockList", h);
+    s->pending_err = scr_str_new(msg, strlen(msg));
+    s->pending_code = "ERR_IP_BLOCKED";
+    s->had_error = true;
+    s->emit_close = true;
+    s->connecting = false;
+    scr_net_work_add(s);
+    return;
   }
-  scr_net_nonblock(fd);
-  int one = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  scr_net_attempt_queue(s, SCR_NET_ATTEMPT, h, family, NULL);
+  int fd;
+  if (s->adopt_fd >= 0) {
+    fd = s->adopt_fd;
+    s->adopt_fd = -1;
+  } else {
+    fd = socket(sa->sa_family, SOCK_STREAM, 0);
+    if (fd < 0) {
+      fputs("scriptc: socket() failed\n", stderr);
+      abort();
+    }
+    scr_net_nonblock(fd);
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  }
+  char bind_err[128];
+  if (scr_net_sock_bind_local(s, fd, family, bind_err, sizeof bind_err) != 0) {
+    s->pending_err = scr_str_new(bind_err, strlen(bind_err));
+    s->had_error = true;
+    s->connecting = false;
+    s->closed_before_connect = true;
+    close(fd);
+    return;
+  }
   s->fd = fd;
   int rc = connect(fd, sa, salen);
   if (rc == 0) {
@@ -3237,6 +3363,27 @@ bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/) {
   scr_jb_put_str(&msg, shown);
   scr_str_release(shown);
   ScrStr *text = scr_jb_finish(&msg);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(text);
+  return false;
+}
+
+/* lookupAndListen's address argument is handed to dns.lookup, whose own
+ * validation speaks of "hostname": a non-string is ERR_INVALID_ARG_TYPE,
+ * a null byte ERR_INVALID_ARG_VALUE. False with the exception pending. */
+static bool scr_net_listen_hostname_chk(const ScrDyn *host) {
+  if (host->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("hostname", "of type string", host);
+    return false;
+  }
+  if (memchr(host->v.str->data, '\0', host->v.str->len) == NULL) return true;
+  ScrStr *shown = scr_str_inspect_quoted(host->v.str, true);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The argument 'hostname' must be a string without null bytes. Received ");
+  scr_jb_put_str(&b, shown);
+  scr_str_release(shown);
+  ScrStr *text = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
   scr_str_release(text);
   return false;
@@ -3357,64 +3504,627 @@ static bool scr_net_dyn_truthy(const ScrDyn *v) {
   }
 }
 
-/* net.connect/createConnection over a RUNTIME option bag (computed keys
- * — the invalid-input probes): Node's Socket-constructor order — the
- * objectMode trio throws ERR_INVALID_ARG_VALUE first, then the port
- * (validatePort), the host's string contract, autoSelectFamily's boolean
- * contract, and the attempt budget. A bag that survives everything meets
- * the compiler-rendered fence: an unmodeled key throws instead of being
- * dropped. Always leaves an exception pending. */
-void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence) {
-  if (opts == NULL || opts->kind != SCR_DYN_OBJ) {
-    scr_dyn_arg_type_fail("options", "of type object",
-                          opts ? opts : scr_dyn_undefined());
+/* ── Node's connect option ladder over runtime values ───────────────────
+ *
+ * net.connect/createConnection over values the compiler cannot type: a
+ * runtime option bag (a JS source, a computed key) or a dynamic positional
+ * argument. Node's normalizeArgs reads the positionals, the Socket
+ * constructor validates its options, the module's connect() applies
+ * `options.timeout`, and Socket.prototype.connect validates the rest
+ * before the dial — in that order, with Node's exact errors. Every option
+ * this slice models is applied; the ones it does not (an onread interface,
+ * a caller-supplied lookup at run time) end in the compiler-rendered fence
+ * after their validation, never in a silent drop. */
+
+static bool scr_net_dyn_is_pipe_name(const ScrDyn *v) {
+  if (v == NULL || v->kind != SCR_DYN_STR) return false;
+  double n = scr_string_to_number(v->v.str);
+  return !(n >= 0);
+}
+
+static void scr_net_missing_args(void) {
+  static const char msg[] =
+      "The \"options\" or \"port\" or \"path\" argument must be specified";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_MISSING_ARGS");
+}
+
+/* validatePort: a number, or a non-empty trimmed numeric string, whose
+ * value is a 32-bit integer below 65536. 1 with *out set; 0 with
+ * ERR_SOCKET_BAD_PORT pending (the received tail is the value as given). */
+static bool scr_net_validate_port_dyn(const ScrDyn *v, const char *name, double *out) {
+  double n = 0;
+  bool ok = false;
+  if (v->kind == SCR_DYN_NUM) {
+    n = v->v.num;
+    ok = n >= 0 && n <= 65535 && trunc(n) == n;
+  } else if (v->kind == SCR_DYN_STR) {
+    ScrStr *trimmed = scr_str_trim(v->v.str);
+    n = scr_string_to_number(v->v.str);
+    ok = trimmed->len > 0 && n >= 0 && n <= 65535 && trunc(n) == n;
+    scr_str_release(trimmed);
+  }
+  if (ok) {
+    *out = n;
+    return true;
+  }
+  char detail[64], msg[192];
+  const char *d = scr_dyn_specific_type(v, detail, sizeof detail);
+  int len = snprintf(msg, sizeof msg, "%s should be >= 0 and < 65536. Received %s.", name, d);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, len < 0 ? 0 : (size_t)len, "ERR_SOCKET_BAD_PORT");
+  return false;
+}
+
+/* ERR_OUT_OF_RANGE over a runtime value ("The value of \"msecs\" is out
+ * of range. It must be a non-negative finite number. Received -1"). */
+static void scr_net_throw_out_of_range(const char *name, const char *why, const ScrDyn *v) {
+  char recv[64], msg[224];
+  const char *r;
+  if (v->kind == SCR_DYN_NUM) {
+    scr_num_received(v->v.num, recv);
+    r = recv;
+  } else {
+    r = scr_dyn_inspect_lite(v, recv, sizeof recv);
+  }
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"%s\" is out of range. It must be %s. Received %s", name, why,
+                     r);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, len < 0 ? 0 : (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+/* validateNumber(name, value): a number, else ERR_INVALID_ARG_TYPE. */
+static bool scr_net_validate_number_dyn(const ScrDyn *v, const char *name) {
+  if (v->kind == SCR_DYN_NUM) return true;
+  if (strchr(name, '.') != NULL) scr_dyn_prop_type_fail(name, "of type number", v);
+  else scr_dyn_arg_type_fail(name, "of type number", v);
+  return false;
+}
+
+/* validateInt32(name, value, min, max): number, integer, in range. */
+static bool scr_net_validate_int32_dyn(const ScrDyn *v, const char *name, double min, double max) {
+  if (!scr_net_validate_number_dyn(v, name)) return false;
+  if (!isfinite(v->v.num) || trunc(v->v.num) != v->v.num) {
+    scr_net_throw_out_of_range(name, "an integer", v);
+    return false;
+  }
+  if (v->v.num < min || v->v.num > max) {
+    char why[64];
+    snprintf(why, sizeof why, ">= %.0f && <= %.0f", min, max);
+    scr_net_throw_out_of_range(name, why, v);
+    return false;
+  }
+  return true;
+}
+
+/* validateAbortSignal(name, signal): undefined or an object carrying
+ * `aborted` (Node's `'aborted' in signal`). */
+static bool scr_net_validate_abort_signal(const ScrDyn *v, const char *name) {
+  if (v == NULL || v->kind == SCR_DYN_UNDEF) return true;
+  if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_get(v, "aborted", 7) != NULL) return true;
+  if (v->kind == SCR_DYN_HANDLE &&
+      (v->v.handle.tag == SCR_DYNH_ABORT_SIGNAL || v->v.handle.tag == SCR_DYNH_EVENT_TARGET))
+    return true;
+  scr_dyn_arg_type_fail(name, "an instance of AbortSignal", v);
+  return false;
+}
+
+/* util.inspect's rendering for ERR_INVALID_ARG_VALUE's Received tail
+ * ("{ port: false }", "{}", "{ path: '' }"), and for util.format('%s')'s
+ * object form in ERR_INVALID_IP_ADDRESS. `max_depth` mirrors inspect's
+ * depth option: values at or below it are expanded, deeper ones print as
+ * their constructor name ("[Object]", "[Array]"). */
+static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int max_depth) {
+  switch (v->kind) {
+  case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
+  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
+  case SCR_DYN_BOOL: scr_jb_puts(b, v->v.b ? "true" : "false"); return;
+  case SCR_DYN_NUM: {
+    char num[48];
+    scr_f64_to_str(v->v.num, num);
+    scr_jb_puts(b, num);
     return;
   }
+  case SCR_DYN_STR: {
+    ScrStr *q = scr_str_inspect_quoted(v->v.str, false);
+    scr_jb_write(b, q->data, q->len);
+    scr_str_release(q);
+    return;
+  }
+  case SCR_DYN_ARR:
+  case SCR_DYN_OBJ: {
+    bool arr = v->kind == SCR_DYN_ARR;
+    if (depth >= max_depth) {
+      scr_jb_puts(b, arr ? "[Array]" : "[Object]");
+      return;
+    }
+    ScrDyn *keys = arr ? NULL : scr_dyn_obj_keys(v);
+    double n = arr ? scr_dyn_arr_len(v) : (keys ? scr_dyn_arr_len(keys) : 0);
+    scr_jb_putc(b, arr ? '[' : '{');
+    if (n > 0) scr_jb_putc(b, ' ');
+    for (double i = 0; i < n; i++) {
+      if (i > 0) scr_jb_puts(b, ", ");
+      if (arr) {
+        ScrDyn *item = scr_dyn_arr_at(v, i);
+        scr_net_inspect_into(item, b, depth + 1, max_depth);
+        scr_dyn_release(item);
+        continue;
+      }
+      ScrDyn *key = scr_dyn_arr_at(keys, i);
+      if (key->kind == SCR_DYN_STR) {
+        bool ident = key->v.str->len > 0;
+        for (size_t c = 0; c < key->v.str->len && ident; c++) {
+          unsigned char ch = (unsigned char)key->v.str->data[c];
+          ident = ch == '_' || ch == '$' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                  (c > 0 && ch >= '0' && ch <= '9');
+        }
+        if (ident) {
+          scr_jb_write(b, key->v.str->data, key->v.str->len);
+        } else {
+          ScrStr *q = scr_str_inspect_quoted(key->v.str, false);
+          scr_jb_write(b, q->data, q->len);
+          scr_str_release(q);
+        }
+        scr_jb_puts(b, ": ");
+        const ScrDyn *val = scr_dyn_obj_get(v, key->v.str->data, key->v.str->len);
+        scr_net_inspect_into(val != NULL ? val : scr_dyn_undefined(), b, depth + 1,
+                             max_depth);
+      }
+      scr_dyn_release(key);
+    }
+    if (n > 0) scr_jb_putc(b, ' ');
+    scr_jb_putc(b, arr ? ']' : '}');
+    scr_dyn_release(keys);
+    return;
+  }
+  default: scr_jb_puts(b, "[object]"); return;
+  }
+}
+
+/* ERR_INVALID_ARG_VALUE over a runtime option bag. */
+static void scr_net_throw_arg_value(const char *name, const ScrDyn *v, const char *reason) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The ");
+  scr_jb_puts(&b, strchr(name, '.') != NULL ? "property '" : "argument '");
+  scr_jb_puts(&b, name);
+  scr_jb_puts(&b, "' ");
+  scr_jb_puts(&b, reason != NULL ? reason : "is invalid");
+  scr_jb_puts(&b, ". Received ");
+  scr_net_inspect_into(v, &b, 0, 2); /* inspect()'s default depth */
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(msg);
+}
+
+/* isIP over a value: its family, or 0. */
+static int scr_net_is_ip_dyn(const ScrDyn *v) {
+  if (v == NULL || v->kind != SCR_DYN_STR) return 0;
+  struct in_addr a4;
+  struct in6_addr a6;
+  if (v->v.str->len == 0) return 0;
+  if (inet_pton(AF_INET, v->v.str->data, &a4) == 1) return 4;
+  if (inet_pton(AF_INET6, v->v.str->data, &a6) == 1) return 6;
+  return 0;
+}
+
+/* ERR_INVALID_IP_ADDRESS over the value as given. The message is
+ * util.format('%s', value): a string goes in raw, anything else renders
+ * through inspect at the depth %s uses ("Invalid IP address: {}"). */
+static void scr_net_invalid_ip(const ScrDyn *v) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Invalid IP address: ");
+  if (v->kind == SCR_DYN_STR) {
+    scr_jb_write(&b, v->v.str->data, v->v.str->len);
+  } else {
+    scr_net_inspect_into(v, &b, 0, 1);
+  }
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_IP_ADDRESS");
+  scr_str_release(msg);
+}
+
+/* Node's guessHandleType spelling for the fd audit: the libuv handle
+ * types createHandle accepts are TCP (a socket) and PIPE; every other
+ * descriptor is ERR_INVALID_FD_TYPE("Unsupported fd type: FILE"). */
+static const char *scr_net_fd_type(int fd) {
+  struct stat st;
+  if (fstat(fd, &st) != 0) return "UNKNOWN";
+  if (S_ISSOCK(st.st_mode)) return "TCP";
+  if (S_ISFIFO(st.st_mode)) return "PIPE";
+  if (S_ISDIR(st.st_mode)) return "DIR";
+  if (S_ISCHR(st.st_mode)) return isatty(fd) ? "TTY" : "FILE";
+  return "FILE";
+}
+
+static void scr_net_throw_fd_type(const char *type) {
+  char msg[96];
+  int len = snprintf(msg, sizeof msg, "Unsupported fd type: %s", type);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len < 0 ? 0 : (size_t)len, "ERR_INVALID_FD_TYPE");
+}
+
+/* connect({ fd }): Node's createHandle ladder over the option — an int32,
+ * then a descriptor the socket layer can adopt. 1 with *out set; 0 with an
+ * exception pending. */
+static bool scr_net_fd_check_dyn(const ScrDyn *v, int *out) {
+  if (!scr_net_validate_int32_dyn(v, "fd", 0, 2147483647)) return false;
+  int fd = (int)v->v.num;
+  const char *type = scr_net_fd_type(fd);
+  if (strcmp(type, "TCP") != 0 && strcmp(type, "PIPE") != 0) {
+    scr_net_throw_fd_type(type);
+    return false;
+  }
+  *out = fd;
+  return true;
+}
+
+/* connect({ signal }): Node's stream-level addAbortSignal — an aborted
+ * signal destroys the socket with AbortError at the next tick, a live one
+ * registers the listener through events.addAbortListener (`add_abort`,
+ * NULL when the program never links the events unit). */
+static void scr_net_sock_abort_now(ScrNetSocket *s) {
+  if (s->close_emitted || s->had_error) return;
+  static const char text[] = "The operation was aborted";
+  if (s->pending_err == NULL) s->pending_err = scr_str_new(text, sizeof text - 1);
+  s->pending_code = "ABORT_ERR";
+  s->pending_name = "AbortError";
+  s->had_error = true;
+  if (s->connecting) s->closed_before_connect = true;
+  s->connecting = false;
+  scr_net_attempt_cancel(s);
+  scr_net_sock_destroy(s);
+}
+
+static ScrDyn *scr_net_sock_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrNetSocket *s = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (s != NULL) {
+    scr_net_sock_abort_now(s);
+    scr_net_sock_release(s);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
+                                   ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
+  if (signal->kind == SCR_DYN_UNDEF) return;
+  bool aborted = false;
+  const ScrDyn *a = scr_dyn_obj_get(signal, "aborted", 7);
+  if (a != NULL) aborted = scr_net_dyn_truthy(a);
+  ScrClosure *listener = scr_closure_new(scr_net_sock_abort_thunk, 1);
+  listener->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
+  scr_box_set_ref(listener->caps[0], scr_net_sock_retain(s));
+  ScrDyn *fn = scr_dyn_new_func(listener, scr_net_sock_abort_thunk, 0, "()", "onAbort");
+  if (aborted) {
+    /* process.nextTick(onAbort): the destroy lands after the connect call */
+    ScrClosure *job = scr_closure_new(scr_net_sock_abort_thunk, 1);
+    job->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
+    scr_box_set_ref(job->caps[0], scr_net_sock_retain(s));
+    scr_next_tick(job);
+  } else if (add_abort != NULL) {
+    s->abort_dispose = add_abort((ScrDyn *)signal, fn);
+  }
+  scr_dyn_release(fn);
+}
+
+/* net.connect/createConnection over dynamic arguments (the checked-
+ * dynamic lane): the positional values as Node's normalizeArgs reads
+ * them, with a statically function-typed connect listener peeled off by
+ * the lowering. A last argument that only turns out to be a function at
+ * run time becomes the listener here, as normalizeArgs would read it.
+ * The result is +1, or NULL with an exception pending. */
+ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                                  ScrClosure *cb /*moves, nullable*/,
+                                  ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                  const ScrStr *fence) {
+  if (a0 == NULL) a0 = scr_dyn_undefined();
+  if (a1 == NULL) a1 = scr_dyn_undefined();
+  if (a2 == NULL) a2 = scr_dyn_undefined();
+  if (cb == NULL) {
+    /* normalizeArgs's `cb = args[args.length - 1]` over the arguments
+     * that are present (an explicit undefined is present but not a
+     * function, so the answer is the same either way) */
+    const ScrDyn *last =
+        a2->kind != SCR_DYN_UNDEF ? a2 : a1->kind != SCR_DYN_UNDEF ? a1 : a0;
+    if (last->kind == SCR_DYN_FUNC) cb = scr_dyn_listener_closure0(last);
+  }
+  const ScrDyn *opts = NULL;
+  const ScrDyn *port = NULL;
+  const ScrDyn *host = NULL;
+  const ScrDyn *path = NULL;
+  /* normalizeArgs: `typeof arg0 === "object" && arg0 !== null` is the
+   * options bag — a plain object, an array, a view, a promise or a native
+   * handle all answer "object", and only a plain object carries port, host
+   * and path. A pipe-name string is the path, everything else is the port
+   * (with a string second argument as the host). connect() and
+   * connect(undefined) reach the same missing-argument error, so an absent
+   * argument is its undefined value. */
+  bool opts_keys = false;
+  switch (a0->kind) {
+  case SCR_DYN_OBJ:
+    opts = a0;
+    opts_keys = true;
+    break;
+  case SCR_DYN_ARR:
+  case SCR_DYN_BYTES:
+  case SCR_DYN_TYPED_REF:
+  case SCR_DYN_PROMISE:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_HANDLE:
+    opts = a0;
+    break;
+  default:
+    if (scr_net_dyn_is_pipe_name(a0)) {
+      path = a0;
+    } else {
+      port = a0;
+      if (a1->kind == SCR_DYN_STR) host = a1;
+    }
+    break;
+  }
+  if (opts_keys) {
+    port = scr_dyn_obj_get(opts, "port", 4);
+    host = scr_dyn_obj_get(opts, "host", 4);
+    path = scr_dyn_obj_get(opts, "path", 4);
+  }
+
+  /* the Socket constructor's ladder */
   static const char *const om[] = { "objectMode", "readableObjectMode", "writableObjectMode" };
-  for (size_t i = 0; i < 3; i++) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, om[i], strlen(om[i]));
+  bool keepalive = false, ka_given = false;
+  double ka_delay = 0;
+  double tos = 0;
+  bool tos_given = false;
+  int adopt_fd = -1;
+  const ScrDyn *signal = NULL;
+  const ScrDyn *block_list = NULL;
+  if (opts_keys) {
+    for (size_t i = 0; i < 3; i++) {
+      const ScrDyn *v = scr_dyn_obj_get(opts, om[i], strlen(om[i]));
+      if (v != NULL && scr_net_dyn_truthy(v)) {
+        char name[48];
+        snprintf(name, sizeof name, "options.%s", om[i]);
+        scr_dyn_arg_value_fail(name, "is not supported", v);
+        goto fail;
+      }
+    }
+    const ScrDyn *v = scr_dyn_obj_get(opts, "keepAliveInitialDelay",
+                                     strlen("keepAliveInitialDelay"));
+    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_net_validate_number_dyn(v, "options.keepAliveInitialDelay")) goto fail;
+      ka_delay = v->v.num < 0 ? 0 : v->v.num;
+      ka_given = true;
+    }
+    v = scr_dyn_obj_get(opts, "handle", 6);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+      /* an adopted handle (net.BoundSocket or a native wrap) is not
+       * modeled by this entry: the fence reports it after validation */
+      scr_throw_lowering_fence(fence);
+      goto fail;
+    }
+    v = scr_dyn_obj_get(opts, "fd", 2);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_net_fd_check_dyn(v, &adopt_fd)) goto fail;
+    }
+    v = scr_dyn_obj_get(opts, "onread", 6);
+    if (v != NULL && v->kind == SCR_DYN_OBJ) {
+      const ScrDyn *buf = scr_dyn_obj_get(v, "buffer", 6);
+      const ScrDyn *cbf = scr_dyn_obj_get(v, "callback", 8);
+      if (buf != NULL && cbf != NULL && cbf->kind == SCR_DYN_FUNC) {
+        /* the custom read interface: an unmodeled transport shape */
+        scr_throw_lowering_fence(fence);
+        goto fail;
+      }
+    }
+    v = scr_dyn_obj_get(opts, "noDelay", 7);
+    (void)v; /* TCP_NODELAY stays the runtime's default: a documented divergence */
+    v = scr_dyn_obj_get(opts, "keepAlive", 9);
+    if (v != NULL && scr_net_dyn_truthy(v)) keepalive = true;
+    v = scr_dyn_obj_get(opts, "typeOfService", 13);
+    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_net_validate_int32_dyn(v, "options.typeOfService", 0, 255)) goto fail;
+      tos = v->v.num;
+      tos_given = true;
+    }
+    /* `if (options.signal)` is the gate: a falsy signal is never a signal */
+    signal = scr_dyn_obj_get(opts, "signal", 6);
+    if (signal != NULL && scr_net_dyn_truthy(signal)) {
+      if (!scr_net_validate_abort_signal(signal, "signal")) goto fail;
+    } else {
+      signal = NULL;
+    }
+    v = scr_dyn_obj_get(opts, "blockList", 9);
     if (v != NULL && scr_net_dyn_truthy(v)) {
-      char name[48];
-      snprintf(name, sizeof name, "options.%s", om[i]);
-      scr_dyn_arg_value_fail(name, "is not supported", v);
-      return;
+      if (!scr_net_is_block_list(v)) {
+        scr_dyn_prop_type_fail("options.blockList", "an net.BlockList", v);
+        goto fail;
+      }
+      block_list = v;
     }
   }
-  const ScrDyn *port = scr_dyn_obj_get(opts, "port", 4);
-  if (port != NULL && port->kind != SCR_DYN_UNDEF) {
-    bool ok = port->kind == SCR_DYN_NUM && trunc(port->v.num) == port->v.num &&
-              port->v.num >= 0 && port->v.num < 65536;
-    if (!ok && port->kind == SCR_DYN_STR) {
-      ScrStr *ps = scr_str_retain(port->v.str);
-      double n = scr_string_to_number(ps);
-      scr_str_release(ps);
-      ok = n == n && trunc(n) == n && n >= 0 && n < 65536 && port->v.str->len > 0;
-    }
-    if (!ok) {
-      char detail[64], msg[160];
-      const char *d = scr_dyn_specific_type(port, detail, sizeof detail);
-      int len = snprintf(msg, sizeof msg,
-                         "Port should be >= 0 and < 65536. Received %s.", d);
-      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_SOCKET_BAD_PORT");
-      return;
+
+  /* net.connect's own `if (options.timeout) socket.setTimeout(...)` */
+  double timeout_ms = 0;
+  if (opts_keys) {
+    const ScrDyn *t = scr_dyn_obj_get(opts, "timeout", 7);
+    if (t != NULL && scr_net_dyn_truthy(t)) {
+      if (t->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("msecs", "of type number", t);
+        goto fail;
+      }
+      if (!(isfinite(t->v.num) && t->v.num >= 0)) {
+        scr_net_throw_out_of_range("msecs", "a non-negative finite number", t);
+        goto fail;
+      }
+      timeout_ms = t->v.num > 2147483647.0 ? 2147483647.0 : t->v.num;
     }
   }
-  const ScrDyn *host = scr_dyn_obj_get(opts, "host", 4);
-  if (host != NULL && host->kind != SCR_DYN_UNDEF && host->kind != SCR_DYN_STR) {
-    scr_dyn_prop_type_fail("options.host", "of type string", host);
-    return;
+
+  /* Socket.prototype.connect: `port === undefined && path == null` */
+  bool port_undef = port == NULL || port->kind == SCR_DYN_UNDEF;
+  bool path_nullish = path == NULL || path->kind == SCR_DYN_NULL || path->kind == SCR_DYN_UNDEF;
+  if (port_undef && path_nullish) {
+    scr_net_missing_args();
+    goto fail;
   }
-  const ScrDyn *asf = scr_dyn_obj_get(opts, "autoSelectFamily", 16);
-  if (asf != NULL && asf->kind != SCR_DYN_UNDEF && asf->kind != SCR_DYN_BOOL) {
-    scr_dyn_prop_type_fail("options.autoSelectFamily", "of type boolean", asf);
-    return;
+  if (path != NULL && !path_nullish && scr_net_dyn_truthy(path)) {
+    /* the pipe branch: `!!path` decides, and the path must be a string */
+    if (path->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail("options.path", "of type string", path);
+      goto fail;
+    }
+    ScrNetSocket *ps = scr_net_connect_path(path->v.str, false);
+    if (timeout_ms > 0) ps->timeout_ms = timeout_ms;
+    if (signal != NULL) scr_net_sock_arm_abort(ps, signal, add_abort);
+    if (cb != NULL) scr_net_ls_add(&ps->conn_ls, cb, NULL, true);
+    return ps;
   }
-  const ScrDyn *att = scr_dyn_obj_get(opts, "autoSelectFamilyAttemptTimeout", 30);
-  if (att != NULL && att->kind != SCR_DYN_UNDEF &&
-      !scr_net_attempt_timeout_chk(att, "options.autoSelectFamilyAttemptTimeout")) {
-    return;
+
+  /* lookupAndConnect opens with `const host = options.host || 'localhost'`
+   * and validates that resolved value before reading anything else: a
+   * truthy non-string host is a type error, and the null-byte check only
+   * ever concerns a host that was actually given. */
+  ScrStr *host_str = NULL;
+  if (host != NULL && scr_net_dyn_truthy(host)) {
+    if (host->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail("options.host", "of type string", host);
+      goto fail;
+    }
+    host_str = host->v.str;
   }
-  scr_throw_lowering_fence(fence);
+  if (!scr_net_host_chk(host_str)) goto fail;
+  char local_ip[64] = "";
+  bool local_set = false;
+  int local_port = 0;
+  if (opts_keys) {
+    const ScrDyn *la = scr_dyn_obj_get(opts, "localAddress", 12);
+    if (la != NULL && scr_net_dyn_truthy(la)) {
+      if (scr_net_is_ip_dyn(la) == 0) {
+        scr_net_invalid_ip(la);
+        goto fail;
+      }
+      snprintf(local_ip, sizeof local_ip, "%.*s",
+               (int)(la->v.str->len < 63 ? la->v.str->len : 63), la->v.str->data);
+      local_set = true;
+    }
+    const ScrDyn *lp = scr_dyn_obj_get(opts, "localPort", 9);
+    if (lp != NULL && scr_net_dyn_truthy(lp)) {
+      if (!scr_net_validate_number_dyn(lp, "options.localPort")) goto fail;
+      local_port = (int)lp->v.num;
+    }
+  }
+  double port_num = 0;
+  if (!port_undef) {
+    if (port->kind != SCR_DYN_NUM && port->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail("options.port", "one of type number or string", port);
+      goto fail;
+    }
+    if (!scr_net_validate_port_dyn(port, "Port", &port_num)) goto fail;
+  }
+  bool auto_sel = scr_net_get_default_autosel();
+  double attempt_ms = -1;
+  int family = 0;
+  int ai_hints = 0;
+  bool lookup_dyn = false;
+  if (opts_keys) {
+    const ScrDyn *asf = scr_dyn_obj_get(opts, "autoSelectFamily", 16);
+    if (asf != NULL && asf->kind != SCR_DYN_UNDEF && asf->kind != SCR_DYN_NULL) {
+      if (asf->kind != SCR_DYN_BOOL) {
+        scr_dyn_prop_type_fail("options.autoSelectFamily", "of type boolean", asf);
+        goto fail;
+      }
+      auto_sel = asf->v.b;
+    }
+    const ScrDyn *att = scr_dyn_obj_get(opts, "autoSelectFamilyAttemptTimeout", 30);
+    if (att != NULL && att->kind != SCR_DYN_UNDEF && att->kind != SCR_DYN_NULL) {
+      if (!scr_net_attempt_timeout_chk(att, "options.autoSelectFamilyAttemptTimeout")) goto fail;
+      attempt_ms = att->v.num < 10 ? 10 : att->v.num;
+    }
+    /* an IP-literal host dials directly: family/hints/lookup stay unread,
+     * as Node's isIP shortcut does. The resolved host is options.host ||
+     * 'localhost', so an absent host is looked up and its dns options are
+     * validated. */
+    if (host_str == NULL || scr_net_is_ip_dyn(host) == 0) {
+      const ScrDyn *lk = scr_dyn_obj_get(opts, "lookup", 6);
+      if (lk != NULL && lk->kind != SCR_DYN_UNDEF && lk->kind != SCR_DYN_NULL) {
+        if (lk->kind != SCR_DYN_FUNC) {
+          scr_dyn_prop_type_fail("options.lookup", "of type function", lk);
+          goto fail;
+        }
+        lookup_dyn = true; /* validated; the runtime function stays fenced */
+      }
+      const ScrDyn *fam = scr_dyn_obj_get(opts, "family", 6);
+      if (fam != NULL && fam->kind != SCR_DYN_UNDEF && fam->kind != SCR_DYN_NULL) {
+        if (fam->kind == SCR_DYN_STR && fam->v.str->len == 4 &&
+            memcmp(fam->v.str->data, "IPv4", 4) == 0) {
+          family = 4;
+        } else if (fam->kind == SCR_DYN_STR && fam->v.str->len == 4 &&
+                   memcmp(fam->v.str->data, "IPv6", 4) == 0) {
+          family = 6;
+        } else if (fam->kind == SCR_DYN_NUM && (fam->v.num == 0 || fam->v.num == 4 ||
+                                                fam->v.num == 6)) {
+          family = (int)fam->v.num;
+        } else {
+          scr_dyn_arg_value_fail("options.family", "must be one of: 0, 4, 6", fam);
+          goto fail;
+        }
+      }
+      const ScrDyn *hints = scr_dyn_obj_get(opts, "hints", 5);
+      if (hints != NULL && hints->kind != SCR_DYN_UNDEF && hints->kind != SCR_DYN_NULL) {
+        if (hints->kind != SCR_DYN_NUM) {
+          scr_dyn_prop_type_fail("options.hints", "of type number", hints);
+          goto fail;
+        }
+        uint32_t h = (uint32_t)(int64_t)hints->v.num;
+        if ((h & ~(uint32_t)(AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL)) != 0) {
+          ScrDyn *shown = scr_dyn_new_num((double)h);
+          scr_dyn_arg_value_fail("hints", "is invalid", shown);
+          scr_dyn_release(shown);
+          goto fail;
+        }
+        ai_hints = (int)h;
+      }
+    }
+  }
+  if (lookup_dyn) {
+    /* every validation passed; a caller-supplied resolver at run time is
+     * the honest tail of this entry */
+    scr_throw_lowering_fence(fence);
+    goto fail;
+  }
+
+  ScrNetSocket *s = scr_net_sock_new();
+  s->peer_port = (int)port_num;
+  scr_net_sock_set_peer(s, host_str);
+  if (local_set) {
+    snprintf(s->local_ip, sizeof s->local_ip, "%s", local_ip);
+    s->local_set = true;
+  }
+  s->local_port = local_port;
+  s->dial_family = family;
+  s->dial_hints = ai_hints;
+  s->autosel = auto_sel && !local_set && family != 4 && family != 6;
+  if (attempt_ms > 0) s->attempt_ms = attempt_ms;
+  s->timeout_ms = timeout_ms;
+  if (block_list != NULL) s->block_list = scr_dyn_retain((ScrDyn *)block_list);
+  s->adopt_fd = adopt_fd;
+  if (tos_given) {
+    ScrNetSocket *kept = scr_net_sock_set_tos(s, tos);
+    scr_net_sock_release(kept);
+  }
+  if (keepalive || ka_given) scr_net_sock_set_keepalive(s, keepalive, ka_delay);
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  if (signal != NULL) scr_net_sock_arm_abort(s, signal, add_abort);
+  scr_net_sock_dial_peer(s);
+  scr_net_sock_register(s);
+  if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  return s;
+
+fail:
+  if (cb != NULL) scr_closure_release(cb);
+  return NULL;
 }
 
 /* The port of listen(arg[, ...]) for a checked-dynamic first argument, as
@@ -3469,6 +4179,316 @@ double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence) {
   double port;
   if (scr_net_listen_port_check(v, &port) < 0) scr_throw_lowering_fence(fence);
   return port;
+}
+
+/* listen({ signal }): Node's addServerAbortSignalOption — the signal is
+ * validated first ('options.signal'), an aborted one closes the server at
+ * the next tick, a live one registers a close listener through
+ * events.addAbortListener (`add_abort`, NULL when the program never links
+ * the event-target unit) whose disposable drops at 'close'. False with
+ * the exception pending. */
+static ScrDyn *scr_net_server_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrNetServer *s = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (s != NULL) {
+    /* Node's emitCloseNT: `if (!self._handle) return; self.close()` */
+    if (s->listening) scr_net_server_close_direct(s, NULL);
+    scr_net_server_release(s);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrClosure *scr_net_server_abort_job(ScrNetServer *s) {
+  ScrClosure *job = scr_closure_new((void *)&scr_net_server_abort_thunk, 1);
+  job->caps[0] = scr_box_new_obj(&scr_net_server_retain_v, &scr_net_server_release_v, NULL);
+  scr_box_set_ref(job->caps[0], scr_net_server_retain(s));
+  return job;
+}
+
+static bool scr_net_server_arm_abort(ScrNetServer *s, const ScrDyn *signal,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
+  if (signal == NULL || signal->kind == SCR_DYN_UNDEF) return true;
+  if (!scr_net_validate_abort_signal(signal, "options.signal")) return false;
+  bool aborted = false;
+  const ScrDyn *a = scr_dyn_obj_get(signal, "aborted", 7);
+  if (a != NULL) aborted = scr_net_dyn_truthy(a);
+  if (aborted) {
+    scr_next_tick(scr_net_server_abort_job(s));
+    return true;
+  }
+  if (add_abort == NULL) return true;
+  ScrClosure *listener = scr_net_server_abort_job(s);
+  ScrDyn *fn = scr_dyn_new_func(listener, scr_net_server_abort_thunk, 0, "()", "onAbort");
+  s->abort_dispose = add_abort((ScrDyn *)signal, fn);
+  scr_dyn_release(fn);
+  return true;
+}
+
+/* Node's toNumber: Number(x) when it is >= 0, else false (0 here). */
+static double scr_net_dyn_to_number(const ScrDyn *v, bool present) {
+  if (!present || v == NULL) return 0;
+  double n = scr_dyn_number_coerce(v);
+  return n >= 0 ? n : 0;
+}
+
+/* The resolved backlog: Node's `options.backlog || backlogFromArgs`, then
+ * listenOnServerFD's `backlog ||= 511`. */
+static int scr_net_dyn_backlog(const ScrDyn *opt, double from_args) {
+  double n = 0;
+  if (opt != NULL && scr_net_dyn_truthy(opt)) {
+    n = scr_dyn_number_coerce(opt);
+    if (!(n > 0) || n != n) n = 0;
+  } else if (from_args > 0) {
+    n = from_args;
+  }
+  if (n <= 0) return 0; /* 0 = the callers' default (511) */
+  return n > 0x7fffffff ? 0x7fffffff : (int)n;
+}
+
+/* Server.prototype.listen over dynamic arguments. normalizeArgs reads the
+ * positionals (the lowering peels the trailing callback), the already-
+ * listening check and the callback registration come first, then the
+ * option bag's handle, signal, fd, port and path in Node's order. The
+ * typed listen entries keep their fast paths; this one follows a bag the
+ * compiler cannot type. `fence` reports the parts still unmodeled (an
+ * adopted TCP handle, a caller lookup) after their validation. */
+void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                        ScrClosure *cb /*moves, nullable*/,
+                        ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *), const ScrStr *fence) {
+  if (a0 == NULL) a0 = scr_dyn_undefined();
+  if (a1 == NULL) a1 = scr_dyn_undefined();
+  if (a2 == NULL) a2 = scr_dyn_undefined();
+  /* normalizeArgs: the last argument is the callback when it is a
+   * function. The lowering peels a statically function-typed one into
+   * `cb`; a value that is a function only at run time arrives in its
+   * positional slot and becomes the listener here. */
+  if (cb == NULL) {
+    const ScrDyn *last =
+        a2->kind != SCR_DYN_UNDEF ? a2 : a1->kind != SCR_DYN_UNDEF ? a1 : a0;
+    if (last->kind == SCR_DYN_FUNC) cb = scr_dyn_listener_closure0(last);
+  }
+  /* normalizeArgs: `typeof arg0 === "object" && arg0 !== null` is the bag —
+   * a plain object, an array, a view, a promise or a native handle all
+   * answer "object", and only a plain object carries the keys the ladder
+   * reads. A pipe-name string is the path, anything else the port with a
+   * string second argument as the host. */
+  ScrDyn *made = NULL;
+  const ScrDyn *bag = NULL;
+  bool bag_keys = false;
+  switch (a0->kind) {
+  case SCR_DYN_OBJ:
+    bag = a0;
+    bag_keys = true;
+    break;
+  case SCR_DYN_ARR:
+  case SCR_DYN_BYTES:
+  case SCR_DYN_TYPED_REF:
+  case SCR_DYN_PROMISE:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_HANDLE:
+    bag = a0;
+    break;
+  default:
+    if (scr_net_dyn_is_pipe_name(a0)) {
+      made = scr_dyn_new_obj();
+      scr_dyn_obj_set(made, "path", 4, scr_dyn_retain((ScrDyn *)a0));
+    } else {
+      made = scr_dyn_new_obj();
+      scr_dyn_obj_set(made, "port", 4, scr_dyn_retain((ScrDyn *)a0));
+      if (a1->kind == SCR_DYN_STR) scr_dyn_obj_set(made, "host", 4, scr_dyn_retain((ScrDyn *)a1));
+    }
+    bag = made;
+    bag_keys = true;
+    break;
+  }
+
+  /* Node's backlogFromArgs: `toNumber(args[1]) || toNumber(args[2])` */
+  double backlog_from_args = scr_net_dyn_to_number(a1, true);
+  if (backlog_from_args == 0) backlog_from_args = scr_net_dyn_to_number(a2, true);
+
+  /* the adopted bound socket: `options instanceof BoundSocket` or
+   * `options.handle instanceof BoundSocket` */
+  const ScrDyn *handle = bag_keys ? scr_dyn_obj_get(bag, "handle", 6) : NULL;
+  const ScrDyn *bound = NULL;
+  if (a0->kind == SCR_DYN_HANDLE && a0->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET)
+    bound = a0;
+  else if (handle != NULL && handle->kind == SCR_DYN_HANDLE &&
+           handle->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET)
+    bound = handle;
+
+  if (s->listening) {
+    scr_dyn_release(made);
+    scr_net_listen_again(cb);
+    return;
+  }
+  if (bound != NULL) {
+    scr_dyn_release(made);
+    scr_net_listen_bound_cb(s, bound, cb);
+    return;
+  }
+  /* the callback registers before any validation, as in Node */
+  if (!scr_net_listen_add_cb(s, cb)) {
+    scr_dyn_release(made);
+    return;
+  }
+
+  if (!bag_keys) {
+    /* an object of another kind — an array, a view, a promise, a proxy — has
+     * no `port` or `path` of its own, so Node's `in` checks are both false
+     * and the ladder ends in ERR_INVALID_ARG_VALUE. A live net.Server or
+     * net.Socket instead carries a `_handle` Node adopts, which the dynamic
+     * lane does not model: fence that case rather than report the wrong
+     * error. */
+    if (a0->kind == SCR_DYN_HANDLE) {
+      bool live = (a0->v.handle.tag == SCR_DYNH_NET_SERVER &&
+                   ((const ScrNetServer *)a0->v.handle.ptr)->fd >= 0) ||
+                  (a0->v.handle.tag == SCR_DYNH_NET_SOCKET &&
+                   ((const ScrNetSocket *)a0->v.handle.ptr)->fd >= 0);
+      if (live) {
+        scr_dyn_release(made);
+        scr_throw_lowering_fence(fence);
+        return;
+      }
+    }
+    scr_net_throw_arg_value("options", bag, "must have the property \"port\" or \"path\"");
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* `options = options._handle || options.handle || options` — an adopted
+   * handle object drives the rest of the ladder: not modeled, fenced */
+  const ScrDyn *inner = scr_dyn_obj_get(bag, "_handle", 7);
+  if (inner == NULL || !scr_net_dyn_truthy(inner)) inner = handle;
+  if (inner != NULL && scr_net_dyn_truthy(inner)) {
+    scr_dyn_release(made);
+    scr_throw_lowering_fence(fence);
+    return;
+  }
+
+  const ScrDyn *o_signal = scr_dyn_obj_get(bag, "signal", 6);
+  const ScrDyn *o_fd = scr_dyn_obj_get(bag, "fd", 2);
+  const ScrDyn *o_port = scr_dyn_obj_get(bag, "port", 4);
+  const ScrDyn *o_host = scr_dyn_obj_get(bag, "host", 4);
+  const ScrDyn *o_path = scr_dyn_obj_get(bag, "path", 4);
+  const ScrDyn *o_backlog = scr_dyn_obj_get(bag, "backlog", 7);
+  const ScrDyn *o_reuse = scr_dyn_obj_get(bag, "reusePort", 9);
+  const ScrDyn *o_ipv6 = scr_dyn_obj_get(bag, "ipv6Only", 8);
+  bool reuse_port = o_reuse != NULL && o_reuse->kind == SCR_DYN_BOOL && o_reuse->v.b;
+  bool ipv6_only = o_ipv6 != NULL && o_ipv6->kind == SCR_DYN_BOOL && o_ipv6->v.b;
+  int backlog = scr_net_dyn_backlog(o_backlog, backlog_from_args);
+
+  /* addServerAbortSignalOption */
+  if (!scr_net_server_arm_abort(s, o_signal, add_abort)) {
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* (handle, ...) by descriptor: a non-negative number adopts it */
+  if (o_fd != NULL && o_fd->kind == SCR_DYN_NUM && o_fd->v.num >= 0) {
+    double fdv = o_fd->v.num;
+    bool usable = trunc(fdv) == fdv && fdv <= 2147483647 &&
+                  strcmp(scr_net_fd_type((int)fdv), "TCP") == 0;
+    if (!usable) {
+      /* Node's createServerHandle: not an fd it can listen on — the
+       * deferred EINVAL, no address in the message */
+      char msg[64];
+      int len = snprintf(msg, sizeof msg, "listen %s: %s", scr_net_errname(EINVAL),
+                         scr_net_uv_reason(EINVAL));
+      if (!s->pending_err) s->pending_err = scr_str_new(msg, len < 0 ? 0 : (size_t)len);
+      scr_net_server_register(s);
+      scr_dyn_release(made);
+      return;
+    }
+    int fd = (int)fdv;
+    if (listen(fd, backlog > 0 ? backlog : 511) != 0) {
+      int err = scr_net_fd_uv_errno(errno);
+      char msg[96];
+      int len = snprintf(msg, sizeof msg, "listen %s: %s", scr_net_errname(err),
+                         scr_net_uv_reason(err));
+      if (!s->pending_err) s->pending_err = scr_str_new(msg, len < 0 ? 0 : (size_t)len);
+      scr_net_server_register(s);
+      scr_dyn_release(made);
+      return;
+    }
+    struct sockaddr_storage bound_sa;
+    socklen_t blen = sizeof bound_sa;
+    memset(&bound_sa, 0, sizeof bound_sa);
+    if (getsockname(fd, (struct sockaddr *)&bound_sa, &blen) == 0) {
+      s->port = bound_sa.ss_family == AF_INET6
+                    ? ntohs(((struct sockaddr_in6 *)&bound_sa)->sin6_port)
+                    : ntohs(((struct sockaddr_in *)&bound_sa)->sin_port);
+      s->bound_v6 = bound_sa.ss_family == AF_INET6;
+    }
+    scr_net_server_capture_listen(s);
+    s->fd = fd;
+    s->listening = true;
+    s->emit_listening = true;
+    scr_net_watch_read(fd, s, true);
+    scr_net_server_register(s);
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* listen(), listen(null), listen(cb) and options whose port is null or
+   * an explicit undefined: bind an arbitrary port */
+  bool port_unset = a0->kind == SCR_DYN_FUNC ||
+                    (o_port != NULL && (o_port->kind == SCR_DYN_NULL ||
+                                        o_port->kind == SCR_DYN_UNDEF));
+  if (port_unset) {
+    scr_dyn_obj_set((ScrDyn *)bag, "port", 4, scr_dyn_new_num(0));
+    o_port = scr_dyn_obj_get(bag, "port", 4);
+  }
+
+  if (o_port != NULL && (o_port->kind == SCR_DYN_NUM || o_port->kind == SCR_DYN_STR)) {
+    double port = 0;
+    if (!scr_net_validate_port_dyn(o_port, "options.port", &port)) {
+      scr_dyn_release(made);
+      return;
+    }
+    ScrStr *host = NULL;
+    if (o_host != NULL && o_host->kind != SCR_DYN_UNDEF && o_host->kind != SCR_DYN_NULL &&
+        scr_net_dyn_truthy(o_host)) {
+      if (!scr_net_listen_hostname_chk(o_host)) {
+        scr_dyn_release(made);
+        return;
+      }
+      host = o_host->v.str;
+    }
+    if (host != NULL) {
+      scr_net_listen_opts_impl(s, port, host, ipv6_only, reuse_port, backlog, NULL);
+    } else {
+      scr_net_listen_any(s, port, reuse_port, ipv6_only, backlog, NULL);
+    }
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* (path[, backlog][, cb]) or options.path: a Unix socket / Windows pipe */
+  if (o_path != NULL && o_path->kind == SCR_DYN_STR && scr_net_dyn_is_pipe_name(o_path)) {
+    const ScrDyn *readable = scr_dyn_obj_get(bag, "readableAll", 11);
+    const ScrDyn *writable = scr_dyn_obj_get(bag, "writableAll", 11);
+    bool ra = readable != NULL && scr_net_dyn_truthy(readable);
+    bool wa = writable != NULL && scr_net_dyn_truthy(writable);
+    if (o_path->v.str->data[0] == '\0' && (ra || wa)) {
+      scr_net_throw_arg_value("options", bag,
+                              "can not set readableAll or writableAllt to true when path is "
+                              "abstract unix socket");
+      scr_dyn_release(made);
+      return;
+    }
+    scr_net_listen_path_impl(s, o_path->v.str, backlog, NULL);
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* the tail: no usable port or path — Node's two ERR_INVALID_ARG_VALUE forms */
+  if (!scr_dyn_obj_enumerable(bag, "port", 4) && !scr_dyn_obj_enumerable(bag, "path", 4)) {
+    scr_net_throw_arg_value("options", bag, "must have the property \"port\" or \"path\"");
+  } else {
+    scr_net_throw_arg_value("options", bag, NULL);
+  }
+  scr_dyn_release(made);
 }
 
 /* A dial the caller starts LATER (the http agent's maxSockets queue):
@@ -3622,12 +4642,12 @@ void scr_net_server_address_check(ScrNetServer *s) {
 
 /* server.listen(path[, cb]): binds a Unix socket now; a failure is the
  * deferred 'error', success the deferred 'listening', as for a port. */
-void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
-                         ScrClosure *cb /*moves, nullable*/) {
+static void scr_net_listen_path_impl(ScrNetServer *s, ScrStr *path /*borrowed*/, int backlog,
+                                     ScrClosure *cb /*moves, nullable*/) {
   /* Node's isPipeName: a string that reads as a non-negative number is a port */
   double port = scr_string_to_number(path);
   if (port >= 0) {
-    scr_net_listen_any(s, port, false, cb);
+    scr_net_listen_any(s, port, false, false, backlog, cb);
     return;
   }
   if (s->listening) {
@@ -3651,7 +4671,8 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
       abort();
     }
     scr_net_nonblock(fd);
-    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(fd, 511) == 0) {
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0 &&
+        listen(fd, backlog > 0 ? backlog : 511) == 0) {
       s->fd = fd;
       s->listening = true;
       s->emit_listening = true;
@@ -3680,6 +4701,11 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
   if (!s->pending_err) s->pending_err = scr_jb_finish(&b);
   else scr_str_release(scr_jb_finish(&b));
   scr_net_server_register(s); /* the sweep delivers the failure */
+}
+
+void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
+                         ScrClosure *cb /*moves, nullable*/) {
+  scr_net_listen_path_impl(s, path, 0, cb);
 }
 
 /* ── the caller-lookup dial (net.connect with a lookup option) ─────────
@@ -3796,6 +4822,7 @@ static void scr_net_attempt_timed_out(ScrNetSocket *s) {
   scr_net_attempt_queue(s, SCR_NET_ATTEMPT_TIMEOUT, s->peer_ip, s->attempt_family, NULL);
   scr_str_release(s->dial_err);
   s->dial_err = scr_str_new(msg, strlen(msg));
+  s->dial_err_code = NULL;
   scr_net_close_fd_raw(s->fd);
   s->fd = -1;
   s->read_armed = s->write_armed = false;
@@ -3806,6 +4833,42 @@ static void scr_net_attempt_timed_out(ScrNetSocket *s) {
 /* Dials one IP now. Success (established or in progress) answers true;
  * failure records the message (LAST-wins — the retry chain's contract),
  * closes any fd, and answers false without emitting. */
+/* connect({ localAddress, localPort }): Node's internalConnect binds the
+ * local address before the socket joins the peer. 0 = bound or nothing to
+ * bind; -1 = the bind failed, and err carries Node's
+ * ExceptionWithHostPort shape ("bind EADDRNOTAVAIL 192.0.2.1:1234"). */
+static int scr_net_sock_bind_local(ScrNetSocket *s, int fd, int family, char *err, size_t errcap) {
+  if (!s->local_set && s->local_port == 0) return 0;
+  const char *addr = s->local_set ? s->local_ip : (family == 6 ? "::" : "0.0.0.0");
+  int rc;
+  if (family == 6) {
+    struct sockaddr_in6 b;
+    memset(&b, 0, sizeof b);
+    b.sin6_family = AF_INET6;
+    b.sin6_port = htons((uint16_t)s->local_port);
+    if (inet_pton(AF_INET6, addr, &b.sin6_addr) != 1) {
+      snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      return -1;
+    }
+    rc = bind(fd, (struct sockaddr *)&b, sizeof b);
+  } else {
+    struct sockaddr_in b;
+    memset(&b, 0, sizeof b);
+    b.sin_family = AF_INET;
+    b.sin_port = htons((uint16_t)s->local_port);
+    if (inet_pton(AF_INET, addr, &b.sin_addr) != 1) {
+      snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      return -1;
+    }
+    rc = bind(fd, (struct sockaddr *)&b, sizeof b);
+  }
+  if (rc != 0) {
+    snprintf(err, errcap, "bind %s %s:%d", scr_net_errname(errno), addr, s->local_port);
+    return -1;
+  }
+  return 0;
+}
+
 static bool scr_net_sock_dial_ip(ScrNetSocket *s, const ScrStr *ip) {
   char h[64];
   snprintf(h, sizeof h, "%.*s", (int)(ip->len < 63 ? ip->len : 63), ip->data);
@@ -3834,6 +4897,7 @@ static bool scr_net_sock_dial_ip(ScrNetSocket *s, const ScrStr *ip) {
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
     scr_str_release(s->dial_err);
     s->dial_err = scr_str_new(msg, strlen(msg));
+    s->dial_err_code = NULL;
     return false;
   }
   int family = sa->sa_family == AF_INET6 ? 6 : 4;
@@ -3847,14 +4911,29 @@ static bool scr_net_sock_dial_ip(ScrNetSocket *s, const ScrStr *ip) {
     scr_dyn_arr_push(s->attempted, scr_dyn_new_str(text));
     scr_str_release(text);
   }
-  int fd = socket(sa->sa_family, SOCK_STREAM, 0);
-  if (fd < 0) {
-    fputs("scriptc: socket() failed\n", stderr);
-    abort();
+  int fd;
+  if (s->adopt_fd >= 0) {
+    /* connect({ fd }): the descriptor Node's createHandle adopted */
+    fd = s->adopt_fd;
+    s->adopt_fd = -1;
+  } else {
+    fd = socket(sa->sa_family, SOCK_STREAM, 0);
+    if (fd < 0) {
+      fputs("scriptc: socket() failed\n", stderr);
+      abort();
+    }
+    scr_net_nonblock(fd);
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
   }
-  scr_net_nonblock(fd);
-  int one = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  char bind_err[128];
+  if (scr_net_sock_bind_local(s, fd, family, bind_err, sizeof bind_err) != 0) {
+    scr_str_release(s->dial_err);
+    s->dial_err = scr_str_new(bind_err, strlen(bind_err));
+    s->dial_err_code = NULL;
+    close(fd);
+    return false;
+  }
   int rc = connect(fd, sa, salen);
   if (rc == 0 || errno == EINPROGRESS) {
     s->fd = fd;
@@ -3867,6 +4946,7 @@ static bool scr_net_sock_dial_ip(ScrNetSocket *s, const ScrStr *ip) {
   snprintf(msg, sizeof msg, "connect %s %s:%d", scr_net_errname(errno), s->peer_ip, s->peer_port);
   scr_str_release(s->dial_err);
   s->dial_err = scr_str_new(msg, strlen(msg));
+  s->dial_err_code = NULL;
   close(fd);
   scr_net_attempt_queue(s, SCR_NET_ATTEMPT_FAILED, h, family, msg);
   return false;
@@ -3888,6 +4968,8 @@ static void scr_net_sock_dial_next(ScrNetSocket *s) {
   if (s->dial_err != NULL && s->pending_err == NULL) {
     s->pending_err = s->dial_err;
     s->dial_err = NULL;
+    s->pending_code = s->dial_err_code;
+    s->dial_err_code = NULL;
   }
   s->connecting = false;
   s->had_error = true;
@@ -5171,6 +6253,20 @@ static bool scr_net_blocklist_check_ip(const ScrNetBlockList *l, const ScrNetIp 
   }
   return false;
 }
+
+/* connect({ blockList }): Node's `self.blockList?.check(address,
+ * 'ipv4'|'ipv6')` at the dial, before the connect is attempted. */
+static bool scr_net_sock_ip_blocked(ScrNetSocket *s, const char *ip, int family) {
+  if (s->block_list == NULL) return false;
+  const ScrNetBlockList *l = (const ScrNetBlockList *)s->block_list->v.handle.ptr;
+  if (l == NULL) return false;
+  ScrStr *text = scr_str_new(ip, strlen(ip));
+  ScrNetIp parsed;
+  bool blocked = scr_net_ip_parse(text, family, &parsed) && scr_net_blocklist_check_ip(l, &parsed);
+  scr_str_release(text);
+  return blocked;
+}
+
 
 static void scr_net_blocklist_remove(ScrNetBlockList *l, const ScrNetBlockRule *rule);
 static bool scr_net_blocklist_has_address(const ScrNetBlockList *l, const ScrNetIp *ip);
@@ -7312,6 +8408,16 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_ls_drop(&srv->client_error_ls);
   scr_net_ls_drop(&srv->new_listener_ls);
   scr_net_ls_drop(&srv->drop_ls);
+  /* listen({ signal }): the registration detaches at the close — readline's
+   * and http's story. Left in place, the server, its dispose closure and
+   * the abort listener reach each other in a cycle the audit reports. */
+  if (srv->abort_dispose != NULL) {
+    ScrDyn *dispose = srv->abort_dispose;
+    srv->abort_dispose = NULL;
+    ScrDyn *r = scr_dyn_call(dispose, NULL, 0, "dispose");
+    if (r) scr_dyn_release(r);
+    scr_dyn_release(dispose);
+  }
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
   scr_net_server_unregister(srv);
 }
@@ -7335,6 +8441,11 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   }
   sock->close_emitted = true;
   sock->emit_close = false;
+  /* connect({ signal }): Node disposes the abort registration at 'close' */
+  if (sock->abort_dispose != NULL) {
+    scr_dyn_release(sock->abort_dispose);
+    sock->abort_dispose = NULL;
+  }
   /* The owning server's count drains FIRST, and a now-drained closing
    * server settles before this socket's own 'close' fires — Node's
    * observed order (differential: the net-echo fixture). */
@@ -7444,7 +8555,10 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     if (!consumed && !scr_exc_pending()) {
       ScrError *coded = NULL;
       ScrError *saved = scr_event_error_payload;
-      if (sock->pending_code != NULL) {
+      if (sock->pending_name != NULL && strcmp(sock->pending_name, "AbortError") == 0) {
+        /* connect({ signal }) aborted: Node's AbortError, not an Error */
+        coded = scr_error_abort(NULL);
+      } else if (sock->pending_code != NULL) {
         coded = scr_error_new(SCR_ERR_ERROR, msg);
         coded->code = scr_str_new(sock->pending_code, strlen(sock->pending_code));
       } else {
@@ -7457,6 +8571,7 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     }
     scr_als_dispatch_leave(prev);
     sock->pending_code = NULL;
+    sock->pending_name = NULL;
     scr_str_release(msg);
     if (scr_exc_pending()) return false;
   }

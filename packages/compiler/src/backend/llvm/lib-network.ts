@@ -18,7 +18,6 @@ import { arrayOf, NETSOCKET_T, STRING } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
-import { emitAlwaysThrowLibCall } from "./lib-shared.js";
 
 export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (
@@ -171,8 +170,26 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "net.connectOptsChk") {
-    return emitAlwaysThrowLibCall(host, e, "scr_net_connect_opts_chk");
+  if (e.fn === "net.listenDyn" || e.fn === "net.listenDynCb") {
+    // listen over dynamic arguments: Node's normalizeArgs, the already-
+    // listening check, the callback registration, then the bag's signal,
+    // fd, port and path in Node's order. The signal's listener comes from
+    // the event-target unit (runtime-features links it for this call).
+    const args = e.args.map((a) => host.emitExpr(a));
+    const withCb = e.fn === "net.listenDynCb";
+    const fence = args[withCb ? 5 : 4]!;
+    let cb = "null";
+    if (withCb) {
+      host.toHeap(args[4]!);
+      cb = args[4]!.name;
+    }
+    host.declare(`declare void @scr_net_listen_dyn(ptr, ptr, ptr, ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    B.line(
+      `call void @scr_net_listen_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb}, ptr @scr_events_add_abort_listener, ptr ${fence.name})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
   }
   if (e.fn === "net.createServer" || e.fn === "net.createServerCb") {
     const args = e.args.map((a) => host.emitExpr(a));
@@ -495,6 +512,28 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     const t = B.tmp();
     B.line(
       `${t} = call ptr @scr_net_connect_checked(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "net.connectDyn" || e.fn === "net.connectDynCb") {
+    // connect over dynamic arguments: the runtime runs Node's normalizeArgs
+    // and lookupAndConnect ladder, dials with the options it models, and
+    // attaches a signal through events.addAbortListener (event-target unit).
+    const args = e.args.map((a) => host.emitExpr(a));
+    const withCb = e.fn === "net.connectDynCb";
+    const fence = args[withCb ? 4 : 3]!;
+    let cb = "null";
+    if (withCb) {
+      host.toHeap(args[3]!);
+      cb = args[3]!.name;
+    }
+    host.declare(`declare ptr @scr_net_connect_dyn(ptr, ptr, ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_connect_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb}, ptr @scr_events_add_abort_listener, ptr ${fence.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

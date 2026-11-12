@@ -47935,8 +47935,8 @@
       "anchor": "serverclosecallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -47989,8 +47989,8 @@
       "anchor": "serverlisten",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48025,8 +48025,8 @@
       "anchor": "serverlistenoptions-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48043,8 +48043,8 @@
       "anchor": "serverlistenpath-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48061,8 +48061,8 @@
       "anchor": "serverlistenport-host-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49290,8 +49290,8 @@
       "anchor": "netconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49326,8 +49326,8 @@
       "anchor": "netconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49344,8 +49344,8 @@
       "anchor": "netconnectport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49362,8 +49362,8 @@
       "anchor": "netcreateconnection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49398,8 +49398,8 @@
       "anchor": "netcreateconnectionpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49416,8 +49416,8 @@
       "anchor": "netcreateconnectionport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49488,8 +49488,8 @@
       "anchor": "netgetdefaultautoselectfamilyattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49506,8 +49506,8 @@
       "anchor": "netsetdefaultautoselectfamilyattempttimeoutvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },

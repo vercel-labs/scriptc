@@ -74407,7 +74407,11 @@
           "tests/corpus/net-attempt-events.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
           "tests/corpus/net-is-ip-inputs.ts",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-drop.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
@@ -75084,17 +75088,12 @@
       "anchor": "serverclosecallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-server-dispose-drop.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75156,17 +75155,14 @@
       "anchor": "serverlisten",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75212,17 +75208,14 @@
       "anchor": "serverlistenoptions-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75240,17 +75233,14 @@
       "anchor": "serverlistenpath-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75268,17 +75258,14 @@
       "anchor": "serverlistenport-host-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -76841,17 +76828,14 @@
       "anchor": "netconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76897,17 +76881,14 @@
       "anchor": "netconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76925,17 +76906,14 @@
       "anchor": "netconnectport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76953,17 +76931,14 @@
       "anchor": "netcreateconnection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77009,17 +76984,14 @@
       "anchor": "netcreateconnectionpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77037,17 +77009,14 @@
       "anchor": "netcreateconnectionport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77135,17 +77104,12 @@
       "anchor": "netgetdefaultautoselectfamilyattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.getDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.getDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77163,17 +77127,12 @@
       "anchor": "netsetdefaultautoselectfamilyattempttimeoutvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.setDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.setDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"

@@ -264,11 +264,26 @@ bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
  * ERR_INVALID_ARG_TYPE) and is then inert — the single dial has nothing
  * to time. +1, or NULL with the throw pending. */
 ScrNetSocket *scr_net_connect_attempt(double port, ScrStr *host /*borrowed*/, const ScrDyn *t /*borrowed*/);
-/* net.connect/createConnection over a RUNTIME option bag (computed
- * keys): Node-order validation (objectMode trio, port, host,
- * autoSelectFamily, attempt budget), then the compiler-rendered fence —
- * always leaves an exception pending. Borrowed. */
-void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence);
+/* net.connect/createConnection over dynamic arguments (a runtime option
+ * bag or positional values the compiler cannot type): Node's normalizeArgs
+ * — the Socket constructor's ladder, the module's timeout, connect()'s
+ * missing-argument check and lookupAndConnect's validation — then the dial
+ * with the options this runtime models (family, hints, local bind, fd,
+ * signal, blockList, keepAlive, typeOfService, attempt budget). Parts that
+ * stay unmodeled (an onread interface, a caller lookup) fence after their
+ * validation. +1, or NULL with an exception pending; `cb` moves. */
+ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                                  ScrClosure *cb /*moves, nullable*/,
+                                  ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                  const ScrStr *fence);
+/* Server.prototype.listen over dynamic arguments: Node's normalizeArgs,
+ * the already-listening check, the bound-socket adoption, then the option
+ * bag's signal, fd, port and path in Node's order (with the backlog and
+ * the ipv6Only/reusePort flags). `fence` reports the parts still
+ * unmodeled (an adopted handle) after their validation. `cb` moves. */
+void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                        ScrClosure *cb /*moves, nullable*/,
+                        ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *), const ScrStr *fence);
 /* The port of listen(arg[, ...]) for a checked-dynamic first argument
  * (Node's normalizeArgs and validatePort): 0 for a function, undefined or
  * null; ERR_SOCKET_BAD_PORT pending for a bad port; the fence pending for

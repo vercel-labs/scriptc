@@ -2221,7 +2221,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       },
       setDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.setAutoSelTimeout",
-        params: [F64],
+        params: [DYN],
         result: VOID,
       },
       // Node's IPv4Reg / IPv6Reg tests over String(input).

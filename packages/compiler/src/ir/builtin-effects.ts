@@ -1142,7 +1142,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
-  "net.connectOptsChk",
+  "net.connectDyn",
+  "net.connectDynCb",
   "net.setAutoSelTimeout",
   "net.setDefaultAutoSel",
   "error.argTypeThrow",
@@ -1236,6 +1237,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // before it binds, so a 'newListener' handler can throw out of the call
   // and the server does not listen.
   "net.listenCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
@@ -1243,6 +1246,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
   // catchable), so every listen entry point can leave an exception.
   "net.listen",
+  "net.listenDyn",
   "net.listenPath",
   "net.listenOpts",
   "net.listenOptsReusePort",
@@ -1454,7 +1458,6 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodChk",
   "fs.readChk",
   "fs.streamOptsChk",
-  "net.connectOptsChk",
   "tls.caCertsChk",
   "sea.getAsset",
   "sea.getRawAsset",

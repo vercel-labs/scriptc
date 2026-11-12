@@ -264,6 +264,12 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.createReadStreamSignal",
   "fs.createWriteStreamSignal",
   "http.clientSignal",
+  // The net entries that read a signal option at run time (the socket and
+  // server close on abort through events.addAbortListener).
+  "net.connectDyn",
+  "net.connectDynCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "http.requestDyn",
   "http.requestDynCb",
   "https.requestDyn",

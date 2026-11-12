@@ -951,7 +951,11 @@ function buildLibFnSignatures() {
      * never forces the net unit into the link. setDefaultAutoSelectFamily
      * throws Node's ERR_INVALID_ARG_TYPE for a non-boolean value. */
     "net.getAutoSelTimeout": { argTypes: [], result: F64 },
-    "net.setAutoSelTimeout": { argTypes: [F64], result: VOID },
+    /** setDefaultAutoSelectFamilyAttemptTimeout(value): Node's
+     * validateInt32 ladder runs over the checked-dynamic value, so a
+     * non-number throws ERR_INVALID_ARG_TYPE instead of a lowering
+     * refusal (the validateBoolean twin above). */
+    "net.setAutoSelTimeout": { argTypes: [DYN], result: VOID },
     /** net.getDefaultAutoSelectFamily()/setDefaultAutoSelectFamily(value):
      * Node's process-wide boolean (true by default). The value crosses as a
      * dyn so the runtime can raise the same TypeError Node does. */
@@ -1960,6 +1964,20 @@ function buildLibFnSignatures() {
       argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL, null],
       result: VOID,
     },
+    /** Server.prototype.listen over dynamic arguments: args [server, arg0,
+     * arg1, arg2, fence]. The runtime runs Node's normalizeArgs (a function,
+     * null or undefined port binds an unused one; a pipe-name string is the
+     * path; an object is the option bag), the already-listening check, the
+     * callback registration, the bound-socket adoption, then the bag's
+     * signal, fd, port and path in Node's order (with backlog, ipv6Only and
+     * reusePort). An adopted TCP handle or an unmodeled form reaches the
+     * compiler-rendered fence after its validation. May-throw seed. */
+    "net.listenDyn": { argTypes: [NETSERVER_T, DYN, DYN, DYN, STRING], result: VOID },
+    // The same with a statically function-typed listen callback peeled off.
+    "net.listenDynCb": {
+      argTypes: [NETSERVER_T, DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: VOID,
+    },
     "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
     "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
     /** socket.ref()/unref() and server.ref()/unref(): whether the handle
@@ -2018,13 +2036,21 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    /** net.connect/createConnection over a RUNTIME option bag (computed
-     * keys — the invalid-input probes): Node-order validation (the
-     * objectMode trio's ERR_INVALID_ARG_VALUE, validatePort, host string,
-     * autoSelectFamily boolean, the attempt budget), then the trailing
-     * compiler-rendered fence — ALWAYS THROWS (the error.nodeThrow
-     * polymorphic-result carve-out). May-throw seed. */
-    "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
+    /** net.connect/createConnection over dynamic arguments (a runtime
+     * option bag, or positional values whose kinds only the run decides):
+     * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
+     * — the Socket constructor's option ladder, net.connect's timeout, the
+     * missing-argument check and lookupAndConnect's validation — then dials
+     * with the options it models; a caller-supplied lookup or an adopted
+     * handle reaches the compiler-rendered fence after its validation.
+     * May-throw seed. */
+    "net.connectDyn": { argTypes: [DYN, DYN, DYN, STRING], result: NETSOCKET_T },
+    // The same with a statically function-typed connect listener peeled off
+    // (Node's normalizeArgs takes the last argument as the callback).
+    "net.connectDynCb": {
+      argTypes: [DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: NETSOCKET_T,
+    },
     "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],

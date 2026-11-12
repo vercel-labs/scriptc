@@ -3772,6 +3772,19 @@ void scr_net_set_autosel_timeout(double ms) {
   scr_net_autosel_timeout_ms = ms < 10 ? 10 : ms;
 }
 
+/* The checked-dynamic entry: Node's validateNumber first (a non-number
+ * throws ERR_INVALID_ARG_TYPE; NaN passes the type gate and lands in the
+ * integer rendering the double form gives it), then the same validateInt32
+ * ladder. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("value", "of type number",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_set_autosel_timeout(value->v.num);
+}
+
 /* ── fs error formatting ─────────────────────────────────────────────
  * Node's fs errors read "<ERRNO>: <text>, <syscall> '<path>'"
  * ("ENOENT: no such file or directory, open 'x'"). The common errnos get

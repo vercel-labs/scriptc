@@ -5878,6 +5878,10 @@ function buildLibFnSignatures() {
     "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
     "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
     "rl.getPrompt": { argTypes: [F64], result: STRING },
+    /** getPrompt() for a checked-dynamic use: the stored prompt value
+     * itself (a number or object set through an untyped setPrompt keeps its
+     * identity). */
+    "rl.getPromptDyn": { argTypes: [F64], result: DYN },
     "rl.write": { argTypes: [F64, STRING], result: VOID },
     /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
      * ctrl, meta, shift] */

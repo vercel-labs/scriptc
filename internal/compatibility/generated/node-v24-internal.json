@@ -33357,6 +33357,7 @@
           "tests/corpus/5213-perf-timing-errors.ts",
           "tests/corpus/5254-cipher-errors.js",
           "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5341-readable-from-dynamic.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
@@ -37422,7 +37423,7 @@
       "anchor": "err_invalid_cursor_pos",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_CURSOR_POS",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs"
@@ -40588,10 +40589,11 @@
       "anchor": "err_use_after_close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_USE_AFTER_CLOSE",
         "tests": [
-          "tests/corpus/5295-readline-promises-question.ts"
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5297-readline-callback-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85418,7 +85420,22 @@
           "tests/corpus/5873-readline-promises-namespace.cjs",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
           "tests/corpus/5877-readline-question-query.cjs",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-history-live.cjs",
+          "tests/corpus/readline-history-live.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/corpus/readline-line-listener-changes.ts",
+          "tests/corpus/readline-line-separators.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -85464,17 +85481,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.Interface",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
           "tests/corpus/5873-readline-promises-namespace.cjs",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-prompt-values.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85497,17 +85516,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.question",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
-          "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85530,7 +85547,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.Readline",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85557,7 +85574,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.clearLine",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85584,7 +85601,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.clearScreenDown",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85611,7 +85628,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.commit",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85638,7 +85655,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.cursorTo",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85665,7 +85682,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.moveCursor",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85692,7 +85709,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.rollback",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85719,17 +85736,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.createInterface",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
           "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5876-readline-dispose-instanceof.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85752,7 +85767,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.completer",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -85805,15 +85820,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.Interface",
         "tests": [
-          "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/readline-line-separators.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-listener-changes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85836,17 +85854,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.question",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
-          "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85869,7 +85885,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.clearLine",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -85896,7 +85912,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.clearScreenDown",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -85923,11 +85939,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readline.createInterface",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85950,7 +85973,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.completer",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -85980,7 +86003,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.cursorTo",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -86007,7 +86030,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.moveCursor",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -86080,11 +86103,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:rl.close",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86107,7 +86137,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86115,7 +86145,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86138,7 +86175,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.pause",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86146,7 +86183,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86169,7 +86213,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.prompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86177,7 +86221,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86200,7 +86251,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.resume",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86208,7 +86259,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86231,7 +86289,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.setPrompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86239,7 +86297,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86262,7 +86327,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.getPrompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86270,7 +86335,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86293,7 +86365,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.write",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86301,7 +86373,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86324,7 +86403,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86332,7 +86411,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86355,11 +86441,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.getCursorPos",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
-          "tests/corpus/5789-readline-cursor-pos.cjs"
+          "tests/corpus/5789-readline-cursor-pos.cjs",
+          "tests/corpus/readline-prompt-values.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86382,7 +86469,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.line",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -86412,7 +86499,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.cursor",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -86442,7 +86529,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'close'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86450,7 +86537,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86473,7 +86567,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'error'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86481,7 +86575,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86504,7 +86605,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'line'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86512,7 +86613,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86535,11 +86643,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'history'",
         "tests": [
           "tests/corpus/5780-readline-history-options.ts",
-          "tests/corpus/5781-readline-history-options.cjs"
+          "tests/corpus/5781-readline-history-options.cjs",
+          "tests/corpus/readline-history-live.ts",
+          "tests/corpus/readline-history-live.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86562,7 +86672,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'pause'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86570,7 +86680,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86593,7 +86710,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'resume'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86601,7 +86718,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86624,14 +86748,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGCONT'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86654,14 +86779,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGINT'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
-          "tests/corpus/5783-readline-terminal-completion.cjs",
-          "tests/corpus/5784-readline-terminal-promises.ts",
-          "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5783-readline-terminal-completion.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86684,14 +86806,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGTSTP'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86714,7 +86837,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.emitKeypressEvents",
         "tests": [
           "tests/corpus/5790-readline-keypress-events.ts",

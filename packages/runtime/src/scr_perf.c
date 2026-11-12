@@ -230,6 +230,15 @@ static bool scr_perf_node_timing_name(const ScrStr *name) {
   return false;
 }
 
+/* performance.nodeTiming's milestone values, as performance.measure reads
+ * them: the startup milestones a compiled program does not have are 0, and
+ * the loop's start and end are -1 until their moment (like Node). */
+static double scr_perf_node_timing_value(const ScrStr *name) {
+  if (name->len == 9 && memcmp(name->data, "loopStart", 9) == 0) return scr_perf_node_loop_start();
+  if (name->len == 8 && memcmp(name->data, "loopExit", 8) == 0) return scr_perf_loop_exit();
+  return 0;
+}
+
 static void scr_perf_reserved_name(ScrStr *name) {
   ScrDyn *got = scr_dyn_new_str(name);
   scr_dyn_arg_value_fail("name", NULL, got);
@@ -258,13 +267,10 @@ static bool scr_perf_get_mark(const ScrDyn *value, double *out) {
   if (!name) return false;
   bool ok = false;
   if (scr_perf_node_timing_name(name)) {
-    /* performance.nodeTiming's milestones describe Node's own startup,
-     * which a compiled program does not have. */
-    char msg[160];
-    int n = snprintf(msg, sizeof msg,
-                     "performance.measure with the '%.*s' Node timing milestone is not supported yet",
-                     (int)name->len, name->data);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
+    /* A Node timing milestone (usertiming.js getMark): its value, which
+     * measure subtracts like any mark. */
+    *out = scr_perf_node_timing_value(name);
+    ok = true;
   } else if (scr_perf_timings && scr_map_get_str_f64(scr_perf_timings, name, out)) {
     ok = true;
   } else {

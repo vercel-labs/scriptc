@@ -55,7 +55,18 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD, PERF_ENTRY_MARKER } from "../ir/ir.js";
+import {
+  BIGINT_T,
+  KEY_ORDER_FIELD,
+  PERF_ENTRY_MARKER,
+  PERF_NODE_TIMING_JSON_FIELDS,
+  PERF_NODE_TIMING_MARKER,
+} from "../ir/ir.js";
+
+/** Both lists live in ir/ir.ts (the backend's JSON writer and dyn
+ * conversion read them): the nodeTiming marker and the fields
+ * PerformanceNodeTiming.prototype.toJSON answers, in its order. */
+export { PERF_NODE_TIMING_JSON_FIELDS, PERF_NODE_TIMING_MARKER };
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
@@ -1307,6 +1318,106 @@ export function perfEntryJsonShape(shapes: ShapeRegistry): string {
     false,
     undefined,
     PERF_ENTRY_FIELDS,
+  );
+}
+
+/** The fields of performance.nodeTiming's uvMetricsInfo object, in Node's
+ * key order. */
+export const UV_METRICS_FIELDS = ["loopCount", "events", "eventsWaiting"];
+
+/** The record behind uv_metrics_info: the three counters Node's
+ * uvMetricsInfo getter reads off libuv. */
+export function uvMetricsShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "events", type: F64 },
+      { name: "eventsWaiting", type: F64 },
+      { name: "loopCount", type: F64 },
+    ],
+    false,
+    undefined,
+    UV_METRICS_FIELDS,
+  );
+}
+
+/** performance.nodeTiming's own properties, in Node's key order. */
+export const PERF_NODE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "bootstrapComplete",
+  "idleTime",
+  "uvMetricsInfo",
+];
+
+/** The record behind performance.nodeTiming (mapType): the timing
+ * milestones as f64 fields in Node's key order, plus the uvMetricsInfo
+ * record. The marker keeps the shape distinct from a structurally equal
+ * user record and gives a dyn conversion the PerformanceNodeTiming
+ * prototype. */
+export function perfNodeTimingShape(shapes: ShapeRegistry, unions: UnionRegistry): string {
+  return shapes.intern(
+    [
+      { name: PERF_NODE_TIMING_MARKER, type: withUndefinedArm(F64, unions)! },
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "uvMetricsInfo", type: { kind: "record", shapeId: uvMetricsShape(shapes) } },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_FIELDS,
+  );
+}
+
+/** toJSON()'s plain object over performance.nodeTiming: its fields without
+ * uvMetricsInfo. */
+export function perfNodeTimingJsonShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_JSON_FIELDS,
+  );
+}
+
+/** performance.eventLoopUtilization()'s record, in Node's key order. */
+export function eventLoopUtilizationShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "active", type: F64 },
+      { name: "idle", type: F64 },
+      { name: "utilization", type: F64 },
+    ],
+    false,
+    undefined,
+    ["idle", "active", "utilization"],
   );
 }
 
@@ -6517,19 +6628,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // perf_hooks' EventLoopUtilization (performance.eventLoopUtilization's
   // result): a plain data record in Node's key order.
   if (isStdlibInterface("EventLoopUtilization")) {
-    return {
-      kind: "record",
-      shapeId: ctx.shapes.intern(
-        [
-          { name: "active", type: F64 },
-          { name: "idle", type: F64 },
-          { name: "utilization", type: F64 },
-        ],
-        false,
-        undefined,
-        ["idle", "active", "utilization"],
-      ),
-    };
+    return { kind: "record", shapeId: eventLoopUtilizationShape(ctx.shapes) };
+  }
+  // perf_hooks' PerformanceNodeTiming (performance.nodeTiming): the timing
+  // milestones and uvMetricsInfo as one record (see perfNodeTimingShape).
+  // @types/node declares it as a class; the shipped fallback declares the
+  // interface performance.nodeTiming is typed with.
+  if (
+    provenance !== null &&
+    psymName === "PerformanceNodeTiming" &&
+    (provenance.stdlibInterface || provenance.stdlibClass)
+  ) {
+    return { kind: "record", shapeId: perfNodeTimingShape(ctx.shapes, ctx.unions) };
+  }
+  // uv_metrics_info()'s record: the three counters, in Node's key order.
+  if (isStdlibInterface("UVMetrics")) {
+    return { kind: "record", shapeId: uvMetricsShape(ctx.shapes) };
   }
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over

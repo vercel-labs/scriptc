@@ -2242,10 +2242,10 @@ console.log(format("%O", [1]));
     );
   });
 
-  test("inspecting a compiled class with static fields through unknown refuses", async () => {
-    // Node prints `[class S] { count: 3 }`; the class object does not
-    // carry compiled static fields, so the inspector refuses rather than
-    // print `[class S]`. A class without static fields still prints.
+  test("inspecting a compiled class with static fields through unknown matches Node", async () => {
+    // Node prints the constructor form with the class's enumerable statics.
+    // The class object carries them in its static property table, so the
+    // inspector renders the same line.
     const r = await compileAndRun(
       "inspect-class-statics",
       `class Plain {}
@@ -2255,17 +2255,11 @@ class S extends Plain {
 const plain: unknown = Plain;
 const s: unknown = S;
 console.log(plain);
-try {
-  console.log(s);
-} catch (e) {
-  console.log((e as Error).message);
-}
+console.log(s);
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
-    );
+    expect(r.stdout).toBe("[class Plain]\n[class S extends Plain] { count: 3 }\n");
   });
 
   test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {

@@ -7223,6 +7223,25 @@ export function computedHeritageOf(decl: ts.ClassLikeDeclaration): ts.Expression
   return expression;
 }
 
+/** Whether a conditional heritage's arm class declares instance behavior of
+ * its own below the class the heritage is TYPED as: a constructor, instance
+ * fields (parameter properties and private ones included), or methods and
+ * accessors (an override is one). Node runs the selected arm's
+ * initialization and dispatches its overrides; a class laid out as the
+ * typed class cannot, so such an arm has no lowering. Also true for an arm
+ * that is not below the typed class at all — nothing proves the two paths
+ * agree. */
+function armAddsInstanceBehavior(arm: ClassInfo, typed: ClassInfo): boolean {
+  for (let current: ClassInfo | null = arm; current; current = current.base) {
+    if (current === typed) return false;
+    if (current.ctor !== null || current.fieldOrder.length > 0) return true;
+    if ((current.paramProps?.length ?? 0) > 0) return true;
+    if (current.methods.size > 0) return true;
+    if ((current.refusedMembers?.size ?? 0) > 0) return true;
+  }
+  return true;
+}
+
 /** Lowers a class's computed heritage expression once, into the base its
  * shape collection reads: a class value the class can lay out natively
  * (`computedClassBases`, keyed by the class's name), else the run-time
@@ -7242,9 +7261,11 @@ export function lowerComputedClassHeritage(
   // which is also the class the program types `this` and every instance
   // member through. A conditional over arms that are one class (both arms
   // the same class, or an arm whose class extends the other's) is typed as
-  // that one class, so it lays out and dispatches against it; a member that
-  // only the more-derived run-time arm declares is erased by the same type,
-  // and stays out of the class on both arms.
+  // that one class, so it lays out and dispatches against it — provided
+  // every arm adds only a STATIC side (a static-only mixin): an arm that
+  // declares instance members of its own would initialize and dispatch
+  // differently on its path, which the shared layout cannot follow, and is
+  // refused below (armAddsInstanceBehavior).
   //
   // A conditional over UNRELATED classes has no type the class could take
   // (the checker keeps a union, and the derived class has no member of
@@ -7279,7 +7300,101 @@ export function lowerComputedClassHeritage(
       "extending a conditional class value with more than one possible base class",
       "a class's instance layout is fixed when it is lowered, so its base must be one class: give both arms a common base (or a factory returning one class) and extend that",
     );
+  // Related arms (one extends the other) share the type's class, but the
+  // class the conditional builds at run time is the arm that ran, and only
+  // the INSTANCE side can be shared: the class lays out as the class its
+  // type names, so every arm must present exactly that class's instance
+  // members. An arm that declares its own constructor, instance fields, or
+  // methods — an override included — would have Node run that arm's
+  // initialization and dispatch its overrides; laying the class out as the
+  // common type cannot, so refuse instead of dropping them.
+  if (conditional && known?.kind === "classval") {
+    const typed = lowerer.classes.get(known.className);
+    const armClasses = [expression.whenTrue, expression.whenFalse].map(
+      (arm) => [arm, storedClassValueType(lowerer, arm)] as const,
+    );
+    for (const [arm, stored] of armClasses) {
+      if (stored?.kind !== "classval" || stored.className === known.className) continue;
+      const armInfo = lowerer.classes.get(stored.className);
+      if (!typed || !armInfo || armAddsInstanceBehavior(armInfo, typed))
+        lowerer.unsupported(
+          "SC1090",
+          arm,
+          "extending a conditional class value with an arm that declares its own instance members",
+          "the class takes the shape of the class its type names, so the other arm's constructor, fields and overrides would not run: give both arms that class's instance shape (a static-only mixin, or the class itself)",
+        );
+    }
+    // The class lays out as the typed class, but which class it EXTENDS is
+    // the run-time selection: `instanceof` against the arms reads the
+    // condition the class statement evaluated rather than the static class
+    // chain. Only a pair of NAMED arms has a selection to record — a nested
+    // conditional arm has its own condition, and an arm the compiler cannot
+    // name keeps the static answer.
+    const whenTrue = armClasses[0]![1];
+    const whenFalse = armClasses[1]![1];
+    if (
+      whenTrue?.kind === "classval" &&
+      whenFalse?.kind === "classval" &&
+      whenTrue.className !== whenFalse.className &&
+      !ts.isConditionalExpression(expression.whenTrue) &&
+      !ts.isConditionalExpression(expression.whenFalse)
+    ) {
+      const className = lowerer.classNamer(decl);
+      // A class the program evaluates again has a DIFFERENT base on each
+      // evaluation, so one stored selection would not describe its
+      // instances: the arms are recorded without one, and a test the static
+      // chain cannot answer is refused (relational.ts).
+      const condGlobal = perEvaluationClass(decl) ? undefined : `%g.${className}.heritageArm`;
+      if (condGlobal !== undefined && !lowerer.globalsList.some((g) => g.id === condGlobal))
+        lowerer.globalsList.push({
+          id: condGlobal,
+          name: `${className} heritage arm`,
+          type: BOOL,
+          mutable: false,
+        });
+      lowerer.computedHeritageArms.set(className, {
+        arms: [whenTrue.className, whenFalse.className],
+        ...(condGlobal !== undefined ? { condGlobal } : {}),
+      });
+    }
+  }
   if (known?.kind === "classval") value = lowerer.coerceToExpected(value, known);
+  // Record the selection where the heritage evaluates, so an `instanceof`
+  // on any class below it can answer from the arm that ran. The ternary's
+  // condition moves to a hidden local (evaluated once, in its own position);
+  // its value runs into the global and the ternary reads the local.
+  const recorded = lowerer.computedHeritageArms.get(lowerer.classNamer(decl));
+  if (recorded?.condGlobal !== undefined) {
+    const global = recorded.condGlobal;
+    const hoist = (node: IrExpr): IrExpr | null => {
+      if (node.kind === "ternary") {
+        const loc = node.loc;
+        const condition = lowerer.declareHiddenLocal("%heritageArm", BOOL);
+        const read = (): IrExpr => varRef(condition.id, BOOL, loc);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: condition.id, init: node.cond, loc },
+            { kind: "assign", localId: global, value: read(), loc },
+          ],
+          result: { ...node, cond: read() },
+          type: node.type,
+          loc,
+        };
+      }
+      if (node.kind === "seqExpr") {
+        const inner = hoist(node.result);
+        return inner === null ? null : { ...node, result: inner };
+      }
+      return null;
+    };
+    const hoisted = hoist(value);
+    // A heritage that lowered to no selectable value (`true ? Sub : Base`
+    // folds to the class itself) picks its arm at compile time: the static
+    // chain already names it, so nothing is recorded.
+    if (hoisted === null) lowerer.computedHeritageArms.delete(lowerer.classNamer(decl));
+    else value = hoisted;
+  }
   const loc = locOf(expression);
   // A class DECLARATION collects its shape away from any statement, so the
   // expression it lowered in the caller's detached context travels in a

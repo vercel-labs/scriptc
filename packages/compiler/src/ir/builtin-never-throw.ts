@@ -105,6 +105,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
+  // timer the handle names: the loop's clear, or the mock's own entry
+  // removal when the program mocks timers. Neither throws nor runs a
+  // callback.
+  "timers.close",
+  "timers.immediateClose",
+  // The same clears in their disposal spelling, whose result is undefined
+  // rather than the handle.
+  "timers.dispose",
+  "timers.immediateDispose",
   // The header-limit properties are plain storage: the getters retain the
   // stored value (or answer null / 0) and the setters retain the new value
   // and release the old one. No accessor, coercion or listener runs, and

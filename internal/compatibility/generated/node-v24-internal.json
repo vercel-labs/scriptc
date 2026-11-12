@@ -19008,7 +19008,7 @@
           "tests/corpus/console-dir-show-hidden.ts",
           "tests/corpus/console-native-value.js",
           "tests/corpus/inspect-getters.ts",
-          "tests/diagnostics/compat-absent-lowerings.ts",
+          "tests/harness/console-trace.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -19641,10 +19641,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:console.console.trace",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/harness/console-trace.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43141,9 +43141,25 @@
           "tests/corpus/5846-events-esm-default-max.ts",
           "tests/corpus/5847-events-cjs-default-max.cjs",
           "tests/corpus/5885-events-max-listener-helpers.ts",
+          "tests/corpus/6491-events-once-streams.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-surface.ts",
           "tests/corpus/emitter-symbol-names.ts",
+          "tests/corpus/event-target-surface.ts",
+          "tests/corpus/events-add-abort-listener.ts",
+          "tests/corpus/events-capture-rejection-symbol.cjs",
+          "tests/corpus/events-capture-rejection-symbol.ts",
           "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/events-module-helpers.ts",
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-on-event-target.ts",
+          "tests/corpus/events-on-iterator.ts",
+          "tests/corpus/events-on-node-event-target.ts",
+          "tests/corpus/events-on-options.ts",
+          "tests/corpus/events-on-signal-close.ts",
+          "tests/corpus/events-on-watermarks.ts",
+          "tests/corpus/events-once-event-target.ts",
+          "tests/corpus/events-once-node-event-target.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -43282,7 +43298,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.EventTarget",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -43295,7 +43311,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43318,7 +43335,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.EventTarget",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -43331,7 +43348,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43354,8 +43372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.NodeEventTarget",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -43400,7 +43421,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.EventTarget",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -43413,7 +43434,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43436,7 +43458,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.Event",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -43444,7 +43466,8 @@
           "tests/corpus/5241-event-subclass.ts",
           "tests/corpus/5242-event-target-subclass-hierarchy.ts",
           "tests/corpus/5244-event-target-subclass.js",
-          "tests/corpus/5247-event-target-subclass-lifetimes.ts"
+          "tests/corpus/5247-event-target-subclass-lifetimes.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -43971,7 +43994,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.EventTarget",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -43984,7 +44007,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44007,7 +44031,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.eventTarget.addEventListener",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -44020,7 +44044,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44043,7 +44068,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.eventTarget.dispatchEvent",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -44056,7 +44081,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44079,7 +44105,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.eventTarget.removeEventListener",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
@@ -44092,7 +44118,8 @@
           "tests/corpus/5243-event-target-subclass-dynamic.ts",
           "tests/corpus/5244-event-target-subclass.js",
           "tests/corpus/5245-event-target-subclass-signals.ts",
-          "tests/corpus/5248-event-target-subclass-warnings.ts"
+          "tests/corpus/5248-event-target-subclass-warnings.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44115,11 +44142,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.CustomEvent",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
-          "tests/corpus/5132-event-target-typed.ts"
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44142,11 +44170,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.detail",
         "tests": [
           "tests/corpus/5130-event-target-dispatch.js",
-          "tests/corpus/5132-event-target-typed.ts"
+          "tests/corpus/5132-event-target-typed.ts",
+          "tests/corpus/event-target-surface.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -44169,8 +44198,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.NodeEventTarget",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44192,8 +44224,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.addListener",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44215,8 +44251,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.emit",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44238,8 +44278,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.eventNames",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44261,8 +44305,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.listenerCount",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44284,8 +44332,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.setMaxListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44307,8 +44359,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.getMaxListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44330,8 +44386,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.off",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44353,8 +44413,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.on",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44376,8 +44440,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.once",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44399,8 +44467,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.removeAllListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44422,8 +44494,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.nodeEventTarget.removeListener",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-once-node-event-target.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44451,7 +44527,8 @@
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44497,13 +44574,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.addListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44526,13 +44604,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.emit",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44555,13 +44634,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.eventNames",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44584,13 +44664,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.getMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44613,13 +44694,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.listenerCount",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44646,9 +44728,7 @@
         "evidence": "compiler-dedicated:emitter.listeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts",
-          "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44671,13 +44751,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.off",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44700,13 +44781,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.on",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44729,13 +44811,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.once",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44758,13 +44841,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.prependListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44787,13 +44871,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.prependOnceListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44816,13 +44901,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.removeAllListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44845,13 +44931,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.removeListener",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44874,13 +44961,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.setMaxListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -44907,9 +44995,7 @@
         "evidence": "compiler-dedicated:emitter.rawListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/2620-ee-override-once-order.ts",
-          "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/emitter-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45102,12 +45188,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.getEventListeners",
         "tests": [
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
-          "tests/corpus/5847-events-cjs-default-max.cjs"
+          "tests/corpus/5847-events-cjs-default-max.cjs",
+          "tests/corpus/events-module-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45130,12 +45217,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.getMaxListeners",
         "tests": [
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
-          "tests/corpus/5847-events-cjs-default-max.cjs"
+          "tests/corpus/5847-events-cjs-default-max.cjs",
+          "tests/corpus/events-module-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45161,10 +45249,10 @@
         "status": "partial",
         "evidence": "compiler-dedicated:events.once",
         "tests": [
-          "tests/corpus/1677-emitter-listeners.ts",
           "tests/corpus/2620-ee-override-once-order.ts",
-          "tests/corpus/emitter-symbol-names.ts",
-          "tests/corpus/events-erased-emit-args.ts"
+          "tests/corpus/6491-events-once-streams.ts",
+          "tests/corpus/events-once-event-target.ts",
+          "tests/corpus/events-once-node-event-target.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45210,12 +45298,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.listenerCount",
         "tests": [
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
-          "tests/corpus/5847-events-cjs-default-max.cjs"
+          "tests/corpus/5847-events-cjs-default-max.cjs",
+          "tests/corpus/events-module-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45238,8 +45327,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-dedicated:events.on",
+        "tests": [
+          "tests/corpus/events-on-iterator.ts",
+          "tests/corpus/events-on-event-target.ts",
+          "tests/corpus/events-on-node-event-target.ts",
+          "tests/corpus/events-on-options.ts",
+          "tests/corpus/events-on-signal-close.ts",
+          "tests/corpus/events-on-watermarks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -45261,12 +45358,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.setMaxListeners",
         "tests": [
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
-          "tests/corpus/5847-events-cjs-default-max.cjs"
+          "tests/corpus/5847-events-cjs-default-max.cjs",
+          "tests/corpus/events-module-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45289,10 +45387,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.events.addAbortListener",
         "tests": [
-          "tests/corpus/5133-abort-signal-event-target.ts"
+          "tests/corpus/5133-abort-signal-event-target.ts",
+          "tests/corpus/events-add-abort-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45315,12 +45414,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.defaultMaxListeners",
         "tests": [
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
-          "tests/corpus/5847-events-cjs-default-max.cjs"
+          "tests/corpus/5847-events-cjs-default-max.cjs",
+          "tests/corpus/events-module-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45343,13 +45443,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:events.events.errorMonitor",
         "tests": [
           "tests/corpus/5134-events-error-monitor.ts",
           "tests/corpus/5136-events-error-monitor-string-name.ts",
           "tests/corpus/5137-events-error-monitor-computed-name.js",
-          "tests/corpus/5138-events-error-monitor-shared-listener.ts"
+          "tests/corpus/5138-events-error-monitor-shared-listener.ts",
+          "tests/corpus/events-add-abort-listener.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45395,8 +45496,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.captureRejectionSymbol",
+        "tests": [
+          "tests/corpus/events-capture-rejection-symbol.ts",
+          "tests/corpus/events-capture-rejection-symbol.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -53799,6 +53904,11 @@
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -55538,14 +55648,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearImmediate",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55568,14 +55683,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearInterval",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55598,14 +55718,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearTimeout",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55680,14 +55805,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setImmediate",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55710,14 +55840,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setInterval",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -55740,14 +55875,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setTimeout",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98439,15 +98579,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
           "tests/corpus/5830-timers-promises-signal.ts",
@@ -98455,7 +98592,13 @@
           "tests/corpus/5889-timers-scheduler-signal.ts",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-promises-interval-options.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-untyped-delays.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -98501,14 +98644,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setImmediate",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98531,14 +98679,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setInterval",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98561,14 +98714,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:setTimeout",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98614,14 +98772,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearImmediate",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98644,14 +98807,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearInterval",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98674,14 +98842,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:clearTimeout",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98727,14 +98900,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timersPromises.setTimeout",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98757,14 +98935,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timersPromises.setImmediate",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98787,14 +98970,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timersPromises.setInterval",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
-          "tests/corpus/1805-timer-callback-args.ts",
-          "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/timers-promises-interval-options.ts",
+          "tests/corpus/timers-handle-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98817,7 +98999,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timersPromises.scheduler.wait",
         "tests": [
           "tests/corpus/5839-timers-promises-scheduler.ts",
@@ -98844,7 +99026,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timersPromises.scheduler.yield",
         "tests": [
           "tests/corpus/5839-timers-promises-scheduler.ts",
@@ -98871,11 +99053,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:timers.Immediate",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98898,14 +99083,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:immediate.hasRef",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98928,14 +99118,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:immediate.ref",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98958,14 +99153,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:immediate.unref",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98988,10 +99188,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:timers.immediate",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-handle-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99014,11 +99216,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:timers.Timeout",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99041,10 +99246,10 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:timers.timeout.close",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99067,14 +99272,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timeout.hasRef",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
-          "tests/corpus/1805-timer-callback-args.ts",
-          "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/timers-promises-interval-options.ts",
+          "tests/corpus/timers-handle-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99097,14 +99301,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timeout.ref",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99127,14 +99336,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timeout.refresh",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99157,14 +99371,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:timeout.unref",
         "tests": [
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
-          "tests/corpus/5830-timers-promises-signal.ts"
+          "tests/corpus/5830-timers-promises-signal.ts",
+          "tests/corpus/timers-handle-surface.ts",
+          "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/timers-optional-delay-reads.ts",
+          "tests/corpus/timers-callback-this.cjs",
+          "tests/corpus/timers-cross-kind-clears.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99187,12 +99406,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:timeout",
+        "status": "supported",
+        "evidence": "compiler-feature:timers.timeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-handle-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99215,10 +99434,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:timers.timeout",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts",
+          "tests/corpus/timers-handle-surface.ts"
         ]
       },
       "anchorSource": "exact"

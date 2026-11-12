@@ -270,6 +270,74 @@ test.skipIf(!runtimePackHost)(
   120_000,
 );
 
+test.skipIf(!persistentExecutable)(
+  "bootstrap repeats a cached build's warnings without loading the compiler graph",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-warnings-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    const preload = join(dir, "reject-full-compiler.mjs");
+    const env = { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot };
+    delete env.SCRIPTC_TIMING;
+    delete env.SCRIPTC_NO_CACHE;
+    const build = (rejectFullCompiler: boolean) =>
+      execFileAsync(
+        process.execPath,
+        [
+          ...(rejectFullCompiler ? ["--import", preload] : []),
+          bootstrap,
+          "build",
+          entry,
+          "-o",
+          outPath,
+        ],
+        { env, maxBuffer: 4 * 1024 * 1024 },
+      );
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      await Promise.all([
+        // A width copy the program can tell: the divergence band's warning.
+        writeFile(
+          entry,
+          [
+            "interface Narrow { a: number }",
+            "interface Wide { a: number; b: string }",
+            'const wide: Wide = { a: 1, b: "x" };',
+            "const narrows: Narrow[] = [wide];",
+            "wide.a = 9;",
+            "console.log(narrows[0]!.a);",
+            "",
+          ].join("\n"),
+        ),
+        writeFile(
+          preload,
+          [
+            "import { registerHooks } from 'node:module';",
+            "registerHooks({ load(url, context, nextLoad) {",
+            "  if (url.includes('/packages/compiler/dist/index.js')) throw new Error('compiler graph loaded');",
+            "  return nextLoad(url, context);",
+            "}});",
+            "",
+          ].join("\n"),
+        ),
+      ]);
+      const first = await build(false);
+      expect(first.stderr).toContain("warning SC6001");
+      expect(first.stderr).toContain("main.ts:4");
+      expect(first.stderr).toContain("1 warning: the program compiled");
+      // The second build restores the executable, so it must print the same
+      // warning bytes from the cache entry, frame included.
+      const cached = await build(true);
+      expect(cached.stderr).toBe(first.stderr);
+      expect((await execFileAsync(outPath)).stdout).toBe("1\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);
+
 test("bootstrap replays an unchanged coverage verdict without loading the compiler graph", async () => {
   const work = await mkdtemp(join(tmpdir(), "scriptc-bootstrap-coverage-"));
   const preload = join(work, "preload.mjs");

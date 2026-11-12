@@ -10,7 +10,6 @@ import {
   type IrExpr,
   type IrFunction,
   type IrStmt,
-  type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
@@ -105,7 +104,11 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
       if (classMemberNameOf(lowerer, name) === null) return false;
       continue;
     }
-    if (ts.isPrivateIdentifier(name)) continue;
+    if (ts.isPrivateIdentifier(name))
+      // A private static is not a public key: the table never lists it
+      // (reflection must not enumerate or reach its storage), and its
+      // presence does not make the class's public statics ineligible.
+      continue;
     const text = classMemberNameOf(lowerer, name);
     if (text === null) return false;
     if (ts.isAccessor(member)) {
@@ -117,8 +120,8 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
       continue;
     }
     if (ts.isPropertyDeclaration(member)) {
-      // An initializer-less field has no storage: its value is `undefined`
-      // until someone assigns it, which the native layout cannot express.
+      // An initializer-less field defines an own data property whose value
+      // is `undefined`; the installer defines it, so it is representable.
       if (member.initializer === undefined) continue;
       const field = info.staticFields.find((candidate) => candidate.name === text);
       if (!field) return false;
@@ -189,13 +192,6 @@ export function classStaticsInstaller(
   });
   const flag = (value: boolean, at: SrcLoc): IrExpr =>
     lowerer.coerceToExpected({ kind: "boolLit", value, type: BOOL, loc: at }, DYN);
-  const closure = (fnName: string, type: IrType, at: SrcLoc): IrExpr => ({
-    kind: "closure",
-    fnName,
-    captures: [],
-    type,
-    loc: at,
-  });
   // `C.prototype` is own, and non-writable, non-enumerable, non-configurable.
   statements.push(
     define(
@@ -258,60 +254,36 @@ export function classStaticsInstaller(
     statements.push(define(key, descriptor(entries, at), at));
     setters.add(key);
   }
-  for (const field of info.staticFields) {
-    const at = loc;
-    const getterName = `%dyn.class.statics.${info.def.name}.get:${field.name}`;
-    lowerer.noteEdge(getterName);
-    lowerer.liftedFns.push({
-      name: getterName,
-      params: [],
-      returnType: DYN,
-      locals: [],
-      body: [
-        {
-          kind: "return",
-          value: lowerer.coerceToExpected(varRef(field.globalId, field.type, at), DYN),
-          loc: at,
-        },
-      ],
-      loc: at,
-    });
-    const setterName = `%dyn.class.statics.${info.def.name}.set:${field.name}`;
-    lowerer.noteEdge(setterName);
-    lowerer.liftedFns.push({
-      name: setterName,
-      params: [{ localId: "p.0", name: "value", type: DYN }],
-      returnType: VOID,
-      locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
-      body: [
-        {
-          kind: "assign",
-          localId: field.globalId,
-          value: { kind: "dynCheck", value: varRef("p.0", DYN, at), type: field.type, loc: at },
-          loc: at,
-        },
-      ],
-      loc: at,
-    });
+  // Static fields are own data properties on the class object, in
+  // declaration order: Node reports `{ value, writable: true,
+  // enumerable: true, configurable: true }`, never an accessor. A field
+  // without an initializer still defines the property, with the value
+  // `undefined`, so `'name' in C` and the descriptor APIs see it. A
+  // `#private` field is not a public key at all: it never enters the
+  // table (the security contract — reflection must not reach its
+  // storage), and the class's public statics still install around it.
+  for (const member of info.decl!.members.nodes) {
+    if (!ts.isPropertyDeclaration(member)) continue;
+    const modifiers = ts.getModifiers(member);
+    if (!modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)) continue;
+    // `declare static x` is type-only: no runtime property.
+    if (modifiers.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) continue;
+    if (ts.isPrivateIdentifier(member.name)) continue;
+    const name = classMemberNameOf(lowerer, member.name);
+    if (name === null) continue;
+    const at = locOf(member);
+    const field = info.staticFields.find((candidate) => candidate.name === name);
+    const value =
+      field === undefined
+        ? dynUndefinedExpr(at)
+        : lowerer.coerceToExpected(varRef(field.globalId, field.type, at), DYN);
     statements.push(
       define(
-        field.name,
+        name,
         descriptor(
           [
-            {
-              key: "get",
-              value: lowerer.coerceToExpected(
-                closure(getterName, { kind: "func", params: [], ret: DYN }, at),
-                DYN,
-              ),
-            },
-            {
-              key: "set",
-              value: lowerer.coerceToExpected(
-                closure(setterName, { kind: "func", params: [DYN], ret: VOID }, at),
-                DYN,
-              ),
-            },
+            { key: "value", value },
+            { key: "writable", value: flag(true, at) },
             { key: "enumerable", value: flag(true, at) },
             { key: "configurable", value: flag(true, at) },
           ],

@@ -54,6 +54,20 @@ console.log(someClass.tag);
 // evaluates.
 const pair = [1, class WithStatic { static x = 1; }] as const;
 
+// An ARM of a conditional evaluates only when it is selected: declaration-
+// time code emitted at the enclosing statement would run on the other arm's
+// path as well.
+const arm = pair.length > 0 ? class Selected { static x = 1; } : class Other {};
+void arm;
+
+// A name read ahead of the class-building argument is not inert: the
+// declaration-time code can assign the binding before the call reads it.
+let seen = 0;
+function consume(first: number, second: unknown) {
+  return first + String(second);
+}
+console.log(consume(seen, class Writes { static { seen = 7; } }));
+
 // Construction through a UNION of class values: narrow or annotate first.
 class Left {
   constructor() {}

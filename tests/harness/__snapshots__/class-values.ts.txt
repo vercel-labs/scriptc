@@ -37,9 +37,23 @@ class-values.ts:55:18 - error SC1090: class expressions with static initializers
      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   56 | 
 
-class-values.ts:75:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
+class-values.ts:60:31 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
 
-  74 | class OtherThis extends UsesThis {}
-  75 | function self(value: typeof UsesThis): string { return value.self(); }
+  59 | // path as well.
+  60 | const arm = pair.length > 0 ? class Selected { static x = 1; } : class Other {};
+     |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  61 | void arm;
+
+class-values.ts:69:27 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
+
+  68 | }
+  69 | console.log(consume(seen, class Writes { static { seen = 7; } }));
+     |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  70 | 
+
+class-values.ts:89:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
+
+  88 | class OtherThis extends UsesThis {}
+  89 | function self(value: typeof UsesThis): string { return value.self(); }
      |                                                        ^~~~~~~~~~
-  76 | console.log(self(OtherThis));
+  90 | console.log(self(OtherThis));

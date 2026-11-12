@@ -16,3 +16,20 @@ class Both extends (pick ? Left : Right) {
 
 const both = Both;
 console.log(both.name);
+
+// Related arms share a type, but the class still lays out as that one type:
+// an arm that declares instance members of its own would have Node run its
+// constructor, fields, and overrides when the conditional selects it.
+class Base {
+  base = 1;
+}
+class Sub extends Base {
+  extra = 2;
+}
+
+class Narrow extends (pick ? Sub : Base) {
+  own = 4;
+}
+
+const narrow = Narrow;
+console.log(narrow.name);

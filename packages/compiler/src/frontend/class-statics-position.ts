@@ -14,19 +14,41 @@
 import * as ts from "./ts7/adapter.js";
 
 /** The top-level statement whose evaluation IS `expression`'s evaluation
- * point, or null. The path may cross only parens, a conditional's arm, an
+ * point, or null. The path may cross only parens, a conditional's test, an
  * argument position whose earlier arguments evaluate nothing observable, a
  * class expression's heritage clause, an enclosing class expression's
  * heritage, a sole-declarator top-level variable statement, a top-level
  * assignment, a bare expression statement, or a top-level class
  * declaration's heritage clause. */
 export function staticsEvaluationStatementOf(expression: ts.Node): ts.Statement | null {
+  return evaluationStatementOf(expression, false);
+}
+
+/** The top-level statement an expression inside a conditional's ARM
+ * evaluates under, or null when the expression reaches a top-level
+ * statement without crossing an arm (staticsEvaluationStatementOf answers
+ * that case) or reaches none. Such an expression evaluates at most once, in
+ * the statement, and only when the condition selects its arm, so code tied
+ * to its evaluation must lower where the arm lowers instead of at the
+ * statement's position. */
+export function staticsArmStatementOf(expression: ts.Node): ts.Statement | null {
+  if (evaluationStatementOf(expression, false) !== null) return null;
+  return evaluationStatementOf(expression, true);
+}
+
+function evaluationStatementOf(expression: ts.Node, crossArms: boolean): ts.Statement | null {
   let n: ts.Node = expression;
   for (let p: ts.Node | undefined = n.parent; p !== undefined; n = p, p = p.parent) {
     if (ts.isParenthesizedExpression(p)) continue;
-    // An arm runs exactly when the conditional it sits in does, so the arm
-    // may stand wherever the conditional does.
-    if (ts.isConditionalExpression(p)) continue;
+    // A conditional's TEST runs with the conditional, so declaration-time
+    // code inside it evaluates where the enclosing statement does. An ARM
+    // runs only when the condition selects it: emitting its code at the
+    // statement would run it even when the arm never evaluated, so an arm
+    // is not a position the walk may cross.
+    if (ts.isConditionalExpression(p)) {
+      if (n === p.condition || crossArms) continue;
+      return null;
+    }
     // A class expression the expression inside a heritage clause builds
     // evaluates at the class expression's own position — `define(tag,
     // class Owner extends mixin(Base) {})` builds the class where the
@@ -64,14 +86,15 @@ export function staticsEvaluationStatementOf(expression: ts.Node): ts.Statement 
   return null;
 }
 
-/** An argument that evaluates nothing observable: a literal or a name read.
- * Anything else could run code ahead of the statics' evaluation point once
- * they move to the enclosing call's statement. */
+/** An argument that evaluates nothing observable: a literal. A name read is
+ * not one — the declaration-time code emitted ahead of the call can assign
+ * the binding the name reads (`static { x = 2 }` in the class an earlier
+ * argument builds), and the call would then read the new value where
+ * JavaScript reads the old one. */
 export function evaluatesNothing(argument: ts.Expression): boolean {
   return (
     ts.isStringLiteral(argument) ||
     ts.isNumericLiteral(argument) ||
-    ts.isIdentifier(argument) ||
     argument.kind === ts.SyntaxKind.TrueKeyword ||
     argument.kind === ts.SyntaxKind.FalseKeyword ||
     argument.kind === ts.SyntaxKind.NullKeyword

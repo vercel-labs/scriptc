@@ -16,11 +16,19 @@
     ".": {
       "types": "./index.d.ts",
       "default": "./index.js"
-    }
+    },
+    "./register": {
+      "types": "./register.d.ts",
+      "default": "./register.js"
+    },
+    "./refusals.json": "./refusals.json"
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "register.js",
+    "register.d.ts",
+    "refusals.json",
     "README.md"
   ],
   "dependencies": {

@@ -1672,8 +1672,16 @@ export class ClassDynamicDispatch {
       if (!info) continue;
       add(info);
       for (let base = info.base; base; base = base.base) add(base);
-      for (const other of lowerer.classes.values())
-        if (other !== info && lowerer.isSubclassOf(other.def.name, info.def.name)) add(other);
+      for (const other of lowerer.classes.values()) {
+        if (other === info || !lowerer.isSubclassOf(other.def.name, info.def.name)) continue;
+        // A slot typed with the boxed class can only hold a descendant this
+        // build retains (classCanBeConstructed). A descendant whose
+        // constructor the reachable graph dropped has no instance and no
+        // class value to reflect on, and installing its table would name its
+        // class value — pulling its declaration-time code into a library
+        // graph that does not reach it.
+        if (lowerer.classCanBeConstructed(other)) add(other);
+      }
     }
     // Ancestors install first: a table links to its base's, so the base's
     // members are there when an inherited name resolves through it.
@@ -4278,6 +4286,74 @@ export class ClassDynamicDispatch {
               loc,
             },
             then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+            else_: null,
+            loc,
+          });
+          changed = true;
+        }
+      else
+        // A write to a static field of a class value updates the native
+        // storage the class's own code reads, and the field's own data
+        // property in the installed table (Node's class object holds the
+        // field; the descriptor read and util.inspect answer from that
+        // entry). Only a class whose table this pass installed takes the
+        // arm: without one the table write would hit the reflection fence
+        // where Node stores the value.
+        for (const name of this.boxedConstructors) {
+          const info = lowerer.classes.get(name);
+          if (!info || dispatch.name.startsWith("#")) continue;
+          const key = `constructor:${name}`;
+          if (dispatch.classes.has(key)) continue;
+          if (runtimeStaticDefines(lowerer, info, dispatch.name)) continue;
+          const found = findStaticOn(lowerer, info, dispatch.name);
+          const field = found?.field;
+          if (!found || !field || !this.staticTablesInstalled.has(found.declarer.def.name))
+            continue;
+          if (findGenericStaticOn(lowerer, info, dispatch.name)) continue;
+          const loc = dispatch.fn.loc;
+          const value = varRef("p.0", DYN, loc);
+          const type: IrType = { kind: "classval", className: name };
+          dispatch.classes.add(key);
+          const table = {
+            kind: "call" as const,
+            callee: this.propertyBag!.name,
+            args: [value],
+            type: DYN,
+            loc,
+          };
+          dispatch.fn.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.classIs",
+              args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "assign",
+                localId: field.globalId,
+                value: { kind: "dynCheck", value: varRef("p.1", DYN, loc), type: field.type, loc },
+                loc,
+              },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.keySet",
+                  args: [
+                    table,
+                    { kind: "strLit", value: dispatch.name, type: STRING, loc },
+                    varRef("p.1", DYN, loc),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              { kind: "return", value: null, loc },
+            ],
             else_: null,
             loc,
           });

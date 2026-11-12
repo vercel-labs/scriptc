@@ -15,3 +15,21 @@ conditional-class-heritage.ts:17:14 - error SC2004: uses of 'Both' inherit the b
   18 | console.log(both.name);
 
   hint: the declaration of 'Both' did not compile — fix the diagnostic reported there and these sites clear with it
+
+conditional-class-heritage.ts:30:30 - error SC1090: extending a conditional class value with an arm that declares its own instance members are not supported yet
+
+  29 | 
+  30 | class Narrow extends (pick ? Sub : Base) {
+     |                              ^~~
+  31 |   own = 4;
+
+  hint: the class takes the shape of the class its type names, so the other arm's constructor, fields and overrides would not run: give both arms that class's instance shape (a static-only mixin, or the class itself)
+
+conditional-class-heritage.ts:34:16 - error SC2004: uses of 'Narrow' inherit the blocker on its declaration
+
+  33 | 
+  34 | const narrow = Narrow;
+     |                ^~~~~~
+  35 | console.log(narrow.name);
+
+  hint: the declaration of 'Narrow' did not compile — fix the diagnostic reported there and these sites clear with it

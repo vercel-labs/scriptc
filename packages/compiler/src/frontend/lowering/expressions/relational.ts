@@ -106,6 +106,80 @@ function operandClass(lowerer: Lowerer, className: string, expr: ts.Node, test: 
   );
 }
 
+/** The class above (or at) `info` whose heritage was a conditional, with the
+ * arms that conditional could select (`arms[0]` when the condition held) and
+ * the global that holds the selection. Null when every class in the chain
+ * extends one fixed class. */
+function heritageArmsOf(
+  lowerer: Lowerer,
+  info: ClassInfo,
+): { arms: readonly [string, string]; condGlobal?: string } | null {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    const arms = lowerer.computedHeritageArms.get(current.def.name);
+    if (arms) return arms;
+  }
+  return null;
+}
+
+/** An `instanceof` answer that depends on WHICH arm a class's conditional
+ * heritage selected, or null when the static class chain already answers it.
+ *
+ * A class that extended a conditional is laid out as the class its type
+ * names, but the class it actually extends is the arm the conditional
+ * selected at the class statement. The static chain cannot see that: for
+ * `Sub extends Base` and `class C extends (flag ? Sub : Base) {}`, a C
+ * instance IS a Sub instance on the arm's path (its prototype chain runs
+ * through Sub.prototype), and Node answers true there. The class statement
+ * evaluated the condition once, so the test reads that selection
+ * (`%g.<C>.heritageArm`) rather than the class chain.
+ *
+ * Only the false answers can change: every class the static chain holds is
+ * on every arm's path, because each arm is the typed class or a class below
+ * it, so a static true stays true. */
+function conditionalHeritageTest(
+  lowerer: Lowerer,
+  left: IrExpr,
+  lhsInfo: ClassInfo,
+  target: ClassInfo,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const inherited = heritageArmsOf(lowerer, lhsInfo);
+  if (!inherited) return null;
+  if (
+    lhsInfo.def.name === target.def.name ||
+    lowerer.isSubclassOf(lhsInfo.def.name, target.def.name)
+  )
+    return null;
+  const isInstance = (className: string): boolean =>
+    className === target.def.name || lowerer.isSubclassOf(className, target.def.name);
+  const whenTrue = isInstance(inherited.arms[0]);
+  const whenFalse = isInstance(inherited.arms[1]);
+  if (!whenTrue && !whenFalse) return null;
+  let result: IrExpr;
+  if (whenTrue === whenFalse) result = { kind: "boolLit", value: whenTrue, type: BOOL, loc };
+  else if (inherited.condGlobal === undefined)
+    lowerer.unsupported(
+      "SC1090",
+      right,
+      "'instanceof' against a class whose conditional heritage is evaluated again at each class expression",
+      "the test reads the arm the conditional selected, which one evaluation of the class expression owns: evaluate the class expression once (a module-level class declaration) and test against that class",
+    );
+  else
+    result = {
+      kind: "ternary",
+      cond: varRef(inherited.condGlobal, BOOL, loc),
+      then: { kind: "boolLit", value: whenTrue, type: BOOL, loc },
+      else_: { kind: "boolLit", value: whenFalse, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  // Node evaluates the operand before testing it; the answer comes from the
+  // class's heritage selection, so only the operand's side effects remain.
+  const stmts: IrStmt[] = left.kind === "varRef" ? [] : [{ kind: "exprStmt", expr: left, loc }];
+  return readsClassAfter(lowerer, target, right, stmts, result);
+}
+
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
  * checked-dynamic value that the checker types as the class: it converts
@@ -806,6 +880,15 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         );
       }
       const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
+      const inherited = conditionalHeritageTest(
+        lowerer,
+        left,
+        lhsInfo,
+        targetInfo,
+        expr.right,
+        loc,
+      );
+      if (inherited) return inherited;
       if (
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
@@ -1199,6 +1282,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     });
   }
   const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
+  if (duplex === undefined) {
+    const inherited = conditionalHeritageTest(lowerer, left, lhsInfo, target, expr.right, loc);
+    if (inherited) return inherited;
+  }
   if (lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)) {
     const tests = runtimeTests(left.type.className);
     if (tests.length === 1) {

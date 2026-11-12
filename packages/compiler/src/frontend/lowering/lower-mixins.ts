@@ -40,7 +40,7 @@ import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { type IrType } from "../../ir/ir.js";
-import { staticsEvaluationStatementOf } from "../class-statics-position.js";
+import { staticsArmStatementOf, staticsEvaluationStatementOf } from "../class-statics-position.js";
 import {
   type ClassInfo,
   builtinStreamInfoOf,
@@ -89,6 +89,11 @@ export interface MixinInstanceInfo {
    * in this file's init, at the top-level statement containing the call —
    * exactly when JS evaluates them (lowerFileInit's merge). */
   statics?: { sf: ts.SourceFile; pos: number };
+  /** Static fields/blocks exist and the call sits in a conditional's arm
+   * of a top-level statement: they run only when the arm is selected, so
+   * they lower with the call's own value (mixinCallValue) instead of at the
+   * statement's position. */
+  staticsInArm?: boolean;
 }
 
 /** The class a mixin FUNCTION's body defines and returns, with every
@@ -520,10 +525,16 @@ function instantiateMixinCall(
   // The supported positions put that point at one top-level statement of
   // the call's file — lowerFileInit's positional merge emits them there
   // (before the statement; every allowed shape evaluates nothing
-  // observable ahead of the call). Anything subtler is a named fence,
-  // never a reordering.
+  // observable ahead of the call). A call in a conditional's arm runs only
+  // when the arm is selected, so its statics lower with the call's value
+  // instead (staticsInArm). Anything subtler is a named fence, never a
+  // reordering.
   if (info.staticFields.length > 0 || (info.staticBlocks?.length ?? 0) > 0) {
     const holder = staticsEvaluationStatementOf(call);
+    if (!holder && staticsArmStatementOf(call) !== null) {
+      if (info.mixinInstance) info.mixinInstance.staticsInArm = true;
+      return info;
+    }
     if (!holder) {
       lowerer.unsupported(
         "SC1090",

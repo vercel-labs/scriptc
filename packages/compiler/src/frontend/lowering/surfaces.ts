@@ -1682,6 +1682,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // canonical signatures for manifest projection and fallback dispatch.
       createHash: { fn: "crypto.hashNew", params: [STRING], result: CRYPTOHASH_T },
       createHmac: { fn: "crypto.hmacNewStr", params: [STRING, STRING], result: CRYPTOHMAC_T },
+      // createMac is special-cased in lowerCryptoModuleCall (any-value
+      // key and options); this row carries its canonical signature.
+      createMac: { fn: "crypto.macNewDyn", params: [DYN, DYN, DYN], result: DYN },
+      secureHeapUsed: { fn: "crypto.secureHeapUsed", params: [], result: DYN },
       hash: { fn: "crypto.hashDigestStr", params: [STRING, STRING, STRING], result: STRING },
       timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
       randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
@@ -1745,9 +1749,6 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Checked-dynamic arguments, the result converted to the call site's
       // type (lowerPrimeCall).
       getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
-      // A fresh usage record per call; only libuv's secure heap would make
-      // it non-zero, and a compiled binary has none.
-      secureHeapUsed: { fn: "crypto.secureHeapUsed", params: [], result: DYN },
       // Node's message and error for every engine but "dynamic".
       setEngine: { fn: "crypto.setEngine", params: [], result: VOID },
       checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
@@ -2068,6 +2069,13 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      // Both answer at the call site where the compiler knows the value
+      // (lowerUtilTypeCall): the arguments object and ESM namespace
+      // bindings. At run time the brand check recognizes boxed program
+      // namespaces; the compiled arguments list and builtin module values
+      // carry neither brand (see docs/content/limitations).
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
       // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then
@@ -3025,10 +3033,31 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["perf.clearMeasures"],
     },
     {
+      id: "node-builtin.perf_hooks.PerformanceMark",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceMark",
+      fns: ["perf.markNew", "perf.entryIs"],
+      note: "new PerformanceMark(name, options?) and the PerformanceMark global; the mark updates the mark timings but is not added to the marks buffer",
+    },
+    {
+      id: "node-builtin.perf_hooks.PerformanceObserver",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceObserver",
+      fns: [
+        "perf.observerNew",
+        "perf.observerObserve",
+        "perf.observerDisconnect",
+        "perf.observerTake",
+        "perf.listEntries",
+        "perf.observerIs",
+      ],
+      note: "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes",
+    },
+    {
       id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
       kind: "node-builtin",
       name: "perf_hooks.performance.eventLoopUtilization",
-      fns: ["perf.loopStart", "perf.idleTime"],
+      fns: ["perf.loopStart", "perf.loopExit", "perf.loopCount", "perf.idleTime"],
       note: "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported",
     },
     {

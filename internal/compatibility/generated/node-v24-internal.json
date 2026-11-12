@@ -19703,6 +19703,7 @@
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
+          "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
@@ -19769,6 +19770,8 @@
           "tests/corpus/compat-x509-keyobject.ts",
           "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-constants-object.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs",
+          "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
@@ -19785,6 +19788,7 @@
           "tests/corpus/crypto-rsa-recover-padding.ts",
           "tests/corpus/crypto-rsa-roundtrip.ts",
           "tests/corpus/crypto-secret-key-inputs.ts",
+          "tests/corpus/crypto-secure-heap-used.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-call-shapes.cjs",
@@ -20495,8 +20499,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.crypto.createMac",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21074,9 +21082,9 @@
       },
       "static": {
         "status": "supported",
-        "evidence": "compiler-dedicated:crypto.getFips",
+        "evidence": "compiler-feature:crypto.crypto.getFips",
         "tests": [
-          "tests/corpus/crypto-introspection.ts"
+          "tests/corpus/2556-crypto-introspection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21127,7 +21135,7 @@
       },
       "static": {
         "status": "supported",
-        "evidence": "compiler-dedicated:crypto.getMacs",
+        "evidence": "compiler-feature:crypto.crypto.getMacs",
         "tests": [
           "tests/corpus/crypto-introspection.ts"
         ]
@@ -21735,9 +21743,9 @@
       },
       "static": {
         "status": "supported",
-        "evidence": "compiler-dedicated:crypto.secureHeapUsed",
+        "evidence": "compiler-feature:crypto.crypto.secureHeapUsed",
         "tests": [
-          "tests/corpus/crypto-introspection.ts"
+          "tests/corpus/crypto-secure-heap-used.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24110,8 +24118,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.Mac",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -24133,8 +24145,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.mac.final",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -24156,8 +24172,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.mac.update",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -43434,17 +43454,24 @@
           "tests/corpus/events-capture-rejection-symbol.cjs",
           "tests/corpus/events-capture-rejection-symbol.ts",
           "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/events-listener-scan-aliases.ts",
+          "tests/corpus/events-listener-scan-any-name.ts",
+          "tests/corpus/events-listener-scan-literal-name.ts",
           "tests/corpus/events-module-helpers.ts",
           "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-on-dynamic-names.ts",
           "tests/corpus/events-on-event-target.ts",
           "tests/corpus/events-on-iterator.ts",
           "tests/corpus/events-on-node-event-target.ts",
           "tests/corpus/events-on-options.ts",
           "tests/corpus/events-on-signal-close.ts",
           "tests/corpus/events-on-watermarks.ts",
+          "tests/corpus/events-once-dynamic-names.ts",
           "tests/corpus/events-once-event-target.ts",
           "tests/corpus/events-once-node-event-target.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/events-once-stream-data.ts",
+          "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/diagnostics/events-once-fences.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -45530,13 +45557,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.once",
         "tests": [
           "tests/corpus/2620-ee-override-once-order.ts",
           "tests/corpus/6491-events-once-streams.ts",
+          "tests/corpus/events-listener-scan-aliases.ts",
+          "tests/corpus/events-listener-scan-any-name.ts",
+          "tests/corpus/events-listener-scan-literal-name.ts",
           "tests/corpus/events-once-event-target.ts",
-          "tests/corpus/events-once-node-event-target.ts"
+          "tests/corpus/events-once-node-event-target.ts",
+          "tests/corpus/events-once-dynamic-names.ts",
+          "tests/corpus/events-once-stream-data.ts",
+          "tests/diagnostics/events-once-fences.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45611,15 +45644,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:events.on",
         "tests": [
+          "tests/corpus/events-listener-scan-aliases.ts",
+          "tests/corpus/events-listener-scan-any-name.ts",
+          "tests/corpus/events-listener-scan-literal-name.ts",
           "tests/corpus/events-on-iterator.ts",
           "tests/corpus/events-on-event-target.ts",
           "tests/corpus/events-on-node-event-target.ts",
           "tests/corpus/events-on-options.ts",
           "tests/corpus/events-on-signal-close.ts",
-          "tests/corpus/events-on-watermarks.ts"
+          "tests/corpus/events-on-watermarks.ts",
+          "tests/corpus/events-on-dynamic-names.ts",
+          "tests/corpus/events-once-stream-data.ts",
+          "tests/diagnostics/events-once-fences.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54187,6 +54226,12 @@
           "tests/corpus/js-abort-portable.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/structured-clone-regexp.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/timers-callback-this.cjs",
           "tests/corpus/timers-cross-kind-clears.ts",
@@ -54207,7 +54252,6 @@
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
           "tests/diagnostics/compat-absent-lowerings.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -55082,10 +55126,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceEntry",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55108,10 +55154,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceMark",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55134,10 +55182,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceMeasure",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55160,10 +55210,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceObserver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55186,8 +55239,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.PerformanceObserverEntryList",
+        "tests": [
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56198,6 +56255,7 @@
         "evidence": "compiler-feature:globals.structuredClone",
         "tests": [
           "tests/corpus/2283-structured-clone.cjs",
+          "tests/corpus/structured-clone-regexp.ts",
           "tests/corpus/5324-structured-clone-documents.ts",
           "tests/corpus/9917-structured-clone-errors.ts"
         ]
@@ -78696,7 +78754,21 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs",
+          "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-supported-entry-types.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
@@ -79056,7 +79128,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceEntry",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79191,7 +79264,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceMark",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79218,7 +79292,8 @@
         "evidence": "compiler-feature:perf_hooks.detail",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79245,7 +79320,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceMeasure",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79525,8 +79601,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceNodeTiming",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-performance-tojson.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -79548,8 +79630,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.bootstrapComplete",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79571,8 +79662,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.environment",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79594,8 +79694,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.idleTime",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79617,8 +79726,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.loopExit",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79640,8 +79758,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.loopStart",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79663,8 +79790,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.nodeStart",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79686,8 +79822,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.uvMetricsInfo",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -79709,8 +79854,17 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.v8Start",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -80238,10 +80392,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.PerformanceObserver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-constructors.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -80264,8 +80420,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.disconnect",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80287,8 +80448,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.observe",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80310,8 +80476,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.takeRecords",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80333,8 +80504,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.supportedEntryTypes",
+        "tests": [
+          "tests/corpus/perf-supported-entry-types.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -80356,8 +80531,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceObserverEntryList",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80379,8 +80559,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntries",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80402,8 +80587,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntriesByName",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80425,8 +80615,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntriesByType",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81729,8 +81924,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.eventLoopUtilization",
+        "tests": [
+          "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-performance-tojson.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81802,8 +82002,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.performance",
+        "tests": [
+          "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-performance-tojson.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81910,6 +82115,7 @@
         "evidence": "compiler-feature:perf_hooks.performance.eventLoopUtilization",
         "tests": [
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/perf-event-loop-utilization.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
@@ -82174,8 +82380,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performance.toJSON",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82220,8 +82434,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.nodeTiming",
+        "tests": [
+          "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-node-timing-dyn.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -105641,7 +105863,11 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-format-json-error.ts",
-          "tests/diagnostics/compat-absent-lowerings.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
@@ -107677,6 +107903,8 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/util-types.ts"
         ]
       },
@@ -107758,8 +107986,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isArgumentsObject",
+        "tests": [
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -108441,10 +108676,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:util.util.types.isModuleNamespaceObject",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -111484,6 +111723,7 @@
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -112594,8 +112834,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.Argon2Params",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112617,8 +112861,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.associatedData",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112640,8 +112887,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.memory",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112663,8 +112913,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112686,8 +112939,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.nonce",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112709,8 +112965,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.parallelism",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112732,8 +112991,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.passes",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112755,8 +113017,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.secretValue",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112778,8 +113043,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.version",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112985,8 +113253,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcdhKeyDeriveParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113008,8 +113280,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113031,8 +113306,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.public",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114156,8 +114434,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114179,8 +114461,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114202,8 +114487,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114225,8 +114513,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114248,8 +114540,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114271,8 +114566,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114294,8 +114592,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114317,8 +114619,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114340,8 +114645,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114363,8 +114671,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114386,8 +114698,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.algorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114409,8 +114724,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114432,8 +114750,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114597,8 +114918,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaHashedImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114654,8 +114979,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114961,8 +115290,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaOaepParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114984,8 +115317,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.label",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115007,8 +115343,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

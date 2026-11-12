@@ -814,11 +814,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // the out-of-line scr_exc_pending call; per-call checks inline the
   // test (pendingTestLines).
   if (entryMayThrow || runsLoop) emitter.declare(`declare zeroext i1 @scr_exc_pending()`);
+  // A synchronous program that reads the loop milestones marks the loop's
+  // start and end around its exit listeners (main's epilogue below); a
+  // program that runs the loop marks the start before it and the loop's
+  // exit hook marks the end.
+  if (emitter.readsLoopMetrics()) {
+    emitter.declare(`declare void @scr_perf_loop_mark()`);
+    if (!runsLoop) emitter.declare(`declare void @scr_perf_loop_end()`);
+  }
   if (runsLoop) {
     emitter.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
     if (emitter.mod.commonJsEntry === true)
       emitter.declare(`declare void @scr_loop_commonjs_entry()`);
-    if (emitter.readsLoopMetrics()) emitter.declare(`declare void @scr_perf_loop_mark()`);
     emitter.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
     emitter.declare(`declare void @scr_discard_unhandled_rejections()`);
   }
@@ -1631,6 +1638,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
               ]
             : []),
         ]
+      : []),
+    // A synchronous program never runs the loop, but Node's loop starts and
+    // stops before a normal exit's listeners do, so the milestones read there
+    // are set. An exit from inside the body (process.exit, an uncaught throw)
+    // returns through another epilogue and leaves them at -1, as Node does.
+    ...(emitter.readsLoopMetrics() && !runsLoop
+      ? [`  call void @scr_perf_loop_mark()`, `  call void @scr_perf_loop_end()`]
       : []),
     ...exitListenerLines("xn"),
     ...globalReleases,

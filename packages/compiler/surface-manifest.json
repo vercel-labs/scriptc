@@ -576,6 +576,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.createMac",
+      "kind": "node-builtin",
+      "name": "crypto.createMac",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.createPrivateKey",
       "kind": "node-builtin",
       "name": "crypto.createPrivateKey",
@@ -2315,6 +2321,20 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.PerformanceMark",
+      "kind": "node-builtin",
+      "name": "perf_hooks.PerformanceMark",
+      "status": "static",
+      "note": "new PerformanceMark(name, options?) and the PerformanceMark global; the mark updates the mark timings but is not added to the marks buffer"
+    },
+    {
+      "id": "node-builtin.perf_hooks.PerformanceObserver",
+      "kind": "node-builtin",
+      "name": "perf_hooks.PerformanceObserver",
+      "status": "static",
+      "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
@@ -3146,6 +3166,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isArgumentsObject",
+      "kind": "node-builtin",
+      "name": "util/types.isArgumentsObject",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isArrayBuffer",
       "kind": "node-builtin",
       "name": "util/types.isArrayBuffer",
@@ -3281,6 +3307,12 @@
       "id": "node-builtin.util.types.isMapIterator",
       "kind": "node-builtin",
       "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isModuleNamespaceObject",
+      "kind": "node-builtin",
+      "name": "util/types.isModuleNamespaceObject",
       "status": "static"
     },
     {

@@ -396,6 +396,15 @@ declare module "crypto" {
     disableEntropyCache?: boolean | undefined;
   }
   export function randomUUID(options?: RandomUUIDOptions): string;
+  /* crypto.secureHeapUsed(): a compiled binary has no --secure-heap, so
+   * every field is Node's answer for a process without one. */
+  export interface SecureHeapUsage {
+    total: number;
+    used: number;
+    utilization: number;
+    min: number;
+  }
+  export function secureHeapUsed(): SecureHeapUsage;
   export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
   export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "latin1" | "binary";
@@ -432,6 +441,28 @@ declare module "crypto" {
     key: BinaryLike | KeyObject,
     options?: { encoding?: BufferEncoding | undefined },
   ): Hmac;
+  /* createMac's Mac: Node 24's provider-MAC handle. Of the algorithms
+   * getMacs() lists, only "hmac" has a native implementation; the Mac
+   * supports update() and final(), not the Transform surface. */
+  export interface Mac {
+    update(data: string | ScriptcBufferView): Mac;
+    update(data: string, inputEncoding: Encoding): Mac;
+    final(): Buffer;
+    final(outputEncoding: Encoding): string;
+  }
+  export interface MacOptions {
+    digest?: string | undefined;
+    cipher?: string | undefined;
+    iv?: ArrayBuffer | ScriptcBufferView | undefined;
+    customization?: ArrayBuffer | ScriptcBufferView | undefined;
+    salt?: ArrayBuffer | ScriptcBufferView | undefined;
+    outputLength?: number | undefined;
+  }
+  export function createMac(
+    algorithm: string,
+    key: ArrayBuffer | ScriptcBufferView | KeyObject,
+    options?: MacOptions,
+  ): Mac;
   /* crypto.hash's output encoding is the same Buffer conversion digest()
    * makes, so it takes the same Encoding set. */
   export interface OneShotDigestOptions {
@@ -509,6 +540,17 @@ declare module "crypto" {
     type RsaHashedKeyGenParams = globalThis.RsaHashedKeyGenParams;
     type RsaHashedImportParams = globalThis.RsaHashedImportParams;
     type RsaPssParams = globalThis.RsaPssParams;
+    type Argon2Params = globalThis.Argon2Params;
+    type CShakeParams = globalThis.CShakeParams;
+    type ContextParams = globalThis.ContextParams;
+    type EcdhKeyDeriveParams = globalThis.EcdhKeyDeriveParams;
+    type KangarooTwelveParams = globalThis.KangarooTwelveParams;
+    type KmacImportParams = globalThis.KmacImportParams;
+    type KmacKeyAlgorithm = globalThis.KmacKeyAlgorithm;
+    type KmacKeyGenParams = globalThis.KmacKeyGenParams;
+    type KmacParams = globalThis.KmacParams;
+    type RsaOaepParams = globalThis.RsaOaepParams;
+    type TurboShakeParams = globalThis.TurboShakeParams;
     type JsonWebKey = globalThis.JsonWebKey;
     type CryptoKey = globalThis.CryptoKey;
     type CryptoKeyPair = globalThis.CryptoKeyPair;
@@ -1015,14 +1057,6 @@ declare module "crypto" {
    * process reports DEP0093 once, on the first read. The exports object
    * owns it as a getter, so only require() and a default import see it. */
   export const fips: 0 | 1;
-  export function getMacs(): string[];
-  export interface SecureHeapUsage {
-    total: number;
-    used: number;
-    utilization: number;
-    min: number;
-  }
-  export function secureHeapUsed(): SecureHeapUsage;
   /* OpenSSL 3 registers only the "dynamic" engine in a compiled binary:
    * that id is accepted, and every other id is Node's
    * ERR_CRYPTO_ENGINE_UNKNOWN. `flags` is Node's method mask. */
@@ -1058,6 +1092,7 @@ declare module "crypto" {
   ): CipherInfo | undefined;
   export function getHashes(): string[];
   export function getCurves(): string[];
+  export function getMacs(): string[];
   /* Node v24 crypto.constants, literal-typed (the Http2Constants
    * stance). Every ACCESS bakes as its literal at lowering; a program
    * that reads the object whole gets the module's singleton record,

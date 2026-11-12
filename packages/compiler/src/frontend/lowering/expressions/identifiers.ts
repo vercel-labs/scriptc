@@ -1163,8 +1163,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
-        WeakRef:
-          "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(
@@ -1172,7 +1170,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         expr,
         globalHints[expr.text],
         sym ?? undefined,
-        expr.text === "WeakRef" || expr.text === "FinalizationRegistry"
+        expr.text === "FinalizationRegistry"
           ? "weak-ref"
           : expr.text === "eval"
             ? "code-from-string"

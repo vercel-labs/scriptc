@@ -164,6 +164,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "weakSet.new",
   // Node's "cleanup must be callable" TypeError.
   "finalizationRegistry.new",
+  // Node's "WeakRef: invalid target" TypeError.
+  "weakRef.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
@@ -629,6 +631,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // new PerformanceMark and the observer family: Node's argument,
+  // receiver and observation-mode validation all throw catchably.
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
@@ -1082,6 +1092,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hmacDigestBuffer",
   "crypto.hashNewOpts",
   "crypto.hmacNewDyn",
+  "crypto.macNewDyn",
+  "crypto.secureHeapUsed",
   "crypto.hashCopyOpts",
   "crypto.hashUpdateEnc",
   "crypto.hmacUpdateEnc",

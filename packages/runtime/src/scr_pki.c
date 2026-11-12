@@ -5225,17 +5225,6 @@ ScrDyn *scr_crypto_public_decrypt(ScrDyn *key, ScrDyn *buffer) {
 
 /* ── The introspection statics ────────────────────────────────────────── */
 
-/* Node answers the libuv secure heap's counters; a compiled binary never
- * opens one, so the record is 0/0/Min(0)/2 with utilization 0/0. */
-ScrDyn *scr_crypto_secure_heap_used(void) {
-  ScrDyn *usage = scr_dyn_new_obj();
-  scr_dyn_obj_set(usage, "total", 5, scr_dyn_new_num(0));
-  scr_dyn_obj_set(usage, "used", 4, scr_dyn_new_num(0));
-  scr_dyn_obj_set(usage, "utilization", 11, scr_dyn_new_num(NAN));
-  scr_dyn_obj_set(usage, "min", 3, scr_dyn_new_num(2));
-  return usage;
-}
-
 /* ERR_CRYPTO_ENGINE_UNKNOWN's message carries the id verbatim, NUL bytes
  * included (Node's template literal does). */
 static void sp_throw_engine_unknown(const ScrStr *id) {

@@ -85,7 +85,10 @@ const KNOWN: Record<string, Known> = {
   // `new AsyncResource(...)`: the refusal names the class.
   "misc-shims": { run: "SC2020" },
   namespace: { island: true },
-  "node24-async-events": { run: "SC2020" },
+  // The events.once and events.on lines match Node; the program stops at the
+  // watermark case, which assigns `pause` and `resume` methods onto an
+  // EventEmitter instance.
+  "node24-async-events": { run: "SC1090" },
   "node24-commonjs-metadata": { island: true },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },

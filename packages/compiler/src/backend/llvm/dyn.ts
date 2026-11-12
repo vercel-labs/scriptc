@@ -47,6 +47,8 @@ import {
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
+  isPerfEntryShape,
+  isPerfNodeTimingShape,
   boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -5317,6 +5319,14 @@ export class LlDyn {
         if (isDirentShape(shape)) {
           host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
           B.line(`call void @scr_dyn_dirent_finish(ptr ${d})`);
+        }
+        // A perf_hooks entry row takes the class prototype its entryType
+        // names (PerformanceMark or PerformanceMeasure, inheriting
+        // PerformanceEntry), so instanceof and util.inspect answer like
+        // Node's.
+        if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
+          host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+          B.line(`call void @scr_dyn_perf_entry_finish(ptr ${d})`);
         }
         if (shape.indexValue) {
           const iv = shape.indexValue;

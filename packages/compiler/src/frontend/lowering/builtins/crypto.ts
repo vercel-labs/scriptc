@@ -680,6 +680,28 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "createMac") {
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `crypto.createMac with ${args.length} arguments`,
+        expr,
+        "createMac(algorithm, key[, options]) is supported",
+      );
+    }
+    // Every argument goes through Node's normalizeKey and options checks
+    // at run time; a missing key reads as undefined, like createHmac's.
+    return {
+      kind: "libCall",
+      fn: "crypto.macNewDyn",
+      args: [
+        lowerer.lowerExprExpecting(args[0]!, DYN),
+        args[1] ? lowerer.lowerExprExpecting(args[1]!, DYN) : dynUndefinedExpr(loc),
+        args[2] ? lowerer.lowerExprExpecting(args[2]!, DYN) : dynUndefinedExpr(loc),
+      ],
+      type: DYN,
+      loc,
+    };
+  }
   if (bi.member === "hash") {
     // A missing, surplus or non-string algorithm takes Node's checks at
     // run time, in its order: algorithm, input, then options.
@@ -1133,6 +1155,15 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "secureHeapUsed") {
+    if (expr.arguments.nodes.length !== 0) {
+      lowerer.noLowering(
+        `crypto.secureHeapUsed with ${expr.arguments.nodes.length} arguments`,
+        expr,
+      );
+    }
+    return { kind: "libCall", fn: "crypto.secureHeapUsed", args: [], type: DYN, loc };
+  }
   const LISTS: Record<string, readonly string[] | undefined> = {
     getCiphers: CRYPTO_CIPHERS,
     getHashes: CRYPTO_HASHES,
@@ -1140,17 +1171,12 @@ export function lowerCryptoModuleCall(
     getMacs: CRYPTO_MACS,
   };
   const list = own(LISTS, bi.member);
-  if (bi.member !== "getFips" && bi.member !== "secureHeapUsed" && list === undefined) return null;
+  if (bi.member !== "getFips" && list === undefined) return null;
   if (expr.arguments.nodes.length !== 0) {
     lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   if (bi.member === "getFips") {
     return { kind: "numLit", value: 0, type: F64, loc };
-  }
-  // A fresh object per call, like Node's: there is no secure heap here, so
-  // the totals are 0 and utilization is 0/0.
-  if (bi.member === "secureHeapUsed") {
-    return { kind: "libCall", fn: "crypto.secureHeapUsed", args: [], type: DYN, loc };
   }
   return {
     kind: "arrayLit",

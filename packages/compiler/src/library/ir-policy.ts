@@ -105,7 +105,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["watcher.", "fs.watch"],
   // The event-loop metrics sample the loop and its timers (scr_perf_loop.c),
   // which library links exclude.
-  ["perf.loopStart", "performance.eventLoopUtilization"],
+  ["perf.loop", "performance.eventLoopUtilization"],
   ["perf.idleTime", "performance.eventLoopUtilization"],
   ["perf.eld", "perf_hooks.monitorEventLoopDelay"],
   ["test.", "the node:test surface"],

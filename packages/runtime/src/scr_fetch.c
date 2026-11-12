@@ -777,6 +777,21 @@ static bool sf_signal_set(void *ptr, const char *key, size_t len,
 
 #ifndef SCR_FETCH_SIGNAL_ONLY
 
+/* The handle-properties unit's released hook (scr_dyn.h): a unit reports the
+ * final release that frees one of its handles, and the unit drops the handle's
+ * own-property table with it. A fetch handle's entry is not retained, so a
+ * table no release dropped would outlive the object it describes. The pointer
+ * is defined by scr_json.c's SCR_JS_OBJECT_MODEL build, which a program that
+ * installs the table selects (handleProps implies jsObjectModel); a program
+ * that links this unit without the table — a library built from a fetch-using
+ * module — resolves the reference weakly to NULL and reports release to no
+ * one. */
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks __attribute__((weak));
+static void sf_notify_released(const void *handle) {
+  if (scr_dyn_handle_props_hooks && scr_dyn_handle_props_hooks->released)
+    scr_dyn_handle_props_hooks->released(handle);
+}
+
 static void sf_stream_track_callbacks(SfStream *s) {
   if (s->callbacks_tracked || (!s->pull_cb && !s->cancel_cb)) return;
   s->callbacks_tracked = true;
@@ -2871,6 +2886,7 @@ static SfHeaders *sf_headers_retain(SfHeaders *h) {
 
 static void sf_headers_release(SfHeaders *h) {
   if (!h || --h->rc > 0) return;
+  sf_notify_released(h);
   scr_arr_release(h->pairs);
   if (h->sorted) scr_arr_release(h->sorted);
   free(h);
@@ -4225,6 +4241,7 @@ static SfResponse *sf_response_retain(SfResponse *r) {
 
 static void sf_response_release(SfResponse *r) {
   if (!r || --r->rc > 0) return;
+  sf_notify_released(r);
   scr_weak_dispose_inline(r);
   sf_stream_release(r->body);
   sf_headers_release(r->headers);
@@ -6865,6 +6882,7 @@ static void *sf_request_retain_v(void *ptr) {
 static void sf_request_release_v(void *ptr) {
   SfRequest *r = ptr;
   if (--r->rc) return;
+  sf_notify_released(r);
   scr_weak_dispose_inline(r);
   sf_response_release(r->payload);
   scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
@@ -7484,6 +7502,28 @@ static const ScrDynHandleMethod sf_headers_methods[] = {
     {"has", 1, false}, {"keys", 0, false}, {"set", 2, false},
     {"values", 0, false}, {NULL, 0, false}};
 
+/* The prototype accessors of each class (scr_dyn.h, ops->attributes), as the
+ * checkouts' Node declares them: a write never replaces one, because a getter
+ * with no setter either refuses the strict write or is ignored by sloppy code.
+ * Headers declares none, so a write of any name adds an own property. */
+static const ScrDynHandleName sf_request_attributes[] = {
+    SCR_DYN_HANDLE_NAME("method"), SCR_DYN_HANDLE_NAME("url"),
+    SCR_DYN_HANDLE_NAME("headers"), SCR_DYN_HANDLE_NAME("destination"),
+    SCR_DYN_HANDLE_NAME("referrer"), SCR_DYN_HANDLE_NAME("referrerPolicy"),
+    SCR_DYN_HANDLE_NAME("mode"), SCR_DYN_HANDLE_NAME("credentials"),
+    SCR_DYN_HANDLE_NAME("cache"), SCR_DYN_HANDLE_NAME("redirect"),
+    SCR_DYN_HANDLE_NAME("integrity"), SCR_DYN_HANDLE_NAME("keepalive"),
+    SCR_DYN_HANDLE_NAME("isReloadNavigation"),
+    SCR_DYN_HANDLE_NAME("isHistoryNavigation"), SCR_DYN_HANDLE_NAME("signal"),
+    SCR_DYN_HANDLE_NAME("body"), SCR_DYN_HANDLE_NAME("bodyUsed"),
+    SCR_DYN_HANDLE_NAME("duplex"), {NULL, 0}};
+static const ScrDynHandleName sf_response_attributes[] = {
+    SCR_DYN_HANDLE_NAME("type"), SCR_DYN_HANDLE_NAME("url"),
+    SCR_DYN_HANDLE_NAME("redirected"), SCR_DYN_HANDLE_NAME("status"),
+    SCR_DYN_HANDLE_NAME("ok"), SCR_DYN_HANDLE_NAME("statusText"),
+    SCR_DYN_HANDLE_NAME("headers"), SCR_DYN_HANDLE_NAME("body"),
+    SCR_DYN_HANDLE_NAME("bodyUsed"), {NULL, 0}};
+
 static const ScrDynHandleMethod sf_writable_methods[] = {
     {"abort", 0, true}, {"close", 0, true}, {"getWriter", 0, false},
     {NULL, 0, false}};
@@ -7527,14 +7567,18 @@ static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
     &sf_no_set, NULL};
+/* undici's constructors are `_Request` and `_Response`, which V8's property
+ * TypeErrors print as `#<_Request>`. */
 static const ScrDynHandleOps sf_request_ops = {
     "Request", &sf_request_retain_v, &sf_request_release_v,
     &sf_request_invoke, &sf_request_get, &sf_no_set, NULL,
-    .methods = sf_body_methods, .rejected = &sf_rejected};
+    .methods = sf_body_methods, .attributes = sf_request_attributes,
+    .error_cls = "_Request", .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_response_ops = {
     "Response", &sf_response_retain_v, &sf_response_release_v,
     &sf_response_invoke, &sf_response_get, &sf_no_set, NULL,
-    .methods = sf_body_methods, .rejected = &sf_rejected};
+    .methods = sf_body_methods, .attributes = sf_response_attributes,
+    .error_cls = "_Response", .rejected = &sf_rejected};
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,

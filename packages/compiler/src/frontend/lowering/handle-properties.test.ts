@@ -106,6 +106,23 @@ console.log(m.size);
   });
 });
 
+test("a TypeScript program that uses fetch installs the handle property table", async () => {
+  // A fetch value is checked-dynamic in both tiers, so the write names no
+  // handle class and the census cannot see it: the fetch fact installs the
+  // table a typed server needs for `req.context = {}`.
+  const mod = await compileIr(
+    `const req = new Request("http://example.com/");
+(req as any).context = { lane: "app" };
+console.log(typeof (req as any).context);
+`,
+    "ts",
+  );
+  expect(installOf(mod)).toMatchObject({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "handle.propsInstall", args: [{ kind: "numLit", value: 0 }] },
+  });
+});
+
 test("a JavaScript program that only writes a declared member links no table", async () => {
   const mod = await compileIr(
     `"use strict";

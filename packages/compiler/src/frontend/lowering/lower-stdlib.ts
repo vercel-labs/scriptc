@@ -996,6 +996,22 @@ function fetchMethodArgumentIsLive(
   );
 }
 
+/** Whether the interface's type declares `member` (or the fetch inventory
+ * knows it). A name the interface does not declare is an own property the
+ * program may have added — Node answers the access with that property, or
+ * with undefined when none exists — so the static fence leaves it to the
+ * runtime's own-property table rather than refusing it by name. */
+function fetchDeclaresMember(
+  lowerer: Lowerer,
+  recvType: ts.Type,
+  owner: string,
+  member: string,
+): boolean {
+  if (member.startsWith("[Symbol.")) return true;
+  if (lowerer.checker.getPropertyOfType(recvType, member) !== undefined) return true;
+  return fetchInventoryStatus(owner, member, "prototype") !== null;
+}
+
 /** The adopted undici Response declaration is wider than the native static
  * handle. Keep the supported fallback slice on checked-dynamic dispatch, but
  * fence every other declared member before the generic dyn keyed-read/call
@@ -1016,12 +1032,13 @@ export function fenceStaticResponseMember(
       member,
       member.startsWith("[Symbol.") ? "prototype-symbol" : "prototype",
     );
+  const declared = (member: string) => fetchDeclaresMember(lowerer, recvType, "Response", member);
 
   const projected = staticFetchMembers();
   const supported = (member: string) =>
     use === "call" ? projected.responseCalls.has(member) : projected.responseReads.has(member);
-  if (members.every(supported)) return null;
-  const member = members.find((candidate) => !supported(candidate))!;
+  if (members.every((candidate) => !declared(candidate) || supported(candidate))) return null;
+  const member = members.find((candidate) => declared(candidate) && !supported(candidate))!;
   if (status(member) === "unsupported") {
     lowerer.noLowering(
       `Response.${member}`,
@@ -1065,8 +1082,11 @@ export function fenceStaticHeadersMember(
   // ones (`headers[Symbol.iterator]()`).
   const callable = (member: string): boolean =>
     headersCalls.has(member) || (member.startsWith("[Symbol.") && status(member) === "static");
-  if (use === "call" && members.every(callable)) return null;
-  const member = members.find((candidate) => use !== "call" || !callable(candidate))!;
+  const declared = (member: string) => fetchDeclaresMember(lowerer, recvType, "Headers", member);
+  const member = members.find(
+    (candidate) => declared(candidate) && (use !== "call" || !callable(candidate)),
+  );
+  if (member === undefined) return null;
   if (status(member) === "unsupported") {
     lowerer.noLowering(
       `Headers.${member}`,

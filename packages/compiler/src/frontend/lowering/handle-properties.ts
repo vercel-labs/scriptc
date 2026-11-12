@@ -26,7 +26,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
-import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
+import { moduleUsesChildProcess, moduleUsesFetch } from "../../ir/runtime-features.js";
 import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
@@ -954,6 +954,20 @@ function functionsUseChildProcess(functions: IrFunction[]): boolean {
   });
 }
 
+/** The fetch fact over the final functions, before the module's type tables
+ * are assembled. A fetch Request, Response or Headers value is checked-dynamic
+ * in both tiers, so a write onto one is an ordinary dynamic write that names
+ * no handle class: the handle census cannot see it, and a program that uses
+ * fetch installs the table for the classes it can reach. */
+function functionsUseFetch(functions: IrFunction[]): boolean {
+  return moduleUsesFetch({
+    irVersion: 17,
+    sourceFile: "",
+    functions,
+    entry: ENTRY_NAME,
+  });
+}
+
 /** Switches a program that can add properties to handles onto the
  * property-table entries (in place), installs the table in %main, hands the
  * runtime the member names the program shadows, and guards the graph
@@ -967,7 +981,9 @@ export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[])
   const child =
     (lowerer.writesOntoChildren || childAdditions(lowerer).any) &&
     functionsUseChildProcess(functions);
-  const handle = programAddsHandleProperties(lowerer);
+  // A fetch value's expando writes are untyped, so the census above cannot
+  // see them: any program that uses fetch asks for the table.
+  const handle = programAddsHandleProperties(lowerer) || functionsUseFetch(functions);
   if (!child && !handle) return;
   const renames = new Map<IrLibFn, IrLibFn>(child ? RENAMES : []);
   // Object.defineProperties reads every descriptor before defining any, a

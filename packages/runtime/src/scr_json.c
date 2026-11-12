@@ -14511,6 +14511,9 @@ static void scr_dyn_note_assign_failure(void) {
   if (scr_exc_pending()) scr_dyn_assign_failure = scr_exc_current_cell()->payload;
 }
 
+/* The same for a gated unit's write path (scr_dyn.h). */
+void scr_dyn_assign_failure_note(void) { scr_dyn_note_assign_failure(); }
+
 static void scr_dyn_sloppy_settle(void) {
   if (scr_dyn_assign_failure && scr_exc_pending() &&
       scr_exc_current_cell()->payload == scr_dyn_assign_failure)
@@ -14533,14 +14536,17 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
     scr_jb_puts(&buffer, object->v.bytes->is_data_view ? ">" : "]");
   }
 #ifdef SCR_JS_OBJECT_MODEL
-  else if (object->kind == SCR_DYN_HANDLE && scr_dyn_handle_props_hooks &&
-           (object->v.handle.tag == SCR_DYNH_DATE || object->v.handle.tag == SCR_DYNH_REGEXP)) {
+  else if (object->kind == SCR_DYN_HANDLE) {
     /* A property of a handle's own-property table: V8 names a Date or
-     * RegExp by its toString tag (the other handles print by class, the
-     * branch below). */
-    scr_jb_puts(&buffer, "[object ");
-    scr_jb_puts(&buffer, scr_dyn_handle_cls(object));
-    scr_jb_puts(&buffer, "]");
+     * RegExp by its toString tag and every other handle by the class name
+     * of the interface it comes from (`#<Map>`, `#<_Request>`). */
+    const ScrDynHandleOps *ops = scr_dynh_ops[object->v.handle.tag];
+    bool tag_form = object->v.handle.tag == SCR_DYNH_DATE ||
+                    object->v.handle.tag == SCR_DYNH_REGEXP;
+    const char *cls = ops && ops->error_cls ? ops->error_cls : scr_dyn_handle_cls(object);
+    scr_jb_puts(&buffer, tag_form ? "[object " : "#<");
+    scr_jb_puts(&buffer, cls);
+    scr_jb_puts(&buffer, tag_form ? "]" : ">");
   }
 #endif
   else if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");

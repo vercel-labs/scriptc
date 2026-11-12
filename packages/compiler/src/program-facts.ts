@@ -276,6 +276,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "fetch-handle-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "functionsUseFetch",
+    source: "ir",
+    scope: "program",
+    setBy: "any fetch libCall in the IR (`fetch.function`, `fetch.requestNew` and the rest)",
+    gates:
+      "%main installs the handle property table, so a write onto a fetch Request, Response or Headers value adds an own property instead of throwing",
+    narrower:
+      "the written value's class, at run time; fetch values are checked-dynamic, so the census of typed handle receivers cannot see the write",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
     name: "replaceable-methods",
     file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
     symbol: "collectClassMethodMutations",

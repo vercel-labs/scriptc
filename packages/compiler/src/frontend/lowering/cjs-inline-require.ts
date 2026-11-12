@@ -619,6 +619,224 @@ export function cjsNestedExportReplacementOf(sf: ts.SourceFile): ts.BinaryExpres
   return found;
 }
 
+/** The whole-export assignments of a CommonJS module that choose between
+ * statically known export tables when the module runs — the shape
+ * react/index.js has:
+ *
+ *   if (process.env.NODE_ENV === "production") {
+ *     module.exports = require("./prod.cjs");
+ *   } else {
+ *     module.exports = require("./dev.cjs");
+ *   }
+ *
+ * Every assignment to `module.exports` in the file must be an inline require
+ * of a program module whose own exports are a static table, and every table
+ * must name the same members. The module's export globals then take their
+ * values from the branch that ran, so importers read the same members Node
+ * answers. Null when the file has no such assignment, when one resolves to
+ * anything else (a computed object, a function, an object literal), or when
+ * the tables disagree on their members. */
+export function cjsConditionalWholeExportTargetsOf(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): { assign: ts.BinaryExpression; req: InlineRequire; names: string[] }[] | null {
+  // A top-level whole-export statement keeps its own treatment (a pure
+  // re-export resolves through the target module's own table).
+  if (sf.statements.nodes.some((stmt) => cjsExportAssignmentOf(stmt) !== null)) return null;
+  const found: { assign: ts.BinaryExpression; req: InlineRequire }[] = [];
+  ts.walkPreorder(sf, (node) => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(node.left)
+    ) {
+      const req = inlineProgramRequireOf(lowerer, node.right);
+      if (req === null || !cjsNamespaceModule(lowerer, req.dep)) return "stop";
+      found.push({ assign: node, req });
+    }
+    return undefined;
+  });
+  if (found.length < 2) return null;
+  const first = cjsWholeExportMemberNamesOf(lowerer, found[0]!.req.dep);
+  if (first === null) return null;
+  for (const { req } of found) {
+    const names = cjsWholeExportMemberNamesOf(lowerer, req.dep);
+    if (names === null || names.length !== first.length) return null;
+    const have = new Set(names);
+    if (first.some((name) => !have.has(name))) return null;
+  }
+  return found.map((entry) => ({ ...entry, names: first }));
+}
+
+/** The member names a module exports, as a conditional whole export's
+ * branch answers them. A module whose export writes are top-level
+ * statements answers its static table's names; one that attaches them
+ * inside a wrapper (react.development.js's `if (…) { (function() {
+ * exports.x = … })(); }`) answers the checker's export list, which names
+ * exactly the members it exports. */
+function cjsWholeExportMemberNamesOf(lowerer: Lowerer, dep: ts.SourceFile): string[] | null {
+  const table = cjsTableExportNamesInOrder(lowerer, dep);
+  if (table !== null && table.length > 0) return table;
+  const target = cjsNamespaceTargetOf(lowerer, dep) ?? dep;
+  const moduleSym = lowerer.checker.getSymbolAtLocation(target);
+  if (moduleSym === undefined) return table;
+  const names = lowerer.checker
+    .getExportsOfModule(moduleSym)
+    .map((symbol) => ts.symbolName(symbol))
+    .filter((name) => name !== "export=");
+  return names.length > 0 ? names : table;
+}
+
+/** One module-local variable whose whole value is a `require()` chosen at
+ * run time among statically known export tables — react-dom/server.node.js's
+ *
+ *   var l, s;
+ *   if (process.env.NODE_ENV === 'production') { l = require('./a'); … }
+ *   else { l = require('./b'); … }
+ *   exports.renderToString = l.renderToString;
+ *
+ * Every write is such a require, every target names the same members, and
+ * every read of the variable happens after the last write. Each member then
+ * has one slot the executed write fills from the table it required, and
+ * `l.member` reads that slot — the value Node's `l.member` answers. */
+export interface CjsConditionalAlias {
+  symbol: ts.Symbol;
+  decl: ts.VariableDeclaration;
+  writes: { assign: ts.BinaryExpression; req: InlineRequire }[];
+  /** The members every target table exports, in the first table's order. */
+  names: string[];
+}
+
+/** The conditional module alias a symbol names, or null (cached). */
+export function cjsConditionalAliasOf(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+): CjsConditionalAlias | null {
+  const cached = lowerer.cjsConditionalAliases.get(symbol);
+  if (cached !== undefined) return cached;
+  const result = computeConditionalAlias(lowerer, symbol);
+  lowerer.cjsConditionalAliases.set(symbol, result);
+  return result;
+}
+
+function computeConditionalAlias(lowerer: Lowerer, symbol: ts.Symbol): CjsConditionalAlias | null {
+  const declarations = symbol.declarations.filter(ts.isVariableDeclaration);
+  if (declarations.length !== 1) return null;
+  const decl = declarations[0]!;
+  // The alias is an UNINITIALIZED top-level binding: `var l, s;` — the
+  // writes below are its only values.
+  if (decl.initializer !== undefined || !ts.isIdentifier(decl.name)) return null;
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) !== 0) return null;
+  const stmt = list.parent;
+  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (!ts.sourceTextIncludes(sf, "require")) return null;
+  const writes: { assign: ts.BinaryExpression; req: InlineRequire }[] = [];
+  let lastWriteStatement = -1;
+  let readsBeforeWrite = false;
+  let conforms = true;
+  ts.walkPreorder(sf, (node) => {
+    if (!conforms) return "stop";
+    if (!ts.isIdentifier(node) || node.text !== decl.name.text) return undefined;
+    if (symbolOfIdentifierValue(lowerer, node) !== symbol) return undefined;
+    const target = writeTargetOf(node);
+    if (target === null) {
+      // Reads of the variable are `l.member` — the alias slots answer them —
+      // and must run at the module's own top level, after every write: a
+      // read before a write would see the uninitialized slot, and one inside
+      // a function may run before the branch did.
+      let inFunction = false;
+      for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
+        if (ts.isSourceFile(p)) break;
+        if (ts.isFunctionLike(p)) inFunction = true;
+      }
+      if (inFunction) {
+        conforms = false;
+        return "stop";
+      }
+      if (topLevelStatementIndexOf(node) <= lastWriteStatement) readsBeforeWrite = true;
+      return undefined;
+    }
+    // Every write must be the plain left side of `l = require("<literal>")`
+    // naming a table module: that is the one write the slot model can take
+    // apart into its members.
+    if (
+      !ts.isBinaryExpression(target) ||
+      target.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      target.left !== node
+    ) {
+      conforms = false;
+      return "stop";
+    }
+    const req = inlineProgramRequireOf(lowerer, target.right);
+    if (req === null || !cjsNamespaceModule(lowerer, req.dep)) {
+      conforms = false;
+      return "stop";
+    }
+    writes.push({ assign: target, req });
+    const at = topLevelStatementIndexOf(target);
+    if (at < 0) {
+      conforms = false;
+      return "stop";
+    }
+    lastWriteStatement = Math.max(lastWriteStatement, at);
+    return undefined;
+  });
+  if (!conforms || readsBeforeWrite || writes.length < 2) return null;
+  // Every target must export the same members: a member only some branch
+  // exports is absent (undefined) on the others in Node, which one slot
+  // shared by the branches cannot answer.
+  const first = cjsWholeExportMemberNamesOf(lowerer, writes[0]!.req.dep);
+  if (first === null) return null;
+  for (const { req } of writes) {
+    const names = cjsWholeExportMemberNamesOf(lowerer, req.dep);
+    if (names === null || names.length !== first.length) return null;
+    const have = new Set(names);
+    if (first.some((name) => !have.has(name))) return null;
+  }
+  return { symbol, decl, writes, names: first };
+}
+
+/** The module statement a node sits in (the index of the top-level
+ * statement whose span contains it), or -1 outside the file's statements. */
+function topLevelStatementIndexOf(node: ts.Node): number {
+  const sf = ts.getSourceFileOfNode(node);
+  const stmts = sf.statements.nodes;
+  const pos = ts.tokenStartOfNode(node);
+  for (let i = 0; i < stmts.length; i++) if (stmts[i]!.end > pos) return i;
+  return stmts.length - 1;
+}
+
+/** The alias a `l = require("./x")` assignment statement writes, or null. */
+export function cjsConditionalAliasWriteOf(
+  lowerer: Lowerer,
+  assign: ts.BinaryExpression,
+): CjsConditionalAlias | null {
+  if (assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !ts.isIdentifier(assign.left))
+    return null;
+  const symbol = symbolOfIdentifierValue(lowerer, assign.left);
+  if (symbol === undefined) return null;
+  const alias = cjsConditionalAliasOf(lowerer, symbol);
+  if (alias === null || !alias.writes.some((entry) => entry.assign === assign)) return null;
+  return alias;
+}
+
+/** The slot behind a `l.<name>` read of a conditional module alias, once
+ * collectGlobals registered one, or null. */
+export function cjsConditionalAliasMemberGlobalOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  name: string,
+): IrGlobal | null {
+  const symbol = symbolOfIdentifierValue(lowerer, ident);
+  if (symbol === undefined) return null;
+  const alias = cjsConditionalAliasOf(lowerer, symbol);
+  if (alias === null || !alias.names.includes(name)) return null;
+  return lowerer.cjsConditionalAliasGlobals.get(symbol)?.get(name) ?? null;
+}
+
 /** The table behind pure CommonJS re-exports (inline, initialized, or split
  * require bindings). Member reads use the original table's symbols, while
  * each require still initializes its own wrapper at its source position. */
@@ -1219,24 +1437,55 @@ export function cjsExportValueByName(
   key: string,
   blame: ts.Node,
 ): IrExpr | null {
+  // The member's storage registered where the module writes it, by name:
+  // exactly what the module's export write left, including members the
+  // checker gives no readable declaration (react.development.js attaches
+  // `exports.x` inside its IIFE, where the value is a local of that
+  // function's evaluation, not a global the importing module can read).
+  const byName = lowerer.cjsInFileExportMemberGlobals.get(dep)?.get(key) ?? null;
+  const slot = (): IrExpr | null =>
+    byName === null
+      ? null
+      : { kind: "varRef", localId: byName.id, type: byName.type, loc: locOf(blame) };
   let sym = lowerer.cjsModuleExportSymbol(dep, key);
-  if (sym === undefined) return null;
-  if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
-  const direct = lowerer.globalsBySymbol.get(sym);
+  if (sym !== undefined && sym.flags & ts.SymbolFlags.Alias)
+    sym = lowerer.checker.getAliasedSymbol(sym);
+  const direct = sym === undefined ? undefined : lowerer.globalsBySymbol.get(sym);
   if (direct) return { kind: "varRef", localId: direct.id, type: direct.type, loc: locOf(blame) };
-  for (const d of sym.declarations) {
+  for (const d of sym?.declarations ?? []) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
     if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
+    // A getter is a function Node runs on every read, so it keeps its call.
     if (ts.isGetAccessorDeclaration(d)) return cjsAccessorCall(lowerer, d, locOf(blame));
+  }
+  const stored = slot();
+  if (stored !== null) return stored;
+  for (const d of sym?.declarations ?? []) {
     // Alias plumbing: a shorthand/identifier table entry or a member
-    // export naming a declaration. Reading that identifier IS the value.
+    // export naming a declaration. Reading that identifier IS the value —
+    // when it names a module-level binding. One nested in a function is
+    // that function's local, and the export write's slot answered above.
     if (ts.isShorthandPropertyAssignment(d)) return lowerer.lowerShorthandValue(d);
     if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer)) {
-      return lowerer.lowerExpr(d.initializer);
+      if (declarationIsModuleLevel(lowerer, d.initializer)) return lowerer.lowerExpr(d.initializer);
+      continue;
     }
-    if ((ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) && d.name !== undefined) {
-      return lowerer.lowerExpr(d.name);
-    }
+    if ((ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) && d.name !== undefined)
+      if (declarationIsModuleLevel(lowerer, d)) return lowerer.lowerExpr(d.name);
   }
   return null;
+}
+
+/** Whether a declaration is a module-level binding of its file: nothing
+ * between it and the source file opens a function frame. A declaration
+ * inside a function belongs to that call's frame, so another module's
+ * evaluation cannot read it. A flattened namespace block hoists its
+ * declarations to module level. */
+function declarationIsModuleLevel(lowerer: Lowerer, node: ts.Node): boolean {
+  for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
+    if (ts.isSourceFile(p)) return true;
+    if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) return false;
+    if (lowerer.nsBlocks.get(p) === "flattened") return true;
+  }
+  return false;
 }

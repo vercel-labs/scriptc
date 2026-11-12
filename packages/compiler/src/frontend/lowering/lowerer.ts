@@ -528,6 +528,7 @@ import {
 import {
   accessorRequirerAssign,
   accessorRequirerSlot,
+  type CjsConditionalAlias,
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
@@ -3684,6 +3685,23 @@ export class Lowerer {
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Module-local variables whose whole value is a require() chosen at run
+   * time among static export tables, by symbol; null when the variable keeps
+   * its ordinary treatment (cjs-inline-require.ts). */
+  readonly cjsConditionalAliases = new Map<ts.Symbol, CjsConditionalAlias | null>();
+  /** The member slots of those aliases, registered by collectGlobals. */
+  readonly cjsConditionalAliasGlobals = new Map<ts.Symbol, Map<string, IrGlobal>>();
+  /** Export member slots of a module whose whole export is chosen at run
+   * time between static tables (react/index.js), by module. The checker's
+   * synthesized property symbols are shared between modules that re-export
+   * the same tables, so the slot a module's statements fill and its
+   * importers read is keyed by module, never by symbol. */
+  readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** Each module's own export member globals by member name, registered
+   * where the write or table registered them. A name lookup that the
+   * checker's export symbols cannot answer (a member attached inside a
+   * wrapper function) reads the member here. */
+  readonly cjsInFileExportMemberGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
   /** Terminal export table, or null for whole values and pure re-export cycles. */
   readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
   /** Receiver proofs depend only on a module's source and stable bindings. */
@@ -6099,6 +6117,10 @@ export class Lowerer {
     "assertedClaims",
     "boundaryClaims",
     "cjsSplitRequireBindings",
+    "cjsConditionalAliases",
+    "cjsConditionalAliasGlobals",
+    "cjsConditionalWholeExportGlobals",
+    "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
     "cjsNamespaceTargets",
@@ -8084,6 +8106,16 @@ export class Lowerer {
         this.flushDeferred(symbol);
         return symbol;
       }
+      // A named import of a module whose whole export is chosen at run time
+      // between static export tables (react/index.js): the imported name is
+      // that module's member slot, and the IMPORT's own alias symbol keys it
+      // — the checker's synthesized member symbols are shared between
+      // modules re-exporting the same tables.
+      const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
+      if (conditionalSlot !== null) {
+        this.globalsBySymbol.set(symbol, conditionalSlot);
+        return symbol;
+      }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
       // symbol (`export default someLet` — collectGlobals registers the
       // Node-semantics snapshot there). getAliasedSymbol would resolve
@@ -8093,6 +8125,18 @@ export class Lowerer {
       if (snap) {
         this.flushDeferred(snap);
         return snap;
+      }
+      // A re-export chain STOPS at the first hop that owns storage. A
+      // CommonJS module's export member is assigned where its own module
+      // ran, and the chain's onward alias names the expression the exporter
+      // read — which may be a value chosen at run time among branches
+      // (`exports.x = l.x` over conditional requires, react-dom/server's
+      // legacy/renderTo stream tables) or a live binding a later statement
+      // changes. Node's importer reads what the exporter stored.
+      const storedHop = this.aliasStorageSymbolOf(symbol);
+      if (storedHop) {
+        this.flushDeferred(storedHop);
+        return storedHop;
       }
       const aliased = this.checker.getAliasedSymbol(symbol);
       // `const { member } = require("./x")` of a module that builds its
@@ -8122,6 +8166,29 @@ export class Lowerer {
     if (splitAlias) symbol = splitAlias;
     this.flushDeferred(symbol);
     return symbol;
+  }
+
+  /** The first immediate alias hop that owns module storage (an export
+   * member global), or null. Alias chains through CommonJS re-exports keep
+   * the exporter's stored value at every hop; see resolveValueSymbol. */
+  aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    let hop = symbol;
+    const seen = new Set<ts.Symbol>();
+    for (let depth = 0; depth < 32; depth++) {
+      if (seen.has(hop)) return null;
+      seen.add(hop);
+      // The checker's immediate-target query is an alias-only operation.
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      const next = this.checker.getImmediateAliasedSymbol(hop);
+      if (!next || seen.has(next)) return null;
+      if (
+        this.globalsBySymbol.has(next) ||
+        next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
+      )
+        return next;
+      hop = next;
+    }
+    return null;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native
@@ -8373,6 +8440,33 @@ export class Lowerer {
     return null;
   }
 
+  /** The export member slot a named import or re-export names when its
+   * source module chooses its whole export at run time between static
+   * tables, or null. */
+  private cjsConditionalWholeExportAliasSlotOf(alias: ts.Symbol): IrGlobal | null {
+    for (const decl of alias.declarations) {
+      let spec: ts.Expression | undefined;
+      let name: string;
+      if (ts.isImportSpecifier(decl)) {
+        const importDecl: ts.Node | undefined = decl.parent?.parent?.parent;
+        if (ts.isImportDeclaration(importDecl)) spec = importDecl.moduleSpecifier;
+        name = (decl.propertyName ?? decl.name).text;
+      } else if (ts.isExportSpecifier(decl)) {
+        const exportDecl: ts.Node | undefined = decl.parent?.parent;
+        if (ts.isExportDeclaration(exportDecl)) spec = exportDecl.moduleSpecifier;
+        name = (decl.propertyName ?? decl.name).text;
+      } else {
+        continue;
+      }
+      if (spec === undefined || !ts.isStringLiteral(spec)) continue;
+      const dep = this.moduleSourceFileOf(ts.getSourceFileOfNode(decl), spec);
+      if (dep === null) continue;
+      const slot = this.cjsConditionalWholeExportSlotOf(dep, name);
+      if (slot !== null) return slot;
+    }
+    return null;
+  }
+
   /** A module's CJS export-table member symbol by NAME (the checker's
    * module-symbol exports map — present in tsgo even where no expando
    * property symbol exists at the attachment/use sites). */
@@ -8500,6 +8594,14 @@ export class Lowerer {
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
     const dep = this.localModuleBindingDepOf(expr);
     return dep === null ? null : (cjsNamespaceTargetOf(this, dep) ?? dep);
+  }
+
+  /** The member slot a module's conditional whole-export statements fill, or
+   * null when the module's whole export is not chosen at run time. Keyed by
+   * module: the checker's synthesized property symbols are shared between
+   * modules that re-export the same tables. */
+  cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
+    return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
   }
 
   /** The compiled module behind a require-like namespace binding: an

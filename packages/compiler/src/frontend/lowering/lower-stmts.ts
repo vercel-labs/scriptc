@@ -126,6 +126,9 @@ import { statementGroupKey } from "./type-failure.js";
 import { reportUncompiledImportsOf } from "./lower-stdlib.js";
 import {
   accessorExportIsExact,
+  type CjsConditionalAlias,
+  cjsConditionalAliasWriteOf,
+  cjsConditionalWholeExportTargetsOf,
   cjsExportEvaluations,
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
@@ -10437,6 +10440,72 @@ function lowerCjsExportStatement(
  * this statement, while alias plumbing would read the live binding — the
  * exported-table lowering's rule. Null for every shape beyond the subset
  * (the caller's generic fence). */
+/** `l = require("./x")` of a module-local variable whose value is chosen at
+ * run time among static export tables (react-dom/server.node.js): the
+ * require runs the table's module, then each member slot takes that table's
+ * value — exactly what Node's `l` holds after this statement, so the member
+ * reads the file performs later answer the executed branch. */
+function lowerCjsConditionalAliasWrite(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  alias: CjsConditionalAlias,
+): IrStmt | null {
+  const write = alias.writes.find((entry) => entry.assign === expr);
+  const slots = lowerer.cjsConditionalAliasGlobals.get(alias.symbol);
+  if (write === undefined || slots === undefined) return null;
+  const loc = locOf(expr);
+  const body: IrStmt[] = [];
+  const init = lowerer.requireInitStmt(write.req.spec, write.req.call);
+  if (init !== null) body.push(init);
+  for (const name of alias.names) {
+    const g = slots.get(name);
+    const value = cjsExportValueByName(lowerer, write.req.dep, name, expr);
+    if (!g || value === null) return null;
+    body.push({
+      kind: "assign",
+      localId: g.id,
+      value: lowerer.coerceInto(expr, value, g.type),
+      loc,
+    });
+  }
+  return { kind: "block", body, loc };
+}
+
+/** `module.exports = require("./x")` in a module that chooses between
+ * statically known export tables when it runs (react/index.js's
+ * `if (prod) module.exports = require("./prod.cjs") else …`): the require
+ * evaluates at this position, then the module's export slots take the
+ * chosen table's member values — collectGlobals registered one slot per
+ * member the tables share. Importer reads of every member then answer what
+ * Node answers. Null when the statement is not one of the module's
+ * static-table choices (the caller keeps its refusal). */
+function lowerCjsConditionalWholeExportStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrStmt | null {
+  const sf = ts.getSourceFileOfNode(expr);
+  const target = cjsConditionalWholeExportTargetsOf(lowerer, sf)?.find(
+    (entry) => entry.assign === expr,
+  );
+  if (target === undefined) return null;
+  const loc = locOf(expr);
+  const body: IrStmt[] = [];
+  const init = lowerer.requireInitStmt(target.req.spec, target.req.call);
+  if (init !== null) body.push(init);
+  for (const name of target.names) {
+    const g = lowerer.cjsConditionalWholeExportSlotOf(sf, name) ?? undefined;
+    const value = cjsExportValueByName(lowerer, target.req.dep, name, expr);
+    if (!g || value === null) return null;
+    body.push({
+      kind: "assign",
+      localId: g.id,
+      value: lowerer.coerceInto(expr, value, g.type),
+      loc,
+    });
+  }
+  return { kind: "block", body, loc };
+}
+
 function lowerCjsSingleValueExport(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -10739,6 +10808,22 @@ export function lowerExprStatement(
       }
     }
   }
+  // `l = require("./x")` of a module-local variable whose whole value is
+  // chosen at run time among static export tables (react-dom/server's
+  // shape): the require initializes the table's module, then every member
+  // slot takes that table's member (cjs-inline-require.ts).
+  if (
+    ts.isBinaryExpression(expr) &&
+    expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(expr.left) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    const alias = cjsConditionalAliasWriteOf(lowerer, expr);
+    if (alias !== null) {
+      const lowered = lowerCjsConditionalAliasWrite(lowerer, expr, alias);
+      if (lowered !== null) return lowered;
+    }
+  }
   // A bare module-namespace binding in STATEMENT position (`ns;` for
   // `import * as ns from ...` — the corpus's canonical "the import
   // linked" assertion): Node evaluates an initialized binding (namespace
@@ -10904,6 +10989,9 @@ export function lowerExprStatement(
   // top-level statement makes the module's exports depend on which path
   // ran (`cond ? module.exports = a : module.exports = b`, an
   // environment-dependent branch); the static export table has one shape.
+  // A branch whose value is a require of a module with a static table is
+  // the exception: every arm names the same members, so each member's slot
+  // takes the arm that ran (react/index.js's shape).
   if (
     !topLevelJs &&
     isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
@@ -10911,6 +10999,10 @@ export function lowerExprStatement(
     expr.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
     (isCjsModuleExports(lowerer, expr.left) || isCjsExportsIdentifier(lowerer, expr.left))
   ) {
+    if (isCjsModuleExports(lowerer, expr.left)) {
+      const lowered = lowerCjsConditionalWholeExportStatement(lowerer, expr);
+      if (lowered !== null) return lowered;
+    }
     lowerer.unsupported(
       "SC1090",
       expr.left,

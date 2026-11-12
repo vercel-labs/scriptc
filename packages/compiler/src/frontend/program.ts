@@ -190,6 +190,7 @@ import {
   resetDeclBoundaryOrigins,
   type DeclProjection,
 } from "./decl-projection.js";
+import { importTypeIndexedAccessSources } from "./import-type-indexed-access.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
 import {
   isVoidInitializerFile,
@@ -1572,6 +1573,21 @@ function loadProgram7(
         lib: [...((options.lib as string[] | undefined) ?? []), TEMPORAL_LIB],
       };
       const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+    }
+    // A type-position `import('spec')['name']` (import-type-indexed-access.ts)
+    // names the type of the member's value, the type `typeof import('spec')['name']`
+    // names. The checker refuses the form as written (TS1340) and types it
+    // `any`, so every world below, the tsc gate included, reads the file with
+    // `typeof ` before the import type: a diagnostic the refused type would
+    // have caused (`const g: F = (x) => x + 1`, F typed `any`) is the one tsc
+    // reports for the spelled-out form, and a program without a site is
+    // served its files untouched.
+    const importTypeSources = importTypeIndexedAccessSources(program);
+    if (importTypeSources.size > 0) {
+      const previous = program;
+      for (const [file, text] of importTypeSources) host.addVirtualFile(file, text);
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
     }

@@ -124,7 +124,22 @@ static ScrDyn *scr_module_namespace_dyn_build(ScrArr *keys, ScrDyn *getter, ScrD
   return object;
 }
 
+/* Node's isModuleNamespaceObject brand over this thread's boxed namespaces:
+ * only a program module's ("file:") box carries it. A builtin's box does
+ * not, because handed on untypedly it stands in for values Node answers
+ * false for (`fs.promises` and the other sub-module members are CommonJS
+ * exports objects); asked of the import binding itself the call site
+ * answers without the box. */
+static bool scr_module_namespace_dyn_brand(const ScrDyn *value) {
+  for (ScrModuleNamespaceDyn *ns = scr_module_namespace_dyns; ns; ns = ns->next) {
+    if (ns->object != value) continue;
+    return ns->id->len >= 5 && memcmp(ns->id->data, "file:", 5) == 0;
+  }
+  return false;
+}
+
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key) {
+  scr_module_namespace_dyn_is = scr_module_namespace_dyn_brand;
   for (ScrModuleNamespaceDyn *ns = scr_module_namespace_dyns; ns; ns = ns->next) {
     if (ns->id->len == id->len && memcmp(ns->id->data, id->data, id->len) == 0)
       return scr_dyn_retain(ns->object);

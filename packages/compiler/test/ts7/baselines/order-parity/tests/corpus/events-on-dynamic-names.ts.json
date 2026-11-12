@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/events-on-dynamic-names.ts"
+ ],
+ "diags": []
+}

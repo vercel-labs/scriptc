@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-types-module-namespace/mod.ts",
+  "<repo>/tests/corpus/util-types-module-namespace/main.ts"
+ ],
+ "diags": []
+}

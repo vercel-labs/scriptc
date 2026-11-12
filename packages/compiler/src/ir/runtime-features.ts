@@ -276,6 +276,7 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "events.onceAny",
   "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStreamSignal",
   "fs.createReadStreamSignal",
@@ -2040,8 +2041,9 @@ const RUNTIME_FEATURE_RULES = {
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
-  /** events.once(emitter, name, options) (scr_events_once_signal.c). */
-  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
+  /** events.once(emitter, name, options), and events.once over a name the
+   * program does not resolve to a typed tuple (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),

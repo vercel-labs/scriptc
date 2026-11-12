@@ -164,19 +164,25 @@ function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
   return symbol !== null && symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
 }
 
-/** Whether the checker's own type for the binding `expr` reads is a union.
- * A string-arithmetic binding keeps its result union at bare reads
- * (runtimeOptionalArithmeticLocals) because an unchecked read can answer the
- * other arm of the union even where the checker's declaration types one, as
- * `const n = compute(4)` does for a `string` return that is NaN at runtime.
- * A binding the checker itself declares as a union is different: its
- * storage mirrors the declaration, so a use the checker narrowed to one arm
- * (`typeof p === "number"` in a `string | number` binding) reads that arm,
- * the way every other union-typed binding reads a narrowed use. */
+/** Whether the checker's own type for the binding `expr` reads is a union
+ * whose storage mirrors the declaration. A string-arithmetic binding keeps
+ * its result union at bare reads (runtimeOptionalArithmeticLocals) because
+ * an unchecked read can answer the other arm of the union even where the
+ * checker's declaration types one, as `const n = compute(4)` does for a
+ * `string` return that is NaN at runtime. A binding the checker itself
+ * declares as a union is different: its storage mirrors the declaration, so
+ * a use the checker narrowed to one arm (`typeof p === "number"` in a
+ * `string | number` binding) reads that arm, the way every other
+ * union-typed binding reads a narrowed use. An initializer that is itself
+ * an unchecked string-arithmetic result is the exception: its run-time arm
+ * is the one the checker names away (`x + 1` over an optional string is NaN
+ * where the checker types the sum as a string), so the declaration keeps
+ * the union at every read. */
 function declaresUnionBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
   const symbol = lowerer.resolveValueSymbol(expr);
   const decl = symbol?.valueDeclaration;
   if (!decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
+  if (lowerer.runtimeUncheckedArithmeticDeclarations.has(decl)) return false;
   return lowerer.typeOf(decl.name).isUnionType();
 }
 

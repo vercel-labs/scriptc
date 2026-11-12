@@ -3848,6 +3848,13 @@ export class Lowerer {
    * reads instead of applying the checker-bare string narrowing adapter. */
   readonly runtimeOptionalArithmeticLocals = new Set<IrLocal>();
   readonly runtimeOptionalArithmeticGlobals = new Set<IrGlobal>();
+  /** The declarations among the two sets above whose initializer IS a
+   * recorded string-arithmetic result (runtimeOptionalArithmeticTypes), not
+   * merely a value of union type: their run-time arm can be the one the
+   * checker's type for every read names away (`x + 1` over an optional
+   * string is NaN where the checker types the sum as a string). Reads of
+   * these keep the union even when the declaration annotates a union. */
+  readonly runtimeUncheckedArithmeticDeclarations = new Set<ts.VariableDeclaration>();
   /** Binding symbols whose IR storage type was widened by the indexed-read
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
@@ -6334,6 +6341,7 @@ export class Lowerer {
     "narrowing.plainContainers",
     "runtimeOptionalStorageLocals",
     "runtimeOptionalArithmeticLocals",
+    "runtimeUncheckedArithmeticDeclarations",
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",

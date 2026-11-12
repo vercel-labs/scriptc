@@ -7372,6 +7372,28 @@ function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean 
   return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
 
+/** The unchecked string-arithmetic result the lowerer recorded for `expr`,
+ * looking through parentheses and the type-only wrappers that keep the same
+ * value: `const s = (x + 1)` records the sum under the parenthesis. */
+function runtimeArithmeticTypeOf(lowerer: Lowerer, expr: ts.Expression): IrType | undefined {
+  let node = expr;
+  for (;;) {
+    const recorded = lowerer.runtimeOptionalArithmeticTypes.get(node);
+    if (recorded !== undefined) return recorded;
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertion(node) ||
+      ts.isSatisfiesExpression(node) ||
+      ts.isNonNullExpression(node)
+    ) {
+      node = node.expression;
+      continue;
+    }
+    return undefined;
+  }
+}
+
 export function lowerVarDecl(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -7819,10 +7841,11 @@ export function lowerVarDecl(
     }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
+    const arithmeticType = runtimeArithmeticTypeOf(lowerer, decl.initializer);
     if (
       arithmetic?.length === 2 &&
       arithmetic.every((a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool") &&
-      (lowerer.runtimeOptionalArithmeticTypes.has(decl.initializer) ||
+      (arithmeticType !== undefined ||
         lowerer.runtimeOptionalBindingType(decl.name)?.kind === "union" ||
         (g.type.kind === "string" &&
           arithmetic.some((a) => a.kind === "f64") &&
@@ -7830,6 +7853,11 @@ export function lowerVarDecl(
     ) {
       g.type = raw.type;
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
+      // The initializer itself answered the unchecked string-arithmetic
+      // union; reads keep it even when the declaration annotates a union
+      // (runtimeUncheckedArithmeticDeclarations).
+      if (arithmeticType !== undefined && typeEquals(arithmeticType, raw.type))
+        lowerer.runtimeUncheckedArithmeticDeclarations.add(decl);
     }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
     refuseAssertionViewWrite(lowerer, decl);
@@ -8377,7 +8405,7 @@ export function lowerVarDecl(
         : (objectFactorySignature(lowerer, decl.initializer)?.returnType ?? settledType);
   }
   const arithmeticType = decl.initializer
-    ? lowerer.runtimeOptionalArithmeticTypes.get(decl.initializer)
+    ? runtimeArithmeticTypeOf(lowerer, decl.initializer)
     : undefined;
   const isStringArithmeticUnion = (t: IrType): boolean => {
     if (t.kind !== "union") return false;
@@ -8549,6 +8577,12 @@ export function lowerVarDecl(
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
   if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
+    // The initializer itself answered the unchecked string-arithmetic union
+    // (not merely a value of union type): its run-time arm is the one the
+    // checker's type for every read can name away, so reads keep the union
+    // even when the declaration annotates a union.
+    if (arithmeticType !== undefined && typeEquals(arithmeticType, init.type))
+      lowerer.runtimeUncheckedArithmeticDeclarations.add(decl);
   }
   if (runtimeOptional) {
     const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(local);

@@ -12,8 +12,8 @@ class Store {
     this.items.push(item);
     return ++this.count;
   }
-  watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 0 : 1;
+  watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 0 : 1;
   }
   get size(): number {
     return this.items.length;
@@ -31,8 +31,8 @@ class Tagged extends Store {
 // A subclass that redeclares the refused method with the same signature, and one that only
 // overrides a compiled method of the class that holds the refused one.
 class Quiet extends Store {
-  watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 2 : 3;
+  watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 2 : 3;
   }
   describe(): string {
     return "quiet";

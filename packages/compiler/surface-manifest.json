@@ -576,6 +576,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.createMac",
+      "kind": "node-builtin",
+      "name": "crypto.createMac",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.createPrivateKey",
       "kind": "node-builtin",
       "name": "crypto.createPrivateKey",
@@ -773,6 +779,12 @@
       "id": "node-builtin.crypto.scryptSync",
       "kind": "node-builtin",
       "name": "crypto.scryptSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.secureHeapUsed",
+      "kind": "node-builtin",
+      "name": "crypto.secureHeapUsed",
       "status": "static"
     },
     {

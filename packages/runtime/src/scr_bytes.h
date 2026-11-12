@@ -548,6 +548,10 @@ ScrStr *scr_text_decode(const ScrBytes *b);
 double scr_text_decoder_encoding(const ScrDyn *label);
 ScrStr *scr_text_decoder_name(double encoding);
 ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination);
+/* TextEncoder.encodeInto over a statically typed string and Uint8Array: the
+ * same walk, with the two counted values written straight into the caller's
+ * slots instead of a fresh dynamic object. */
+void scr_text_encode_into_str(const ScrStr *text, ScrBytes *dest, double *read, double *written);
 /* TextEncoder and TextDecoder records as checked-dynamic handles
  * (scr_text_codec_dyn.c, linked by the textCodecDyn runtime feature). The
  * boxes borrow the record and retain it through `retain`; a decoder also

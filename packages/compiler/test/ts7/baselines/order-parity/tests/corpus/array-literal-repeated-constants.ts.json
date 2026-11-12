@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-literal-repeated-constants.ts"
+ ],
+ "diags": []
+}

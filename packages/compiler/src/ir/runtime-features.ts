@@ -160,6 +160,14 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // new PerformanceMark and the PerformanceObserver family: their
+  // callbacks run from an immediate (scr_perf.c).
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",
@@ -259,6 +267,7 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "events.onceAny",
   "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStreamSignal",
   "fs.createReadStreamSignal",
@@ -362,6 +371,9 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
   "transform.",
   "writable.",
   "zlib.stream",
+  // The `info: true` one-shots answer the stream the call used: the
+  // fabricated engine is a runtime Transform (scr_zlib_stream.c).
+  "zlib.info",
 ];
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
@@ -421,6 +433,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  // Object.prototype.isPrototypeOf's walk and Function.prototype as a
+  // value live in scr_dyn_invoke.c.
+  "dyn.isPrototypeOf",
+  "dyn.functionPrototype",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
@@ -438,6 +454,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
   "toString",
   "valueOf",
@@ -534,6 +551,12 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // A symbol event name's registry key (scr_str_symbol_key lives in the
   // string unit, but the emitter registry holds the symbol itself).
   "emitter.symName",
+  // events.on's iterator answers Symbol.asyncIterator and reads
+  // Symbol.for('nodejs.watermarkData'); a symbol event name keeps its
+  // symbol identity.
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
@@ -839,6 +862,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.cursor",
   "rl.cursorPos",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.history",
   "rl.isPromises",
   "rl.isTerminal",
@@ -1787,6 +1811,12 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // scr_event_target.c's events.on reads the receiver's pause() and
+      // resume() through scr_dyn_invoke when the compiler handed it no
+      // method value.
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
       // scr_js_wrapper.c answers other values' tags through
       // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
       "wrapper.objectTag",
@@ -1941,7 +1971,24 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    // The events-module helpers whose receiver is resolved at runtime
+    // answer a NodeEventTarget (a MessagePort) or a Worker through its
+    // emitter, so those calls link the emitter unit as well.
+    fns: [
+      ...STREAM_LIB_FNS,
+      ...BUILTIN_CLASS_LIB_FNS,
+      "event.targetListeners",
+      "event.targetListenersDyn",
+      "event.targetListenerCount",
+      "event.targetListenerCountDyn",
+      "event.targetGetMax",
+      "event.targetSetMax",
+      "event.onceTarget",
+      "event.onceTargetSignal",
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
+    ],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -1952,8 +1999,10 @@ const RUNTIME_FEATURE_RULES = {
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
     // util.debounce and util.throttle register options.signal's listener.
+    // events.on's typed-emitter iterator lives in scr_event_target.c too.
     fns: [
       "events.addAbortListener",
+      "events.onTyped",
       "util.aborted",
       "util.debounce",
       "util.throttle",
@@ -1975,8 +2024,9 @@ const RUNTIME_FEATURE_RULES = {
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
-  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
-  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
+  /** events.once(emitter, name, options), and events.once over a name the
+   * program does not resolve to a typed tuple (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),

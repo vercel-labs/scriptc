@@ -1357,6 +1357,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_weak_ref_get",
+  "message": "WeakRef method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_native_set_get",
   "message": "Native Set method values have no lowering",
   "code": "SC2020"
@@ -1449,6 +1455,24 @@
   "file": "scr_lib.c",
   "function": "scr_crypto_cshake_param",
   "message": "A digest option with NUL bytes in a view other than a Buffer has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_unsupported",
+  "message": "Mac members other than update() and final() have no lowering on an 'unknown' value; cast the value to Mac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_method_call",
+  "message": "Mac methods called with a receiver other than their own Mac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_new_dyn",
+  "message": "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()",
   "code": "SC2020"
  },
  {
@@ -2101,14 +2125,8 @@
  },
  {
   "file": "scr_zlib.c",
-  "function": "scr_zlib_base_options",
-  "message": "a zlib chunkSize above 4294967295 is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_zlib.c",
   "function": "scr_zlib_refuse_info",
-  "message": "the zlib option 'info' is not supported yet (it returns the engine object)",
+  "message": "the zlib option 'info' is not supported through a non-literal value; write info: true in the options object to get { buffer, engine }",
   "code": "SC2020"
  },
  {

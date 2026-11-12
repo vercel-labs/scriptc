@@ -197,12 +197,21 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
-/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
- * which process.execArgv reports; NULL without one. */
-static SCR_TL const char *scr_lib_exec_flag = NULL;
+/* Leading Node runtime flags taken out of process.argv (scr_lib_take_flag,
+ * scr_lib_take_flag_value) in the order they were taken; process.execArgv
+ * reports them, empty without any. A program sees at most a handful (the
+ * snapshot and reporter options), and a flag past the cap is still taken
+ * out of argv; it just does not appear in execArgv. Each flag is copied:
+ * setting process.title overwrites the original argument area on POSIX
+ * (libuv's proctitle), so a pointer into argv would not survive a program
+ * that renames itself before reading execArgv. */
+#define SCR_LIB_MAX_EXEC_FLAGS 8
+static SCR_TL const char *scr_lib_exec_flags[SCR_LIB_MAX_EXEC_FLAGS];
+static SCR_TL int scr_lib_exec_flag_count = 0;
 #if defined(_WIN32) && !defined(SCR_LIB)
-/* The flag's index in the original Windows command line, -1 without one. */
-static SCR_TL int scr_lib_exec_flag_index = -1;
+/* Each taken flag's index in the original Windows command line, in the
+ * same order: scr_lib_prepare_utf8_argv skips them when it rebuilds argv. */
+static SCR_TL int scr_lib_exec_flag_indexes[SCR_LIB_MAX_EXEC_FLAGS];
 #endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
@@ -370,7 +379,10 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
-    if (i == scr_lib_exec_flag_index) continue;
+    bool taken = false;
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
+      if (i == scr_lib_exec_flag_indexes[f]) taken = true;
+    if (taken) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -619,8 +631,10 @@ const char *scr_lib_arg(int i) {
   return scr_lib_argv[i];
 }
 
-bool scr_lib_take_flag(const char *flag) {
-  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+/* Drops process.argv[1], a leading runtime flag, and records it among the
+ * flags process.execArgv reports. Returns the recorded copy, or NULL when
+ * the flag cap is reached. */
+static const char *scr_lib_take_first_arg(const char *exec_flag) {
   char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
   if (!args) scr_trap("out of memory");
   args[0] = scr_lib_argv[0];
@@ -631,9 +645,35 @@ bool scr_lib_take_flag(const char *flag) {
   scr_lib_argv = args;
   scr_lib_argc--;
 #if defined(_WIN32) && !defined(SCR_LIB)
-  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+  if (scr_lib_exec_flag_count < SCR_LIB_MAX_EXEC_FLAGS)
+    scr_lib_exec_flag_indexes[scr_lib_exec_flag_count] =
+        (scr_lib_has_fork ? 2 : 1) + scr_lib_exec_flag_count;
 #endif
-  scr_lib_exec_flag = flag;
+  if (scr_lib_exec_flag_count >= SCR_LIB_MAX_EXEC_FLAGS) return NULL;
+  size_t size = strlen(exec_flag) + 1;
+  char *copy = malloc(size);
+  if (!copy) scr_trap("out of memory");
+  memcpy(copy, exec_flag, size);
+  scr_lib_exec_flags[scr_lib_exec_flag_count++] = copy;
+  return copy;
+}
+
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  scr_lib_take_first_arg(flag);
+  return true;
+}
+
+bool scr_lib_take_flag_value(const char *name, const char **value) {
+  if (scr_lib_argc < 2) return false;
+  const char *arg = scr_lib_argv[1];
+  size_t n = strlen(name);
+  if (strncmp(arg, name, n) != 0 || arg[n] != '=') return false;
+  const char *flag = scr_lib_take_first_arg(arg);
+  /* The value points into the flag's recorded copy, which process.title's
+   * rewrite of the argument area does not touch. Past the flag cap there is
+   * no copy, and the pointer into argv is valid only until a rename. */
+  if (value) *value = (flag != NULL ? flag : arg) + n + 1;
   return true;
 }
 
@@ -650,9 +690,9 @@ static void scr_process_exec_argv_cleanup(void) {
 ScrArr *scr_process_exec_argv(void) {
   if (!scr_exec_argv_arr) {
     scr_exec_argv_arr = scr_arr_new(SCR_ELEM_STR, 1);
-    if (scr_lib_exec_flag)
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
       scr_arr_push_ref(scr_exec_argv_arr,
-                       scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+                       scr_str_new(scr_lib_exec_flags[f], strlen(scr_lib_exec_flags[f])));
 #ifndef SCR_LIB
     scr_atexit(scr_process_exec_argv_cleanup);
 #endif
@@ -2849,9 +2889,12 @@ void scr_process_exit(double code) {
 #endif
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
-   * expected). scr_init's flush-at-exit is also skipped — flush here. */
+   * expected). scr_init's flush-at-exit is also skipped — flush here. The
+   * terminal restore the other exit path registers is skipped too, and
+   * Node restores the terminal mode on this path as well. */
   scr_stdout_settle();
   fflush(stdout);
+  scr_process_stdin_restore_mode();
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
 #ifndef SCR_LIB
@@ -6392,6 +6435,21 @@ bool scr_process_stdin_raw(void) { return scr_stdin_raw; }
 static SCR_TL DWORD scr_stdin_cooked;
 static SCR_TL bool scr_stdin_cooked_saved = false;
 
+/* The entry mode comes back when the process ends, not only when raw mode
+ * is left explicitly: libuv's uv_tty_reset_mode, which Node runs from its
+ * teardown, restores the mode a terminal was in when it first entered raw
+ * mode. A program that finishes while readline holds raw mode otherwise
+ * hands the user a terminal with echo and line editing switched off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  HANDLE h = (HANDLE)_get_osfhandle(0);
+  if (h == INVALID_HANDLE_VALUE) return;
+  (void)SetConsoleMode(h, scr_stdin_cooked);
+}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
     const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6417,6 +6475,8 @@ void scr_process_stdin_set_raw_mode(bool raw) {
   }
 }
 #elif defined(__wasi__)
+void scr_process_stdin_restore_mode(void) {}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   (void)raw;
   const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6424,7 +6484,36 @@ void scr_process_stdin_set_raw_mode(bool raw) {
 }
 #else
 static SCR_TL struct termios scr_stdin_cooked;
+static SCR_TL struct stat scr_stdin_cooked_stat;
 static SCR_TL bool scr_stdin_cooked_saved = false;
+
+/* libuv's uv_tty_reset_mode, which Node runs from its teardown: the mode
+ * the terminal was in when raw mode was first entered comes back when the
+ * process ends, so a program that finishes while readline holds raw mode
+ * does not hand the user a terminal with echo and line editing off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. Node checks the descriptor still names the
+ * file it saved (ResetStdio) and blocks SIGTTOU across the call, because a
+ * background job that no longer owns the terminal would be stopped inside
+ * its own exit; the same two guards are here. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  struct stat now;
+  if (fstat(0, &now) != 0) return;
+  if (now.st_dev != scr_stdin_cooked_stat.st_dev ||
+      now.st_ino != scr_stdin_cooked_stat.st_ino)
+    return;
+  sigset_t ttou, old;
+  sigemptyset(&ttou);
+  sigaddset(&ttou, SIGTTOU);
+  (void)pthread_sigmask(SIG_BLOCK, &ttou, &old);
+  int err;
+  do {
+    err = tcsetattr(0, TCSANOW, &scr_stdin_cooked);
+  } while (err == -1 && errno == EINTR);
+  (void)pthread_sigmask(SIG_SETMASK, &old, NULL);
+}
 
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
@@ -6437,8 +6526,15 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     struct termios t;
     if (tcgetattr(0, &t) != 0) return;
     if (!scr_stdin_cooked_saved) {
-      scr_stdin_cooked = t;
-      scr_stdin_cooked_saved = true;
+      /* The descriptor's identity goes with the mode: the restore must not
+       * write it onto a different file that took fd 0 later. A descriptor
+       * that cannot be identified is still made raw, just not restored. */
+      struct stat st;
+      if (fstat(0, &st) == 0) {
+        scr_stdin_cooked = t;
+        scr_stdin_cooked_stat = st;
+        scr_stdin_cooked_saved = true;
+      }
     }
     /* libuv uv__tty_make_raw (UV_TTY_MODE_RAW) */
     t.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -9817,6 +9913,31 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
   return false;
 }
 
+/* createMac() fetches its digest from OpenSSL's providers (EVP_MD_fetch),
+ * which resolves the canonical names, their object identifiers and the OID
+ * aliases, but not the RSA signature aliases of OpenSSL's object table, and
+ * it does not map the legacy "dss1" spelling that createHash accepts. */
+static bool scr_digest_mac_alg(const char *name, size_t len, ScrDigestAlg *out) {
+  const char *nul = memchr(name, '\0', len);
+  if (nul) len = (size_t)(nul - name);
+  if ((len == 4 && memcmp(name, "dss1", 4) == 0) || (len == 4 && memcmp(name, "DSS1", 4) == 0))
+    return false;
+  size_t trimmed = len;
+  while (trimmed > 0 && name[trimmed - 1] == ' ') trimmed--;
+  for (size_t i = 0; i < sizeof scr_digest_names / sizeof scr_digest_names[0]; i++) {
+    size_t n = scr_digest_names[i].len;
+    if (n != len && n != trimmed) continue;
+    const char *literal = scr_digest_names[i].name;
+    if (scr_digest_name_exact_only(literal)) continue;
+    if (scr_digest_name_is(name, len, literal) ||
+        (trimmed != len && scr_digest_name_is(name, trimmed, literal))) {
+      *out = scr_digest_names[i].alg;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool scr_digest_known(const char *name, size_t len) {
   ScrDigestAlg alg;
   return scr_digest_alg(name, len, &alg);
@@ -10007,6 +10128,10 @@ struct ScrCryptoHash {
   size_t rc;
   bool finalized;
   bool hmac;
+  /* createMac's Mac: an HMAC whose handle Node marks finalized once, so a
+   * repeated final() or an update() after it throws (Hmac answers an empty
+   * digest instead). */
+  bool mac;
   /* The digest was computed, by digest() or by the stream's flush. Node's
    * native handle keeps it, so a Hash flushed as a stream answers one more
    * digest() with it, and every later update fails. */
@@ -10085,7 +10210,13 @@ static bool scr_crypto_hmac_digest_ok(ScrDigestAlg alg) {
   return false;
 }
 
-static void scr_crypto_hash_finalized(void) {
+static void scr_crypto_hash_finalized(const ScrCryptoHash *hash) {
+  if (hash->mac) {
+    static const char mac_msg[] = "MAC already finalized";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, mac_msg, sizeof mac_msg - 1,
+                             "ERR_CRYPTO_MAC_FINALIZED");
+    return;
+  }
   static const char msg[] = "Digest already called";
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
                            "ERR_CRYPTO_HASH_FINALIZED");
@@ -10102,7 +10233,7 @@ static void scr_crypto_hash_update_failed(void) {
  * digest. */
 static bool scr_crypto_hash_updatable(const ScrCryptoHash *hash) {
   if (hash->finalized) {
-    scr_crypto_hash_finalized();
+    scr_crypto_hash_finalized(hash);
     return false;
   }
   if (hash->digested) {
@@ -10414,7 +10545,7 @@ ScrCryptoHash *scr_crypto_hash_update_bytes(ScrCryptoHash *hash, ScrBytes *data)
  * error-queue codes; that copy has no lowering. */
 static bool scr_crypto_hash_copyable(const ScrCryptoHash *hash) {
   if (hash->finalized) {
-    scr_crypto_hash_finalized();
+    scr_crypto_hash_finalized(hash);
     return false;
   }
   if (hash->digested) {
@@ -10469,8 +10600,8 @@ static size_t scr_crypto_hash_compute(ScrCryptoHash *hash, unsigned char *out) {
  * without one for a repeated Hmac.digest(), which Node answers empty. */
 static size_t scr_crypto_hash_finish(ScrCryptoHash *hash, unsigned char *out) {
   if (hash->finalized) {
-    if (hash->hmac) return 0;
-    scr_crypto_hash_finalized();
+    if (hash->hmac && !hash->mac) return 0;
+    scr_crypto_hash_finalized(hash);
     return 0;
   }
   hash->finalized = true;
@@ -10506,7 +10637,7 @@ static void scr_crypto_encoding_unlowered(void) {
 ScrStr *scr_crypto_hash_digest_string(ScrCryptoHash *hash, ScrStr *enc) {
   int encoding = scr_crypto_encoding(enc->data, enc->len);
   if (encoding < 0) {
-    if (hash->finalized && !hash->hmac) scr_crypto_hash_finalized();
+    if (hash->finalized && (!hash->hmac || hash->mac)) scr_crypto_hash_finalized(hash);
     else if (hash->finalized) return scr_str_new("", 0);
     else scr_crypto_encoding_unlowered();
     return NULL;
@@ -10639,8 +10770,8 @@ static ScrDyn *scr_crypto_dyn_buffer(const unsigned char *data, size_t len) {
  * outputEncoding goes through String(), and a name Node does not know
  * gives a Buffer. */
 ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *hash, ScrDyn *enc) {
-  if (hash->finalized && !hash->hmac) {
-    scr_crypto_hash_finalized();
+  if (hash->finalized && (!hash->hmac || hash->mac)) {
+    scr_crypto_hash_finalized(hash);
     return NULL;
   }
   bool truthy = scr_dyn_truthy(enc);
@@ -10939,6 +11070,451 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
     result = scr_crypto_hash_alloc(kind, true, bytes->data, (size_t)scr_bytes_byte_len(bytes));
   scr_bytes_release(bytes);
   return result;
+}
+
+/* ── createMac ─────────────────────────────────────────────────────────
+ * Node's provider_mac createMac(): the algorithm name, then the options
+ * bag (digest first, then the extended options hmac refuses), the key,
+ * the MAC name, and only then the HMAC construction. Of the MAC names
+ * getMacs() lists, only hmac has a native implementation here; an
+ * unknown name keeps Node's ERR_CRYPTO_INVALID_MAC and a known one
+ * reports a coded SC2020 error instead of a native answer. */
+
+/* Node's validateName(): a string, non-empty, without NUL bytes. */
+static bool scr_crypto_mac_name_ok(const ScrDyn *value, const char *name) {
+  if (value->kind != SCR_DYN_STR) {
+    if (strchr(name, '.') != NULL) scr_dyn_prop_type_fail(name, "of type string", value);
+    else scr_dyn_arg_type_fail(name, "of type string", value);
+    return false;
+  }
+  const ScrStr *text = value->v.str;
+  if (text->len != 0 && memchr(text->data, 0, text->len) == NULL) return true;
+  ScrStr *shown = scr_str_inspect_quoted(text, true);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The ");
+  scr_jb_puts(&b, strchr(name, '.') != NULL ? "property '" : "argument '");
+  scr_jb_puts(&b, name);
+  scr_jb_puts(&b, "' must be non-empty and contain no NUL bytes. Received ");
+  scr_jb_put_str(&b, shown);
+  scr_str_release(shown);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(message);
+  return false;
+}
+
+/* The MAC algorithm names Node's getMacs() lists. */
+static const char *const scr_crypto_mac_names[] = {
+    "blake2bmac", "blake2smac", "cmac",  "gmac",    "hmac",    "kmac-128",
+    "kmac-256",   "kmac128",    "kmac256", "poly1305", "siphash",
+};
+
+static bool scr_crypto_mac_known(const ScrStr *name) {
+  for (size_t i = 0; i < sizeof scr_crypto_mac_names / sizeof scr_crypto_mac_names[0]; i++)
+    if (scr_digest_name_is(name->data, name->len, scr_crypto_mac_names[i])) return true;
+  return false;
+}
+
+static void scr_crypto_invalid_mac(const ScrStr *name) {
+  static const char prefix[] = "Invalid MAC: ";
+  const size_t prefix_len = sizeof prefix - 1;
+  if (name->len > SIZE_MAX - prefix_len) scr_trap("scriptc: out of memory\n");
+  const size_t msg_len = prefix_len + name->len;
+  char *msg = malloc(msg_len);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  memcpy(msg, prefix, prefix_len);
+  memcpy(msg + prefix_len, name->data, name->len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, msg_len, "ERR_CRYPTO_INVALID_MAC");
+  free(msg);
+}
+
+/* OpenSSL's EVP_R_UNSUPPORTED, the code an unknown HMAC digest answers
+ * with. */
+static void scr_crypto_mac_digest_unsupported(void) {
+  static const char message[] = "error:0308010C:digital envelope routines::unsupported";
+  static const char code[] = "ERR_OSSL_EVP_UNSUPPORTED";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("unsupported", 11)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's normalizeKey(): a secret KeyObject's bytes, an ArrayBuffer, a
+ * Buffer, a TypedArray or a DataView. A private or public KeyObject gets
+ * the same argument-type error, named by its class. +1 or NULL. */
+static ScrBytes *scr_crypto_mac_key(ScrDyn *key) {
+  if (key->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(key);
+    if (!value) return NULL;
+    ScrBytes *bytes = scr_crypto_mac_key(value);
+    scr_dyn_release(value);
+    return bytes;
+  }
+  size_t len;
+  const unsigned char *secret = scr_key_object_bytes(key, &len);
+  if (secret) {
+    ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(bytes->data, secret, len);
+    return bytes;
+  }
+  static const char types[] = "an instance of ArrayBuffer, Buffer, TypedArray, DataView, or KeyObject";
+  if (scr_crypto_is_key_object(key)) {
+    scr_dyn_arg_type_fail("key", types, key);
+    return NULL;
+  }
+  if (key->kind == SCR_DYN_BYTES || scr_buffer_storage_is(key)) return scr_bytes_buffer_source(key);
+  scr_dyn_arg_type_fail("key", types, key);
+  return NULL;
+}
+
+/* Mac.prototype.update(data[, inputEncoding]): finalization first, then
+ * the string path's encoding checks, then a Buffer/TypedArray/DataView
+ * (an ArrayBuffer alone is not a view). */
+static ScrCryptoHash *scr_crypto_mac_update_dyn(ScrCryptoHash *mac, ScrDyn *data, ScrDyn *enc) {
+  if (mac->finalized) {
+    scr_crypto_hash_finalized(mac);
+    return NULL;
+  }
+  if (data->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(data);
+    if (!value) return NULL;
+    ScrCryptoHash *result = scr_crypto_mac_update_dyn(mac, value, enc);
+    scr_dyn_release(value);
+    return result;
+  }
+  if (data->kind == SCR_DYN_STR) {
+    if (enc->kind == SCR_DYN_UNDEF) return scr_crypto_hash_update_str(mac, data->v.str);
+    if (enc->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("inputEncoding", "of type string", enc);
+      return NULL;
+    }
+    if (scr_crypto_encoding(enc->v.str->data, enc->v.str->len) < 0) {
+      scr_dyn_arg_value_fail("inputEncoding", NULL, enc);
+      return NULL;
+    }
+    return scr_crypto_hash_update_enc(mac, data->v.str, enc->v.str);
+  }
+  if (data->kind == SCR_DYN_BYTES) return scr_crypto_hash_update_bytes(mac, data->v.bytes);
+  static const char types[] = "of type string or an instance of Buffer, TypedArray, or DataView";
+  scr_dyn_arg_type_fail("data", types, data);
+  return NULL;
+}
+
+/* Mac.prototype.final([outputEncoding]): a Buffer for undefined or any
+ * spelling of "buffer", else the digest in a Buffer encoding. */
+static ScrDyn *scr_crypto_mac_final_dyn(ScrCryptoHash *mac, ScrDyn *enc) {
+  if (mac->finalized) {
+    scr_crypto_hash_finalized(mac);
+    return NULL;
+  }
+  int encoding = -1;
+  if (enc->kind != SCR_DYN_UNDEF) {
+    if (enc->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("outputEncoding", "of type string", enc);
+      return NULL;
+    }
+    const ScrStr *name = enc->v.str;
+    bool buffer = name->len == 6;
+    for (size_t i = 0; buffer && i < 6; i++) {
+      char c = name->data[i];
+      if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+      buffer = c == "buffer"[i];
+    }
+    if (!buffer) {
+      encoding = scr_crypto_encoding(name->data, name->len);
+      if (encoding < 0) {
+        scr_dyn_arg_value_fail("outputEncoding", NULL, enc);
+        return NULL;
+      }
+    }
+  }
+  unsigned char stack[64];
+  unsigned char *digest = scr_crypto_digest_space(mac->out_len, stack);
+  size_t n = scr_crypto_hash_finish(mac, digest);
+  ScrDyn *result = encoding >= 0 ? scr_crypto_dyn_str(scr_digest_encode(digest, n, encoding))
+                                 : scr_crypto_dyn_buffer(digest, n);
+  scr_crypto_digest_space_end(digest, mac->out_len, stack);
+  return result;
+}
+
+/* The Mac handle's members: update() and final(), the rest of a Mac's
+ * Transform and emitter surface (the Hash list without digest) with the
+ * coded refusal the Hash handles give. */
+static bool scr_crypto_mac_dyn_member(const char *key, size_t len) {
+  if (len == 6 && memcmp(key, "digest", 6) == 0) return false;
+  for (const char *name = scr_crypto_hash_dyn_members; *name; name += strlen(name) + 1)
+    if (strlen(name) == len && memcmp(name, key, len) == 0) return true;
+  return false;
+}
+
+static void scr_crypto_mac_dyn_unsupported(void) {
+  static const char msg[] =
+      "Mac members other than update() and final() have no lowering on an 'unknown' value; "
+      "cast the value to Mac first";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+}
+
+enum { SCR_MAC_DYN_UPDATE, SCR_MAC_DYN_FINAL };
+static const char *const scr_crypto_mac_dyn_method_names[] = {"update", "final"};
+static SCR_TL ScrDyn *scr_crypto_mac_dyn_methods[2];
+static SCR_TL bool scr_crypto_mac_dyn_methods_registered;
+
+static void scr_crypto_mac_dyn_methods_cleanup(void) {
+  for (size_t i = 0; i < 2; i++) {
+    ScrDyn *method = scr_crypto_mac_dyn_methods[i];
+    scr_crypto_mac_dyn_methods[i] = NULL;
+    scr_dyn_release(method);
+  }
+}
+
+static int scr_crypto_mac_dyn_method_index(const char *key, size_t len) {
+  if (len == 6 && memcmp(key, "update", 6) == 0) return SCR_MAC_DYN_UPDATE;
+  if (len == 5 && memcmp(key, "final", 5) == 0) return SCR_MAC_DYN_FINAL;
+  return -1;
+}
+
+/* Runs method `index` on `mac`; `self` is the receiving box, which
+ * update() answers and final() does not. */
+static ScrDyn *scr_crypto_mac_dyn_run(ScrCryptoHash *mac, ScrDyn *self, int index,
+                                      ScrDyn *const *args, size_t argc) {
+  ScrDyn *undefined = scr_dyn_undefined();
+  ScrDyn *first = argc > 0 ? args[0] : undefined;
+  ScrDyn *second = argc > 1 ? args[1] : undefined;
+  ScrDyn *result = NULL;
+  if (index == SCR_MAC_DYN_UPDATE) {
+    ScrCryptoHash *updated = scr_crypto_mac_update_dyn(mac, first, second);
+    if (updated) {
+      scr_crypto_hash_release(updated);
+      result = scr_dyn_retain(self);
+    }
+  } else {
+    result = scr_crypto_mac_final_dyn(mac, first);
+  }
+  scr_dyn_release(undefined);
+  return result;
+}
+
+static ScrDyn *scr_crypto_mac_dyn_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  int index = (int)scr_box_get_f64(clo->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  bool mac_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_MAC;
+  ScrDyn *result = NULL;
+  if (mac_this) {
+    result = scr_crypto_mac_dyn_run(self->v.handle.ptr, self, index, args, argc);
+  } else {
+    static const char msg[] =
+        "Mac methods called with a receiver other than their own Mac have no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_crypto_mac_dyn_method_value(int index) {
+  if (!scr_crypto_mac_dyn_methods_registered) {
+    scr_crypto_mac_dyn_methods_registered = true;
+    scr_atexit(scr_crypto_mac_dyn_methods_cleanup);
+  }
+  if (!scr_crypto_mac_dyn_methods[index]) {
+    ScrClosure *clo = scr_closure_new(NULL, 1);
+    clo->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(clo->caps[0], (double)index);
+    uint32_t arity = index == SCR_MAC_DYN_UPDATE ? 2 : 1;
+    scr_crypto_mac_dyn_methods[index] = scr_dyn_new_func(
+        clo, scr_crypto_mac_dyn_method_call, arity, "", scr_crypto_mac_dyn_method_names[index]);
+  }
+  return scr_dyn_retain(scr_crypto_mac_dyn_methods[index]);
+}
+
+static ScrDyn *scr_crypto_mac_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                         ScrDyn *const *args, size_t argc, const char *what) {
+  ScrCryptoHash *mac = h;
+  size_t len = strlen(method);
+  int index = scr_crypto_mac_dyn_method_index(method, len);
+  if (index >= 0) return scr_crypto_mac_dyn_run(mac, self, index, args, argc);
+  if (scr_crypto_mac_dyn_member(method, len)) {
+    scr_crypto_mac_dyn_unsupported();
+    return NULL;
+  }
+  scr_lib_throw_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_crypto_mac_dyn_get(void *h, const char *key, size_t len) {
+  (void)h;
+  int index = scr_crypto_mac_dyn_method_index(key, len);
+  if (index >= 0) return scr_crypto_mac_dyn_method_value(index);
+  if (scr_crypto_mac_dyn_member(key, len)) scr_crypto_mac_dyn_unsupported();
+  return NULL;
+}
+
+static bool scr_crypto_mac_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_crypto_mac_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps mac_ops = {
+      .cls = "Mac",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_mac_dyn_invoke,
+      .get = scr_crypto_mac_dyn_get,
+      .set = scr_crypto_mac_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_MAC, &mac_ops);
+}
+
+/* The property options hmac refuses, by the name the program gave. */
+static void scr_crypto_mac_option_unsupported(const char *name, const ScrStr *mac_name) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "The property '");
+  scr_jb_puts(&b, name);
+  scr_jb_puts(&b, "' is not supported by MAC ");
+  scr_jb_put_str(&b, mac_name);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(message);
+}
+
+static void scr_crypto_mac_digest_required(void) {
+  static const char msg[] = "The property 'options.digest' is required for HMAC";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+}
+
+/* createMac(algorithm, key[, options]). */
+ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) {
+  if (algorithm->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(algorithm);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_mac_new_dyn(value, key, options);
+    scr_dyn_release(value);
+    return result;
+  }
+  if (!scr_crypto_mac_name_ok(algorithm, "algorithm")) return NULL;
+  const ScrStr *name = algorithm->v.str;
+  const ScrDyn *digest = NULL;
+  bool has_cipher = false, has_iv = false, has_customization = false, has_salt = false;
+  bool has_output_length = false;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *value = scr_dyn_typed_ref_materialize(options);
+    if (!value) return NULL;
+    ScrDyn *result = scr_crypto_mac_new_dyn(algorithm, key, value);
+    scr_dyn_release(value);
+    return result;
+  }
+  if (options->kind != SCR_DYN_UNDEF) {
+    /* Node's validateObject refuses arrays (allowArray defaults to false)
+     * but accepts any other object, including a Buffer or a Date. */
+    if (options->kind == SCR_DYN_ARR || !scr_crypto_is_object(options)) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return NULL;
+    }
+    const ScrDyn *option = scr_crypto_option(options, "digest");
+    if (option) {
+      if (!scr_crypto_mac_name_ok(option, "options.digest")) return NULL;
+      digest = option;
+    }
+    option = scr_crypto_option(options, "cipher");
+    if (option) {
+      if (!scr_crypto_mac_name_ok(option, "options.cipher")) return NULL;
+      has_cipher = true;
+    }
+    static const char *const bytes_options[3] = {"iv", "customization", "salt"};
+    bool *const bytes_flags[3] = {&has_iv, &has_customization, &has_salt};
+    for (int i = 0; i < 3; i++) {
+      option = scr_crypto_option(options, bytes_options[i]);
+      if (!option) continue;
+      if (option->kind != SCR_DYN_BYTES && !scr_buffer_storage_is(option)) {
+        char argname[32];
+        snprintf(argname, sizeof argname, "options.%s", bytes_options[i]);
+        scr_dyn_prop_type_fail(
+            argname, "an instance of ArrayBuffer, Buffer, TypedArray, or DataView", option);
+        return NULL;
+      }
+      *bytes_flags[i] = true;
+    }
+    option = scr_crypto_option(options, "outputLength");
+    if (option) {
+      double length;
+      if (!scr_crypto_uint32(option, "options.outputLength", &length)) return NULL;
+      (void)length;
+      has_output_length = true;
+    }
+  }
+  ScrBytes *bytes = scr_crypto_mac_key(key);
+  if (!bytes) return NULL;
+  if (!scr_crypto_mac_known(name)) {
+    scr_crypto_invalid_mac(name);
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  if (!scr_digest_name_is(name->data, name->len, "hmac")) {
+    static const char msg[] =
+        "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  if (!digest) {
+    scr_crypto_mac_digest_required();
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  static const char *const extended[5] = {
+      "options.cipher", "options.iv", "options.customization", "options.salt", "options.outputLength"};
+  bool const present[5] = {has_cipher, has_iv, has_customization, has_salt, has_output_length};
+  for (int i = 0; i < 5; i++) {
+    if (!present[i]) continue;
+    scr_crypto_mac_option_unsupported(extended[i], name);
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  ScrDigestAlg kind;
+  if (!scr_digest_mac_alg(digest->v.str->data, digest->v.str->len, &kind)) {
+    scr_crypto_mac_digest_unsupported();
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  if (scr_digest_info[kind].xof) {
+    static const char msg[] = "Failed to initialize MAC";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_CRYPTO_OPERATION_FAILED");
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  ScrCryptoHash *mac =
+      scr_crypto_hash_alloc(kind, true, bytes->data, (size_t)scr_bytes_byte_len(bytes));
+  scr_bytes_release(bytes);
+  mac->mac = true;
+  scr_crypto_mac_dyn_install();
+  ScrDyn *box = scr_dyn_new_handle(mac, SCR_DYNH_MAC);
+  scr_crypto_hash_release(mac);
+  return box;
+}
+
+/* crypto.secureHeapUsed(): Node's answer when the process was not started
+ * with --secure-heap, which a compiled binary cannot be. */
+ScrDyn *scr_crypto_secure_heap_used(void) {
+  ScrDyn *out = scr_dyn_new_obj();
+  scr_dyn_obj_set(out, "total", 5, scr_dyn_new_num(0));
+  scr_dyn_obj_set(out, "used", 4, scr_dyn_new_num(0));
+  /* Node divides by the zero total, so utilization is NaN (which
+   * JSON.stringify spells null); it is a number, not null. */
+  scr_dyn_obj_set(out, "utilization", 11, scr_dyn_new_num(NAN));
+  scr_dyn_obj_set(out, "min", 3, scr_dyn_new_num(2));
+  return out;
 }
 
 /* hash.copy(options). A copy without outputLength has the default

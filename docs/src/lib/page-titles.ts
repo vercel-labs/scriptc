@@ -10,6 +10,7 @@ export const PAGE_TITLES: Record<string, string> = {
   threads: "Sharing Data Between Workers",
   contracts: "Contract Types",
   experimental: "Experimental APIs",
+  "dual-run": "Dual-Run Testing",
   wasm: "WebAssembly Modules",
   platforms: "Platform Support",
   compatibility: "Node.js 24 Compatibility",

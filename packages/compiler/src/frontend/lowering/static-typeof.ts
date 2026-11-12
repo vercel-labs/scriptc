@@ -4,7 +4,7 @@ import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { undeclaredGlobalTypeof } from "./global-object-names.js";
-import { programMayWriteGlobalName } from "./global-object-writes.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
 import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
@@ -41,6 +41,12 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   }
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
+  // A global binding the program declares and TypeScript erases answers
+  // "undefined" only while the global object has no such property: a
+  // censused write of the name gives typeof a value to read at run time
+  // (typeof.ts), so no answer folds.
+  if (erasedGlobalBindingOf(lowerer, e) && programMayWriteGlobalName(lowerer, e.text, e))
+    return null;
   // A name the program declares ambiently but nothing defines (`declare
   // const Bun`): undeclared at run time.
   if (ambientUndefinedVarSymbolOf(lowerer, e) || ambientUndefinedFnSymbolOf(lowerer, e))

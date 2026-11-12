@@ -1363,6 +1363,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_weak_ref_get",
+  "message": "WeakRef method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_native_set_get",
   "message": "Native Set method values have no lowering",
   "code": "SC2020"
@@ -1455,6 +1461,24 @@
   "file": "scr_lib.c",
   "function": "scr_crypto_cshake_param",
   "message": "A digest option with NUL bytes in a view other than a Buffer has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_unsupported",
+  "message": "Mac members other than update() and final() have no lowering on an 'unknown' value; cast the value to Mac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_method_call",
+  "message": "Mac methods called with a receiver other than their own Mac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_new_dyn",
+  "message": "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()",
   "code": "SC2020"
  },
  {
@@ -1558,12 +1582,6 @@
   "function": "nh_receiver",
   "message": "scriptc: %s needs a Node island value",
   "code": "SC8010"
- },
- {
-  "file": "scr_perf.c",
-  "function": "scr_perf_get_mark",
-  "message": "performance.measure with the '%.*s' Node timing milestone is not supported yet",
-  "code": "SC2020"
  },
  {
   "file": "scr_pki.c",

@@ -7,9 +7,9 @@
  * - Symbol makes a symbol whose description is its argument's ToString, or
  *   one without a description when the argument is undefined.
  * - eval throws the EvalError a direct call throws (code-generation.ts).
- * - escape, unescape, WeakRef and AsyncDisposableStack have no lowering:
- *   their values have Node's name and length and throw SC2020 when called
- *   or constructed, as their direct uses refuse. */
+ * - escape, unescape and AsyncDisposableStack have no lowering: their
+ *   values have Node's name and length and throw SC2020 when called or
+ *   constructed, as their direct uses refuse. */
 import {
   BOOL,
   DYN,
@@ -32,12 +32,7 @@ import { globalFunctionFenceValue } from "./builtin-function-fences.js";
  * through this file (the others a JavaScript source reads are answered by
  * the same builder at the identifier and member reads). Node's length for
  * each comes from the census of the pinned Node (node-values.ts). */
-const UNLOWERED: ReadonlySet<string> = new Set([
-  "escape",
-  "unescape",
-  "WeakRef",
-  "AsyncDisposableStack",
-]);
+const UNLOWERED: ReadonlySet<string> = new Set(["escape", "unescape", "AsyncDisposableStack"]);
 
 /** Whether `name` is a global without a lowering, whose value throws the
  * fence. TypeScript sources keep the compile-time refusal for these. */

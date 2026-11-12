@@ -699,6 +699,10 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   // a value.
   "weakMap.new",
   "weakSet.new",
+  // A WeakRef keeps its target and answers it from deref: the target gets a
+  // reference count, but no property.
+  "weakRef.new",
+  "weakRef.is",
   "worker.new",
 ]);
 /** Runtime helpers that do nothing with their dynamic arguments but call

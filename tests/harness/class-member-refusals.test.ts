@@ -52,7 +52,7 @@ test("a refused method reached through an untyped value throws its refusal", asy
   const { stdout, stderr, code } = await run(`${attempt}
 class Store {
   count = 0;
-  watch(ref: WeakRef<object>): number { return ref.deref() === undefined ? 0 : 1; }
+  watch(ref: BigInt64Array<ArrayBuffer>): number { return ref.length === 0 ? 0 : 1; }
   add(): number { return ++this.count; }
 }
 const store = new Store();
@@ -65,8 +65,8 @@ console.log(store.count);
 `);
   expect(lines(stdout)).toEqual([
     "1 function true 2",
-    "call threw 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
-    "detached threw 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
+    "call threw 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
+    "detached threw 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
     "2",
     "",
   ]);
@@ -116,7 +116,7 @@ class Cell {
 }
 class Holder {
   n = 1;
-  get held(): WeakRef<object> { throw new Error("never"); }
+  get held(): BigInt64Array<ArrayBuffer> { throw new Error("never"); }
 }
 const cell: any = new Cell();
 attempt("read", () => cell.v);
@@ -128,7 +128,7 @@ console.log(holder.n);
   expect(lines(stdout)).toEqual([
     "read 1",
     "write threw getter/setter pairs with different types (the property 'v' must have one type) are not supported yet [SC1090] SC1090",
-    "held threw 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
+    "held threw 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
     "1",
     "",
   ]);

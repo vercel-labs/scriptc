@@ -2,7 +2,8 @@
  * (execa's mixin assigns `spawned.kill = ...` and defines then/catch/finally
  * with Reflect.defineProperty, and its callers await the child as a
  * thenable), a Date, RegExp, Map, Set, WeakMap, WeakSet, ArrayBuffer,
- * SharedArrayBuffer or FinalizationRegistry (`d = new Date(); d.tag = 1`).
+ * SharedArrayBuffer, FinalizationRegistry or WeakRef (`d = new Date();
+ * d.tag = 1`).
  *
  * The runtime keeps such properties in a side table per handle
  * (scr_dyn_handle_props.c). Only programs that can add one link it: a
@@ -295,6 +296,7 @@ const HANDLE_CLASSES: ReadonlySet<string> = new Set([
   "ArrayBuffer",
   "SharedArrayBuffer",
   "FinalizationRegistry",
+  "WeakRef",
 ]);
 
 /** Visits the file's nodes outermost first, iteratively: these censuses
@@ -621,8 +623,8 @@ export function handlePropertyScanRoots(sourceFiles: readonly ts.SourceFile[]): 
 }
 
 /** The typed handle kinds a JavaScript program can hold (Date, ArrayBuffer,
- * WeakMap, WeakSet and FinalizationRegistry are already checked-dynamic
- * values there). */
+ * WeakMap, WeakSet, FinalizationRegistry and WeakRef are already
+ * checked-dynamic values there). */
 export const TYPED_HANDLE_KINDS: ReadonlySet<string> = new Set(["date", "regex", "map", "set"]);
 
 /** Whether the program has a JavaScript implementation file: only such a

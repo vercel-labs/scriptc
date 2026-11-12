@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "nodeVersion": "24.22.1",
+  "compilerVersion": "0.4.12",
+  "refusals": [
+    {
+      "binding": { "module": "node:vm", "access": "import" },
+      "code": "SC1010",
+      "message": "the 'node:vm' module (it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it) is not supported yet",
+      "layer": "load"
+    },
+    {
+      "binding": { "module": "node:inspector", "access": "import" },
+      "code": "SC1010",
+      "message": "the 'node:inspector' module (it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect) is not supported yet",
+      "layer": "load"
+    },
+    {
+      "binding": { "module": "node:sqlite", "access": "import" },
+      "code": "SC1010",
+      "message": "the 'node:sqlite' module (it wraps the SQLite library bundled into the node executable, and scriptc binaries bundle no SQLite engine) is not supported yet",
+      "layer": "load"
+    },
+    {
+      "binding": { "module": "domain", "access": "import" },
+      "code": "SC1010",
+      "message": "the 'domain' module (deprecated in Node and slated for removal; its implicit error interception hooks every async callback at engine level, which is not modeled) is not supported yet",
+      "layer": "load"
+    },
+    {
+      "binding": { "module": "_http_agent", "access": "import" },
+      "code": "SC1010",
+      "message": "the '_http_agent' module (a Node-internal module: it exposes Node's own implementation objects, which the scriptc runtime does not replicate) is not supported yet",
+      "layer": "load"
+    },
+    {
+      "binding": { "module": "node:repl", "access": "import" },
+      "code": "SC1010",
+      "message": "the 'node:repl' module is not supported yet",
+      "layer": "load"
+    }
+  ]
+}

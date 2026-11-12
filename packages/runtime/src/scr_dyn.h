@@ -1336,6 +1336,11 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
 ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The same answer for a program's non-constant-key read of an ordinary
+ * object (the backend's keyed-read helper), through the dyn-invoke unit's
+ * table when the program links it (scr_json.c). Takes `read`; +1, or NULL
+ * with the exception pending. The runtime's own reads do not call it. */
+ScrDyn *scr_dyn_computed_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
 /* The member `key` read on Object.prototype itself, or NULL for any other
  * receiver (scr_dyn_invoke.c). */
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
@@ -2853,6 +2858,10 @@ typedef struct ScrDynTypedRefRecipe {
   int view;
   const void *ops;
 } ScrDynTypedRefRecipe;
+/* The live checked-dynamic view of `ptr` boxed with `recipe` (+1): the same
+ * interned capsule eager boxing of that value answers, with the recipe's
+ * array, record or class view bound. ptr is BORROWED. */
+ScrDyn *scr_dyn_typed_box(void *ptr, const ScrDynTypedRefRecipe *recipe);
 /* A class instance as the window's receiver, boxed with its recipe only when
  * read. ptr is BORROWED: the caller holds the instance across the window. */
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe);

@@ -6363,7 +6363,26 @@ export class LlDyn {
       B.line(
         `${r} = call ptr @scr_dyn_obj_read(ptr %d, ptr ${kParts.data}, ${host.sizeType} ${kParts.len})`,
       );
+      // A program's non-constant key (`o[k]`, a Proxy get trap forwarding
+      // `t[k]`) that misses answers the Object.prototype member the object
+      // inherits, as a constant-key read does. Constant keys on an object
+      // read through the site cache instead and never reach this block, and
+      // only an undefined read pays the runtime call.
+      const lRead = B.newLabel("kg.ob.read");
+      const lInherit = B.newLabel("kg.ob.inherit");
+      const lMiss = B.newLabel("kg.ob.miss");
+      const present = B.tmp();
+      B.line(`${present} = icmp ne ptr ${r}, null`);
+      B.condBr(present, lRead, lMiss);
+      B.startBlock(lRead);
+      B.condBr(this.isUndefined(B, r), lInherit, lMiss);
+      B.startBlock(lMiss);
       B.terminate(`ret ptr ${r}`);
+      B.startBlock(lInherit);
+      host.declare(`declare ptr @scr_dyn_computed_inherited_read(ptr, ptr, ptr)`);
+      const inherited = B.tmp();
+      B.line(`${inherited} = call ptr @scr_dyn_computed_inherited_read(ptr %d, ptr %k, ptr ${r})`);
+      B.terminate(`ret ptr ${inherited}`);
       B.startBlock(lNext);
     }
     // HANDLE: the tag's modeled properties through the installed ops.

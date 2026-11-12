@@ -156,8 +156,6 @@ function linksDynPromiseUnit(opts: CcOptions): boolean {
   return (
     opts.dynAsync === true ||
     opts.dynInvoke === true ||
-    // The invoke unit a native Proxy links calls the unit's promise adapter.
-    opts.nativeProxy === true ||
     opts.workers === true ||
     opts.dc === true ||
     opts.fileHandle === true ||
@@ -250,12 +248,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
-    (u) =>
-      u.opts.dynInvoke ||
-      u.opts.nativeProxy === true ||
-      u.opts.workers ||
-      u.nativeFetch ||
-      u.opts.nodeIsland === true,
+    (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
     "scr_dyn_invoke.c",
   ),
   // Buffer.prototype methods called on checked-dynamic values.

@@ -93,8 +93,9 @@ ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
 #endif
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
- * Function.prototype members a computed key or a Proxy's forwarded Get
- * reads. A program without the unit answers the undefined read. */
+ * Function.prototype members a program's computed key or a trap-less
+ * Proxy's forwarded Get reads. A program without the unit answers the
+ * undefined read. */
 ScrDyn *(*scr_dyn_inherited_member_hook)(const ScrDyn *d, const ScrStr *key) = NULL;
 
 /* The inherited member `key` of `d`, +1, or NULL when the program links no
@@ -4021,23 +4022,30 @@ static ScrDyn *scr_dyn_proxy_get_receiver(const ScrDyn *proxy, const ScrStr *key
   if (scr_exc_pending()) return NULL;
   if (!trap) {
     ScrDyn *target = proxy->v.proxy.target;
+    /* A typed record target forwards to its materialized object, which
+     * inherits Object.prototype the same way. */
+    ScrDyn *view = NULL;
     if (target->kind == SCR_DYN_TYPED_REF) {
-      ScrDyn *view = scr_dyn_typed_ref_materialize(target);
-      ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_obj_read_receiver(view, key->data, key->len, receiver);
-      scr_dyn_release(view);
-      return result;
+      view = scr_dyn_typed_ref_materialize(target);
+      if (scr_exc_pending()) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+      target = view;
     }
+    ScrDyn *result;
     if (!scr_dyn_obj_get(target, key->data, key->len) && scr_dyn_object_proto_key(target, key)) {
       /* A Proxy without a get trap forwards Get, so an Object.prototype
        * member (toString, valueOf, hasOwnProperty, ...) answers the builtin
        * function the target's own read answers; String() of a trapless
        * Proxy walks exactly this path. */
-      ScrDyn *inherited = scr_dyn_inherited_lookup(target, key);
-      if (inherited || scr_exc_pending()) return inherited;
-      scr_dyn_proxy_unsupported("inherited Object.prototype member reads");
-      return NULL;
+      result = scr_dyn_inherited_lookup(target, key);
+      if (!result && !scr_exc_pending()) scr_dyn_proxy_unsupported("inherited Object.prototype member reads");
+    } else {
+      result = scr_dyn_obj_read_receiver(target, key->data, key->len, receiver);
     }
-    return scr_dyn_obj_read_receiver(target, key->data, key->len, receiver);
+    scr_dyn_release(view);
+    return result;
   }
   ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
   ScrDyn *args[] = { proxy->v.proxy.target, property, (ScrDyn *)receiver };
@@ -8950,6 +8958,26 @@ void scr_dyn_this_push_dyn_once(const ScrDyn *v) {
   scr_dyn_this_stack[scr_dyn_this_n - 1].once = true;
 }
 
+ScrDyn *scr_dyn_typed_box(void *ptr, const ScrDynTypedRefRecipe *r) {
+  ScrDyn *d = r->kind == 2
+      ? scr_dyn_new_typed_ref_traced(ptr, r->retain, r->release, r->type_key, r->type_key_len,
+                                     r->materialize, r->commit)
+      : r->kind == 1
+          ? scr_dyn_new_typed_ref_observed(ptr, r->retain, r->release, r->type_key,
+                                           r->type_key_len, r->materialize, r->commit)
+          : scr_dyn_new_typed_ref(ptr, r->retain, r->release, r->type_key, r->type_key_len,
+                                  r->materialize, r->commit);
+  if (r->view == 1)
+    scr_dyn_typed_ref_bind_array(d, (const ScrDynTypedArrayOps *)r->ops);
+  else if (r->view == 2)
+    scr_dyn_typed_ref_bind_record(d, (const ScrDynTypedRecordOps *)r->ops);
+  else if (r->view == 3)
+    scr_dyn_typed_ref_bind_class(d, (const ScrDynTypedClassOps *)r->ops);
+  else if (r->view == 4)
+    scr_dyn_typed_ref_bind_bag_class(d, (const ScrDynTypedBagClassOps *)r->ops);
+  return d;
+}
+
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
   ScrDynThisEnt *e = scr_dyn_this_grow();
   e->ptr = ptr;
@@ -8970,25 +8998,7 @@ void scr_dyn_this_pop(void) {
 ScrDyn *scr_dyn_this_get(void) {
   if (scr_dyn_this_n > 0) {
     ScrDynThisEnt *e = &scr_dyn_this_stack[scr_dyn_this_n - 1];
-    if (!e->dv && e->recipe) {
-      const ScrDynTypedRefRecipe *r = e->recipe;
-      e->dv = r->kind == 2
-          ? scr_dyn_new_typed_ref_traced(e->ptr, r->retain, r->release, r->type_key,
-                                         r->type_key_len, r->materialize, r->commit)
-          : r->kind == 1
-              ? scr_dyn_new_typed_ref_observed(e->ptr, r->retain, r->release, r->type_key,
-                                               r->type_key_len, r->materialize, r->commit)
-              : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
-                                      r->type_key_len, r->materialize, r->commit);
-      if (r->view == 1)
-        scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops);
-      else if (r->view == 2)
-        scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
-      else if (r->view == 3)
-        scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
-      else if (r->view == 4)
-        scr_dyn_typed_ref_bind_bag_class(e->dv, (const ScrDynTypedBagClassOps *)r->ops);
-    }
+    if (!e->dv && e->recipe) e->dv = scr_dyn_typed_box(e->ptr, e->recipe);
     if (e->once) {
       ScrDyn *taken = e->dv ? e->dv : scr_dyn_retain(scr_dyn_undefined());
       e->dv = NULL;
@@ -19209,26 +19219,6 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
   if (scr_dyn_proto_accessor(receiver, key, key_len))
     return scr_dyn_get_prototype((ScrDyn *)receiver);
 #endif
-  /* An ordinary object inherits Object.prototype, so a COMPUTED read of a
-   * name its own chain does not define answers the builtin member, exactly
-   * as the same name read statically does: `o["toString"]` is the function
-   * `o.toString` is, and a Proxy's get trap forwarding `t[k]` answers what
-   * Node's answers. The switch dispatches on the first byte of the names
-   * Object.prototype owns, so an unrelated miss pays two comparisons and
-   * no allocation. */
-  if (d->kind == SCR_DYN_OBJ && key_len >= 7 && key_len <= 20) {
-    switch (key[0]) {
-    case 'c': case '_': case 'h': case 'i': case 'p': case 't': case 'v': {
-      ScrStr *name = scr_str_new(key, key_len);
-      if (!name) return NULL;
-      ScrDyn *member = scr_dyn_inherited_lookup(d, name);
-      scr_str_release(name);
-      if (member || scr_exc_pending()) return member;
-      break;
-    }
-    default: break;
-    }
-  }
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -19313,6 +19303,34 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
 ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
                                        const ScrDyn *receiver) {
   return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
+}
+
+/* A program's computed-key read of an ordinary object (`o[k]`, a Proxy get
+ * trap forwarding `t[k]`) whose ordinary read missed: an Object.prototype
+ * name the object's own chain does not define answers the builtin member,
+ * as the same name read with a constant key does. Only the backend's keyed
+ * read of a program's non-constant key calls this; the runtime's own reads
+ * keep the ordinary read's undefined. The table is the dyn-invoke unit's, so a
+ * program that does not link it keeps the undefined read. Takes `read`
+ * (+1, NULL when the read threw); +1. */
+ScrDyn *scr_dyn_computed_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read) {
+  if (!read || read->kind != SCR_DYN_UNDEF || d->kind != SCR_DYN_OBJ) return read;
+  /* Object.prototype's names are 7 to 20 bytes long and start with one of
+   * these letters: any other miss returns without a lookup. */
+  if (key->len < 7 || key->len > 20) return read;
+  switch (key->data[0]) {
+  case 'c': case '_': case 'h': case 'i': case 'p': case 't': case 'v': break;
+  default: return read;
+  }
+  ScrDyn *member = scr_dyn_inherited_lookup(d, key);
+  if (scr_exc_pending()) {
+    scr_dyn_release(member);
+    scr_dyn_release(read);
+    return NULL;
+  }
+  if (!member) return read;
+  scr_dyn_release(read);
+  return member;
 }
 
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of

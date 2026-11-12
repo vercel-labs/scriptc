@@ -362,6 +362,9 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
   "transform.",
   "writable.",
   "zlib.stream",
+  // The `info: true` one-shots answer the stream the call used: the
+  // fabricated engine is a runtime Transform (scr_zlib_stream.c).
+  "zlib.info",
 ];
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
@@ -839,6 +842,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.cursor",
   "rl.cursorPos",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.history",
   "rl.isPromises",
   "rl.isTerminal",
@@ -1772,13 +1776,6 @@ const RUNTIME_FEATURE_RULES = {
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
-  /** A program that creates a native Proxy (dyn.proxyNew): links the
-   * dyn-invoke unit, whose Object.prototype table answers the members a
-   * computed key or a trap-less Proxy's forwarded Get reads as functions
-   * (scr_dyn_inherited_member_hook), and the checked-dynamic promise unit
-   * that the invoke unit's promises settle through. Without them, those
-   * reads stay undefined exactly as before. */
-  nativeProxy: rule({ fns: ["dyn.proxyNew"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -1787,6 +1784,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      // A native Proxy converts and forwards Get through the invoke unit's
+      // Object.prototype table (scr_dyn_inherited_member_hook).
+      "dyn.proxyNew",
       "buffer.prototypeMember",
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
@@ -2528,7 +2528,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
-    nativeProxy: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,

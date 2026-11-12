@@ -66,7 +66,6 @@ export function executableLinkFeatures(
     ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
-    ...(features.nativeProxy ? { nativeProxy: true } : {}),
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,

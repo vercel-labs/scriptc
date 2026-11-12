@@ -2595,11 +2595,11 @@ ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read)
   return member;
 }
 
-/* Program startup: scr_json.c answers a computed read of an inherited name
- * (and a trap-less Proxy's forwarded Get) through this table. A program
- * that creates a native Proxy links this unit for it (nativeProxy), so the
- * table is in place before %main; every other program keeps the undefined
- * read the base unit answers. */
+/* Program startup: scr_json.c answers a program's computed read of an
+ * inherited name (and a trap-less Proxy's forwarded Get) through this
+ * table. A program that creates a native Proxy links this unit (dynInvoke),
+ * so the table is in place before %main; a program without the unit keeps
+ * the undefined read the base unit answers. */
 __attribute__((constructor)) static void dyn_inherited_member_hook_install(void) {
   scr_dyn_inherited_member_hook = scr_dyn_inherited_member;
 }

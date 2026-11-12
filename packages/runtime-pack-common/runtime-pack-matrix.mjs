@@ -102,11 +102,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
-  // A program that creates a native Proxy links the invoke unit for its
-  // inherited-member table: scr_json.c answers a computed key on a plain
-  // object, and a trap-less Proxy's forwarded Get, with the Object.prototype
-  // members this unit builds (scr_dyn_inherited_member_hook).
-  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland", "nativeProxy")],
+  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
@@ -143,17 +139,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any(
-      "dynAsync",
-      "dynInvoke",
-      "dc",
-      "fileHandle",
-      "nativeFetch",
-      "nodeIsland",
-      "nodeTest",
-      // The invoke unit a native Proxy links calls this unit's promise adapter.
-      "nativeProxy",
-    ),
+    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
   ],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its

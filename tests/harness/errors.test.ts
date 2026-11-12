@@ -1233,7 +1233,7 @@ console.log("wrap: done");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("wrap: done\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: module namespace objects as values.*\[SC1090 at .*split-table-reexport-as-value\.cjs:3\]\n$/,
+      /^Uncaught Error: console\.log of 'module namespace .*lib\.cjs'' values.*\[SC1090 at .*split-table-reexport-as-value\.cjs:3\]\n$/,
     );
   });
 

@@ -17057,11 +17057,15 @@ export class Lowerer {
     // extraction rebuilds the declared layout, validating each key and value
     // exactly like every other dyn→static edge. The copy is the entry order
     // Node's map has; the destination never shares the source's identity
-    // because the two layouts could not.
+    // because the two layouts could not. Only a checked-dynamic slot
+    // converts: a slot with another static layout (`new Set<number>()` cast
+    // to a `Set<string>` view) holds values the declared layout cannot
+    // describe, and keeps its refusal.
     if (
       (expected.kind === "map" || expected.kind === "set") &&
       expr.type.kind === expected.kind &&
       !typeEquals(expected, expr.type) &&
+      dynSlotsWiden(expr.type, expected) &&
       this.dynConvertible(expr.type) &&
       canDynCheckTo(
         expected,
@@ -24200,4 +24204,15 @@ function narrowedIntoClass(
     if (ts.isUnreadableConstituentsPanic(e)) return false;
     throw e;
   }
+}
+
+/** Whether every key, value or element slot where a Map or Set differs from
+ * the expected one is checked-dynamic in the source, so the checked
+ * extraction can rebuild the expected layout from the entries it holds. */
+function dynSlotsWiden(from: IrType, to: IrType): boolean {
+  const widens = (a: IrType, b: IrType): boolean => a.kind === "dyn" || typeEquals(a, b);
+  if (from.kind === "map" && to.kind === "map")
+    return widens(from.key, to.key) && widens(from.value, to.value);
+  if (from.kind === "set" && to.kind === "set") return widens(from.elem, to.elem);
+  return false;
 }

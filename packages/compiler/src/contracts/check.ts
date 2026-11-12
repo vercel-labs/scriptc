@@ -39,6 +39,7 @@ import type {
   SrcLoc,
 } from "../ir/ir.js";
 import { isRefCounted, typeKey } from "../ir/ir.js";
+import { ALWAYS_THROW_LIB_FNS } from "../ir/builtin-effects.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import {
   analyzeIntegerRanges,
@@ -118,6 +119,16 @@ function arrayElement(type: IrType): IrType | undefined {
  * elements are all this kind shares no mutable storage with its source. */
 function cannotAlias(type: IrType): boolean {
   return !isRefCounted(type) || type.kind === "string";
+}
+
+/** Whether reading an element of an Immutable array can yield an Immutable
+ * value. Only an element whose type can reference an object can be one: a
+ * number, string or boolean element of an Immutable array carries nothing
+ * writable, so an ordinary indexed read of a `number[]` yields a plain value
+ * (even though the read's `number | undefined` result is a refcounted box). */
+function immutableElement(type: IrType, arrayDerived: boolean): boolean {
+  const elem = arrayElement(type);
+  return arrayDerived && elem !== undefined && !cannotAlias(elem);
 }
 
 /** Visit the `varRef`s that a stored value carries into the container
@@ -1913,7 +1924,7 @@ class ImmutableContracts {
               return;
             }
             case "libCall":
-              if (!LIB_READS.test(e.fn))
+              if (!LIB_READS.test(e.fn) && !ALWAYS_THROW_LIB_FNS.has(e.fn))
                 for (const a of e.args) escape(a, a.loc, `the library call ${e.fn}`);
               return;
             case "callValue":
@@ -2025,7 +2036,10 @@ class ImmutableContracts {
           ) || derived(e.obj)
         );
       case "arrayGet":
-        return this.mayHold.has(`e:${typeKey(e.arr.type)}`) || derived(e.arr);
+        return (
+          this.mayHold.has(`e:${typeKey(e.arr.type)}`) ||
+          immutableElement(e.arr.type, derived(e.arr))
+        );
       case "mapIntrinsic":
         return (
           MAP_ELEMENT_READS.has(e.method) &&
@@ -2045,7 +2059,9 @@ class ImmutableContracts {
         // when the array passed here may hold Immutable elements.
         const arg = e.args[0];
         if (arg !== undefined && e.callee.startsWith("%arr.idxOr."))
-          return this.mayHold.has(`e:${typeKey(arg.type)}`) || derived(arg);
+          return (
+            this.mayHold.has(`e:${typeKey(arg.type)}`) || immutableElement(arg.type, derived(arg))
+          );
         return this.mayHold.has(`r:${e.callee}`);
       }
       case "virtualCall":

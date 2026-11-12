@@ -2380,6 +2380,40 @@ console.log(remove(Base, "extra"), added.extra, Base.count, Reflect.get(Base, "c
     expect(r.stdout).toBe("true\ntrue 1\ntrue undefined 1 1\n");
   });
 
+  test("Object.assign and Object.defineProperties onto a reflected static field are refused", async () => {
+    // Both act on the source's own enumerable keys. A key naming a static
+    // field the table lists would change the table (its value, or its
+    // writability) while the class's compiled code kept its own storage, so
+    // the call is refused before anything is copied or defined. Other keys
+    // still copy and define.
+    const r = await compileAndRun(
+      "static-assign-define-many",
+      `class Base {
+  static count = 1;
+}
+const C: any = Base;
+for (const attempt of [
+  () => Object.assign(C, { other: 9 }, { count: 2 }),
+  () => Object.defineProperties(C, { count: { value: 9 } }),
+  () => Object.defineProperties(C, { count: { writable: false } }),
+]) {
+  try {
+    attempt();
+    console.log("changed");
+  } catch (error) {
+    console.log((error as Error).message.includes("static field 'count'"));
+  }
+}
+Object.assign(C, { other: 9 });
+Object.defineProperties(C, { more: { value: 3, enumerable: true } });
+C.count = 5;
+console.log(Base.count, Reflect.get(Base, "count"), C.other, C.more);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n5 5 9 3\n");
+  });
+
   test("a public static named like a private one never publishes the private value", async () => {
     // \`static ["#secret"]\` is a public key, distinct from the private
     // \`#secret\`. The class keeps its reflection refusal instead of listing

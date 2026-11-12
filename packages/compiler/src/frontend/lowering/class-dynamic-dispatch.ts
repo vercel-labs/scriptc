@@ -1685,6 +1685,11 @@ const STATIC_DELETE_CALLS = new Set<IrLibFn>([
   "dyn.reflectDeleteProperty",
 ]);
 
+/** The copies and definitions that can write a listed static field from a
+ * source object: each runs a static source guard first once a table is
+ * installed. */
+const STATIC_SOURCE_CALLS = new Set<IrLibFn>(["dyn.assign", "dyn.assignAll", "dyn.defineProps"]);
+
 /** A native static write the table sync already rewrote: its first
  * statement declares the sync's temporary. */
 function isStaticTableSync(node: IrStmt): boolean {
@@ -2064,7 +2069,110 @@ export class ClassDynamicDispatch {
           (field, owner) =>
             `deleting the static field '${field}' of '${owner}' is not supported yet (the class's compiled code keeps reading the field's own storage)`,
         ) || changed;
+    // Object.assign and Object.defineProperties act on the source's (the
+    // descriptor map's) own enumerable keys.
+    const sourceHas = (field: string, loc: SrcLoc): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.propertyIsEnumerable",
+      args: [varRef("source", DYN, loc), { kind: "strLit", value: field, type: STRING, loc }],
+      type: BOOL,
+      loc,
+    });
+    for (const [fn, guard] of this.staticSourceGuards)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          guard,
+          (field, owner) =>
+            `${fn === "dyn.defineProps" ? "redefining" : "assigning"} the static field '${field}' of '${owner}' with '${fn === "dyn.defineProps" ? "Object.defineProperties" : "Object.assign"}' is not supported yet (the class's compiled code reads the field's own storage)`,
+          sourceHas,
+        ) || changed;
     return changed;
+  }
+
+  /** Guards that run ahead of Object.assign and Object.defineProperties once a
+   * static table is installed (parameters `target` and `source`): a source
+   * that would write or redefine a listed static field is refused there. */
+  private readonly staticSourceGuards = new Map<IrLibFn, IrFunction>();
+
+  /** Runs the Object.assign guard over each source of a run-time list. */
+  private staticSourceList: IrFunction | null = null;
+
+  private staticSourceListGuard(lowerer: Lowerer, guard: string, loc: SrcLoc): IrFunction {
+    if (this.staticSourceList) return this.staticSourceList;
+    const listType: IrType = { kind: "array", elem: DYN };
+    this.staticSourceList = {
+      name: "%dyn.class.staticAssignAll",
+      params: [
+        { localId: "target", name: "target", type: DYN },
+        { localId: "sources", name: "sources", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "target", name: "target", type: DYN, mutable: false },
+        { id: "sources", name: "sources", type: DYN, mutable: false },
+        { id: "list", name: "list", type: listType, mutable: false },
+        { id: "source", name: "source", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "list",
+          init: { kind: "dynCheck", value: varRef("sources", DYN, loc), type: listType, loc },
+          loc,
+        },
+        {
+          kind: "forOf",
+          localId: "source",
+          iterable: varRef("list", listType, loc),
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: guard,
+                args: [varRef("target", DYN, loc), varRef("source", DYN, loc)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    };
+    this.generated.add(this.staticSourceList);
+    lowerer.liftedFns.push(this.staticSourceList);
+    return this.staticSourceList;
+  }
+
+  private staticSourceGuard(lowerer: Lowerer, call: IrLibFn, loc: SrcLoc): IrFunction {
+    // Object.assign's two forms share one guard.
+    const fn: IrLibFn = call === "dyn.assignAll" ? "dyn.assign" : call;
+    const known = this.staticSourceGuards.get(fn);
+    if (known) return known;
+    const params = ["target", "source"].map((name) => ({ localId: name, name, type: DYN }));
+    const guard: IrFunction = {
+      name:
+        fn === "dyn.defineProps" ? "%dyn.class.staticDefineProperties" : "%dyn.class.staticAssign",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.staticSourceGuards.set(fn, guard);
+    this.generated.add(guard);
+    lowerer.liftedFns.push(guard);
+    return guard;
   }
 
   /** Refuses, at the head of `helper` (parameters `target` and `key`), an
@@ -2074,12 +2182,21 @@ export class ClassDynamicDispatch {
     lowerer: Lowerer,
     helper: IrFunction,
     message: (field: string, owner: string) => string,
+    matches?: (field: string, loc: SrcLoc) => IrExpr,
   ): boolean {
     if (this.staticTablesInstalled.size === 0) return false;
     let changed = false;
     const loc = helper.loc;
     const target = varRef("target", DYN, loc);
     const key = varRef("key", DYN, loc);
+    const keyIs = (field: string, at: SrcLoc): IrExpr => ({
+      kind: "dynScalarEq",
+      left: key,
+      right: lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc: at }, DYN),
+      type: BOOL,
+      loc: at,
+    });
+    const match = matches ?? keyIs;
     for (const keyClass of this.boxedConstructors)
       for (const actual of [keyClass, ...this.staticTablesInstalled]) {
         if (actual !== keyClass && !lowerer.isSubclassOf(actual, keyClass)) continue;
@@ -2098,16 +2215,7 @@ export class ClassDynamicDispatch {
               cond: {
                 kind: "logical",
                 op: "&&",
-                left: {
-                  kind: "dynScalarEq",
-                  left: key,
-                  right: lowerer.coerceToExpected(
-                    { kind: "strLit", value: field.name, type: STRING, loc },
-                    DYN,
-                  ),
-                  type: BOOL,
-                  loc,
-                },
+                left: match(field.name, loc),
                 right: {
                   kind: "logical",
                   op: "&&",
@@ -2220,7 +2328,11 @@ export class ClassDynamicDispatch {
           if (found) return false;
           if (isStaticTableSyncExpr(node)) return true;
           if (node.kind === "incDec" && globals.has(node.localId)) found = true;
-          if (node.kind === "libCall" && STATIC_DELETE_CALLS.has(node.fn)) found = true;
+          if (
+            node.kind === "libCall" &&
+            (STATIC_DELETE_CALLS.has(node.fn) || STATIC_SOURCE_CALLS.has(node.fn))
+          )
+            found = true;
           return !found && everyExprChild(node, expr, stmt);
         };
         body.every(stmt);
@@ -2274,6 +2386,73 @@ export class ClassDynamicDispatch {
       const expr = (node: IrExpr): IrExpr => {
         if (isStaticTableSyncExpr(node)) return node;
         const mapped = mapExprChildren(node, expr, stmt);
+        if (mapped.kind === "libCall" && STATIC_SOURCE_CALLS.has(mapped.fn)) {
+          // The target and every source, evaluated in order, pass the guard
+          // before the copy or the definition runs.
+          const loc = mapped.loc;
+          const [target, sources] = mapped.args;
+          const guard = this.staticSourceGuard(lowerer, mapped.fn, loc).name;
+          const targetLocal = temp(target!.type);
+          const targetRead = (): IrExpr =>
+            lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN);
+          const stmts: IrStmt[] = [{ kind: "varDecl", localId: targetLocal, init: target!, loc }];
+          const check = (source: IrExpr): IrStmt => ({
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: guard,
+              args: [targetRead(), lowerer.coerceToExpected(source, DYN)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          });
+          let sourcesArg: IrExpr;
+          if (mapped.fn === "dyn.assignAll" && sources!.kind === "dynArrLit") {
+            const elems = sources!.elems.map((elem) => {
+              const local = temp(elem.type);
+              stmts.push({ kind: "varDecl", localId: local, init: elem, loc });
+              return varRef(local, elem.type, loc);
+            });
+            for (const elem of elems) stmts.push(check(elem));
+            sourcesArg = { ...sources!, elems };
+          } else if (mapped.fn === "dyn.assignAll") {
+            // A source list built at run time (Object.assign as a value,
+            // with its rest array): each source passes the guard in turn.
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push({
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: this.staticSourceListGuard(lowerer, guard, loc).name,
+                args: [
+                  targetRead(),
+                  lowerer.coerceToExpected(varRef(local, sources!.type, loc), DYN),
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            });
+            sourcesArg = varRef(local, sources!.type, loc);
+          } else {
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push(check(varRef(local, sources!.type, loc)));
+            sourcesArg = varRef(local, sources!.type, loc);
+          }
+          return {
+            kind: "seqExpr",
+            stmts,
+            result: {
+              ...mapped,
+              args: [varRef(targetLocal, target!.type, loc), sourcesArg, ...mapped.args.slice(2)],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
         if (mapped.kind === "libCall" && STATIC_DELETE_CALLS.has(mapped.fn)) {
           // The delete's target and key, evaluated once, pass the guard first.
           const loc = mapped.loc;

@@ -1682,6 +1682,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // canonical signatures for manifest projection and fallback dispatch.
       createHash: { fn: "crypto.hashNew", params: [STRING], result: CRYPTOHASH_T },
       createHmac: { fn: "crypto.hmacNewStr", params: [STRING, STRING], result: CRYPTOHMAC_T },
+      // createMac is special-cased in lowerCryptoModuleCall (any-value
+      // key and options); this row carries its canonical signature.
+      createMac: { fn: "crypto.macNewDyn", params: [DYN, DYN, DYN], result: DYN },
+      secureHeapUsed: { fn: "crypto.secureHeapUsed", params: [], result: DYN },
       hash: { fn: "crypto.hashDigestStr", params: [STRING, STRING, STRING], result: STRING },
       timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
       randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },

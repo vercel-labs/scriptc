@@ -521,6 +521,19 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // undefined to that branch rather than reject it at the ABI boundary.
     if (acceptsUndefined) type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
   }
+  if (
+    type.kind === "func" &&
+    !nativeExecutor &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !lowerer.bareUndefinedArmedUnion(type)
+  ) {
+    // JavaScript callers may leave any argument out, whatever its
+    // documentation says: the callee then reads undefined. A callable
+    // parameter's slot must be able to hold it, so the parameter takes the
+    // undefined arm its JSDoc type otherwise lacks (a body that calls the
+    // callback reaches the same "not a function" answer Node gives).
+    type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
+  }
   if (type.kind === "void") {
     return { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }

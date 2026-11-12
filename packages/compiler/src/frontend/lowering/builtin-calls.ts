@@ -1,6 +1,9 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
-import { lowerMonitorEventLoopDelayCall } from "./builtins/performance.js";
+import {
+  lowerEventLoopUtilizationCall,
+  lowerMonitorEventLoopDelayCall,
+} from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
@@ -175,6 +178,9 @@ export function lowerBuiltinCall(
   }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
+    return lowerEventLoopUtilizationCall(lowerer, expr);
   }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);

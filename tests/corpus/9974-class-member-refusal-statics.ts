@@ -5,8 +5,8 @@ type Both = { (x: number): number; (x: string): string };
 class Registry {
   static count = 0;
   n = 1;
-  static watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 0 : 1;
+  static watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 0 : 1;
   }
   static bump(): number {
     return ++Registry.count;
@@ -23,8 +23,8 @@ class Child extends Registry {
 class Panel {
   n = 1;
   hook: Both | undefined = undefined;
-  watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 0 : 1;
+  watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 0 : 1;
   }
   inc(): number {
     return ++this.n;

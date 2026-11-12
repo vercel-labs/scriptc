@@ -1707,6 +1707,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "weakMap":
     case "weakSet":
     case "finalizationRegistry":
+    case "weakRef":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":

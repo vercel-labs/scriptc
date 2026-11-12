@@ -263,8 +263,10 @@ typedef enum {
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
+  Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
-  Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */
+  Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -577,8 +579,10 @@ struct ScrDyn {
     ScrStr *str; /* owned */
     ScrBytes *bytes; /* owned (SCR_DYN_BYTES) */
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
-    /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
-    struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
+    /* Callbacks keep the optional symbol unit out of symbol-free binaries.
+     * `registered` marks a `Symbol.for` symbol, which lives in the global
+     * registry and is therefore not a weak target. */
+    struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); bool registered; } symbol;
     /* `len` is the DENSE prefix: items[0…len-1] are the values a direct
      * items[i] read may touch, and every consumer of this payload is
      * written against it. `length` is the array's own length, which
@@ -1868,6 +1872,10 @@ ScrDyn *scr_weak_map_new(ScrDyn *entries);
 ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup);
 bool scr_finalization_registry_is(const ScrDyn *value);
 ScrDyn *scr_weak_set_new(ScrDyn *values);
+/* WeakRef keeps its target alive; deref answers it, as Node answers a
+ * target the collector has not freed. */
+ScrDyn *scr_weak_ref_new(ScrDyn *target);
+bool scr_weak_ref_is(const ScrDyn *value);
 /* Ends this thread's weak-collection entries whose key or collection only
  * the entries' own values keep alive; returns how many. A collector pass
  * runs it by itself as the heap grows. */

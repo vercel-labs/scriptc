@@ -218,7 +218,10 @@ setTimeout(() => {
   w.end();
 }, 120);
 
-// allowHalfOpen duplex
+// allowHalfOpen duplex. The delay leaves the preceding block's nested 5 ms
+// timer a wide margin: a loaded runner can delay a timer by more than the
+// 10 ms that had separated these two blocks, which reorders their lines in
+// Node itself.
 setTimeout(() => {
   const d = new Duplex({
     read() { this.push(null); },
@@ -230,4 +233,4 @@ setTimeout(() => {
   d.on("close", () => log("aho-close"));
   d.resume();
   d.end();
-}, 130);
+}, 250);

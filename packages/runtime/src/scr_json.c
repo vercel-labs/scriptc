@@ -84,6 +84,10 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+/* Set by scr_module_namespace_dyn.c when this thread boxes a module
+ * namespace. Thread-local like the boxes it answers for: a thread that
+ * boxed no namespace has no branded value. */
+SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value) = NULL;
 #ifdef SCR_JS_OBJECT_MODEL
 /* Set by scr_dyn_invoke.c when the object model build links it, so a
  * DataView's `constructor` is the global's own interned value. A program that
@@ -2790,6 +2794,7 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
   d->v.symbol.release = release;
   d->v.symbol.render = render;
   d->v.symbol.description = description;
+  d->v.symbol.registered = false;
   return d;
 }
 
@@ -6431,11 +6436,19 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
+  /* Only a boxed program module namespace has Node's [[Module]] brand; the
+   * call site answers for the namespaces the compiler knows (see
+   * module-namespace-elements.ts). */
+  if (PROBE("isModuleNamespaceObject"))
+    return scr_module_namespace_dyn_is != NULL && scr_module_namespace_dyn_is(value);
   /* Boxed primitives, BigInt64Array, BigUint64Array, CryptoKey and external
-   * values cannot be created here, so no value has these brands. */
+   * values cannot be created here, so no value has these brands. An
+   * arguments object that left its function is the argument list, an array
+   * (arguments-object.ts), so no value here has that brand either. */
   if (PROBE("isNumberObject") || PROBE("isStringObject") || PROBE("isBooleanObject") ||
       PROBE("isBigIntObject") || PROBE("isSymbolObject") || PROBE("isBoxedPrimitive") ||
-      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal"))
+      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal") ||
+      PROBE("isArgumentsObject"))
     return false;
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);
@@ -6828,6 +6841,7 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"WeakRef", SCR_DYNH_WEAK_REF},
     {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
@@ -12200,6 +12214,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY ||
+        d->v.handle.tag == SCR_DYNH_WEAK_REF ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
         d->v.handle.tag == SCR_DYNH_FILE || d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
@@ -23521,6 +23536,103 @@ ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup) {
 
 bool scr_finalization_registry_is(const ScrDyn *value) {
   return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY;
+}
+
+/* WeakRef. A target an object graph reaches only weakly is still reachable
+ * here: a compiled program keeps the target alive, so deref() answers it
+ * forever, which Node allows (the collector is free never to collect).
+ * Unregistered symbols are targets, as Node accepts them; a `Symbol.for`
+ * registry symbol is permanent, so it throws the same TypeError as the other
+ * primitives. */
+typedef struct {
+  size_t rc;
+  ScrDyn *target;
+} ScrWeakRef;
+
+static void *scr_weak_ref_retain(void *ptr) {
+  ((ScrWeakRef *)ptr)->rc++;
+  return ptr;
+}
+
+static void scr_weak_ref_release(void *ptr) {
+  ScrWeakRef *ref = ptr;
+  if (--ref->rc) return;
+  scr_dyn_release(ref->target);
+  free(ref);
+}
+
+static bool scr_weak_ref_target_allowed(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BIGINT:
+    return false;
+  case SCR_DYN_SYMBOL:
+    return !value->v.symbol.registered;
+  default:
+    return true;
+  }
+}
+
+static ScrDyn *scr_weak_ref_invoke(void *ptr, ScrDyn *self, const char *method,
+    ScrDyn *const *args, size_t argc, const char *what) {
+  (void)self; (void)args; (void)argc;
+  if (strcmp(method, "deref") == 0) return scr_dyn_retain(((ScrWeakRef *)ptr)->target);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what ? what : method);
+  scr_jb_puts(&b, " is not a function");
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+  scr_str_release(message);
+  return NULL;
+}
+
+/* A property read answers undefined for names the reference does not have.
+ * `deref` read as a value (`const deref = ref.deref`) is refused, as a
+ * finalization registry's methods are. */
+static ScrDyn *scr_weak_ref_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  if (len == 5 && memcmp(key, "deref", 5) == 0) {
+    static const char message[] = "WeakRef method values have no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  return NULL;
+}
+
+static ScrDyn *scr_weak_ref_view(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+ScrDyn *scr_weak_ref_new(ScrDyn *target) {
+  if (!scr_weak_ref_target_allowed(target)) {
+    static const char message[] = "WeakRef: invalid target";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  static const ScrDynHandleOps ops = {
+    .cls = "WeakRef",
+    .retain = &scr_weak_ref_retain,
+    .release = &scr_weak_ref_release,
+    .invoke = &scr_weak_ref_invoke,
+    .get = &scr_weak_ref_get,
+    .inspect_view = &scr_weak_ref_view,
+    .inspect_view_empty = true,
+    .json_empty_object = true,
+  };
+  scr_dyn_handle_install(SCR_DYNH_WEAK_REF, &ops);
+  ScrWeakRef *ref = calloc(1, sizeof *ref);
+  if (!ref) scr_json_oom();
+  ref->target = scr_dyn_retain(target);
+  return scr_dyn_new_handle(ref, SCR_DYNH_WEAK_REF);
+}
+
+bool scr_weak_ref_is(const ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WEAK_REF;
 }
 
 ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {

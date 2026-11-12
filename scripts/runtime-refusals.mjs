@@ -41,6 +41,7 @@ const NODE_WORDING = [
   /^Digest method not supported$/, // crypto.createHash
   /^" encoding is not supported$/, // ERR_ENCODING_NOT_SUPPORTED's tail
   /^ is not supported$/, // ERR_CRYPTO_* tails assembled around a name
+  /^' is not supported by MAC $/, // createMac's extended-option error (ERR_INVALID_ARG_VALUE)
   /^Digest options are not supported$/,
   /^Zero-length key is not supported$/, // WebCrypto DataError
   /key export is not supported$/, // WebCrypto NotSupportedError

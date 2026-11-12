@@ -71,8 +71,8 @@ class Sensor {
   }
 }
 class Shy extends Sensor {
-  watch(target: WeakRef<object>): number {
-    return target.deref() === undefined ? 0 : 1;
+  watch(target: BigInt64Array<ArrayBuffer>): number {
+    return target.length === 0 ? 0 : 1;
   }
 }
 const sensors: Sensor[] = [new Sensor(), new Shy()];

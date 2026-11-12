@@ -161,6 +161,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "weakSet.new",
   // Node's "cleanup must be callable" TypeError.
   "finalizationRegistry.new",
+  // Node's "WeakRef: invalid target" TypeError.
+  "weakRef.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
@@ -1096,6 +1098,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hmacDigestBuffer",
   "crypto.hashNewOpts",
   "crypto.hmacNewDyn",
+  "crypto.macNewDyn",
+  "crypto.secureHeapUsed",
   "crypto.hashCopyOpts",
   "crypto.hashUpdateEnc",
   "crypto.hmacUpdateEnc",

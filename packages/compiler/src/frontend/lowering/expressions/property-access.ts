@@ -6446,10 +6446,10 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
  * constructor, and dynamic values answer `.constructor` with the same one,
  * so `o.constructor === Object` and `err.constructor === TypeError` are
  * exact identity tests, and `err.constructor.name` is the constructor's
- * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array and
- * Proxy have values with Node's name, length and instanceof answers;
+ * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array, Proxy
+ * and WeakRef have values with Node's name, length and instanceof answers;
  * calling one throws Node's TypeError, and constructing through the value
- * is fenced. */
+ * is fenced, except WeakRef, which builds the reference it builds directly. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -6461,6 +6461,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakMap",
   "WeakSet",
   "FinalizationRegistry",
+  "WeakRef",
   "SharedArrayBuffer",
   "DataView",
   "BigInt64Array",

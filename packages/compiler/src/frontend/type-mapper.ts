@@ -180,6 +180,17 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "Pbkdf2Params",
   "HkdfParams",
   "AesDerivedKeyParams",
+  "Argon2Params",
+  "CShakeParams",
+  "ContextParams",
+  "EcdhKeyDeriveParams",
+  "KangarooTwelveParams",
+  "KmacImportParams",
+  "KmacKeyAlgorithm",
+  "KmacKeyGenParams",
+  "KmacParams",
+  "RsaOaepParams",
+  "TurboShakeParams",
 ]);
 
 /** node:crypto's key, signature and X509Certificate check option
@@ -4939,6 +4950,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
   // FinalizationRegistry is a native handle with register and unregister.
   if (isStdlibInterface("FinalizationRegistry")) return DYN;
+  // WeakRef is a native handle with deref.
+  if (isStdlibInterface("WeakRef")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.
@@ -5302,6 +5315,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return psymName === "Hash" ? CRYPTOHASH_T : CRYPTOHMAC_T;
+  }
+  // crypto.Mac (createMac): the HMAC-only native Mac handle (scr_lib.c).
+  // Module-checked like Hash and Hmac, so a user class named Mac keeps its
+  // own representation.
+  if (
+    psym !== undefined &&
+    psymName === "Mac" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
   }
   // fs.FSWatcher: the fs.watch handle (scr_watch.c). Module-checked like
   // net.Server — @types/node declares `interface FSWatcher extends
@@ -6081,6 +6109,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // every result.
   if (
     isStdlibInterface("CipherInfo") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
+  // crypto.secureHeapUsed()'s report: the runtime builds Node's object as a
+  // checked-dynamic value (its utilization is NaN), so the declared interface
+  // reads dynamically.
+  if (
+    isStdlibInterface("SecureHeapUsage") &&
     psym!.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
     )

@@ -19012,7 +19012,8 @@
           "tests/corpus/console-native-value.js",
           "tests/corpus/console-object-value.ts",
           "tests/corpus/console-trace-output.cjs",
-          "tests/corpus/stdout-patch-console-arguments.js"
+          "tests/corpus/stdout-patch-console-arguments.js",
+          "tests/harness/console-trace.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -19664,7 +19665,8 @@
         "status": "partial",
         "evidence": "compiler-feature:console.console.trace",
         "tests": [
-          "tests/corpus/console-trace-output.cjs"
+          "tests/corpus/console-trace-output.cjs",
+          "tests/harness/console-trace.test.ts"
         ]
       },
       "anchorSource": "exact"

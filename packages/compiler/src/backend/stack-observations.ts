@@ -24,7 +24,7 @@ import { writesPublished } from "./publication.js";
 
 /** The nodes the scans below read: stack reads, the "stack" literal, call
  * sites and function references, declarations. */
-const STACK_READ_KINDS: readonly IrNodeKind[] = ["libCall", "dynKeyGet"];
+const STACK_READ_KINDS: readonly IrNodeKind[] = ["libCall", "intrinsic", "dynKeyGet"];
 const STRING_KINDS: readonly IrNodeKind[] = ["strLit"];
 const CENSUS_KINDS: readonly IrNodeKind[] = ["call", ...FUNCTION_REFERENCE_KINDS];
 const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
@@ -32,11 +32,9 @@ const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 /** Lib calls that read a captured stack trace. */
 const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack"]);
 
-/** Lib calls that PRINT a captured stack trace. They run as statements, so
- * the scan counts them from any position: console.trace's own output names
- * the frames above its call site, which needs the same source frames a
- * `.stack` read does. */
-const STACK_PRINTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["console.trace"]);
+/** Intrinsics that read a captured stack trace: console.trace prints the
+ * frames the call captured. */
+const STACK_READ_INTRINSICS: ReadonlySet<string> = new Set(["console.trace"]);
 
 /** Key types whose property names are never `stack`: a number, bigint or
  * boolean key names its decimal or `true`/`false` property. */
@@ -163,11 +161,13 @@ class StackKeys {
   }
 }
 
-/** A typed `error.stack` read, or a read on a checked-dynamic value that
- * can reach an error's own `stack` accessor: one whose key can be "stack"
+/** A typed `error.stack` read, a console.trace call (its write carries the
+ * frames the call captured), or a read on a checked-dynamic value that can
+ * reach an error's own `stack` accessor: one whose key can be "stack"
  * (StackKeys). */
 function readsStack(fn: IrFunction, expr: IrExpr, keys: StackKeys): boolean {
-  if (expr.kind === "libCall") return STACK_READS.has(expr.fn) || STACK_PRINTS.has(expr.fn);
+  if (expr.kind === "libCall") return STACK_READS.has(expr.fn);
+  if (expr.kind === "intrinsic") return STACK_READ_INTRINSICS.has(expr.name);
   if (expr.kind !== "dynKeyGet") return false;
   return keys.mayBeStack(fn, expr.key);
 }
@@ -188,10 +188,7 @@ function spellsStack(mod: IrModule, nodes: IrNodeIndex | undefined): boolean {
 function containsStackRead(fn: IrFunction, keys: StackKeys, scan: IrKindScan | undefined): boolean {
   let found = false;
   eachNodeOfKinds(fn, scan, (node, statement) => {
-    found =
-      node.kind === "libCall"
-        ? STACK_READS.has(node.fn) || STACK_PRINTS.has(node.fn)
-        : !statement && readsStack(fn, node as IrExpr, keys);
+    found = !statement && readsStack(fn, node as IrExpr, keys);
     return !found;
   });
   return found;

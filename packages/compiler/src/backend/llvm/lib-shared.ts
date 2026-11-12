@@ -342,7 +342,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.group": "scr_console_group",
   "console.clear": "scr_console_clear",
   "console.table": "scr_console_table",
-  "console.trace": "scr_console_trace",
   "console.dirDyn": "scr_console_dir_dyn",
   "console.dirHidden": "scr_console_dir_hidden",
   "global.native": "scr_global_native",

@@ -31,11 +31,6 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
-  // scr_console_trace joins an already formatted string with the captured
-  // frames and writes it as the global console's error output, which
-  // discards the error of a patched process.stderr.write (Node's
-  // ignoreErrors); the heading is the only program value it reads.
-  "console.trace",
   // scr_dyn_new_promise retains the promise and allocates its box.
   "weakMap.promiseKey",
   // scr_resolve_adopt queues a job; a promise resolved with itself is

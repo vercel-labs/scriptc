@@ -1,7 +1,7 @@
 // The global console's honest fences: tables over Map and Set values,
-// console.dir over a Buffer (custom inspection off) or with options that do
-// not resolve at compile time, assert forms whose output would depend on a
-// runtime format string or on skipped argument evaluation, and
+// console.dir over a Buffer (custom inspection off) or with options that
+// do not resolve at compile time, assert forms whose output would depend
+// on a runtime format string or on skipped argument evaluation, and
 // inspector-only members with object arguments. Every reached site
 // terminates in a named diagnostic.
 console.table(new Map([["k", 1]]));

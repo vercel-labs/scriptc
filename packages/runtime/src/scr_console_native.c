@@ -526,33 +526,6 @@ void scr_console_group(double delta) {
   scr_console_indenter = scr_console_group_indent ? scr_console_indent_line : NULL;
 }
 
-/* console.trace: Node formats the arguments and prints them under the
- * `Trace[: message]` heading, then the stack below the trace function
- * (ErrorCaptureStackTrace with trace itself as the cut-off), as one
- * console.error write. The frames here are the program's own call frames:
- * Node's stack also names its module loader, which a native binary has no
- * counterpart for, so the heading and one "    at name (file)" line per
- * frame are the parts both spell the same way. In a group the write is
- * indented like any other console line, stack lines included. */
-void scr_console_trace(ScrStr *message) {
-  ScrStr *heading;
-  if (message == NULL || message->len == 0) {
-    heading = scr_str_new("Trace", 5);
-  } else {
-    ScrStr *prefix = scr_str_new("Trace: ", 7);
-    heading = scr_str_concat(prefix, message);
-    scr_str_release(prefix);
-  }
-  ScrStr *frames = scr_stack_capture();
-  ScrStr *text = frames == NULL ? scr_str_retain(heading) : scr_str_concat(heading, frames);
-  scr_str_release(frames);
-  ScrLogArg arg = {.tag = SCR_ARG_STR};
-  arg.v.s = text;
-  scr_console_error(1, &arg);
-  scr_str_release(text);
-  scr_str_release(heading);
-}
-
 /* Only a terminal stdout clears (TERM=dumb excepted): readline's
  * cursorTo(stdout, 0, 0), then clearScreenDown(stdout). */
 void scr_console_clear(void) {

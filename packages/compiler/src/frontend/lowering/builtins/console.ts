@@ -13,7 +13,9 @@ export type ConsoleOutputMember = "log" | "info" | "debug" | "error" | "warn";
 
 /** The rest of the lowered global console surface (lower-console.ts):
  * counters, timers, groups, assert, dir/dirxml, table, clear, trace, and
- * the inspector-only profile/profileEnd/timeStamp. */
+ * the inspector-only profile/profileEnd/timeStamp. trace prints the
+ * captured frames with scriptc's own function and file text (SEMANTICS
+ * divergence 11), the same frames an uncaught Error's report carries. */
 export type ConsoleMethodMember =
   | "assert"
   | "clear"

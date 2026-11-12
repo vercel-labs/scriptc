@@ -4717,10 +4717,6 @@ function buildLibFnSignatures() {
     "console.group": { argTypes: [F64], result: VOID },
     "console.clear": { argTypes: [], result: VOID },
     "console.table": { argTypes: [DYN, DYN], result: VOID },
-    /** console.trace: the formatted message ("" for no arguments) printed
-     * under Node's `Trace[: message]` heading with the call frames below
-     * the call site. */
-    "console.trace": { argTypes: [STRING], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
     /** A native reference to the global object; known names retain value fences. */

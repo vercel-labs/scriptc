@@ -184,21 +184,27 @@ async function tryFastPath(): Promise<number | null> {
   // program reads at run time was not installed beside it; the full compiler
   // restores the same executable and installs that file.
   if (hit.native.intl === true) return null;
-  // A cached build repeats every warning it reported. This path renders the
-  // performance warning itself (SC6101 needs no source frames); a hit that
-  // holds any other warning — a divergence, a Node island note, a type patch —
-  // takes the full compiler, which renders it as the cold build does.
-  const cachedWarnings = hit.warnings ?? [];
-  if (command === "build" && cachedWarnings.some((d) => !startup.isPerformanceCode(d.code)))
-    return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
-    const performance =
-      values["dynamic-tier-warning"] === false
-        ? []
-        : cachedWarnings.filter((d) => startup.isPerformanceCode(d.code));
-    if (performance.length > 0)
-      process.stderr.write(startup.renderPerformanceWarnings(performance) + "\n");
+    // A cached build repeats every warning it reported, rendered by the same
+    // function the full compiler uses, from the same entry: the warnings and,
+    // for a file the build edited before locating a warning in it, the text
+    // the entry kept. The fast path answers only the options that drop a
+    // warning; every other warning option takes the full CLI.
+    const cachedWarnings = hit.warnings ?? [];
+    const warnings = startup.buildWarnings(cachedWarnings, {
+      dynamicTier: values["dynamic-tier-warning"] !== false,
+    });
+    if (warnings.length > 0) {
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        startup.renderBuildWarnings(
+          warnings,
+          startup.warningSourceTexts(cachedWarnings, hit.warningSources),
+          { color },
+        ) + "\n",
+      );
+    }
     process.stdout.write(`${outPath}\n`);
     return 0;
   }

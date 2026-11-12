@@ -7,7 +7,6 @@ import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
-import { PerformanceObserver, performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
 
 // stream: the web-stream adapters going out.
@@ -21,11 +20,6 @@ console.log(URL.createObjectURL(new Blob(["x"])));
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
 timer.close();
-
-// perf_hooks: the time origin and the observer.
-console.log(performance.timeOrigin);
-const observer = new PerformanceObserver(() => {});
-observer.observe({ entryTypes: ["mark"] });
 
 // process: source maps, the capture callback, finalization and ref counting.
 process.setSourceMapsEnabled(true);

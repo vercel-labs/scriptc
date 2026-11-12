@@ -563,6 +563,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const shapes = layouts.records;
   const classShapes = layouts.classes;
   const classObjDefs = layouts.classObjects;
+  // The function-source lookup the runtime prints a boxed function through
+  // (function-source-text.ts): rows keyed by link-time entry addresses, so
+  // the table is one of the module's definitions, and main installs it.
+  // Asked for here, before the wrappers are emitted (a row's entry is one),
+  // the string constants are, and the extern block flushes.
+  const fnSources = emitter.dyn.fnSourceTable();
   const wrappers = emitter.emitFnValueDefs();
   const asyncDefs = emitter.emitAsyncScaffolding();
   const ffiCallbacks = emitter.emitFfiCallbackDefs();
@@ -808,11 +814,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // the out-of-line scr_exc_pending call; per-call checks inline the
   // test (pendingTestLines).
   if (entryMayThrow || runsLoop) emitter.declare(`declare zeroext i1 @scr_exc_pending()`);
+  // A synchronous program that reads the loop milestones marks the loop's
+  // start and end around its exit listeners (main's epilogue below); a
+  // program that runs the loop marks the start before it and the loop's
+  // exit hook marks the end.
+  if (emitter.readsLoopMetrics()) {
+    emitter.declare(`declare void @scr_perf_loop_mark()`);
+    if (!runsLoop) emitter.declare(`declare void @scr_perf_loop_end()`);
+  }
   if (runsLoop) {
     emitter.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
     if (emitter.mod.commonJsEntry === true)
       emitter.declare(`declare void @scr_loop_commonjs_entry()`);
-    if (emitter.readsLoopMetrics()) emitter.declare(`declare void @scr_perf_loop_mark()`);
     emitter.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
     emitter.declare(`declare void @scr_discard_unhandled_rejections()`);
   }
@@ -1379,6 +1392,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // The traces the weak analysis reads; overrides the runtime's weak, empty
   // default (scr_json.c).
   for (const line of weakTraceTable(emitter.weakTraces)) out.push(line);
+  if (fnSources !== null) {
+    // Declared inline: the extern block already flushed (the
+    // scr_error_set_traced precedent).
+    out.push(`declare void @scr_dyn_fn_source_install(ptr)`, ``);
+  }
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught
@@ -1482,6 +1500,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // nullable event hooks before %main — scr_events.c links only when
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
+    // The runtime prints a boxed function through the program's own source
+    // rows, so a program with any installs its lookup before %main runs.
+    ...(fnSources !== null
+      ? [`  call void @scr_dyn_fn_source_install(ptr @${fnSources.symbol})`]
+      : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
     ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
@@ -1520,7 +1543,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
-    // node:test takes Node's --test-update-snapshots out of argv first.
+    // node:test takes Node's runtime options (the snapshot update flag and
+    // the reporter options) out of argv first.
     ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
@@ -1614,6 +1638,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
               ]
             : []),
         ]
+      : []),
+    // A synchronous program never runs the loop, but Node's loop starts and
+    // stops before a normal exit's listeners do, so the milestones read there
+    // are set. An exit from inside the body (process.exit, an uncaught throw)
+    // returns through another epilogue and leaves them at -1, as Node does.
+    ...(emitter.readsLoopMetrics() && !runsLoop
+      ? [`  call void @scr_perf_loop_mark()`, `  call void @scr_perf_loop_end()`]
       : []),
     ...exitListenerLines("xn"),
     ...globalReleases,

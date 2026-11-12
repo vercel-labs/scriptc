@@ -17,7 +17,12 @@ import { InternalCompilerError } from "../../errors.js";
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
-import { isRefCounted, typeKey } from "../../ir/ir.js";
+import {
+  isPerfNodeTimingShape,
+  isRefCounted,
+  PERF_NODE_TIMING_JSON_FIELDS,
+  typeKey,
+} from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
 import { mangleFunction, mangleRecordStruct } from "../mangle.js";
@@ -371,10 +376,17 @@ export class LlWalkers {
     // Fields serialize in DECLARED order (JS insertion order), or in the
     // value's own order for a shape with orderVariants; internal
     // '%'-fields stay hidden — jsonWriteHelper's contract, ported comment
-    // and all.
-    emitPerKeyOrder(B, shape, fieldBase, "%v", (order) => {
+    // and all. performance.nodeTiming is the exception: stringify runs its
+    // toJSON first, which answers the class's own field list (without
+    // uvMetricsInfo), so that list is what serializes.
+    const toJsonOrder = isPerfNodeTimingShape(shape) ? PERF_NODE_TIMING_JSON_FIELDS : null;
+    emitPerKeyOrder(B, shape, fieldBase, "%v", (declaredOrder) => {
+      const order = toJsonOrder ?? declaredOrder;
       const inOrder = new Set(order);
-      if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
+      if (
+        toJsonOrder === null &&
+        shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))
+      ) {
         throw new InternalCompilerError(
           `llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`,
         );

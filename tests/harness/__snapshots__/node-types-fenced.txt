@@ -7,15 +7,6 @@ fenced.ts:5:13 - error SC2020: 'process.hasUncaughtExceptionCaptureCallback' is 
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:15:1 - error SC2020: 'Timeout.close' is typed by @types/node but has no scriptc lowering yet
-
-  14 | timer.refresh();
-  15 | timer.close();
-     | ^~~~~~~~~~~~~
-  16 | /* The web-platform globals ride in with @types/node (undici). Fetch,
-
-  hint: unref(), ref(), hasRef(), and refresh() are the supported Timeout methods
-
 fenced.ts:27:15 - error SC2020: 'Response.type' is typed by @types/node but has no scriptc lowering yet
 
   26 |   const response = await fetch(url);
@@ -39,15 +30,15 @@ fenced.ts:37:1 - error SC2020: 'fs.openAsBlob' is typed by @types/node but has n
   36 | import { win32 } from "path";
   37 | openAsBlob("x");
      | ^~~~~~~~~~~~~~~
-  38 | on(new EventEmitter(), "tick");
+  38 | console.log(EventEmitter.captureRejections);
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:38:1 - error SC2020: 'events.on' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:38:13 - error SC2020: 'typeof EventEmitter.captureRejections' is typed by @types/node but has no scriptc lowering yet
 
   37 | openAsBlob("x");
-  38 | on(new EventEmitter(), "tick");
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  38 | console.log(EventEmitter.captureRejections);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   39 | console.log(win32.sep);
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
@@ -105,15 +96,6 @@ fenced.ts:75:16 - error SC2020: 'crypto.createCipheriv with cipher 'aes-128-ocb'
   76 | secureHeapUsed();
 
   hint: the supported ciphers are aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1 and ofb modes and their wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20, and chacha20-poly1305
-
-fenced.ts:76:1 - error SC2020: 'crypto.secureHeapUsed' is typed by @types/node but has no scriptc lowering yet
-
-  75 | createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
-  76 | secureHeapUsed();
-     | ^~~~~~~~~~~~~~~~
-  77 | setFips(false);
-
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 fenced.ts:77:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
 

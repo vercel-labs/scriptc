@@ -1139,6 +1139,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return out;
   }
+  // events.on over a compiled emitter builds its typed listener adapters
+  // beside the emitter calls (lib-process.ts), like events.once: the
+  // dedicated arm below the generic table, and a call that may throw.
+  if (e.fn === "events.onTyped") return host.emitErrorsEventsLibCall(e);
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
@@ -1702,6 +1706,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "weakMap":
     case "weakSet":
     case "finalizationRegistry":
+    case "weakRef":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":

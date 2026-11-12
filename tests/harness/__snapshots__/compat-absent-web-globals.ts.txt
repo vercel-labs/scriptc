@@ -39,24 +39,3 @@ compat-absent-web-globals.ts:18:20 - error SC0001: Cannot find name 'Decompressi
   18 | const gunzip = new DecompressionStream("gzip");
      |                    ^~~~~~~~~~~~~~~~~~~
   19 | console.log(typeof gzip.readable, typeof gunzip.writable);
-
-compat-absent-web-globals.ts:24:18 - error SC0001: Cannot find name 'PerformanceMark'. Did you mean 'performance'?
-
-  23 | // perf_hooks rows); the three global classes are not.
-  24 | const mark = new PerformanceMark("m");
-     |                  ^~~~~~~~~~~~~~~
-  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
-
-compat-absent-web-globals.ts:25:29 - error SC0001: Cannot find name 'PerformanceEntry'. Did you mean 'performance'?
-
-  24 | const mark = new PerformanceMark("m");
-  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
-     |                             ^~~~~~~~~~~~~~~~
-  26 | 
-
-compat-absent-web-globals.ts:25:63 - error SC0001: Cannot find name 'PerformanceMeasure'.
-
-  24 | const mark = new PerformanceMark("m");
-  25 | console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);
-     |                                                               ^~~~~~~~~~~~~~~~~~
-  26 | 

@@ -1,5 +1,5 @@
 `process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2.
-In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag: it is kept out of `process.argv` and appears in `process.execArgv`, which is otherwise `[]`.
+In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag, and leading `--test-reporter=spec` and `--test-reporter-destination=...` arguments are Node's reporter options: each is kept out of `process.argv` and appears in `process.execArgv`, in the order given, which is otherwise `[]`.
 `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
 The `process.features` object cannot be changed: under Node nine of its flags are writable and a program may add keys, but a compiled binary reads a flag as a constant, so a write to the object throws the `TypeError` of a frozen object and `Object.isFrozen(process.features)` is `true`.
 

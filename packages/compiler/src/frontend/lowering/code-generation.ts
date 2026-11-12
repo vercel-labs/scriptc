@@ -40,6 +40,10 @@ export function codeGenerationCalleeOf(
   if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) {
     return codeGenerationCalleeOf(lowerer, e.right) === "eval" ? "eval" : null;
   }
+  // `<function>.constructor` is the Function constructor itself (Node's
+  // Function.prototype.constructor), so calling or constructing it refuses
+  // like the global spelling.
+  if (functionConstructorReceiverOf(lowerer, e) !== null) return "Function";
   // Syntactic pre-check first: every call and construction asks, and only
   // these spellings can name the globals (aliases are stdlib-resolved
   // symbols, checked below only when the spelling could match).
@@ -48,6 +52,48 @@ export function codeGenerationCalleeOf(
   if (text !== "eval" && text !== "Function" && !hasCodeGenerationAlias(lowerer)) return null;
   const name = stdlibGlobalNameOf(lowerer, e);
   return name === "eval" || name === "Function" ? name : null;
+}
+
+/** The receiver of a `constructor` read that answers the Function
+ * constructor: `<function>.constructor` and `<function>["constructor"]`,
+ * when the receiver is a function value whose type keeps the inherited
+ * Function.prototype member. A function the program gives its own
+ * `constructor` property keeps its own value, and an optional chain can
+ * short-circuit before the read, so neither is code generation. */
+export function functionConstructorReceiverOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): ts.Expression | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const receiver =
+    ts.isPropertyAccessExpression(e) &&
+    e.questionDotToken === undefined &&
+    e.name.text === "constructor"
+      ? e.expression
+      : ts.isElementAccessExpression(e) &&
+          e.questionDotToken === undefined &&
+          ts.isStringLiteral(e.argumentExpression) &&
+          e.argumentExpression.text === "constructor"
+        ? e.expression
+        : null;
+  if (receiver === null) return null;
+  try {
+    const type = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
+    const checker = lowerer.checker;
+    if (
+      checker.getCallSignatures(type).length === 0 &&
+      checker.getConstructSignatures(type).length === 0
+    )
+      return null;
+    const member = checker.getPropertyOfType(type, "constructor");
+    if (member !== undefined && !lowerer.isStdlibSymbol(member)) return null;
+    return receiver;
+  } catch {
+    // A checker query about a node that never lowered answers nothing; the
+    // read keeps its ordinary lowering.
+    return null;
+  }
 }
 
 /** Some stable binding aliases `eval` or `Function` (`const F = Function`,
@@ -86,6 +132,12 @@ export function lowerCodeGenerationCall(
 ): IrExpr {
   const loc = locOf(expr);
   const stmts: IrStmt[] = [];
+  // `f.constructor(...)` evaluates `f` first (bracketed to find the callee),
+  // then the arguments, then refuses.
+  const receiver = functionConstructorReceiverOf(lowerer, expr.expression);
+  if (receiver !== null) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(receiver), loc: locOf(receiver) });
+  }
   for (const operand of indirectEvalPrefix(expr.expression)) {
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(operand), loc: locOf(operand) });
   }

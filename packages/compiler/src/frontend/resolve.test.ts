@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import {
   clearResolveCaches,
   projectDtsRuntimeSibling,
+  resolveBareModule,
   rememberProjectTypes,
   rememberedProjectTypes,
   resolveInTypeRoots,
@@ -240,6 +241,61 @@ test("a node10 project finds declarations by path where the exports map names no
     expect(
       resolveTypesAsProject(main, "bread-proof/rise", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the scriptc export condition is selected before node, require and default", async () => {
+  const dir = await projectTree({
+    "node_modules/platform-choice/package.json": JSON.stringify({
+      name: "platform-choice",
+      version: "1.0.0",
+      type: "module",
+      // scriptc last, after node and default: its branch still wins.
+      exports: {
+        ".": {
+          types: "./index.d.ts",
+          node: "./node.mjs",
+          default: "./default.mjs",
+          scriptc: "./scriptc.mjs",
+        },
+      },
+    }),
+    "node_modules/platform-choice/index.d.ts": "export declare const value: string;\n",
+    "node_modules/platform-choice/node.mjs": "export const value = 'node';\n",
+    "node_modules/platform-choice/default.mjs": "export const value = 'default';\n",
+    "node_modules/platform-choice/scriptc.mjs": "export const value = 'scriptc';\n",
+    "node_modules/platform-choice-require/package.json": JSON.stringify({
+      name: "platform-choice-require",
+      version: "1.0.0",
+      exports: {
+        ".": { require: "./require.cjs", scriptc: "./scriptc.cjs", default: "./default.cjs" },
+      },
+    }),
+    "node_modules/platform-choice-require/require.cjs": 'exports.value = "require";\n',
+    "node_modules/platform-choice-require/scriptc.cjs": 'exports.value = "scriptc";\n',
+    "node_modules/platform-choice-require/default.cjs": 'exports.value = "default";\n',
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    const runtime = (pkg: string) => realpathSync(join(dir, "node_modules", pkg));
+    // The compiled program runs the adapter the package ships for scriptc,
+    // whatever place the map gives that key.
+    expect(resolveBareModule(main, "platform-choice", "js-only")?.typesFile).toBe(
+      runtime("platform-choice/scriptc.mjs"),
+    );
+    // The types branch keeps its lead, so the adapter is checked against
+    // the package's declarations.
+    expect(resolveBareModule(main, "platform-choice", "types-only")?.typesFile).toBe(
+      runtime("platform-choice/index.d.ts"),
+    );
+    // A require edge asks its own condition set, and scriptc still leads.
+    expect(
+      resolveBareModule(main, "platform-choice-require", "js-only", "require")?.typesFile,
+    ).toBe(runtime("platform-choice-require/scriptc.cjs"));
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });

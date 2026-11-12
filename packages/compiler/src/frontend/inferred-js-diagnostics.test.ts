@@ -344,15 +344,23 @@ test("TypeScript keeps the diagnostic of a discarded negation of a void call", (
   expect(kept.some((message) => message.includes("cannot be tested for truthiness"))).toBe(true);
 });
 
-test("a negation whose boolean is consumed keeps the named refusal", () => {
-  // Only statement-position `!voidCall();` is admitted: a consumed boolean
-  // needs a runtime value for an operand the checker types `void`, which a
-  // callback typed that way can still fill at run time.
-  const result = diagnostics(
-    'function register() { console.log("registered"); }\nexport const ok = !register();',
+test("JavaScript drops the diagnostic of a consumed negation of a void call", () => {
+  // The operand evaluates once for its effects and Node's ToBoolean of the
+  // value it yields is false, which the ordinary lowering answers.
+  expect(
+    diagnostics(
+      'function register() { console.log("registered"); }\nexport const ok = !register();',
+      'import { ok } from "./library.js"; console.log(ok);',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript file keeps the consumed void-negation diagnostic", () => {
+  const kept = diagnostics(
+    '// @ts-check\nfunction register() { console.log("registered"); }\nexport const ok = !register();',
     'import { ok } from "./library.js"; console.log(ok);',
   );
-  expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+  expect(kept.some((d) => d.message.includes("cannot be tested for truthiness"))).toBe(true);
 });
 
 /* The triage rows' descriptions (tsc-codes.ts, TRIAGE_ROWS) must state what

@@ -289,32 +289,6 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
   return false;
 };
 
-/** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
- * `!function () { … }();`): the operand still evaluates once for its
- * effects and any exception, while the value the negation would read is
- * never consumed. A negation whose result is used — an initializer, a
- * condition, a logical operand — keeps the diagnostic, because converting a
- * value the checker types `void` needs a runtime value the lowering does
- * not model. */
-const discardedVoidNegation = (node: ts.Node): boolean => {
-  // The diagnostic's span is the void-typed OPERAND (the call), so climb
-  // to the `!` that tests it, then out of any parentheses.
-  let operand: ts.Node = node;
-  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
-    operand = operand.parent;
-  const negation = operand.parent;
-  if (
-    negation === undefined ||
-    !ts.isPrefixUnaryExpression(negation) ||
-    negation.operator !== ts.SyntaxKind.ExclamationToken
-  )
-    return false;
-  let outer: ts.Node = negation;
-  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
-    outer = outer.parent;
-  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
-};
-
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -332,6 +306,17 @@ const LEGACY_REGEX_ESCAPE = at(
     "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
     ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
   ),
+);
+
+const UNDECLARED_NAME_READ = THROW(
+  "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+  [
+    "tests/corpus/8427-sloppy-with-island/main.js",
+    "tests/corpus/8515-js-undeclared-read.js",
+    "tests/corpus/8941-js-host-name-read.js",
+    "tests/corpus/global-detection-typeof.cjs",
+    "tests/corpus/js-type-package-global-read.js",
+  ],
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
@@ -650,6 +635,16 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   ],
   [1064, CHECKER(JSDOC_CLAIM)],
   [2366, CHECKER(JSDOC_CLAIM, ["tests/corpus/js-object-receiver-storage.js"])],
+  // A subclass STATIC side that does not match its base's (2417): a static
+  // method or field whose JSDoc signature differs from the inherited one
+  // (`static isError(input)` on an `Error` subclass, whose base declares
+  // `isError` as a type predicate). The assignment check is a type-space
+  // claim about the constructor object; the member itself is an ordinary
+  // static that installs on the constructor, and Node never reads the
+  // signature. A checked file keeps the error: the project asked tsc for
+  // it. Its instance-side sibling (2416) stays refused — a differing
+  // instance member's storage is the class lowering's business.
+  [2417, inCheckedJs(CHECKER(JSDOC_CLAIM, ["tests/corpus/js-subclass-static-side.js"]))],
   // The async-iterator protocol demand (2504). Whether a value is
   // async-iterable is a runtime fact of untyped JS, exactly like the sync
   // demand: `for await` over a non-iterable value and `yield*` in an async
@@ -820,38 +815,32 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // route the sloppy semantics need. TypeScript input keeps the compile
   // error: an undeclared name there is a bug, not a runtime path, unless a
   // library the project's `lib` names declares it and Node defines no such
-  // global (program.ts, projectLibraryName admits those sites). 2552 is
-  // 2304's did-you-mean spelling, 2584 its spelling for a name another
-  // library declares (`document`, `window`: Node defines neither), and
-  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
-  // the checker reports against the property instead of the reference.
-  [
-    2304,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8427-sloppy-with-island/main.js", "tests/corpus/8515-js-undeclared-read.js"],
-    ),
-  ],
-  [
-    2552,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-    ),
-  ],
-  [
-    2584,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
-    ),
-  ],
-  [
-    18004,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8515-js-undeclared-read.js"],
-    ),
-  ],
+  // global (program.ts, projectLibraryName admits those sites). The checker
+  // splits the one unresolved name across a family of codes that differ only
+  // in the suggestion they print: 2552 is 2304's did-you-mean spelling, 2584
+  // its spelling for a name another library declares (`document`, `window`:
+  // Node defines neither), and 18004 the same unresolved name in SHORTHAND
+  // position (`{ x }`), which the checker reports against the property
+  // instead of the reference. The type-package suggestions are a code each
+  // (`require` is 2580, `describe` 2582, `Bun` 2867 when the project's
+  // tsconfig has no `types` field, and 2591/2593/2868 when it has one), and
+  // every spelling names the same undeclared global: Node throws
+  // `ReferenceError: Bun is not defined` for it whatever tsc suggests
+  // installing. The unknown-name codes this list leaves out are the ones
+  // that do not name an undeclared global: 2583 (a newer library's name,
+  // which Node may define) and 2585/2586 (a `lib` setting).
+  [2304, UNDECLARED_NAME_READ],
+  [2552, UNDECLARED_NAME_READ],
+  [2580, UNDECLARED_NAME_READ],
+  [2581, UNDECLARED_NAME_READ],
+  [2582, UNDECLARED_NAME_READ],
+  [2584, UNDECLARED_NAME_READ],
+  [2591, UNDECLARED_NAME_READ],
+  [2592, UNDECLARED_NAME_READ],
+  [2593, UNDECLARED_NAME_READ],
+  [2867, UNDECLARED_NAME_READ],
+  [2868, UNDECLARED_NAME_READ],
+  [18004, UNDECLARED_NAME_READ],
   // ---- The checker's OPINIONS about legal JavaScript ----
   // Each diagnostic below reports that a construct is unusual for TypeScript,
   // never that it is illegal JavaScript: Node gives it a defined runtime
@@ -1108,20 +1097,21 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
-  // 1345, a discarded negation of a void-typed operand (`!register();`):
-  // Node evaluates the operand once and throws the boolean away, and the
-  // operand's ordinary lowering does exactly that. A consumed negation
-  // keeps the triage row below, and a checked project keeps the diagnostic:
-  // it asked tsc to judge the test.
+  // 1345, a truthiness test of a void-typed operand (`!register();`,
+  // `if (this["~findRoute"](event))`): the checker infers the operand's type
+  // from the function body it sees, while Node reads whatever the call
+  // returned — a method or callback typed `void` can be overridden to answer
+  // a value. The lowering already carries such a call as a checked-dynamic
+  // value (the dynamic class and callback paths return `dyn`), and a value
+  // that really is `undefined` tests false; the operand still evaluates once
+  // for its effects and any exception. A checked project keeps the
+  // diagnostic: it asked tsc to judge the test.
   [
     1345,
     inCheckedJs(
-      at(
-        discardedVoidNegation,
-        CHECKER(
-          "a discarded negation's boolean is never consumed: Node evaluates the operand once for its effects, and the operand's ordinary lowering does the same",
-          ["tests/corpus/discarded-void-negation.mjs"],
-        ),
+      CHECKER(
+        "a void-typed value tests for truthiness as Node's ToBoolean of whatever the call returned; the lowering carries the value and its effects",
+        ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
       ),
     ),
   ],
@@ -1361,16 +1351,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
-  // The discarded `!voidCall();` sites are admitted by the 1345 opinion row;
-  // every site whose boolean is consumed needs a runtime value for a
-  // void-typed operand, which the lowering does not model.
-  [
-    1345,
-    REWRITE(
-      "a truthiness test of a void-typed expression whose boolean is used",
-      "the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model",
-    ),
-  ],
   [1359, KEEP(KEEP_GRAMMAR)],
   [1368, KEEP(KEEP_GRAMMAR)],
   [1451, KEEP(KEEP_GRAMMAR)],
@@ -1462,13 +1442,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2416,
     REFUSE(
       "a subclass member whose type differs from its base's",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
-    2417,
-    REFUSE(
-      "a subclass static side whose type differs from its base's",
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],

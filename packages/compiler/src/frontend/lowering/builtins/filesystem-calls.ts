@@ -2564,16 +2564,17 @@ function parseMkdirOptions(
 }
 
 /** fs.existsSync(path) where the path value is not statically a string: a
- * Buffer path, an `any`-typed value, or a union of those with strings and the
- * unit arms. A statically typed Buffer takes the typed entry point
- * (scr_fs_exists_bytes); an `any`-typed value or a union takes the value
- * form, which decides the arm at run time. Node answers false for any other
- * value and reports DEP0187 once, which the value form (scr_fs_exists_dyn.c)
- * does; a plain string argument keeps the typed call. Null for the URL type,
- * which converts to a string path before the call, and for every union
- * holding an arm the value form cannot answer. Node ignores arguments past
- * the first but still evaluates them, so surplus arguments are lowered here
- * rather than dropped.
+ * Buffer path, an `any`-typed value, a URL, or any other value. Node's
+ * existsSync answers false for every path getValidatedPath rejects —
+ * anything that is not a string, a Uint8Array or a file: URL — and reports
+ * DEP0187 once, which the value form (scr_fs_exists_dyn.c) does. A
+ * statically typed Buffer takes the typed entry point (scr_fs_exists_bytes)
+ * and every other non-string value takes the value form, which decides the
+ * arm at run time; only a plain string argument keeps the typed call. A URL
+ * path whose conversion the fs URL machinery already lifted to a string
+ * arrives here as a string. Null for a value the value form cannot carry.
+ * Node ignores arguments past the first but still evaluates them, so surplus
+ * arguments are lowered here rather than dropped.
  */
 export function lowerFsExistsValueCall(
   lowerer: Lowerer,
@@ -2584,27 +2585,37 @@ export function lowerFsExistsValueCall(
   // stage; the ordinary call path rejects it.
   if (expr.arguments.nodes.some(ts.isSpreadElement)) return null;
   const arg = expr.arguments.nodes[0];
-  if (!arg) return null;
-  const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
-  const ok = (arm: IrType | null) =>
-    arm?.kind === "string" || (arm !== null && typeEquals(arm, BYTES_U8));
+  const type = arg ? lowerer.mapTypeOf(lowerer.typeOf(arg)) : null;
   const unit = (arm: IrType | null) =>
     arm?.kind === "undefinedT" || arm?.kind === "nullT" || arm?.kind === "void";
-  // A null mapped type is `any`/`unknown`: the runtime decides.
-  let value = type === null || type.kind === "dyn" || (type.kind !== "string" && ok(type));
-  if (!value && type?.kind === "union") {
-    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
-    value = arms.some(ok) && arms.every((arm) => ok(arm) || unit(arm));
-  }
-  if (!value) return null;
+  const unitExpr =
+    arg !== undefined &&
+    (arg.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(arg) && arg.text === "undefined"));
+  // A statically typed string (the URL path machinery converts file: URLs to
+  // one) keeps the typed entry point.
+  if (arg !== undefined && type !== null && type.kind === "string") return null;
+  // A null mapped type is `any`/`unknown`: the runtime decides. Everything
+  // else must be a value the checked-dynamic form can carry.
+  const boxable =
+    arg === undefined ||
+    type === null ||
+    type.kind === "dyn" ||
+    typeEquals(type, BYTES_U8) ||
+    unit(type) ||
+    unitExpr ||
+    lowerer.dynConvertible(type);
+  if (!boxable) return null;
   // A statically typed Buffer path answers through its own entry point
   // (scr_fs_exists_bytes): the value form would box it, and a fully typed
-  // program links no dynamic tier. A `dyn` or union path keeps the value
-  // form, which decides the arm at run time.
+  // program links no dynamic tier. Every other non-string path keeps the
+  // value form, which decides the arm at run time.
   const bytesPath = type !== null && typeEquals(type, BYTES_U8);
-  const lowered = bytesPath
-    ? lowerer.lowerExprExpecting(arg, BYTES_U8)
-    : lowerer.lowerExprExpecting(arg, DYN);
+  const lowered =
+    arg === undefined
+      ? dynUndefinedExpr(loc)
+      : bytesPath
+        ? lowerer.lowerExprExpecting(arg, BYTES_U8)
+        : lowerer.lowerExprExpecting(arg, DYN);
   const fn = bytesPath ? "fs.existsSyncBytes" : "fs.existsSyncValue";
   const surplus = expr.arguments.nodes.slice(1);
   if (surplus.length === 0) {

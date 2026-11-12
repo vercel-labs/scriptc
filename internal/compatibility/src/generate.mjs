@@ -693,6 +693,21 @@ function publicDetail(tier) {
     ) {
       return "Changes timestamps using numeric seconds, numeric strings, and Dates with tested argument validation; link variants update the symlink itself.";
     }
+    if (/^compiler-feature:fs\.fs\.(?:exists|existsSync)$/.test(source)) {
+      return "Answers path existence for strings, Buffers, and file URLs; a path getValidatedPath rejects answers false, the deprecated exists validates its callback first and answers a rejected path through the callback synchronously, and existsSync reports DEP0187 once for invalid argument types.";
+    }
+    if (/^compiler-feature:fs\.dir(?:\.|$)/.test(source)) {
+      return "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.";
+    }
+    if (source.startsWith("compiler-feature:fs.dirent.")) {
+      return "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.";
+    }
+    if (source === "compiler-feature:fs.constants") {
+      return "Exposes the platform's open flags, file-type bits, and permission bits as read-only members of a null-prototype object.";
+    }
+    if (/^compiler-feature:errors\.ERR_DIR_(?:CLOSED|CONCURRENT_OPERATION)$/.test(source)) {
+      return "Reports a closed Dir or a synchronous member used during an asynchronous operation as an Error with Node's name, code, and message.";
+    }
     if (/^compiler-feature:buffer\.buffer\.(?:isAscii|isUtf8)$/.test(source)) {
       return "Validates bytes in ArrayBuffer and typed-array views with Node-compatible argument errors.";
     }

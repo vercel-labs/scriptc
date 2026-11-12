@@ -2830,12 +2830,12 @@ double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode) {
 }
 
 /* fs.exists(path, cb) — the REAL deprecated-API shape: the callback
- * validates synchronously (Node's one throwing arm), and the answer
- * arrives asynchronously through it — string/Buffer paths run the
- * existsSync probe at fire time, every other path kind answers `false`
- * (Node swallows getValidatedPath failures there). The loop-held timer
- * matches Node's I/O-completion timing closely enough for the
- * sequential CLI corpus. */
+ * validates synchronously (Node's one throwing arm), and a path that
+ * getValidatedPath accepts — a string, a Uint8Array or a file: URL without
+ * a null byte — runs the existsSync probe asynchronously through the
+ * callback. Every other path answers `false` synchronously: Node calls
+ * fs.access inside a try, the path validation throws, and the catch runs
+ * `return callback(false)` before exists returns. */
 #ifndef SCR_LIB
 static void scr_fs_exists_fire(ScrClosure *self) {
   ScrDyn *path = scr_box_get_ref(self->caps[0]); /* +1 */
@@ -2859,32 +2859,58 @@ static void scr_fs_exists_fire(ScrClosure *self) {
 }
 #endif
 
+/* validatePath over the kinds that reach the async probe: a string or
+ * Uint8Array without a null byte passes (a URL is converted first), and
+ * every other value kind is an invalid argument. */
+static bool scr_fs_exists_path_ok(const ScrDyn *path) {
+  if (path->kind == SCR_DYN_STR) return memchr(path->v.str->data, 0, path->v.str->len) == NULL;
+  if (scr_dyn_bytes_is(path, SCR_BYTES_U8))
+    return memchr(path->v.bytes->data, 0, path->v.bytes->len) == NULL;
+  return false;
+}
+
+/* The synchronous false arm: exists' catch block. */
+static ScrDyn *scr_fs_exists_false(const ScrDyn *cb) {
+  ScrDyn *arg = scr_dyn_new_bool(false);
+  ScrDyn *r = scr_dyn_call(cb, &arg, 1, "the fs.exists callback");
+  scr_dyn_release(arg);
+  scr_dyn_release(r);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
 ScrDyn *scr_fs_exists_async(const ScrDyn *path, const ScrDyn *cb) {
   if (!scr_fs_cb_chk(cb, "cb")) return NULL;
-  if (path->kind != SCR_DYN_STR && !scr_dyn_bytes_is(path, SCR_BYTES_U8)) {
-    /* Node's wart, kept exactly: a path getValidatedPath rejects answers
-     * false through the callback SYNCHRONOUSLY (`return callback(false)`
-     * in lib/fs.js exists). */
-    ScrDyn *arg = scr_dyn_new_bool(false);
-    ScrDyn *r = scr_dyn_call(cb, &arg, 1, "the fs.exists callback");
-    scr_dyn_release(arg);
-    scr_dyn_release(r);
-    if (scr_exc_pending()) return NULL;
-    return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *converted = NULL; /* +1: a file: URL's path, once converted */
+  const ScrDyn *probe = path;
+  if (scr_dyn_native_url_is(path)) {
+    /* toPathIfFileURL: only file: URLs name a path, and a conversion error
+     * (or a decoded path validatePath rejects, a null byte) is the same
+     * caught throw as any other rejected path. */
+    converted = scr_url_to_path_value(path->v.handle.ptr);
+    if (converted->kind != SCR_DYN_STR || !scr_fs_exists_path_ok(converted)) {
+      scr_dyn_release(converted);
+      return scr_fs_exists_false(cb);
+    }
+    probe = converted;
+  } else if (!scr_fs_exists_path_ok(path)) {
+    return scr_fs_exists_false(cb);
   }
 #ifdef SCR_LIB
   /* Library links exclude the event-loop unit, and the compile-time scan
    * refuses the fs.exists surface (SC4005's family) — this arm exists
    * only so the TU links without scr_async. Unreachable by construction. */
+  if (converted) scr_dyn_release(converted);
   scr_trap("scriptc: internal error: fs.exists async fire reached in a library build — please report this");
   return NULL;
 #else
   ScrClosure *clo = scr_closure_new((void *)scr_fs_exists_fire, 2);
   clo->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
-  scr_box_set_ref(clo->caps[0], scr_dyn_retain((ScrDyn *)path));
+  scr_box_set_ref(clo->caps[0], scr_dyn_retain((ScrDyn *)probe));
   clo->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(clo->caps[1], scr_dyn_retain((ScrDyn *)cb));
   scr_loop_defer(clo);
+  if (converted) scr_dyn_release(converted);
   return scr_dyn_retain(scr_dyn_undefined());
 #endif
 }

@@ -295,36 +295,12 @@ export function lowerFsLadderCall(
   switch (bi.member) {
     case "exists": {
       // The REAL deprecated-API shape: the callback validates
-      // synchronously (Node's one throwing arm), invalid paths answer
-      // false THROUGH it, and the answer is asynchronous.
-      // A provably-non-file `new URL('<literal>')` path (the suite's
-      // https://foo probe): Node answers false through the callback
-      // synchronously — the checked-dynamic tree has no URL kind, so the path slot
-      // carries the unvalidatable token instead (construction of a
-      // parseable literal is effect-free; file: URLs keep the fence —
-      // they would need the real path conversion).
-      let pathNode: ts.Expression | undefined = args[0];
-      let pathExpr: IrExpr | null = null;
-      if (
-        pathNode &&
-        ts.isNewExpression(pathNode) &&
-        ts.isIdentifier(pathNode.expression) &&
-        pathNode.expression.text === "URL" &&
-        lowerer.mapTypeOf(lowerer.typeOf(pathNode))?.kind === "url" &&
-        pathNode.arguments?.nodes.length === 1 &&
-        ts.isStringLiteral(pathNode.arguments.nodes[0]!)
-      ) {
-        let parsed: URL | null = null;
-        try {
-          parsed = new URL(pathNode.arguments.nodes[0]!.text);
-        } catch {
-          parsed = null;
-        }
-        if (parsed === null || parsed.protocol === "file:") return null;
-        pathExpr = dynUndefinedExpr(loc);
-        pathNode = undefined;
-      }
-      pathExpr ??= dynArg(pathNode);
+      // synchronously (Node's one throwing arm), a path getValidatedPath
+      // rejects answers false THROUGH it synchronously, a file: URL converts
+      // to its path and probes, and a valid string or Buffer probes in a
+      // later loop turn. The runtime (scr_fs_exists_async) decides between
+      // those arms, so the path crosses as the value Node sees.
+      const pathExpr = dynArg(args[0]);
       const cbExpr = dynArg(args[1]);
       if (pathExpr === null || cbExpr === null) return null;
       return chk("fs.existsChk", [pathExpr, cbExpr], DYN);

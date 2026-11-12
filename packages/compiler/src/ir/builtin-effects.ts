@@ -1339,6 +1339,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.readSync",
   "dir.readCb",
   "dir.closeSync",
+  // close(callback) validates the callback before the closed check, so a
+  // non-function argument throws synchronously.
+  "dir.closeCb",
   // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
   // while an operation is queued.
   "dir.dispose",

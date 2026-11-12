@@ -33395,6 +33395,7 @@
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
@@ -35431,9 +35432,10 @@
       "anchor": "err_dir_closed",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_DIR_CLOSED",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
       },
@@ -35452,9 +35454,10 @@
       "anchor": "err_dir_concurrent_operation",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_DIR_CONCURRENT_OPERATION",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
       },
@@ -45456,7 +45459,9 @@
           "tests/corpus/fs-close-callback.cjs",
           "tests/corpus/fs-descriptor-family.cjs",
           "tests/corpus/fs-dir-dispose.ts",
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
@@ -47341,8 +47346,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.constants",
         "tests": [
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs"
@@ -47670,9 +47675,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.exists",
         "tests": [
+          "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs"
         ]
       },
@@ -49325,9 +49331,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.existsSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.existsSync",
         "tests": [
+          "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/fs-exists-optional-path.ts"
         ]
       },
@@ -50617,9 +50624,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.close",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -50643,9 +50651,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.close",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
@@ -50670,9 +50679,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.closeSync",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -50696,9 +50706,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.read",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -50722,9 +50733,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.read",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
@@ -50749,9 +50761,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir.readSync",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -50801,9 +50814,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
@@ -50828,9 +50842,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-dir-dispose.ts"
         ]
@@ -50855,9 +50870,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.path",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -50907,9 +50923,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isBlockDevice",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -50935,9 +50952,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isCharacterDevice",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -50963,9 +50981,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isDirectory",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -50991,9 +51010,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isFIFO",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -51019,9 +51039,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isFile",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -51047,9 +51068,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isSocket",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -51075,9 +51097,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dirent.isSymbolicLink",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/1541-fs-readdir-dirent.ts",
           "tests/corpus/5544-fs-opendir.cjs",
           "tests/corpus/fs-opendir-callbacks.ts"
@@ -53623,8 +53646,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.constants",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.constants",
         "tests": [
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs"

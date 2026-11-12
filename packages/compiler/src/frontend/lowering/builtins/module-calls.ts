@@ -219,9 +219,9 @@ export function lowerBuiltinModuleCall(
   if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
   }
-  // fs.existsSync(path) over a Buffer path or a value whose type only the
-  // runtime knows (`any`): Node answers false for a non-path and reports
-  // DEP0187 once, which the value form does.
+  // fs.existsSync(path) over a value that is not statically a string: a
+  // Buffer, a URL, an `any`, or any other value Node answers false for with
+  // one DEP0187 report. The value form decides the arm at run time.
   if (bi.module === "fs" && bi.member === "existsSync") {
     const lowered = lowerFsExistsValueCall(lowerer, expr, loc);
     if (lowered) return lowered;

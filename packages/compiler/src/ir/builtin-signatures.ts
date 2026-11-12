@@ -4483,6 +4483,10 @@ function buildLibFnSignatures() {
      * (URLSearchParams names/values). Borrowed dyn; +1 string. May-throw. */
     "dyn.toStringCoerce": { argTypes: [DYN], result: STRING },
     "dyn.stringConstructor": { argTypes: [DYN], result: STRING },
+    /** Registers a class's compiled String(instance) (the conversion method
+     * its instances run) under the class's instance-capsule type key, for
+     * the untyped conversion. */
+    "dyn.registerClassToString": { argTypes: [STRING, DYN], result: VOID },
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },

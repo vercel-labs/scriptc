@@ -4774,7 +4774,7 @@ function formatSValue(
     const declaresToString = (arm: IrType): boolean => {
       if (arm.kind !== "object" || isErrorClass(lowerer, arm.className)) return false;
       for (let info = lowerer.classes.get(arm.className) ?? null; info; info = info.base)
-        if (info.methods.has("toString")) return true;
+        if (info.methods.has("toString") || info.methods.has("sym:toPrimitive")) return true;
       return false;
     };
     if (lowerer.unions.get(t.unionId)?.arms.some(declaresToString)) {
@@ -4792,17 +4792,19 @@ function formatSValue(
   }
   // hasBuiltInToString walks the prototype chain for the owner of
   // `toString` (or Symbol.toPrimitive) and answers true only for a
-  // built-in owner's constructor; a class with its OWN toString takes
-  // String(arg) in Node, not inspect, so the program's conversion is the
-  // answer. A program class that declares one lowers through the same
-  // class-to-primitive path as any other String() conversion.
+  // built-in owner's constructor; a class with its OWN toString or
+  // Symbol.toPrimitive takes String(arg) in Node, not inspect, so the
+  // program's conversion is the answer. A program class that declares one
+  // lowers through the same class-to-primitive path as any other String()
+  // conversion.
   if (t.kind === "object" && !isErrorClass(lowerer, t.className)) {
     for (
       let info: ClassInfo | null = lowerer.classes.get(t.className) ?? null;
       info;
       info = info.base
     ) {
-      if (info.methods.has("toString")) return lowerer.ensureString(value, node);
+      if (info.methods.has("toString") || info.methods.has("sym:toPrimitive"))
+        return lowerer.ensureString(value, node);
     }
   }
   // A record with a `toString` member is a custom conversion too: a

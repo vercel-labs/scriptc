@@ -69,9 +69,11 @@ In TypeScript, a `util.callbackify` result must reach a callback whose error par
 `util.debuglog` reads `NODE_DEBUG` as the process started.
 Its `%s` refuses functions and objects with symbol-keyed members, and object arguments are refused on a color terminal.
 
-`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, byte views and typed arrays, Dates, RegExps, Maps, Sets, URLs, URLSearchParams, weak-collection identity, class instances, and Errors compared by message, name, `cause` and `errors`.
+`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, byte views and typed arrays, Dates, RegExps, Maps, Sets, URLs, URLSearchParams, ArrayBuffers and SharedArrayBuffers compared by their bytes, weak-collection identity, class instances, and Errors compared by message, name, `cause` and `errors`.
 Its optional third argument skips prototype and constructor comparisons.
-Opaque proxies, own accessor properties, and own enumerable `constructor` values remain refused.
+An own enumerable accessor property takes part by the value its getter answers, run once with the object as `this`, and a throwing getter's error reaches the caller.
+A detached ArrayBuffer compared with a buffer that also reports length 0 throws a `TypeError`, as Node does.
+Opaque proxies, own enumerable `constructor` values, an accessor `constructor`, and an accessor `Symbol.toStringTag` remain refused.
 
 Synchronous and promise filesystem APIs with trailing arguments that affect behavior remain call-only.
 This includes writers, open, directory creation/removal, metadata readers, and directory readers.

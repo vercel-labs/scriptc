@@ -5943,6 +5943,55 @@ int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
 static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
 static ScrStr *scr_dyn_tag_string(const ScrStr *tag);
 
+/* The compiled String(instance) of the program's classes, by the type key
+ * of their instances' typed refs: a compiled function (self) that calls
+ * the conversion method and answers its primitive result. The program
+ * registers them before it runs. */
+typedef struct {
+  char *type_key;
+  ScrDyn *fn;
+} ScrClassToString;
+
+static SCR_TL ScrClassToString *g_class_to_string;
+static SCR_TL size_t g_nclass_to_string;
+
+static void scr_class_to_string_cleanup(void) {
+  for (size_t i = 0; i < g_nclass_to_string; i++) {
+    free(g_class_to_string[i].type_key);
+    scr_dyn_release(g_class_to_string[i].fn);
+  }
+  free(g_class_to_string);
+  g_class_to_string = NULL;
+  g_nclass_to_string = 0;
+}
+
+void scr_dyn_register_class_to_string(ScrStr *type_key, ScrDyn *fn) {
+  if (g_nclass_to_string == 0) scr_atexit(scr_class_to_string_cleanup);
+  ScrClassToString *grown =
+      realloc(g_class_to_string, (g_nclass_to_string + 1) * sizeof *g_class_to_string);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  g_class_to_string = grown;
+  char *key = malloc(type_key->len + 1);
+  if (!key) scr_trap("scriptc: out of memory\n");
+  memcpy(key, type_key->data, type_key->len);
+  key[type_key->len] = '\0';
+  g_class_to_string[g_nclass_to_string].type_key = key;
+  g_class_to_string[g_nclass_to_string].fn = scr_dyn_retain(fn);
+  g_nclass_to_string++;
+}
+
+static ScrDyn *scr_class_to_string_fn(const ScrDyn *d) {
+  if (!g_nclass_to_string || d->kind != SCR_DYN_TYPED_REF) return NULL;
+  const char *key = d->v.typed_ref.type_key;
+  for (size_t i = 0; i < g_nclass_to_string; i++)
+    if (strcmp(g_class_to_string[i].type_key, key) == 0) return g_class_to_string[i].fn;
+  return NULL;
+}
+
+bool scr_dyn_class_to_string_registered(const ScrDyn *d) {
+  return scr_class_to_string_fn(d) != NULL;
+}
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   /* An instance of a class declared `extends Date` converts through its
    * toString, declared or inherited. With an exception pending the view is
@@ -5956,6 +6005,34 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     scr_str_release(empty);
     return out;
   }
+  /* A class whose conversion the program defines (Symbol.toPrimitive or
+   * toString) converts through the compiled function the program
+   * registered: its primitive answer is the conversion's. */
+  ScrDyn *compiled = scr_class_to_string_fn(d);
+  if (compiled) {
+    ScrDyn *argument = (ScrDyn *)d;
+    ScrDyn *result = scr_dyn_call(compiled, &argument, 1, "toString");
+    if (!result) {
+      /* The method threw: the exception is pending, and the caller's
+       * ToString keeps failing (the empty string is never used). */
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+    if (scr_dyn_to_primitive_result_is_object(result)) {
+      /* ToPrimitive got a non-primitive answer from the method: nothing
+       * OrdinaryToPrimitive can convert. */
+      static const char message[] = "Cannot convert object to primitive value";
+      scr_dyn_release(result);
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+    return result;
+  }
   /* A class instance converting through Object.prototype.toString shows
    * its Symbol.toStringTag getter's string. */
   ScrStr *class_tag = scr_dyn_typed_ref_conversion_tag(d);
@@ -5968,11 +6045,12 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
   /* The view of a class instance holds its fields, not its class's methods:
-   * a toString the class declares is compiled for the class's own calls,
-   * which the runtime cannot make. Node runs that method, so answering
-   * "[object Object]" from the view would be a wrong value: the conversion
-   * is refused by name. (A class with prototype data answers no to the
-   * class test, and its view reaches the method.) */
+   * a toString the class declares is compiled for the class's own calls.
+   * A class the program could not register a compiled conversion for
+   * (a declared answer that is not a primitive, a method the program
+   * replaces, an abstract declaration) keeps the refusal by name. (A class
+   * with prototype data answers no to the class test, and its view reaches
+   * the method.) */
   if (view->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(view, "toString", 8)) {
     ScrStr *to_string_key = scr_str_new("toString", 8);
     bool declared = scr_dyn_typed_ref_class_has(d, to_string_key);
@@ -13663,11 +13741,16 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     return NULL;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
-    if (tag) {
-      ScrStr *out = scr_dyn_tag_string(tag);
-      scr_str_release(tag);
-      return out;
+    /* A class whose conversion the program registered runs it (a declared
+     * Symbol.toPrimitive decides the conversion before Object.prototype's
+     * tag). */
+    if (!scr_dyn_class_to_string_registered(d)) {
+      ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+      if (tag) {
+        ScrStr *out = scr_dyn_tag_string(tag);
+        scr_str_release(tag);
+        return out;
+      }
     }
     if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);

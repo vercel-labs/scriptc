@@ -1582,6 +1582,16 @@ ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
  * toString, the "[object EventTarget]" / "[object Event]" string of its
  * inherited @@toStringTag. */
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d);
+/* Registers the compiled String(instance) of a class (the method its
+ * conversion runs: [Symbol.toPrimitive]("string") or toString) under the
+ * type key of the class's instance capsules. The program registers them
+ * before it runs; an instance of a class the runtime has no function for
+ * keeps the conversion's refusal. */
+void scr_dyn_register_class_to_string(ScrStr *type_key, ScrDyn *fn);
+/* Whether the program registered a compiled String(instance) for the
+ * value's class (a conversion the program defines: Symbol.toPrimitive or
+ * toString). */
+bool scr_dyn_class_to_string_registered(const ScrDyn *d);
 void scr_dyn_typed_ref_commit(ScrDyn *d);
 /* Attach per-element access to a live array capsule (idempotent). Indexed
  * reads, `length`, in-range writes, `in`, own-property probes, and array

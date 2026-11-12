@@ -19,6 +19,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_dyn_register_class_to_string copies the type key and retains the
+  // function in a thread-local table; no program code runs.
+  "dyn.registerClassToString",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
   // scr_closure_adopt_identity writes two fields of the adapter.

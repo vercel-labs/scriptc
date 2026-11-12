@@ -105169,10 +105169,14 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-ansi-text.ts",
+          "tests/corpus/util-deep-equal-accessors.ts",
+          "tests/corpus/util-deep-equal-buffers.ts",
           "tests/corpus/util-deep-equal-builtins.ts",
           "tests/corpus/util-deep-equal-classes.ts",
+          "tests/corpus/util-deep-equal-detached-buffers.cjs",
           "tests/corpus/util-deep-equal-errors.ts",
           "tests/corpus/util-deprecated-helper-edges.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/util-format-json-error.ts",
           "tests/corpus/util-inspect-colors-values.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
@@ -106403,6 +106407,7 @@
         "evidence": "compiler-feature:util.util.format",
         "tests": [
           "tests/corpus/1636-util-format.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
@@ -106439,6 +106444,7 @@
         "evidence": "compiler-feature:util.util.formatWithOptions",
         "tests": [
           "tests/corpus/1636-util-format.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
@@ -106907,7 +106913,10 @@
           "packages/compiler/test/deep-equality.test.ts",
           "tests/corpus/util-deep-equal-builtins.ts",
           "tests/corpus/util-deep-equal-classes.ts",
-          "tests/corpus/util-deep-equal-errors.ts"
+          "tests/corpus/util-deep-equal-errors.ts",
+          "tests/corpus/util-deep-equal-buffers.ts",
+          "tests/corpus/util-deep-equal-accessors.ts",
+          "tests/corpus/util-deep-equal-detached-buffers.cjs"
         ]
       },
       "anchorSource": "exact"

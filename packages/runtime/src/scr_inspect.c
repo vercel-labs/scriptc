@@ -4944,13 +4944,18 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
  * the object or its prototype chain (1). Symbol-keyed members (where
  * Symbol.toPrimitive would also count) are reported as unknown (-1), and a
  * class instance whose class defines toString as -2: its methods are
- * compiled for the class's own calls, which this runtime cannot make. */
+ * compiled for the class's own calls, which this runtime cannot make. A
+ * class whose compiled conversion the program registered (the registry
+ * scr_dyn_register_class_to_string fills) is -2 as well. */
 static int insp_fmt_custom_to_string(const ScrDyn *value) {
   ScrDyn *view = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
-    ScrStr *to_string = scr_str_new("toString", 8);
-    bool has = scr_dyn_typed_ref_class_has(value, to_string);
-    scr_str_release(to_string);
+    bool has = scr_dyn_class_to_string_registered(value);
+    if (!has) {
+      ScrStr *to_string = scr_str_new("toString", 8);
+      has = scr_dyn_typed_ref_class_has(value, to_string);
+      scr_str_release(to_string);
+    }
     if (has) return -2;
     /* A record that typed code built can hold a toString function of its
      * own, and answers from the object it shows untyped code. A class

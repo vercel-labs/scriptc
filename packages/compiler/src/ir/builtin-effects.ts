@@ -308,6 +308,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
   "insp.dynS",
+  // %s converts its argument with String(value) or renders it, and both can
+  // throw (a program conversion, an inspect refusal): the NULL answer with
+  // the exception pending must not be read as text.
+  "insp.dynFormatS",
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",

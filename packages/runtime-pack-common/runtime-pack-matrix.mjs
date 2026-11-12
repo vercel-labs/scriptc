@@ -432,6 +432,14 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // util.isDeepStrictEqual's ArrayBuffer and SharedArrayBuffer arm asks the
+  // mutable-buffers registry whether either side is detached, and Node throws
+  // V8's construct TypeError when both report length 0 (scr_util_compare.c).
+  // The registry's ScrJsBufferOps table exists only in the object model build,
+  // so the unit's check needs that build: a program with the object model
+  // links this twin, and every other program keeps the default object, byte
+  // for byte.
+  if (source === "scr_util_compare.c") withJsObjectModel(variants);
   // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
   // object model build: its tables and the ScrJsBufferOps contract it fills
   // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build

@@ -45,7 +45,7 @@ static ScrDyn *util_deep_constructor(const ScrDyn *value) {
     if (table) for (size_t i = 0; i < scr_dyn_obj_count(table); i++) {
       ScrDynProp e = scr_dyn_obj_prop_at(table, i);
       if (e.key_len == 11 && !memcmp(e.key, "constructor", 11)) {
-        if (e.accessor) { util_deep_refused("native accessor properties"); return NULL; }
+        if (e.accessor) { util_deep_refused("an accessor constructor property"); return NULL; }
         if (p == value && e.value->kind == SCR_DYN_FUNC) {
           util_deep_refused("native own constructor functions"); return NULL;
         }
@@ -75,12 +75,16 @@ static ScrDyn *util_deep_tag(const ScrDyn *value) {
     if (!keys) continue;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       if (!scr_dyn_same_value(keys->v.arr.items[i], key)) continue;
-      // General native getters retain an explicit boundary, including
-      // non-enumerable Symbol.toStringTag descriptors read by Node.
-      for (size_t j = 0; j < scr_dyn_obj_count(p->symbol_properties); j++) {
-        if (scr_dyn_obj_prop_at(p->symbol_properties, j).accessor) {
-          scr_dyn_release(key); util_deep_refused("native accessor properties"); return NULL;
-        }
+      // Node reads Symbol.toStringTag with a Get, so an accessor tag would
+      // run its getter, and its tag gates read it several times over, which
+      // this comparison does not reproduce. That one descriptor stays a
+      // refusal; an accessor for any other symbol takes part through the
+      // property check below.
+      const ScrDynEntry *tag = scr_dyn_own_symbol_entry(p, key);
+      if (tag && tag->accessor) {
+        scr_dyn_release(key);
+        util_deep_refused("a native accessor Symbol.toStringTag");
+        return NULL;
       }
       ScrDyn *result = scr_dyn_symbol_key_get(p, key, false);
       scr_dyn_release(key);
@@ -91,26 +95,47 @@ static ScrDyn *util_deep_tag(const ScrDyn *value) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b, bool skip,
-                                  const ScrDeepFrame *frame) {
+/* Node's keyCheck reads each corresponding property through a Get
+ * (`a[key]` and `b[key]`), so an own accessor takes part by the value its
+ * getter answers, run with the object as `this`. A throwing getter
+ * propagates to the caller, and a side without a getter answers undefined.
+ * `owner` is the object the descriptor belongs to; the symbol-key tables
+ * compare through their object so `this` is the instance, not the table. */
+static ScrDyn *util_deep_property_value(const ScrDyn *owner, const ScrDynProp *prop) {
+  if (!prop->accessor) return scr_dyn_retain(prop->value);
+  if (!prop->getter) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *getter = scr_dyn_retain(prop->getter);
+  scr_dyn_this_push_dyn(owner);
+  ScrDyn *value = scr_dyn_call(getter, NULL, 0, "property getter");
+  scr_dyn_this_pop();
+  scr_dyn_release(getter);
+  return value;
+}
+
+static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b,
+                                 const ScrDyn *owner_a, const ScrDyn *owner_b,
+                                 bool skip, const ScrDeepFrame *frame) {
   if (util_deep_key_count(a) != util_deep_key_count(b)) return false;
-  if (!a) return true;
-  for (size_t i = 0; i < scr_dyn_obj_count(a); i++) {
-    ScrDynProp x = scr_dyn_obj_prop_at(a, i);
-    if (!x.enumerable) continue;
-    ScrDynProp yp;
-    const ScrDynProp *y = NULL;
-    if (b) for (size_t j = 0; j < scr_dyn_obj_count(b); j++) {
-      ScrDynProp candidate = scr_dyn_obj_prop_at(b, j);
-      if (candidate.enumerable && candidate.key_len == x.key_len &&
-          !memcmp(candidate.key, x.key, x.key_len)) { yp = candidate; y = &yp; break; }
+  if (!b) return true;
+  /* Node's keyCheck walks the second side's own keys, whichever order the
+   * two sides keep: matching keys compare a's value with b's, so a getter
+   * on either side runs in b's key order. */
+  for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
+    ScrDynProp y = scr_dyn_obj_prop_at(b, i);
+    if (!y.enumerable) continue;
+    ScrDynProp xp;
+    const ScrDynProp *x = NULL;
+    if (a) for (size_t j = 0; j < scr_dyn_obj_count(a); j++) {
+      ScrDynProp candidate = scr_dyn_obj_prop_at(a, j);
+      if (candidate.enumerable && candidate.key_len == y.key_len &&
+          !memcmp(candidate.key, y.key, y.key_len)) { xp = candidate; x = &xp; break; }
     }
-    if (!y) return false;
-    if (x.accessor || y->accessor) return util_deep_refused("native accessor properties");
+    if (!x) return false;
     // Materializing a cyclic typed child can refresh its ancestor table.
-    // Retain the values before that refresh replaces descriptor storage.
-    ScrDyn *xv = scr_dyn_retain(x.value), *yv = scr_dyn_retain(y->value);
-    bool same = util_deep_equal(xv, yv, skip, frame);
+    // Read both values before that refresh replaces descriptor storage.
+    ScrDyn *xv = util_deep_property_value(owner_a, x);
+    ScrDyn *yv = xv && !scr_exc_pending() ? util_deep_property_value(owner_b, &y) : NULL;
+    bool same = xv && yv && util_deep_equal(xv, yv, skip, frame);
     scr_dyn_release(xv); scr_dyn_release(yv);
     if (!same) return false;
   }
@@ -123,10 +148,10 @@ static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b, bool skip,
  * by its time (an invalid date equals another invalid one), a RegExp by
  * source, flags and lastIndex, a Map or Set by its entries in any order,
  * a URL by its href, a URLSearchParams (which holds no own enumerable
- * properties) as equal to any other, and a WeakMap or WeakSet only by
- * identity. A handle of any other kind keeps the refusal: its own
- * enumerable properties are not modeled, so Node's key check has no
- * honest answer here. */
+ * properties) as equal to any other, an ArrayBuffer or SharedArrayBuffer by
+ * its byte contents, and a WeakMap or WeakSet only by identity. A handle of
+ * any other kind keeps the refusal: its own enumerable properties are not
+ * modeled, so Node's key check has no honest answer here. */
 
 static bool util_deep_handle_known(const ScrDyn *d) {
   if (d->kind != SCR_DYN_HANDLE) return false;
@@ -139,6 +164,8 @@ static bool util_deep_handle_known(const ScrDyn *d) {
     case SCR_DYNH_WEAK_SET:
     case SCR_DYNH_URL:
     case SCR_DYNH_SEARCH_PARAMS:
+    case SCR_DYNH_ARRAY_BUFFER:
+    case SCR_DYNH_SHARED_ARRAY_BUFFER:
       return true;
     default:
       return false;
@@ -262,6 +289,31 @@ static bool util_deep_handles(const ScrDyn *a, const ScrDyn *b, bool skip,
     case SCR_DYNH_SEARCH_PARAMS:
       /* No own enumerable properties, so any two params compare equal. */
       return true;
+    case SCR_DYNH_ARRAY_BUFFER:
+    case SCR_DYNH_SHARED_ARRAY_BUFFER: {
+      if (!skip && !util_deep_same_constructor(a, b)) return false;
+      /* Node's areEqualArrayBuffers: the byte lengths agree and the bytes
+       * do. The length gate runs first, so a detached buffer (which reports
+       * 0) only reaches the byte comparison against another buffer that
+       * also reports 0; there Node builds a Uint8Array over each buffer,
+       * and V8 refuses that on a detached one, so the comparison throws.
+       * The shared storage is copied before the comparison, so a worker
+       * writing during it cannot tear the bytes. */
+      const ScrBytes *x = a->v.handle.ptr, *y = b->v.handle.ptr;
+      if (scr_bytes_byte_len(x) != scr_bytes_byte_len(y)) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+      const ScrJsBufferOps *ops = scr_js_buffer_ops;
+      if (ops && (ops->owner_detached(x) || ops->owner_detached(y))) {
+        static const char message[] = "Cannot perform Construct on a detached ArrayBuffer";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        return false;
+      }
+#endif
+      SCR_BYTES_SNAPSHOT(x);
+      SCR_BYTES_SNAPSHOT(y);
+      size_t length = (size_t)scr_bytes_byte_len(x);
+      return length == 0 || !memcmp(x->data, y->data, length);
+    }
     default:
       return util_deep_refused("native handles");
   }
@@ -333,8 +385,8 @@ static bool util_deep_date_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
     ScrDeepFrame frame = { a, b, parent };
     same = util_deep_same_keys(va, vb) &&
            util_deep_same_keys(va->symbol_properties, vb->symbol_properties) &&
-           util_deep_properties(va, vb, skip, &frame) &&
-           util_deep_properties(va->symbol_properties, vb->symbol_properties, skip, &frame);
+           util_deep_properties(va, vb, va, vb, skip, &frame) &&
+           util_deep_properties(va->symbol_properties, vb->symbol_properties, va, vb, skip, &frame);
   }
   scr_dyn_release(va);
   scr_dyn_release(vb);
@@ -393,8 +445,8 @@ static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
   }
   if (same && !scr_exc_pending())
     same = util_deep_same_keys(a, b) && util_deep_same_keys(a->symbol_properties, b->symbol_properties) &&
-           util_deep_properties(a, b, skip, &frame) &&
-           util_deep_properties(a->symbol_properties, b->symbol_properties, skip, &frame);
+           util_deep_properties(a, b, a, b, skip, &frame) &&
+           util_deep_properties(a->symbol_properties, b->symbol_properties, a, b, skip, &frame);
   scr_error_release(ea);
   scr_error_release(eb);
   return same && !scr_exc_pending();
@@ -485,6 +537,10 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
   if (!skip) {
     if (a->kind == SCR_DYN_BYTES) {
       if (a->buffer != b->buffer || a->prototype != b->prototype) return false;
+      /* Node's tag gate reads a typed array's Symbol.toStringTag, which a
+       * DataView does not have, so a DataView never matches a numeric typed
+       * array of the same width even when their bytes agree. */
+      if (a->v.bytes->is_data_view != b->v.bytes->is_data_view) return false;
     } else {
       ScrDyn *x = util_deep_constructor(a);
       ScrDyn *y = !scr_exc_pending() ? util_deep_constructor(b) : NULL;
@@ -547,11 +603,11 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
       if (present != scr_dyn_arr_has_index(b, i)) return false;
       if (present && !util_deep_equal(a->v.arr.items[i], b->v.arr.items[i], skip, &frame)) return false;
     }
-    if (!util_deep_properties(a->v.arr.properties, b->v.arr.properties, skip, &frame)) return false;
+    if (!util_deep_properties(a->v.arr.properties, b->v.arr.properties, a, b, skip, &frame)) return false;
   } else if (a->kind == SCR_DYN_OBJ) {
-    if (!util_deep_properties(a, b, skip, &frame)) return false;
+    if (!util_deep_properties(a, b, a, b, skip, &frame)) return false;
   }
-  return util_deep_properties(a->symbol_properties, b->symbol_properties, skip, &frame);
+  return util_deep_properties(a->symbol_properties, b->symbol_properties, a, b, skip, &frame);
 }
 
 bool scr_util_is_deep_strict_equal(const ScrDyn *a, const ScrDyn *b, const ScrDyn *skip) {

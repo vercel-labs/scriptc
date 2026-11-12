@@ -1380,6 +1380,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.dataViewIs": "scr_dyn_data_view_is",
   "dyn.construct": "scr_dyn_construct",
   "dyn.this": "scr_dyn_this_get",
+  "dyn.registerClassToString": "scr_dyn_register_class_to_string",
   "dyn.generatorThis": "scr_gen_receiver",
   "insp.dyn": "scr_insp_dyn",
   "insp.dynS": "scr_insp_dyn_s",

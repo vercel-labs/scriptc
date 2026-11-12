@@ -14058,6 +14058,25 @@ export class Lowerer {
             break;
           }
         }
+        // That class's conversion method runs the same way, from the
+        // untyped conversion runtime (classToStringRegistrations): the
+        // nearest declaration at or above the constructed class, like the
+        // custom inspect method. Its units exist only for classes whose
+        // plan the untyped conversion can run.
+        const converted = this.classes.get(name.slice(1, -".constructor".length)) ?? null;
+        for (const conversion of ["sym:toPrimitive", "toString"] as const) {
+          let declaredAt: ClassInfo | null = null;
+          for (let c = converted; c; c = c.base) {
+            if (units.has(`%${c.def.name}.${conversion}`)) {
+              declaredAt = c;
+              break;
+            }
+          }
+          if (declaredAt) {
+            this.noteVirtualEdge(declaredAt, conversion);
+            break;
+          }
+        }
       }
     };
     // Class EXPRESSIONS collect while init bodies lower (below): their

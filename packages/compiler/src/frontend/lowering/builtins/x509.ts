@@ -292,6 +292,32 @@ export function lowerX509IssuerCertificate(
       "its type is X509Certificate | undefined",
     );
   }
+  if (site?.kind === "void" || site?.kind === "undefinedT") {
+    /* The checker narrowed the read to the undefined arm (`if
+     * (cert.issuerCertificate === undefined) { … cert.issuerCertificate … }`):
+     * the getter's answer there is that undefined. The value keeps the
+     * declared union's undefined arm, so equality, `typeof` and argument
+     * coercions see the shape a full read gives, and the receiver still
+     * evaluates for its effects. */
+    const receiver = lowerer.lowerExpr(access.expression);
+    const value: IrExpr = {
+      kind: "unionWrap",
+      unionId: declared.unionId,
+      tag: undefinedTag,
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: declared,
+      loc,
+    };
+    return receiver.kind === "varRef"
+      ? value
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result: value,
+          type: declared,
+          loc,
+        };
+  }
   if (site === null || (site.kind !== "union" && !isX509Type(lowerer, site))) {
     lowerer.noLowering(
       "X509Certificate.issuerCertificate with this result type",

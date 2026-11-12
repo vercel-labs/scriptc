@@ -2,7 +2,10 @@
 // certificate the program builds from PEM or DER carries none, so the getter
 // answers undefined, however it is read: through the property type, a held
 // union, a helper, a truthiness test, a narrowed branch, equality, `typeof`
-// and `??`, and as a prototype member for `in` and Object.hasOwn.
+// and `??`, and as a prototype member for `in` and Object.hasOwn. Inside a
+// branch a check narrowed the property to undefined, reads still keep the
+// declared union, so equality, `typeof` and argument coercions answer as they
+// do outside it.
 import * as crypto from "node:crypto";
 
 const CA = `-----BEGIN CERTIFICATE-----
@@ -114,3 +117,61 @@ console.log(
   describe(leafPem.issuerCertificate),
   describe(ca.issuerCertificate),
 );
+
+// A check that tests issuerCertificate narrows the property itself: every
+// read in that branch is typed undefined, and the getter's answer there is
+// that same undefined. The receiver still evaluates for its effects.
+function narrowed(label: string, cert: crypto.X509Certificate): void {
+  if (cert.issuerCertificate === undefined) {
+    console.log(
+      label,
+      "narrowed-eq",
+      cert.issuerCertificate === undefined,
+      typeof cert.issuerCertificate,
+      cert.issuerCertificate === cert.issuerCertificate,
+    );
+  }
+  if (cert.issuerCertificate == null) {
+    console.log(
+      label,
+      "narrowed-null",
+      cert.issuerCertificate === undefined,
+      describe(cert.issuerCertificate),
+    );
+  }
+  if (!cert.issuerCertificate) {
+    console.log(
+      label,
+      "narrowed-falsy",
+      describe(cert.issuerCertificate),
+      cert.issuerCertificate === undefined,
+      typeof cert.issuerCertificate,
+    );
+  }
+  if (typeof cert.issuerCertificate === "undefined") {
+    console.log(label, "narrowed-typeof", cert.issuerCertificate === undefined);
+  }
+  if (cert.issuerCertificate !== undefined) {
+    console.log(label, "narrowed-arm", cert.issuerCertificate.subject.length > 0);
+  } else {
+    console.log(
+      label,
+      "narrowed-else",
+      cert.issuerCertificate === undefined,
+      describe(cert.issuerCertificate),
+    );
+  }
+  // A member receiver evaluates for its effects before the read answers.
+  const holder = { cert };
+  if (holder.cert.issuerCertificate === undefined) {
+    console.log(
+      label,
+      "narrowed-member",
+      holder.cert.issuerCertificate === undefined,
+      typeof holder.cert.issuerCertificate,
+    );
+  }
+}
+
+narrowed("narrowed-pem", leafPem);
+narrowed("narrowed-ca", ca);

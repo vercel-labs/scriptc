@@ -210,13 +210,32 @@ void scr_init(void) {
   if (scr_stdout_buffering && !isatty(1)) scr_stdout_buffered = true;
 #endif
 #if !defined(_WIN32) && !defined(__wasi__)
-  /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
-   * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
-   * ending the process. A process.on listener replaces the disposition
-   * while it is registered (scr_events.c), and spawned children start with
-   * both at their default actions (scr_spawn_command). */
-  signal(SIGPIPE, SIG_IGN);
-  signal(SIGXFSZ, SIG_IGN);
+  /* Node resets the signal dispositions it inherits before any program code
+   * runs (src/node.cc, ResetSignalHandlers): an ignored signal goes back to
+   * its default action, while a handler an embedder or an LD_PRELOAD
+   * installed is kept. Without this a program launched by a shell or a CI
+   * runner that ignores SIGTSTP can never suspend on Ctrl+Z — readline's
+   * kill(getpid(), SIGTSTP) is discarded — and an inherited ignored SIGPIPE
+   * or SIGXFSZ leaves the write failing instead of ending the process the
+   * way Node does. Node's bound is kMaxSignal (32: NSIG is not reliable
+   * across platforms). SIGPIPE and SIGXFSZ are then ignored again: a write
+   * to a closed pipe or past RLIMIT_FSIZE fails with EPIPE or EFBIG, on any
+   * thread, instead of ending the process. A process.on listener replaces
+   * the disposition while it is registered (scr_events.c), and spawned
+   * children start with both at their default actions (scr_spawn_command). */
+  for (unsigned nr = 1; nr < 32; nr++) {
+    if (nr == SIGKILL || nr == SIGSTOP) continue;
+    struct sigaction act;
+    memset(&act, 0, sizeof act);
+    act.sa_handler = nr == SIGPIPE || nr == SIGXFSZ ? SIG_IGN : SIG_DFL;
+    if (act.sa_handler == SIG_DFL) {
+      /* Only an inherited SIG_IGN is replaced; a real handler stays. */
+      struct sigaction old;
+      if (sigaction((int)nr, NULL, &old) != 0) continue;
+      if ((old.sa_flags & SA_SIGINFO) != 0 || old.sa_handler != SIG_IGN) continue;
+    }
+    (void)sigaction((int)nr, &act, NULL);
+  }
 #endif
 #ifdef SCR_WORKERS
   }

@@ -2,7 +2,8 @@
 // X509Certificate | undefined, and a certificate read from a PEM file has no
 // issuer chain, so every read answers undefined — through the property type,
 // a held union, a helper, truthiness, equality and `typeof`, while the member
-// stays on the prototype for `in` and Object.hasOwn.
+// stays on the prototype for `in` and Object.hasOwn. A read inside a branch
+// that narrowed the property to undefined keeps the declared union there.
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -39,3 +40,30 @@ probe("leaf", leaf);
 probe("ca", ca);
 probe("der", new X509Certificate(leaf.raw));
 console.log("paired", leaf.issuerCertificate === ca.issuerCertificate, describe(ca.issuerCertificate));
+
+// A check that tests issuerCertificate narrows the property itself: the read
+// in that branch is typed undefined and the getter's answer there is that
+// same undefined.
+function narrowed(label: string, cert: X509Certificate): void {
+  if (cert.issuerCertificate === undefined) {
+    console.log(
+      label,
+      "narrowed-eq",
+      cert.issuerCertificate === undefined,
+      typeof cert.issuerCertificate,
+    );
+  }
+  if (cert.issuerCertificate !== undefined) {
+    console.log(label, "narrowed-arm", cert.issuerCertificate.subject.length > 0);
+  } else {
+    console.log(
+      label,
+      "narrowed-else",
+      cert.issuerCertificate === undefined,
+      describe(cert.issuerCertificate),
+    );
+  }
+}
+
+narrowed("narrowed-leaf", leaf);
+narrowed("narrowed-ca", ca);

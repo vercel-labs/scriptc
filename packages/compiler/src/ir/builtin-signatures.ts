@@ -4802,6 +4802,11 @@ function buildLibFnSignatures() {
     "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
     "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
+    /** Object.prototype.isPrototypeOf(receiver, value) over checked-dynamic
+     * operands: ToObject throws on a nullish receiver, and the argument's
+     * prototype chain is walked comparing each link with the receiver by
+     * identity. */
+    "dyn.isPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
     "dyn.copyDataProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.objectRest": { argTypes: [DYN, DYN], result: DYN },
@@ -4848,6 +4853,9 @@ function buildLibFnSignatures() {
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
+    /** Function.prototype as a value: an anonymous function answering
+     * undefined, length 0 and name "", one value per program. */
+    "dyn.functionPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },

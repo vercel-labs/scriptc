@@ -514,9 +514,33 @@ function builtinAnswer(
       );
     case "valueOf":
       return want.kind === "dyn" ? lowerer.coerceToExpected(o, DYN) : o;
-    case "isPrototypeOf":
-      // No object is created with a typed record as its prototype.
-      return { kind: "boolLit", value: false, type: BOOL, loc };
+    case "isPrototypeOf": {
+      // A primitive argument answers false before the receiver's chain or the
+      // argument's own chain is read, so no runtime walk is needed.
+      const arg = args[0];
+      const kind = arg?.type.kind;
+      if (
+        arg === undefined ||
+        isUnitType(arg.type) ||
+        kind === "string" ||
+        kind === "f64" ||
+        kind === "bool" ||
+        kind === "bigint"
+      )
+        return { kind: "boolLit", value: false, type: BOOL, loc };
+      // A record is an ordinary object, and `Object.create(r)` or
+      // `{ __proto__: r }` makes that very record a live prototype: the
+      // answer is one identity walk of the argument's prototype chain, not a
+      // constant. A record with a null prototype answers the caller's
+      // "is not a function" instead (nullProtoRecordShape below).
+      return {
+        kind: "libCall",
+        fn: "dyn.isPrototypeOf",
+        args: [lowerer.coerceToExpected(o, DYN), lowerer.coerceToExpected(arg, DYN)],
+        type: BOOL,
+        loc,
+      };
+    }
     default: {
       // hasOwnProperty and propertyIsEnumerable: ToPropertyKey keeps a
       // symbol a symbol, and a record's own keys are strings, so a symbol

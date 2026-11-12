@@ -8103,6 +8103,24 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
 _Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.fn.js) == 72,
                "ScrDyn.v.fn.js moved: update the dynamic tier's call sites");
 
+/* The program's function-source lookup (scr_dyn.h). A module that keeps the
+ * printed text of the functions it boxes — Node's Function.prototype.toString
+ * output, the source with the TypeScript syntax erased — emits a table keyed
+ * by closure entry point and installs this at startup; a module that keeps
+ * none never calls it. */
+static ScrDynFnSourceLookup scr_dyn_fn_source_lookup = NULL;
+
+void scr_dyn_fn_source_install(ScrDynFnSourceLookup lookup) {
+  scr_dyn_fn_source_lookup = lookup;
+}
+
+const char *scr_dyn_fn_source_text(const ScrDyn *fn) {
+  if (scr_dyn_fn_source_lookup == NULL || fn->kind != SCR_DYN_FUNC) return NULL;
+  const void *closure = fn->v.fn.clo;
+  if (closure == NULL) return NULL;
+  return scr_dyn_fn_source_lookup(closure);
+}
+
 void scr_dyn_func_set_js(ScrDyn *fn, ScrDynThunk thunk, ScrDynJsEntry entry) {
   /* As scr_dyn_func_set_message: an adapted function's original box keeps
    * its own entries. */
@@ -13393,10 +13411,13 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     return out;
   }
   case SCR_DYN_FUNC: {
-    /* The interned builtin constructors print with their names, as in Node
-     * (function Map() { [native code] }); other functions without a source
-     * text print the anonymous native form. */
-    if (d->v.fn.sig && strcmp(d->v.fn.sig, "native:constructor") == 0 && d->v.fn.name) {
+    /* A function of the program's own prints the text Node prints for it —
+     * its source with the TypeScript syntax erased (function-source-text.ts
+     * in the compiler emits the rows). A builtin prints with its name, as in
+     * Node (function Map() { [native code] }), and anonymously without one. */
+    const char *source = scr_dyn_fn_source_text(d);
+    if (source != NULL) return scr_str_new(source, strlen(source));
+    if (d->v.fn.name != NULL && d->v.fn.name[0] != '\0') {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "function ");

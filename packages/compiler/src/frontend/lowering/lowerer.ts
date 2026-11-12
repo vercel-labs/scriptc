@@ -310,6 +310,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { finalizeFunctionSourceText } from "./function-source-text.js";
 import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
@@ -592,6 +593,7 @@ import {
   lowerDerivedCtorBody,
   superCallStmt,
   lowerSuperMethodCall,
+  lowerSuperComputedMethodCall,
   superThisRef,
   lowerSuperAccessorRead,
   lowerSuperAccessorWrite,
@@ -4238,6 +4240,22 @@ export class Lowerer {
       : null;
   }
 
+  /** A class field the JS collector widened to an undefined-armed union
+   * under trust-but-verify (ClassInfo.runtimeOptionalFields): the declaring
+   * assignment wrote undefined, so a read the checker narrows to the
+   * inferred type must keep the STORED union — Node can hold the undefined
+   * the checker's later-write inference does not name. */
+  runtimeOptionalClassField(className: string, field: string): boolean {
+    for (
+      let info: ClassInfo | null | undefined = this.classes.get(className);
+      info;
+      info = info.base
+    ) {
+      if (info.runtimeOptionalFields?.has(field)) return true;
+    }
+    return false;
+  }
+
   /** A strict property or method receiver over an array-derived optional
    * value. Reuse a plain read directly or stabilize an effectful receiver
    * once, throw Node's member-read TypeError for a unit arm, and extract the
@@ -5103,6 +5121,10 @@ export class Lowerer {
    * constructors held as typed values. Given only in a program that prints
    * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
+  /** The source node each lifted function came from, by function: the text
+   * a boxed function prints as (function-source-text.ts). Keyed by the
+   * function itself, whose name later passes may change. */
+  readonly functionSourceNodes = new Map<IrFunction, ts.Node>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5883,6 +5905,7 @@ export class Lowerer {
       checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
+      checkedTable("functionSourceNodes", () => this.functionSourceNodes.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("funduleMembers", () => this.funduleMembers.size),
@@ -13304,6 +13327,7 @@ export class Lowerer {
     boxBuiltinValuesChecked(this, functions);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
+    finalizeFunctionSourceText(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -22524,6 +22548,13 @@ export class Lowerer {
 
   lowerSuperMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr {
     return lowerSuperMethodCall(this, call, access);
+  }
+
+  lowerSuperComputedMethodCall(
+    call: ts.CallExpression,
+    access: ts.ElementAccessExpression,
+  ): IrExpr {
+    return lowerSuperComputedMethodCall(this, call, access);
   }
 
   superThisRef(access: ts.PropertyAccessExpression): { thisRef: IrExpr; base: ClassInfo } {

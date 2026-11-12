@@ -262,7 +262,9 @@ typedef enum {
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
-  Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */
+  Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
+  Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
+  Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */

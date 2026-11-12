@@ -198,12 +198,21 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
-/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
- * which process.execArgv reports; NULL without one. */
-static SCR_TL const char *scr_lib_exec_flag = NULL;
+/* Leading Node runtime flags taken out of process.argv (scr_lib_take_flag,
+ * scr_lib_take_flag_value) in the order they were taken; process.execArgv
+ * reports them, empty without any. A program sees at most a handful (the
+ * snapshot and reporter options), and a flag past the cap is still taken
+ * out of argv; it just does not appear in execArgv. Each flag is copied:
+ * setting process.title overwrites the original argument area on POSIX
+ * (libuv's proctitle), so a pointer into argv would not survive a program
+ * that renames itself before reading execArgv. */
+#define SCR_LIB_MAX_EXEC_FLAGS 8
+static SCR_TL const char *scr_lib_exec_flags[SCR_LIB_MAX_EXEC_FLAGS];
+static SCR_TL int scr_lib_exec_flag_count = 0;
 #if defined(_WIN32) && !defined(SCR_LIB)
-/* The flag's index in the original Windows command line, -1 without one. */
-static SCR_TL int scr_lib_exec_flag_index = -1;
+/* Each taken flag's index in the original Windows command line, in the
+ * same order: scr_lib_prepare_utf8_argv skips them when it rebuilds argv. */
+static SCR_TL int scr_lib_exec_flag_indexes[SCR_LIB_MAX_EXEC_FLAGS];
 #endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
@@ -371,7 +380,10 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
-    if (i == scr_lib_exec_flag_index) continue;
+    bool taken = false;
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
+      if (i == scr_lib_exec_flag_indexes[f]) taken = true;
+    if (taken) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -620,8 +632,10 @@ const char *scr_lib_arg(int i) {
   return scr_lib_argv[i];
 }
 
-bool scr_lib_take_flag(const char *flag) {
-  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+/* Drops process.argv[1], a leading runtime flag, and records it among the
+ * flags process.execArgv reports. Returns the recorded copy, or NULL when
+ * the flag cap is reached. */
+static const char *scr_lib_take_first_arg(const char *exec_flag) {
   char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
   if (!args) scr_trap("out of memory");
   args[0] = scr_lib_argv[0];
@@ -632,9 +646,35 @@ bool scr_lib_take_flag(const char *flag) {
   scr_lib_argv = args;
   scr_lib_argc--;
 #if defined(_WIN32) && !defined(SCR_LIB)
-  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+  if (scr_lib_exec_flag_count < SCR_LIB_MAX_EXEC_FLAGS)
+    scr_lib_exec_flag_indexes[scr_lib_exec_flag_count] =
+        (scr_lib_has_fork ? 2 : 1) + scr_lib_exec_flag_count;
 #endif
-  scr_lib_exec_flag = flag;
+  if (scr_lib_exec_flag_count >= SCR_LIB_MAX_EXEC_FLAGS) return NULL;
+  size_t size = strlen(exec_flag) + 1;
+  char *copy = malloc(size);
+  if (!copy) scr_trap("out of memory");
+  memcpy(copy, exec_flag, size);
+  scr_lib_exec_flags[scr_lib_exec_flag_count++] = copy;
+  return copy;
+}
+
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  scr_lib_take_first_arg(flag);
+  return true;
+}
+
+bool scr_lib_take_flag_value(const char *name, const char **value) {
+  if (scr_lib_argc < 2) return false;
+  const char *arg = scr_lib_argv[1];
+  size_t n = strlen(name);
+  if (strncmp(arg, name, n) != 0 || arg[n] != '=') return false;
+  const char *flag = scr_lib_take_first_arg(arg);
+  /* The value points into the flag's recorded copy, which process.title's
+   * rewrite of the argument area does not touch. Past the flag cap there is
+   * no copy, and the pointer into argv is valid only until a rename. */
+  if (value) *value = (flag != NULL ? flag : arg) + n + 1;
   return true;
 }
 
@@ -651,9 +691,9 @@ static void scr_process_exec_argv_cleanup(void) {
 ScrArr *scr_process_exec_argv(void) {
   if (!scr_exec_argv_arr) {
     scr_exec_argv_arr = scr_arr_new(SCR_ELEM_STR, 1);
-    if (scr_lib_exec_flag)
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
       scr_arr_push_ref(scr_exec_argv_arr,
-                       scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+                       scr_str_new(scr_lib_exec_flags[f], strlen(scr_lib_exec_flags[f])));
 #ifndef SCR_LIB
     scr_atexit(scr_process_exec_argv_cleanup);
 #endif

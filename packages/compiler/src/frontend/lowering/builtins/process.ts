@@ -1392,8 +1392,9 @@ export function lowerProcessProperty(
     // the read is DYN however the declaration spells the type.
     return { kind: "libCall", fn: "process.channel", args: [], type: DYN, loc };
   }
-  // process.execArgv: the Node runtime flags kept out of process.argv —
-  // a leading --test-update-snapshots in node:test programs, else [].
+  // process.execArgv: the Node runtime flags kept out of process.argv (in
+  // node:test programs, the leading --test-update-snapshots and reporter
+  // options), else [].
   if (member === "execArgv") {
     return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
   }

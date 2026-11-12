@@ -108,11 +108,21 @@ function resolveScriptcBin({ cwd = process.cwd(), env = process.env } = {}) {
   );
 }
 
+/** Variables that would make a lane behave as a node:test child rather than
+ * as a plain `node <file>` run. Node's test runner sets NODE_TEST_CONTEXT for
+ * every test file it starts, and node:test then writes binary test events
+ * instead of the spec report; a compiled program never does that, so a lane
+ * that inherited the variable would differ for reasons the program does not
+ * control. `dualRun` is often called from inside a test, so both lanes drop
+ * it even when the caller names it. */
+const LANE_ENV_DROPPED = ["NODE_TEST_CONTEXT"];
+
 /** The merged environment both lanes run with. The fixed variables win over
  * the caller's, since a diff that depends on the machine's locale or time
  * zone would not be about the program. */
 function laneEnv(env) {
   const merged = { ...process.env, ...env, ...BASE_ENV };
+  for (const key of LANE_ENV_DROPPED) delete merged[key];
   for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
   return merged;
 }

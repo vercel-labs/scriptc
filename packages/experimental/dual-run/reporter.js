@@ -31,6 +31,15 @@ import {
  * and each comparison is one cached build plus two short runs. */
 const CONCURRENCY = 4;
 
+/** The file Node ran that a result belongs to. A test declared in a module
+ * the entry imports reports that module as `file`, with `entryFile` naming
+ * the file Node started; keying by the entry keeps one line per file Node
+ * ran and keeps the failure with the file that ran it. A file Node could not
+ * load reports no `entryFile`, and its own path is the entry. */
+function entryFileOf(data) {
+  return typeof data.entryFile === "string" ? data.entryFile : data.file;
+}
+
 /** The report stream is whatever Node was told to use; the reporter only
  * yields text. */
 export default async function* reporter(source) {
@@ -62,13 +71,13 @@ export default async function* reporter(source) {
       // A suite reports its children's failure again as its own; the leaf
       // test is the one with the message.
       if (typeof data?.file !== "string" || data.details?.type === "suite") continue;
-      stateFor(data.file).failures.push(data);
+      stateFor(entryFileOf(data)).failures.push(data);
       continue;
     }
     if (event.type !== "test:summary") continue;
-    const file = data?.file;
     // The run's own summary has no file; every file's has one.
-    if (typeof file !== "string") continue;
+    if (typeof data?.file !== "string") continue;
+    const file = entryFileOf(data);
     stateFor(file).summary = data;
     queue(file);
     // Yield results that are already in, so a long run reports as it goes.

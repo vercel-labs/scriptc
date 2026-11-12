@@ -27,6 +27,39 @@ function cliEnv(env: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, SCRIPTC_BIN: cli, ...env };
 }
 
+/** Runs files through `node --test`, optionally with the dual-run reporter,
+ * the way a CI job would, and returns what it printed and its exit code. */
+function runNodeTest(
+  files: string[],
+  { withReporter }: { withReporter: boolean },
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const args = withReporter
+    ? ["--test", `--test-reporter=${reporter}`, "--test-reporter-destination=stdout", ...files]
+    : ["--test", ...files];
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: repoRoot,
+      env: cliEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on("data", (c: Buffer) => out.push(c));
+    child.stderr.on("data", (c: Buffer) => err.push(c));
+    child.on("close", (code, signal) => {
+      if (signal) {
+        reject(new Error(`node --test died to ${signal}\n${Buffer.concat(err)}`));
+        return;
+      }
+      resolve({
+        stdout: Buffer.concat(out).toString("utf8"),
+        stderr: Buffer.concat(err).toString("utf8"),
+        exitCode: code ?? 0,
+      });
+    });
+  });
+}
+
 describe("dualRun", () => {
   test("a passing program matches its binary", async () => {
     const result = await dualRun(join(fixturesDir, "passing.test.mts"), {
@@ -83,6 +116,19 @@ describe("dualRun", () => {
     expect(error!.entry).toBe(entry);
     expect(error!.stderr).toContain("SC2020");
   }, 180_000);
+
+  test("a call from inside a node:test run compares the file", async () => {
+    // The runner starts its test files with NODE_TEST_CONTEXT set, where
+    // node:test answers with binary test events instead of the spec report;
+    // the lanes must not inherit it, or every call made from a test would
+    // report a divergence that is not the program's.
+    const run = await runNodeTest([join(fixturesDir, "dual-run-in-test.test.mts")], {
+      withReporter: false,
+    });
+    expect(run.stderr).toBe("");
+    expect(run.stdout).toContain("✔ dualRun inside the runner compares the file");
+    expect(run.exitCode).toBe(0);
+  }, 180_000);
 });
 
 describe("dual-run reporter", () => {
@@ -93,30 +139,7 @@ describe("dual-run reporter", () => {
       "diverges.test.mts",
       "load-failure.mts",
     ].map((name) => join(fixturesDir, name));
-    const run = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
-      (resolve, reject) => {
-        const child = spawn(
-          process.execPath,
-          ["--test", `--test-reporter=${reporter}`, "--test-reporter-destination=stdout", ...files],
-          { cwd: repoRoot, env: cliEnv(), stdio: ["ignore", "pipe", "pipe"] },
-        );
-        const out: Buffer[] = [];
-        const err: Buffer[] = [];
-        child.stdout.on("data", (c: Buffer) => out.push(c));
-        child.stderr.on("data", (c: Buffer) => err.push(c));
-        child.on("close", (code, signal) => {
-          if (signal) {
-            reject(new Error(`reporter run died to ${signal}\n${Buffer.concat(err)}`));
-            return;
-          }
-          resolve({
-            stdout: Buffer.concat(out).toString("utf8"),
-            stderr: Buffer.concat(err).toString("utf8"),
-            exitCode: code ?? 0,
-          });
-        });
-      },
-    );
+    const run = await runNodeTest(files, { withReporter: true });
     const lines = run.stdout.split("\n");
     const lineFor = (name: string) =>
       lines.find((line) => line.includes(`tests/fixtures/dual-run/${name}`));
@@ -130,6 +153,20 @@ describe("dual-run reporter", () => {
     // Node reported for it; the comparison found the two lanes equal.
     expect(lineFor("load-failure.mts")).toMatch(/^✖ .*load-failure\.mts$/);
     expect(run.stdout).toMatch(/ ✖ .*load-failure\.mts: test failed \(line 1\)/);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(1);
+  }, 180_000);
+
+  test("a failure declared in an imported module stays on the entry's line", async () => {
+    const entry = join(fixturesDir, "imports-helper.test.mts");
+    const run = await runNodeTest([entry], { withReporter: true });
+    // Node counts the imported module's tests in the entry it ran, and its
+    // failure names the module as the declaring file; the report keeps one
+    // line for the entry and does not compare the module as a file of its
+    // own.
+    expect(run.stdout).toMatch(/^✖ .*imports-helper\.test\.mts \(2 passed, 1 failed\)$/m);
+    expect(run.stdout).toContain("✖ helper fails: from the helper");
+    expect(run.stdout).not.toContain("helper-failure.mjs");
     expect(run.stderr).toBe("");
     expect(run.exitCode).toBe(1);
   }, 180_000);

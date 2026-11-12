@@ -12,7 +12,9 @@ export interface DualRunOptions {
   /** Written to both lanes' standard input, which is closed afterwards. */
   stdin?: string | Uint8Array;
   /** Added to both lanes' environment. The environment always sets TZ=UTC
-   * and LANG=C. An entry left undefined removes the variable. */
+   * and LANG=C, and never carries NODE_TEST_CONTEXT, which would make a
+   * node:test program write binary test events instead of its report. An
+   * entry left undefined removes the variable. */
   env?: Record<string, string | undefined>;
   /** Working directory of both lanes and of the build. Defaults to
    * process.cwd(). */

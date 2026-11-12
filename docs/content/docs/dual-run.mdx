@@ -34,7 +34,7 @@ $ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-rep
 
 - A `✔` line means every test in the file behaves the same in both runs.
 - A `✖` line that names a test and shows a diff means the compiled binary's output differs from Node.js, and the diff starts at the line where it does.
-- A `✖` line with test counts means Node.js reported a failed test in the file. The failing tests and their messages follow, so the report explains the exit code on its own.
+- A `✖` line with test counts means Node.js reported a failed test in the file. The failing tests and their messages follow, so the report explains the exit code on its own. A test declared in a module the file imports counts toward the file Node.js ran, so its failure appears on that file's line and the imported module is not compared as a file of its own.
 - A `✖` line without counts is a file Node.js itself could not run, for example because its TypeScript loader rejects the file's syntax; the failure Node.js reported follows, and the file is still compared.
 - An `ℹ` line marks a file whose output differed between two Node.js runs. The reporter does not blame the binary for that, and the comparison does not fail the run.
 
@@ -69,7 +69,7 @@ Both runs render a Node.js spec report, and the two reports are compared as text
 
 Everything else must match: test names, pass, fail, skip and todo results, assertion messages, the failing-tests section, and the program's own stdout and stderr.
 
-Both lanes run with `TZ=UTC` and `LANG=C`, so dates and collation do not depend on the machine. The Node.js lane also runs with `--experimental-transform-types`, which a compiled program does not need, and with `--disallow-code-generation-from-strings`, the same refusal compiled programs apply to `eval` and `Function`. Node's warnings about the transform flag and about a `.ts` file in a package that does not set `"type": "module"` are turned off, because they carry content the binary never prints, the process id included.
+Both lanes run with `TZ=UTC` and `LANG=C`, so dates and collation do not depend on the machine. They also run without `NODE_TEST_CONTEXT`, which `node --test` sets for each test file it starts and which would make the Node.js lane answer with binary test events instead of the spec report. The Node.js lane also runs with `--experimental-transform-types`, which a compiled program does not need, and with `--disallow-code-generation-from-strings`, the same refusal compiled programs apply to `eval` and `Function`. Node's warnings about the transform flag and about a `.ts` file in a package that does not set `"type": "module"` are turned off, because they carry content the binary never prints, the process id included.
 
 ## API
 

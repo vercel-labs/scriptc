@@ -3159,7 +3159,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
@@ -8136,6 +8137,14 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
+  /** Runs `body` as an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). */
+  emitInSequenceScope<T>(body: () => T): T {
+    return this.emitSequence(body);
+  }
+
   /** Saved operands can feed later call arguments. Transfer ownership of a
    * sequence's locals to this expression's frame so they survive those
    * reads and still die on the path that created them, including inside
@@ -9676,6 +9685,12 @@ export class LlEmitter {
 
   zlibBytesThunkFor(cbT: IrType & { kind: "func" }): string {
     return zlibBytesThunkFor(this, cbT);
+  }
+
+  /** The `info: true` callback adapter: its result parameter is the
+   * checked { buffer, engine } object, passed through as a dyn value. */
+  zlibDynThunkFor(cbT: IrType & { kind: "func" }): string {
+    return zlibBytesThunkFor(this, cbT, false, "zlib", "dyn");
   }
 
   streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {

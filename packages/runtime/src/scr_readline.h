@@ -34,6 +34,16 @@ typedef struct ScrRlIo {
   void *(*retain)(void *s);
   void (*drop_data)(void *s, double id); /* a terminal interface's own 'data' listener leaves */
   void (*release)(void *s);
+  /* Node registers a 'resize' listener on a terminal interface's output
+   * and removes it at close: on adds the interface's refreshing listener
+   * to the stream's 'resize' event, off (at close) removes it. refresh is
+   * the listener's body — the readline unit's redraw — which the stream
+   * unit only wraps in a function value: a stream output's listener lives
+   * in the stream unit's emitter, but the stream unit must not call into
+   * the readline units, which a program using streams alone does not
+   * link. */
+  void (*watch_resize)(void *s, double id, bool on,
+                       ScrDyn *(*refresh)(ScrClosure *cb, ScrDyn *const *args, size_t argc));
 } ScrRlIo;
 double scr_rl_open(const ScrRlIo *io, void *in /*+1 or NULL: stdin*/, void *out /*+1 or NULL*/,
                    bool out_stdout, double crlf_delay, ScrStr *prompt, ScrDyn *signal,
@@ -60,13 +70,22 @@ void scr_rl_pause(double id);  /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_resume(double id); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_prompt(double id); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_prompt_with(double id, bool preserve); /* prompt(preserveCursor); may throw */
+/* The stream output's 'resize' listener: Node's kRefreshLine on a
+ * terminal interface. */
+void scr_rl_resize(double id);
 void scr_rl_set_prompt(double id, ScrStr *prompt);
 void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt); /* borrows; may throw */
 ScrStr *scr_rl_get_prompt(double id); /* +1; may throw (a prompt that is not a string) */
+ScrDyn *scr_rl_get_prompt_dyn(double id); /* +1: the stored prompt value itself */
 void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
-void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* `box` is the 'history' event's typed-ref recipe when the listener takes
+ * the array as a checked-dynamic value (its argument is the interface's
+ * history array itself, boxed live); NULL otherwise. */
+void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+               const ScrDynTypedRefRecipe *box, bool once);
 /* prependListener/prependOnceListener: the same registration, run first. */
-void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+                     const ScrDynTypedRefRecipe *box, bool once);
 /* removeListener/off: the last registration of cb leaves. cb is borrowed. */
 void scr_rl_off(double id, double ev, ScrClosure *cb);
 /* removeAllListeners(); ev -1 is the no-argument form. */
@@ -147,7 +166,6 @@ void scr_rl_answer_thunk0(ScrClosure *cb, ScrStr *answer);
 void scr_rl_answer_thunk_str(ScrClosure *cb, ScrStr *answer);
 void scr_rl_error_thunk(ScrClosure *cb, ScrError *err);
 void scr_rl_history_thunk_arr(ScrClosure *cb, ScrArr *history);
-void scr_rl_history_thunk_dyn(ScrClosure *cb, ScrArr *history);
 void scr_rl_error_thunk0(ScrClosure *cb, ScrError *err);
 void scr_rl_answer_thunk_dyn(ScrClosure *cb, ScrStr *answer);
 void scr_rl_error_thunk_dyn(ScrClosure *cb, ScrError *err);

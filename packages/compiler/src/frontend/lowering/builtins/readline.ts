@@ -720,7 +720,11 @@ export function lowerReadlineMethodCall(
     return { kind: "libCall", fn, args: [recv, prompt.value], type: VOID, loc };
   }
   if (name === "getPrompt" && args.length === 0) {
-    return { kind: "libCall", fn: "rl.getPrompt", args: [receiver()], type: STRING, loc };
+    // Node answers the stored prompt value itself: a number or object set
+    // through an untyped setPrompt survives with its identity, so the
+    // result is checked-dynamic. Typed code coerces it back to the
+    // declared string at the use.
+    return { kind: "libCall", fn: "rl.getPromptDyn", args: [receiver()], type: DYN, loc };
   }
   if (name === "getCursorPos" && args.length === 0) {
     // { rows, cols } of the prompt and the line before the cursor

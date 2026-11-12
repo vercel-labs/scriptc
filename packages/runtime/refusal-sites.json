@@ -2107,14 +2107,8 @@
  },
  {
   "file": "scr_zlib.c",
-  "function": "scr_zlib_base_options",
-  "message": "a zlib chunkSize above 4294967295 is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_zlib.c",
   "function": "scr_zlib_refuse_info",
-  "message": "the zlib option 'info' is not supported yet (it returns the engine object)",
+  "message": "the zlib option 'info' is not supported through a non-literal value; write info: true in the options object to get { buffer, engine }",
   "code": "SC2020"
  },
  {

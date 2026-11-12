@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5998-readline-unclosed-terminal-output.ts"
+ ],
+ "diags": []
+}

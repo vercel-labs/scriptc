@@ -8941,6 +8941,26 @@ void scr_dyn_this_push_dyn_once(const ScrDyn *v) {
   scr_dyn_this_stack[scr_dyn_this_n - 1].once = true;
 }
 
+ScrDyn *scr_dyn_typed_box(void *ptr, const ScrDynTypedRefRecipe *r) {
+  ScrDyn *d = r->kind == 2
+      ? scr_dyn_new_typed_ref_traced(ptr, r->retain, r->release, r->type_key, r->type_key_len,
+                                     r->materialize, r->commit)
+      : r->kind == 1
+          ? scr_dyn_new_typed_ref_observed(ptr, r->retain, r->release, r->type_key,
+                                           r->type_key_len, r->materialize, r->commit)
+          : scr_dyn_new_typed_ref(ptr, r->retain, r->release, r->type_key, r->type_key_len,
+                                  r->materialize, r->commit);
+  if (r->view == 1)
+    scr_dyn_typed_ref_bind_array(d, (const ScrDynTypedArrayOps *)r->ops);
+  else if (r->view == 2)
+    scr_dyn_typed_ref_bind_record(d, (const ScrDynTypedRecordOps *)r->ops);
+  else if (r->view == 3)
+    scr_dyn_typed_ref_bind_class(d, (const ScrDynTypedClassOps *)r->ops);
+  else if (r->view == 4)
+    scr_dyn_typed_ref_bind_bag_class(d, (const ScrDynTypedBagClassOps *)r->ops);
+  return d;
+}
+
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe) {
   ScrDynThisEnt *e = scr_dyn_this_grow();
   e->ptr = ptr;
@@ -8961,25 +8981,7 @@ void scr_dyn_this_pop(void) {
 ScrDyn *scr_dyn_this_get(void) {
   if (scr_dyn_this_n > 0) {
     ScrDynThisEnt *e = &scr_dyn_this_stack[scr_dyn_this_n - 1];
-    if (!e->dv && e->recipe) {
-      const ScrDynTypedRefRecipe *r = e->recipe;
-      e->dv = r->kind == 2
-          ? scr_dyn_new_typed_ref_traced(e->ptr, r->retain, r->release, r->type_key,
-                                         r->type_key_len, r->materialize, r->commit)
-          : r->kind == 1
-              ? scr_dyn_new_typed_ref_observed(e->ptr, r->retain, r->release, r->type_key,
-                                               r->type_key_len, r->materialize, r->commit)
-              : scr_dyn_new_typed_ref(e->ptr, r->retain, r->release, r->type_key,
-                                      r->type_key_len, r->materialize, r->commit);
-      if (r->view == 1)
-        scr_dyn_typed_ref_bind_array(e->dv, (const ScrDynTypedArrayOps *)r->ops);
-      else if (r->view == 2)
-        scr_dyn_typed_ref_bind_record(e->dv, (const ScrDynTypedRecordOps *)r->ops);
-      else if (r->view == 3)
-        scr_dyn_typed_ref_bind_class(e->dv, (const ScrDynTypedClassOps *)r->ops);
-      else if (r->view == 4)
-        scr_dyn_typed_ref_bind_bag_class(e->dv, (const ScrDynTypedBagClassOps *)r->ops);
-    }
+    if (!e->dv && e->recipe) e->dv = scr_dyn_typed_box(e->ptr, e->recipe);
     if (e->once) {
       ScrDyn *taken = e->dv ? e->dv : scr_dyn_retain(scr_dyn_undefined());
       e->dv = NULL;

@@ -576,6 +576,48 @@ void scr_console_error_parts(size_t n, const ScrLogArg *args) {
   scr_console_write(2, n, args, true, true);
 }
 
+/* console.trace: "Trace" with ": " and the formatted arguments on stderr,
+ * then the frames the call captured. The line goes through the public
+ * writer, so group indentation applies as it does to console.error. The
+ * frames are scriptc's own function and file text (SEMANTICS.md
+ * divergence 11) — the same text a caught Error's stack carries — so the
+ * line before them is Node's exactly and the frame block is not. Writes
+ * swallow what a patched stream throws, as every console method does.
+ * Borrows the arguments. */
+void scr_console_trace(size_t n, const ScrLogArg *args) {
+  ScrLogArg *line = malloc((n + 1) * sizeof *line);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  ScrStr *head = n > 0 ? scr_str_new("Trace: ", 7) : scr_str_new("Trace", 5);
+  line[0] = (ScrLogArg){.tag = SCR_ARG_STR, .v.s = head};
+  for (size_t i = 0; i < n; i++) {
+    line[i + 1] = args[i];
+    /* "Trace: " already ends in the separator. */
+    if (i == 0) line[i + 1].tag |= SCR_ARG_GLUE;
+  }
+  scr_console_write(2, n + 1, line, true, true);
+  scr_str_release(head);
+  free(line);
+  /* scr_stack_capture's text opens with the newline that separates it from
+   * an Error's "Name: message" header; the line above already ended in a
+   * newline, so drop that one. */
+  ScrStr *frames = scr_stack_capture();
+  if (frames) {
+    ScrStr *body = frames->len > 0 && frames->data[0] == '\n'
+                     ? scr_str_new(frames->data + 1, frames->len - 1)
+                     : scr_str_new(frames->data, frames->len);
+    ScrLogArg frame = {.tag = SCR_ARG_STR, .v.s = body};
+    scr_console_write(2, 1, &frame, true, true);
+    scr_str_release(body);
+    scr_str_release(frames);
+  }
+}
+
+/* The string-concatenation twin: the tags the caller passed carry the
+ * GLUE and SCR_ARG_NUM bits the renderer already honors. */
+void scr_console_trace_parts(size_t n, const ScrLogArg *args) {
+  scr_console_trace(n, args);
+}
+
 /* A Console instance's line on process stdout (fd 1) or stderr (fd 2):
  * the global console's group indentation does not apply. */
 void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors) {

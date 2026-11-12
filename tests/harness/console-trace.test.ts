@@ -40,10 +40,12 @@ interface RunResult {
 async function runBoth(
   name: string,
   source: string,
+  optimization: "dev" | "release" = "dev",
 ): Promise<{ native: RunResult; node: RunResult }> {
   const key = createHash("sha256")
     .update(source)
     .update(sanitize ? "san" : "plain")
+    .update(optimization)
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `console-trace-${key}`);
@@ -55,7 +57,7 @@ async function runBoth(
     outDir,
     sanitize,
     backend: "llvm",
-    optimization: "dev",
+    optimization,
   });
   if (!result.ok) {
     throw new Error(
@@ -120,7 +122,10 @@ outer();
     expect(frames.length).toBeGreaterThan(0);
     for (const line of frames) {
       expect(line.startsWith("    at ")).toBe(true);
-      expect(line).toMatch(/:\d+:\d+\)?$/);
+      // A sanitized dev build keeps no positions (positioned frames off,
+      // like a release build), so only the plain dev build can name the
+      // statement.
+      if (!sanitize) expect(line).toMatch(/:\d+:\d+\)?$/);
     }
     // The nearest frame is the function that called console.trace, and the
     // caller above it follows: the frame block is the program's call chain.
@@ -159,6 +164,70 @@ console.trace("bare");
     );
     expect(native.stderr).toBe("Trace: bare\n");
     expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
+  });
+
+  test("an empty formatted message prints Trace alone", async () => {
+    const { native, node } = await runBoth(
+      "trace-empty-message",
+      // A named function: a sanitized build keeps frames only where a
+      // function names them, and the frame assertion below holds in both
+      // lanes.
+      `function emit() {
+  console.trace("");
+  console.trace("%s", "");
+  console.trace("", "");
+}
+emit();
+`,
+    );
+    expect(traceLines(native.stderr)).toEqual(["Trace", "Trace", "Trace:  "]);
+    expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
+    expect(frameLines(native.stderr).length).toBeGreaterThan(0);
+  });
+
+  test("a patched stderr receives one write whose frames the hook cannot change", async () => {
+    const { native, node } = await runBoth(
+      "trace-one-write",
+      `let writes = 0;
+let head = "";
+let frames = 0;
+process.stderr.write = function (chunk) {
+  writes++;
+  const lines = String(chunk).split("\\n");
+  if (head === "") head = lines[0];
+  for (const line of lines) if (line.startsWith("    at ")) frames++;
+  Error.stackTraceLimit = 0;
+  return true;
+};
+function inner() { console.trace("limit"); }
+inner();
+process.stdout.write(writes + " " + head + " " + (frames > 0) + "\\n");
+`,
+    );
+    // One call, the whole trace; the frames were captured when the call ran,
+    // so the hook's Error.stackTraceLimit = 0 changes nothing.
+    expect(native.stdout).toBe("1 Trace: limit true\n");
+    expect(native.stdout).toBe(node.stdout);
+    expect(native.stderr).toBe("");
+    expect(node.stderr).toBe("");
+  });
+
+  test("a release build prints its frames", async () => {
+    const { native, node } = await runBoth(
+      "trace-release",
+      `function inner() { console.trace("release"); }
+function outer() { inner(); }
+outer();
+`,
+      "release",
+    );
+    expect(native.stdout).toBe("");
+    expect(traceLines(native.stderr)).toEqual(["Trace: release"]);
+    expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
+    const frames = frameLines(native.stderr);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0]).toContain("inner");
+    expect(frames[1]).toContain("outer");
   });
 
   test("arguments evaluate in source order before the write, and stdout stays clean", async () => {

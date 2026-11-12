@@ -576,40 +576,58 @@ void scr_console_error_parts(size_t n, const ScrLogArg *args) {
   scr_console_write(2, n, args, true, true);
 }
 
-/* console.trace: "Trace" with ": " and the formatted arguments on stderr,
- * then the frames the call captured. The line goes through the public
- * writer, so group indentation applies as it does to console.error. The
- * frames are scriptc's own function and file text (SEMANTICS.md
- * divergence 11) — the same text a caught Error's stack carries — so the
- * line before them is Node's exactly and the frame block is not. Writes
- * swallow what a patched stream throws, as every console method does.
- * Borrows the arguments. */
-void scr_console_trace(size_t n, const ScrLogArg *args) {
-  ScrLogArg *line = malloc((n + 1) * sizeof *line);
+/* Whether the rendered arguments are empty. Render adds the line's final
+ * newline, so an empty message renders as that one byte. */
+static bool scr_console_message_empty(size_t n, const ScrLogArg *args) {
+  if (n == 0) return true;
+  char stack[SCR_CONSOLE_STACK_LINE];
+  size_t capacity = scr_console_capacity(n, args);
+  char *line = capacity <= sizeof stack ? stack : malloc(capacity);
   if (!line) scr_trap("scriptc: out of memory\n");
-  ScrStr *head = n > 0 ? scr_str_new("Trace: ", 7) : scr_str_new("Trace", 5);
+  bool wide = false;
+  size_t used = scr_console_render(line, n, args, &wide);
+  if (line != stack) free(line);
+  return used <= 1;
+}
+
+/* console.trace: "Trace" with ": " and the formatted arguments on stderr,
+ * then the frames the call captured, in ONE write (Node writes the
+ * formatted Error's whole stack as one chunk). An empty message prints
+ * "Trace" alone: Node's trace is an Error whose name it prints, and an
+ * Error with an empty message renders as its name. The line goes through
+ * the public writer, so group indentation applies as it does to
+ * console.error. The frames are scriptc's own function and file text
+ * (SEMANTICS.md divergence 11) — the same text a caught Error's stack
+ * carries — so the line before them is Node's exactly and the frame block
+ * is not. The capture happens before the write, as Node captures the
+ * stack when console.trace runs: a patched write that changes
+ * Error.stackTraceLimit cannot change this call's frames. Writes swallow
+ * what a patched stream throws, as every console method does. Borrows the
+ * arguments. */
+void scr_console_trace(size_t n, const ScrLogArg *args) {
+  ScrStr *frames = scr_stack_capture();
+  bool empty = scr_console_message_empty(n, args);
+  ScrLogArg *line = malloc((n + 2) * sizeof *line);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  ScrStr *head = empty ? scr_str_new("Trace", 5) : scr_str_new("Trace: ", 7);
   line[0] = (ScrLogArg){.tag = SCR_ARG_STR, .v.s = head};
   for (size_t i = 0; i < n; i++) {
     line[i + 1] = args[i];
-    /* "Trace: " already ends in the separator. */
+    /* No separator between the header and the first argument: "Trace: "
+     * ends in one, and the empty message that prints "Trace" alone must
+     * not leave a trailing space. */
     if (i == 0) line[i + 1].tag |= SCR_ARG_GLUE;
   }
-  scr_console_write(2, n + 1, line, true, true);
-  scr_str_release(head);
-  free(line);
-  /* scr_stack_capture's text opens with the newline that separates it from
-   * an Error's "Name: message" header; the line above already ended in a
-   * newline, so drop that one. */
-  ScrStr *frames = scr_stack_capture();
+  size_t total = n + 1;
   if (frames) {
-    ScrStr *body = frames->len > 0 && frames->data[0] == '\n'
-                     ? scr_str_new(frames->data + 1, frames->len - 1)
-                     : scr_str_new(frames->data, frames->len);
-    ScrLogArg frame = {.tag = SCR_ARG_STR, .v.s = body};
-    scr_console_write(2, 1, &frame, true, true);
-    scr_str_release(body);
-    scr_str_release(frames);
+    /* The frames' text opens with the newline that separates them from an
+     * Error's header. */
+    line[total++] = (ScrLogArg){.tag = SCR_ARG_STR | SCR_ARG_GLUE, .v.s = frames};
   }
+  scr_console_write(2, total, line, true, true);
+  scr_str_release(head);
+  scr_str_release(frames);
+  free(line);
 }
 
 /* The string-concatenation twin: the tags the caller passed carry the

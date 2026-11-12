@@ -1121,12 +1121,18 @@ static ScrDyn *scr_console_inst_invoke_all(void *ptr, ScrDyn *self, const char *
   (void)what;
   int which = scr_console_member_target(key, strlen(key));
   if (which < 0) {
-    char message[128];
-    int len = snprintf(message, sizeof message,
-                       "Calling Console.%s through a stored value has no lowering; call it on the "
-                       "instance",
-                       key);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
+    /* The key is whatever name the program called, so the message grows
+     * with it: size the buffer from the formatted length instead of
+     * letting a fixed one record more characters than it holds. */
+    static const char format[] =
+        "Calling Console.%s through a stored value has no lowering; call it on the instance";
+    int needed = snprintf(NULL, 0, format, key);
+    if (needed < 0) needed = 0;
+    char *message = malloc((size_t)needed + 1);
+    if (!message) scr_trap("scriptc: out of memory\n");
+    snprintf(message, (size_t)needed + 1, format, key);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)needed, "SC2020");
+    free(message);
     return NULL;
   }
   ScrInspFormatOptions options;

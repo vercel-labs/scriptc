@@ -583,8 +583,11 @@ describe("library profile fences", () => {
     expect(r.profile.fences[1]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
     // The user-timing timeline reads the same clock (mark() and measure()
     // default to performance.now()), and so do the event-loop metrics, so
-    // they join the perf_hooks family.
+    // they join the perf_hooks family. So do the entry classes and the
+    // observer that report on that timeline.
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
+      "node-builtin.perf_hooks.PerformanceMark",
+      "node-builtin.perf_hooks.PerformanceObserver",
       "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",

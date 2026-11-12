@@ -85,7 +85,10 @@ const KNOWN: Record<string, Known> = {
   // `new AsyncResource(...)`: the refusal names the class.
   "misc-shims": { run: "SC2020" },
   namespace: { island: true },
-  "node24-async-events": { run: "SC2020" },
+  // once()/on() option validation now matches Node, so the program runs to
+  // the fixture's `em.pause = ...`, an assignment through a member the
+  // EventEmitter declaration does not have.
+  "node24-async-events": { run: "SC1090" },
   "node24-commonjs-metadata": { island: true },
   "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },

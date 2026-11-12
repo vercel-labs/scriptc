@@ -8138,21 +8138,20 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
-  /** Runs `body` as an expression sequence emitted in place: the locals its
+  /** Opens an expression sequence emitted in place: the locals its
    * statements declare transfer to the current frame when it ends, so they
    * die with the statement or branch arm that created them (see
-   * emitSequence). */
-  emitInSequenceScope<T>(body: () => T): T {
-    return this.emitSequence(body);
+   * emitSequence). A function that compiles with the compiler opens the pair
+   * directly instead of passing a closure: emitReadReceiver lowered to 4,933
+   * stack slots with the closure #3563 passed it and to 409 with the pair,
+   * the difference between the bootstrap's second generation fitting its
+   * stack or not. */
+  beginSequenceScope(): void {
+    this.scopes.push([]);
   }
 
-  /** Saved operands can feed later call arguments. Transfer ownership of a
-   * sequence's locals to this expression's frame so they survive those
-   * reads and still die on the path that created them, including inside
-   * lazy branches. */
-  private emitSequence<T>(body: () => T): T {
-    this.scopes.push([]);
-    const result = body();
+  /** Closes the sequence beginSequenceScope opened. */
+  endSequenceScope(): void {
     for (const local of this.scopes.pop()!) {
       this.currentFrame().push({
         name: local.slot,
@@ -8162,6 +8161,16 @@ export class LlEmitter {
         ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
+  }
+
+  /** Saved operands can feed later call arguments. Transfer ownership of a
+   * sequence's locals to this expression's frame so they survive those
+   * reads and still die on the path that created them, including inside
+   * lazy branches. */
+  private emitSequence<T>(body: () => T): T {
+    this.beginSequenceScope();
+    const result = body();
+    this.endSequenceScope();
     return result;
   }
 

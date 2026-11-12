@@ -1520,7 +1520,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
-    // node:test takes Node's --test-update-snapshots out of argv first.
+    // node:test takes Node's runtime options (the snapshot update flag and
+    // the reporter options) out of argv first.
     ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]

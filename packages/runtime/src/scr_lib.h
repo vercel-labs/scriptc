@@ -51,7 +51,12 @@ const char *scr_lib_arg(int i);
  * right after scr_lib_init, before process.argv is first read. True when
  * the flag was there. */
 bool scr_lib_take_flag(const char *flag);
-/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+/* Takes a leading `name=value` argument out of process.argv the same way,
+ * with *value (when not NULL) naming the text after the '='. True when the
+ * option was there. */
+bool scr_lib_take_flag_value(const char *name, const char **value);
+/* process.execArgv: the flags scr_lib_take_flag* took, in order, or [] (+1,
+ * fresh). */
 ScrArr *scr_process_exec_argv(void);
 /* process.allowedNodeEnvironmentFlags: one interned set of the option
  * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */

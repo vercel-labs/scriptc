@@ -4317,6 +4317,10 @@ export type IrExpr =
       name:
         | "console.log"
         | "console.error"
+        /* console.trace: the stderr line "Trace[: args]" and then the
+         * captured frames, through the same ScrLogArg protocol as
+         * console.error. Never throws; a write failure is discarded. */
+        | "console.trace"
         | "promise.race"
         | "promise.all"
         | "promise.allSettled"

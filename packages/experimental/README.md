@@ -193,6 +193,25 @@ In scriptc builds the chunks of a `parallelInto` or a `parallelReduce` may run o
 A captured typed array it reads is compared with the target: when the two overlap, the chunks run one after another, since one chunk's write could race another's read. A call that breaks a rule compiles to the sequential loop, which is exactly the Node.js call, and scriptc reports which rule it broke as a performance warning (SC6106), never as a build failure. `parallelFor` always runs its chunks one after another until scriptc can show that its callbacks write disjoint elements.
 
 The number of threads is the process's, taken from `SCRIPTC_THREADS` (default: the hardware thread count, capped at 64). Results do not depend on it: chunks are handed out whole and the reduce fold is in chunk order, so a sum of floating-point values is the same on every run and every machine.
+
+## Refusals
+
+`@scriptc/experimental/refusals.json` lists the Node APIs and builtin modules that scriptc refuses, with the access a program uses to reach each one. The Node compatibility generator writes it beside the compatibility ledger, and `pnpm node-compat:check` fails when the committed table is stale. Each release publishes the table for its own compiler version.
+
+```ts
+import refusals from "@scriptc/experimental/refusals.json" with { type: "json" };
+
+for (const refusal of refusals.refusals) {
+  if (refusal.layer === "load") console.log(refusal.binding.module);
+}
+```
+
+- The top level carries `schemaVersion`, the pinned `nodeVersion`, and the `compilerVersion` the table was generated for.
+- `refusals` holds one entry per refusal site. `layer` is `"static"` for an API that scriptc refuses or `"load"` for a builtin module it does not serve.
+- `binding` is the access that reaches the refusal: the `module` (spelled like an import, such as `node:crypto`), the member `path` inside it, and `access`, one of `"call"`, `"get"`, `"construct"`, `"listen"`, or `"import"`. A module import omits `path`, and a row the sources cannot place says `"unknown"` instead.
+- A static entry names its `row` in the compatibility ledger, the compiler surface manifest entry in `manifestId`, and the row's `chapter`, `apiSymbol`, `kind`, and `label`.
+- A load entry carries the `code` and `message` of its `SC1010` diagnostic, the same text `@scriptc/experimental/register` raises; for a module fenced by construction the message names the reason.
+
 ## Load hook
 
 `@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.
@@ -218,3 +237,23 @@ NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/exp
 ```
 
 The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.
+## Dual-run testing
+
+`@scriptc/experimental/dual-run` runs a test file twice, once under Node.js and once as the executable scriptc builds, and compares the runs: test names, pass and fail results, assertion messages, program output and the exit code, with durations and stack frames normalized away. It is Node.js tooling, so a scriptc-built program cannot call it, and a compiled program never needs to.
+
+```ts
+import { dualRun } from "@scriptc/experimental/dual-run";
+
+const result = await dualRun("test/format.test.ts");
+if (!result.equal) throw new Error(result.diff);
+```
+
+`dualRun(entry, { args, stdin, env, cwd, timeoutMs })` returns `{ node, native, equal, diff }`, where each run has `stdout`, `stderr` and `exitCode`. A program that does not compile rejects with a `DualRunBuildError` whose `stderr` holds the diagnostics.
+
+The `@scriptc/experimental/dual-run/reporter` subpath is a Node.js test reporter that does the same for every file `node --test` runs:
+
+```console
+$ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+```
+
+It prints one line per file, shows a diff when the two runs differ, reports a file whose Node.js output itself varies as flaky, and fails the run on a difference. Both forms build through the `scriptc` command and its executable cache, found from `SCRIPTC_BIN`, `node_modules/.bin` or `PATH`. See [dual-run testing](https://scriptc.dev/docs/dual-run).

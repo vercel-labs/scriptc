@@ -251,10 +251,12 @@ static void scr_fs_write_blob(ScrStr *path, const ScrBytes *data, ScrStr *encodi
 
 /* What one call reads out of the record. The dyn values are owned and
  * released by scr_fs_write_opts_clear; `encoding` borrows its string from
- * the record, which stays alive for the call. */
+ * `encoding_value`, which the struct owns so that a getter's returned
+ * string outlives the reach for the data. */
 typedef struct {
   const ScrDyn *options; /* borrowed; open() reads `mode` from it last */
-  ScrStr *encoding;      /* NULL for utf8 */
+  ScrDyn *encoding_value; /* owned; NULL when the record named no encoding */
+  ScrStr *encoding;      /* borrows from encoding_value; NULL for utf8 */
   bool buffer_encoding;  /* encoding === "buffer" */
   ScrDyn *flag;
   ScrDyn *flush;
@@ -266,6 +268,7 @@ static void scr_fs_write_opts_clear(ScrFsWriteOpts *o) {
   scr_dyn_release(o->flag);
   scr_dyn_release(o->flush);
   scr_dyn_release(o->signal);
+  scr_dyn_release(o->encoding_value);
 }
 
 static bool scr_fs_write_opts_encoding(ScrFsWriteOpts *o, const ScrDyn *options) {
@@ -293,7 +296,9 @@ static bool scr_fs_write_opts_encoding(ScrFsWriteOpts *o, const ScrDyn *options)
     scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
     ok = false;
   }
-  scr_dyn_release(value);
+  /* `o->encoding` borrows this value's string: the struct keeps it alive
+   * until scr_fs_write_opts_clear, by which point the data is encoded. */
+  o->encoding_value = value;
   return ok;
 }
 

@@ -4025,6 +4025,17 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: BYTES_U8 },
     },
     "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+    /** Node's `info: true` results: the same one-shot runs, answering the
+     * { buffer, engine } checked object instead of the Buffer. The Cb form
+     * hands its (Error | null, { buffer, engine }) callback the checked
+     * value; the promise form settles with it. The Dyn twins take the JS
+     * lane's untyped data. */
+    "zlib.infoSync": { argTypes: [F64, BYTES_U8, DYN], result: DYN },
+    "zlib.infoCb": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+    "zlib.infoSyncDyn": { argTypes: [F64, DYN, DYN], result: DYN },
+    "zlib.infoCbDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+    "zlib.infoPromise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: DYN } },
+    "zlib.infoPromiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: DYN } },
     /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
      * streamNew takes Node's node_zlib_mode number and the options value
      * (undefined when absent), validates it with Node's ladder, and answers
@@ -4367,11 +4378,13 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
-    // stat with a non-literal options value: the argument is the
-    // runtime null check; Node's member table was chosen by the checker's
-    // result type, so the payload stays the stat snapshot.
+    // stat with a non-literal options value: the runtime validates the
+    // handle first, then reads options.bigint (an accessor runs, and a null
+    // options value is the member read's TypeError); Node's member table
+    // was chosen by the checker's result type, so the payload stays the
+    // stat snapshot.
     "fileHandle.statOptions": {
-      argTypes: [FILEHANDLE_T, BOOL],
+      argTypes: [FILEHANDLE_T, DYN],
       result: { kind: "promise", inner: STATS_T },
     },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
@@ -6028,6 +6041,10 @@ function buildLibFnSignatures() {
     "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
     "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
     "rl.getPrompt": { argTypes: [F64], result: STRING },
+    /** getPrompt() for a checked-dynamic use: the stored prompt value
+     * itself (a number or object set through an untyped setPrompt keeps its
+     * identity). */
+    "rl.getPromptDyn": { argTypes: [F64], result: DYN },
     "rl.write": { argTypes: [F64, STRING], result: VOID },
     /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
      * ctrl, meta, shift] */
@@ -6428,6 +6445,11 @@ function buildLibFnSignatures() {
     "text.decoderEncoding": { argTypes: [DYN], result: F64 },
     "text.decoderName": { argTypes: [F64], result: STRING },
     "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+    /** TextEncoder.encodeInto over a statically typed string and Uint8Array:
+     * scr_bytes.c's typed entry, which boxes nothing. Borrowed args; the
+     * result is the call site's own `{ read, written }` record (the backend
+     * fills it from two slots), so the signature names none. */
+    "text.encodeIntoStr": { argTypes: [STRING, BYTES_U8], result: DYN },
     /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
      * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
      * Borrowed; never throws. */

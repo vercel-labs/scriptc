@@ -6562,6 +6562,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   bool null_body = !json_body &&
       (!body || body->kind == SCR_DYN_UNDEF || body->kind == SCR_DYN_NULL);
   bool text_body = false;
+  bool blob_unreadable = false;
 #ifdef SCR_WEB_BODIES
   ScrStr *web_type = NULL;
 #endif
@@ -6594,8 +6595,19 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
     if (sf_blob_body(body, &body_bytes, &web_type)) {
       /* extractBody: the blob's bytes are the body, its type applies below.
        * A file-backed Blob that cannot be read any more leaves its
-       * NotReadableError pending (Node reports it when the body is read). */
-      if (!body_bytes) goto fail;
+       * NotReadableError pending. Node's Response still constructs — the
+       * blob's stream only reads when the body is consumed — so the error
+       * becomes the body stream's reason instead of escaping here. */
+      if (!body_bytes) {
+        ScrCaught *caught = scr_exc_take();
+        ScrDyn *reason = caught ? scr_caught_to_dyn(caught)
+                                : scr_dyn_retain(scr_dyn_undefined());
+        scr_caught_release(caught);
+        stream = sf_stream_new_native();
+        sf_stream_error(stream, reason);
+        scr_dyn_release(reason);
+        blob_unreadable = true;
+      }
     } else
 #endif
     if (body->kind == SCR_DYN_BYTES) {
@@ -6713,6 +6725,9 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
     stream = sf_stream_retain((SfStream *)web->v.handle.ptr);
     scr_dyn_release(web);
 #endif
+  } else if (blob_unreadable) {
+    /* The errored stream recorded in the blob arm: it has no bytes to
+     * enqueue, and reading the body rejects with the blob's error. */
   } else {
     stream = sf_stream_new_native();
     light_length_bytes = body_bytes->len;

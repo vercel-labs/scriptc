@@ -276,6 +276,58 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn === "zlib.infoSync" || e.fn === "zlib.infoSyncDyn") {
+    // (mode, data, options): the same run as syncOpts, answering the
+    // checked { buffer, engine } object; +1 dyn or NULL with a pending throw.
+    host.usesTimers = true; // the fabricated engine is a runtime stream
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoSync" ? "scr_zlib_sync_opts_info" : "scr_zlib_sync_opts_info_dyn";
+    host.declare(`declare ptr @${sym}(double, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "zlib.infoPromise" || e.fn === "zlib.infoPromiseDyn") {
+    // (mode, data, options): the promise settles with the checked object.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoPromise"
+        ? "scr_zlib_codec_promise_info"
+        : "scr_zlib_codec_promise_info_dyn";
+    host.declare(`declare ptr @${sym}(ptr, double, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "zlib.infoCb" || e.fn === "zlib.infoCbDyn") {
+    // (mode, data, options, callback): the callback's result parameter is
+    // the checked object, so the adapter passes the dyn through.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
+    host.toHeap(args[3]!);
+    const adapter = host.zlibDynThunkFor(cbT);
+    const sym =
+      e.fn === "zlib.infoCb"
+        ? "scr_zlib_codec_async_opts_info"
+        : "scr_zlib_codec_async_opts_info_dyn";
+    host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
+    B.line(
+      `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "zlib.streamNew") {
     // The stream's engine steps run on the worker pool; the options value
     // is borrowed and the +1 stream may be NULL with a pending throw.

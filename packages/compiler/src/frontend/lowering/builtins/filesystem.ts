@@ -25,7 +25,6 @@ import {
   type IrLibFn,
   type IrStmt,
   type IrType,
-  NULL_T,
   STATS_T,
   STRING,
   UNDEFINED_T,
@@ -853,18 +852,20 @@ export function lowerFileHandleMethodCall(
     }
     if (!ts.isObjectLiteralExpression(optsNode)) {
       // A stored options value. The checker's result type already chose
-      // the member table (a widened `bigint` flag is the union result this
-      // lowering refused above), so only evaluation order and Node's null
-      // read remain: Node validates the handle, reads options.bigint
-      // (which a null options value does not have), then stats.
-      const value = lowerer.lowerExpr(optsNode);
+      // the member table, and Node reads options.bigint through the
+      // property after validating the handle — an accessor runs there, a
+      // throwing one replaces the stat, and a null options value is that
+      // read's TypeError. The runtime needs the value itself for the read,
+      // so it crosses as a checked-dynamic object; that also carries the
+      // evaluation of the expression, in handle-then-options order.
+      const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
       const arms =
-        value.type.kind === "union" ? lowerer.unions.get(value.type.unionId)?.arms : undefined;
+        optsType?.kind === "union" ? lowerer.unions.get(optsType.unionId)?.arms : undefined;
       const recordOrUnit = (arm: IrType): boolean => arm.kind === "record" || isUnitType(arm);
       const recordsOrUnits =
-        value.type.kind === "record" ||
-        value.type.kind === "nullT" ||
-        (value.type.kind === "union" && arms !== undefined && arms.every(recordOrUnit));
+        optsType?.kind === "record" ||
+        optsType?.kind === "nullT" ||
+        (optsType?.kind === "union" && arms !== undefined && arms.every(recordOrUnit));
       if (!recordsOrUnits) {
         lowerer.noLowering(
           "FileHandle.stat with this options value",
@@ -873,39 +874,13 @@ export function lowerFileHandleMethodCall(
         );
       }
       const handle = lowerer.declareHiddenLocal("%fhHandle", FILEHANDLE_T);
-      const stmts: IrStmt[] = [{ kind: "varDecl", localId: handle.id, init: receiver(), loc }];
-      const discard = (): void => {
-        if (!isSafeToDiscard(value)) stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
-      };
-      let optionsNull: IrExpr;
-      const nullTag = value.type.kind === "union" ? lowerer.armTag(value.type.unionId, NULL_T) : -1;
-      if (value.type.kind === "nullT") {
-        discard();
-        optionsNull = boolLit(true, loc);
-      } else if (nullTag >= 0 && value.type.kind === "union") {
-        const unionId = value.type.unionId;
-        const slot = lowerer.declareHiddenLocal("%fhStatOptions", value.type);
-        stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc: value.loc });
-        optionsNull = {
-          kind: "unionIsTag",
-          unionId,
-          tag: nullTag,
-          negated: false,
-          value: varRef(slot.id, value.type, loc),
-          type: BOOL,
-          loc,
-        };
-      } else {
-        discard();
-        optionsNull = boolLit(false, loc);
-      }
       return {
         kind: "seqExpr",
-        stmts,
+        stmts: [{ kind: "varDecl", localId: handle.id, init: receiver(), loc }],
         result: {
           kind: "libCall",
           fn: "fileHandle.statOptions",
-          args: [varRef(handle.id, FILEHANDLE_T, loc), optionsNull],
+          args: [varRef(handle.id, FILEHANDLE_T, loc), lowerer.lowerExprExpecting(optsNode, DYN)],
           type: promise(statsType),
           loc,
         },
@@ -2597,12 +2572,29 @@ export function lowerFsPromisesStatOptionsCall(
   // A statically null options value: the default parameter covers only
   // undefined, so Node validates the path and then reads options.bigint off
   // the null — the promise rejects with "Cannot read properties of null".
+  // The expression itself still evaluates between the two. The result type
+  // cannot select a member table here (Node never gets that far), so this
+  // answers Stats regardless of what the call's loose type says.
   if ((lowerer.typeOf(optsNode).flags & ts.TypeFlags.Null) !== 0) {
-    return {
+    const value = lowerer.lowerExpr(optsNode);
+    const type: IrType = { kind: "promise", inner: STATS_T };
+    const statNullOptions = (pathArg: IrExpr): IrExpr => ({
       kind: "libCall",
       fn: "fsp.statNullOptions",
-      args: [path],
-      type: { kind: "promise", inner: STATS_T },
+      args: [pathArg],
+      type,
+      loc,
+    });
+    if (isSafeToDiscard(value)) return statNullOptions(path);
+    const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        { kind: "exprStmt", expr: value, loc: value.loc },
+      ],
+      result: statNullOptions(varRef(pathLocal.id, STRING, loc)),
+      type,
       loc,
     };
   }

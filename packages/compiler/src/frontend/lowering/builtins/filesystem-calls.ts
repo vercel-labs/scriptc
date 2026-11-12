@@ -29,6 +29,8 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import { lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -303,6 +305,18 @@ export function lowerFsPromisesOpenCall(
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const flagsNode = expr.arguments.nodes[1];
   const modeNode = expr.arguments.nodes[2];
+  // An explicitly supplied argument whose static type is only unit values
+  // takes Node's default (`stringToFlags(null)`, `parseFileMode(undefined,
+  // 'mode', 0o666)`), but the argument expression still evaluates. Its
+  // effects run between the path and the call.
+  const unitEffects = (node: ts.Expression | undefined): IrExpr | null => {
+    if (node === undefined || !staticallyAbsent(lowerer, node)) return null;
+    const value = lowerStaticallyUndefinedArgument(lowerer, node) ?? lowerer.lowerExpr(node);
+    return isSafeToDiscard(value) ? null : value;
+  };
+  const flagsEffect = unitEffects(flagsNode);
+  const modeEffect = unitEffects(modeNode);
+  const effects = [flagsEffect, modeEffect].filter((e): e is IrExpr => e !== null);
   const flagsPresent = flagsNode !== undefined && !staticallyAbsent(lowerer, flagsNode);
   const modePresent = modeNode !== undefined && !staticallyAbsent(lowerer, modeNode);
   const flagsKind =
@@ -314,24 +328,45 @@ export function lowerFsPromisesOpenCall(
       ? lowerer.mapTypeOf(lowerer.typeOf(modeNode))?.kind
       : undefined;
   const type: IrType = { kind: "promise", inner: FILEHANDLE_T };
+  const withEffects = (call: (pathArg: IrExpr) => IrExpr): IrExpr => {
+    if (effects.length === 0) return call(path);
+    const pathLocal = lowerer.declareHiddenLocal("%openPath", STRING);
+    const result = call(varRef(pathLocal.id, STRING, loc));
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        ...effects.map((effect): IrStmt => ({ kind: "exprStmt", expr: effect, loc: effect.loc })),
+      ],
+      result,
+      type: result.type,
+      loc,
+    };
+  };
   if ((!flagsPresent || flagsKind === "string") && (!modePresent || modeKind === "f64")) {
     const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
     const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
     const flags = flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, STRING) : defaultFlags;
     const mode = modePresent ? lowerer.lowerExprExpecting(modeNode!, F64) : defaultMode;
-    return { kind: "libCall", fn: "fsp.open", args: [path, flags, mode], type, loc };
+    return withEffects((pathArg) => ({
+      kind: "libCall",
+      fn: "fsp.open",
+      args: [pathArg, flags, mode],
+      type,
+      loc,
+    }));
   }
-  return {
+  return withEffects((pathArg) => ({
     kind: "libCall",
     fn: "fsp.openOptions",
     args: [
-      path,
+      pathArg,
       flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, DYN) : dynUndefinedExpr(loc),
       modePresent ? lowerer.lowerExprExpecting(modeNode!, DYN) : dynUndefinedExpr(loc),
     ],
     type,
     loc,
-  };
+  }));
 }
 
 // fs.openAsBlob(path[, options]) — Node's call is synchronous: it validates

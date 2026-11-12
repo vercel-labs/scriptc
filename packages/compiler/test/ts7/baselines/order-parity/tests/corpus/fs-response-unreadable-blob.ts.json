@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-response-unreadable-blob.ts"
+ ],
+ "diags": []
+}

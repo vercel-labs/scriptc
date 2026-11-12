@@ -1907,19 +1907,40 @@ static bool scr_fs_encoding_chk(const ScrDyn *opts) {
     return false;
   }
   const ScrDyn *enc = opts;
+  ScrDyn *read = NULL; /* the object's second `encoding` read, when taken */
   if (opts->kind != SCR_DYN_STR) {
-    enc = opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "encoding", 8) : NULL;
-    if (enc == NULL) return true;
+    /* Node guards with `if (options.encoding !== 'buffer')` and then hands
+     * `options.encoding` to assertEncoding: the property is read twice, so
+     * an accessor runs twice, and only the first read's spelling can skip
+     * the assertion. */
+    ScrDyn *first = scr_dyn_obj_read(opts, "encoding", 8);
+    if (!first) return false; /* the accessor threw */
+    if (first->kind == SCR_DYN_STR && scr_fs_str_is(first->v.str, "buffer")) {
+      scr_dyn_release(first);
+      return true;
+    }
+    read = scr_dyn_obj_read(opts, "encoding", 8);
+    scr_dyn_release(first);
+    if (!read) return false;
+    enc = read;
   }
-  if (scr_fs_dyn_absent(enc)) return true;
+  if (scr_fs_dyn_absent(enc)) {
+    scr_dyn_release(read);
+    return true;
+  }
+  bool ok = false;
   if (enc->kind == SCR_DYN_STR) {
-    if (enc->v.str->len == 0) return true; /* falsy: assertEncoding's `encoding &&` gate */
-    if (scr_bytes_is_encoding(enc->v.str) || scr_fs_str_is(enc->v.str, "buffer")) return true;
+    /* falsy: assertEncoding's `encoding &&` gate */
+    ok = enc->v.str->len == 0 || scr_bytes_is_encoding(enc->v.str) ||
+         scr_fs_str_is(enc->v.str, "buffer");
+  } else if (enc->kind == SCR_DYN_BOOL) {
+    ok = !enc->v.b;
+  } else if (enc->kind == SCR_DYN_NUM) {
+    ok = enc->v.num == 0 || enc->v.num != enc->v.num; /* 0, NaN */
   }
-  if (enc->kind == SCR_DYN_BOOL && !enc->v.b) return true;
-  if (enc->kind == SCR_DYN_NUM && (enc->v.num == 0 || enc->v.num != enc->v.num)) return true; /* 0, NaN */
-  scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
-  return false;
+  if (!ok) scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
+  scr_dyn_release(read);
+  return ok;
 }
 
 /* parseFileMode: integers 0..2^32-1 pass, octal strings parse, and the

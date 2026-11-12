@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-write-encoding-accessor.ts"
+ ],
+ "diags": []
+}

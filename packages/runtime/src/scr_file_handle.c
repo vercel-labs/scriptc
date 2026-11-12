@@ -952,17 +952,36 @@ ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h) {
 }
 
 /* FileHandle.stat(options): Node validates the handle first (EBADF), then
- * reads options.bigint without validating the options value — a null options
- * value is the TypeError below — and only then stats. The member table
- * (Stats or BigIntStats) was already chosen from the checker's result type,
- * so the null shape is the only runtime fact this form carries. */
+ * reads options.bigint and only then stats. The default parameter turns
+ * only an undefined options value into `{ bigint: false }`; a null one is
+ * the member read's TypeError. The member table (Stats or BigIntStats) was
+ * already chosen from the checker's result type, so the read is observed
+ * for its own effects: an accessor runs, and a throwing one replaces the
+ * stat. */
 ScrPromise *scr_file_handle_stat_options_promise(ScrFileHandle *h,
-                                                 bool options_null) {
+                                                 ScrDyn *options) {
   if (!scr_file_handle_require_open(h, "fstat")) return scr_promise_settled_void();
-  if (options_null) {
+  /* A typed record crosses as a live view of its slots; materializing it
+   * answers the object the property read sees, accessor slots included. */
+  ScrDyn *view = options->kind == SCR_DYN_TYPED_REF
+                     ? scr_dyn_typed_ref_materialize(options)
+                     : NULL;
+  if (options->kind == SCR_DYN_TYPED_REF && !view)
+    return scr_promise_settled_void(); /* the view failed */
+  ScrDyn *target = view ? view : options;
+  if (target->kind == SCR_DYN_NULL) {
     static const char message[] = "Cannot read properties of null (reading 'bigint')";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_dyn_release(view);
     return scr_promise_settled_void();
+  }
+  if (target->kind != SCR_DYN_UNDEF) {
+    ScrDyn *bigint = scr_dyn_obj_read(target, "bigint", 6);
+    scr_dyn_release(view);
+    if (!bigint) return scr_promise_settled_void(); /* the accessor threw */
+    scr_dyn_release(bigint);
+  } else {
+    scr_dyn_release(view);
   }
   ScrStats *st = scr_file_handle_stat(h);
   return scr_promise_settled_ref(st, &scr_stats_retain_v,

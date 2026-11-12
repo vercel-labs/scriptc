@@ -1,0 +1,35 @@
+contract-immutable-push-alias.ts:50:35 - error SC7004: the value stored into 'PUSHED' (Immutable) may be referenced elsewhere: 'pushed()' is not a fresh literal, construction or factory result
+
+  49 | 
+  50 | const PUSHED: Immutable<Item[]> = pushed();
+     |                                   ^~~~~~~~
+  51 | const INDEXED: Immutable<Item[]> = indexed();
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains
+
+contract-immutable-push-alias.ts:51:36 - error SC7004: the value stored into 'INDEXED' (Immutable) may be referenced elsewhere: 'indexed()' is not a fresh literal, construction or factory result
+
+  50 | const PUSHED: Immutable<Item[]> = pushed();
+  51 | const INDEXED: Immutable<Item[]> = indexed();
+     |                                    ^~~~~~~~~
+  52 | const FIELD: Immutable<Box> = field();
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains
+
+contract-immutable-push-alias.ts:52:31 - error SC7004: the value stored into 'FIELD' (Immutable) may be referenced elsewhere: 'field()' is not a fresh literal, construction or factory result
+
+  51 | const INDEXED: Immutable<Item[]> = indexed();
+  52 | const FIELD: Immutable<Box> = field();
+     |                               ^~~~~~~
+  53 | const NESTED: Immutable<Box> = nested();
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains
+
+contract-immutable-push-alias.ts:53:32 - error SC7004: the value stored into 'NESTED' (Immutable) may be referenced elsewhere: 'nested()' is not a fresh literal, construction or factory result
+
+  52 | const FIELD: Immutable<Box> = field();
+  53 | const NESTED: Immutable<Box> = nested();
+     |                                ^~~~~~~~
+  54 | 
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains

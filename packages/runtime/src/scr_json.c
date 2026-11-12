@@ -3225,6 +3225,33 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
 static SCR_TL ScrDyn *scr_dyn_perf_entry_base_proto;
 static SCR_TL ScrDyn *scr_dyn_perf_mark_proto;
 static SCR_TL ScrDyn *scr_dyn_perf_measure_proto;
+static SCR_TL ScrDyn *scr_dyn_perf_node_timing_proto;
+
+/* PerformanceNodeTiming.prototype.toJSON: a plain object with the eleven
+ * fields Node's toJSON answers, uvMetricsInfo left out. */
+static ScrDyn *scr_dyn_perf_node_timing_to_json(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  static const char *const names[] = {"name",   "entryType", "startTime", "duration",
+                                      "nodeStart", "v8Start",  "bootstrapComplete",
+                                      "environment", "loopStart", "loopExit", "idleTime"};
+  ScrDyn *self = scr_dyn_this_get();
+  /* `this` may be the record's live capsule (a checked-dynamic read of
+   * performance.nodeTiming), whose fields live in the native record: read
+   * the materialized view, as Reflect.get and the other capsule-aware
+   * entries do. */
+  ScrDyn *view = self && self->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(self) : NULL;
+  if (self && !view && scr_exc_pending()) { scr_dyn_release(self); return NULL; }
+  const ScrDyn *source = view ? view : self;
+  ScrDyn *result = scr_dyn_new_obj();
+  for (size_t i = 0; i < sizeof names / sizeof names[0] && result != NULL; i++) {
+    ScrDyn *value = scr_dyn_obj_read(source, names[i], strlen(names[i]));
+    if (value == NULL) { scr_dyn_release(result); result = NULL; break; }
+    scr_dyn_obj_set(result, names[i], strlen(names[i]), value);
+  }
+  scr_dyn_release(view);
+  scr_dyn_release(self);
+  return result;
+}
 
 static void scr_dyn_perf_entry_init(void) {
   if (scr_dyn_perf_entry_base_proto) return;
@@ -3239,9 +3266,18 @@ static void scr_dyn_perf_entry_init(void) {
   measure->prototype = scr_dyn_retain(base);
   measure->v.obj.class_name = "PerformanceMeasure";
   scr_dyn_fix_prototype(measure);
+  ScrDyn *node_timing = scr_dyn_new_obj();
+  node_timing->prototype = scr_dyn_retain(base);
+  node_timing->v.obj.class_name = "PerformanceNodeTiming";
+  scr_dyn_fix_prototype(node_timing);
+  scr_dyn_obj_set(node_timing, "toJSON", 6,
+      scr_dyn_new_func(scr_closure_new(NULL, 0), scr_dyn_perf_node_timing_to_json, 0,
+                       "native:PerformanceNodeTiming", "toJSON"));
+  scr_error_prototype_hide(node_timing, "toJSON", 6);
   scr_dyn_perf_entry_base_proto = base;
   scr_dyn_perf_mark_proto = mark;
   scr_dyn_perf_measure_proto = measure;
+  scr_dyn_perf_node_timing_proto = node_timing;
   /* The registry's references are the ones that outlive the program; the
    * statics borrow them. The creation references drop here, or the three
    * values would never reach zero and the RC audit would report them at
@@ -3249,30 +3285,34 @@ static void scr_dyn_perf_entry_init(void) {
    * registry's release either way (scr_dyn_release is counted). */
   scr_dyn_release(mark);
   scr_dyn_release(measure);
+  scr_dyn_release(node_timing);
   scr_dyn_release(base);
 }
 
 void scr_dyn_perf_entry_finish(ScrDyn *object) {
   if (!object || object->kind != SCR_DYN_OBJ) return;
   scr_dyn_perf_entry_init();
-  bool measure = false;
+  bool measure = false, node = false;
   size_t i = scr_dyn_obj_index_of(object, "entryType", 9);
   if (i != SIZE_MAX) {
     ScrDynProp prop = scr_dyn_obj_prop_at(object, i);
     const ScrDyn *type = prop.value;
     measure = type && type->kind == SCR_DYN_STR && type->v.str->len == 7 &&
               memcmp(type->v.str->data, "measure", 7) == 0;
+    node = type && type->kind == SCR_DYN_STR && type->v.str->len == 4 &&
+           memcmp(type->v.str->data, "node", 4) == 0;
   }
   scr_dyn_region_store(object, NULL); /* a prototype store (ScrDynRegion) */
   scr_dyn_release(object->prototype);
-  object->prototype =
-      scr_dyn_retain(measure ? scr_dyn_perf_measure_proto : scr_dyn_perf_mark_proto);
+  object->prototype = scr_dyn_retain(node ? scr_dyn_perf_node_timing_proto
+                                   : measure ? scr_dyn_perf_measure_proto
+                                             : scr_dyn_perf_mark_proto);
 }
 
 bool scr_dyn_perf_entry_is(const ScrDyn *value, double which) {
   static const char *const classes[] = {"PerformanceEntry", "PerformanceMark",
-                                        "PerformanceMeasure"};
-  if (!value || !(which >= 0 && which <= 2)) return false;
+                                        "PerformanceMeasure", "PerformanceNodeTiming"};
+  if (!value || !(which >= 0 && which <= 3)) return false;
   if (value->kind == SCR_DYN_TYPED_REF) {
     /* A live record capsule carries the brand on its view, whose converter
      * runs the finish hook (the compiler's materializer), so ask that. */
@@ -9049,12 +9089,27 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
 SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge = NULL;
 
 /* The method `key` of the handle's class as a function value (+1), or NULL
- * when the class has no such method. */
+ * when the class has no such method. An entry whose same_as names another
+ * entry answers that entry's function: Node aliases a prototype method by
+ * assignment, so the two reads are one value (`mime.toJSON ===
+ * mime.toString`, `params[Symbol.iterator] === params.entries`). */
 static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const char *key, size_t len) {
   const ScrDynHandleMethod *methods = ops->methods;
   if (!methods || !ops->invoke) return NULL;
-  for (size_t i = 0; methods[i].name; i++) {
-    if (strlen(methods[i].name) != len || memcmp(methods[i].name, key, len) != 0) continue;
+  size_t i;
+  for (i = 0; methods[i].name; i++)
+    if (strlen(methods[i].name) == len && memcmp(methods[i].name, key, len) == 0) break;
+  if (!methods[i].name) return NULL;
+  if (methods[i].same_as) {
+    size_t j;
+    for (j = 0; methods[j].name; j++)
+      if (strcmp(methods[j].name, methods[i].same_as) == 0) break;
+    /* The table must name an earlier entry: an alias to a missing name has
+     * no function to share, so it answers its own (a table bug, not a
+     * program's). */
+    if (methods[j].name) i = j;
+  }
+  {
     if (!scr_dynh_method_values[tag]) {
       size_t count = i + 1;
       while (methods[count].name) count++;
@@ -9074,7 +9129,12 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
     }
     return scr_dyn_retain(*slot);
   }
-  return NULL;
+}
+
+/* scr_blob.h: the same value a keyed read of `name` answers (+1, NULL when
+ * the class has no such method), for a symbol-keyed read that aliases it. */
+ScrDyn *scr_dyn_handle_method_value(ScrDynHandleTag tag, const char *name) {
+  return scr_dynh_method_value(tag, scr_dyn_handle_ops(tag), name, strlen(name));
 }
 
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
@@ -11386,13 +11446,18 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
     return NULL;
   }
-  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
-  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
+  /* A handle's own symbol-keyed members answer first: a class whose
+   * Symbol.iterator is a prototype method (`params[Symbol.iterator] ===
+   * params.entries`) must read that very function, not the generic
+   * iterator the built-in-iterable path builds. A hook that answers NULL
+   * leaves the read to the built-in path, as before. */
   if (value->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
     if (member || scr_exc_pending()) return member;
   }
+  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
+  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
   ScrDyn *table = scr_dyn_symbol_receiver(value);
   if (!table && scr_exc_pending()) return NULL;
   ScrDynEntry *entry = table ? scr_dyn_symbol_entry(table, key, false) : NULL;
@@ -25096,6 +25161,11 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
+}
+
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key) {
+  return scr_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_iterator_symbol->v.symbol.value;
 }
 
 /* Whether native record `rec` answers reflection from its declared fields

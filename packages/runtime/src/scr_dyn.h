@@ -1409,6 +1409,9 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 const ScrDyn *scr_dyn_to_string_tag_symbol(void);
 /* Whether key is Symbol.asyncIterator. */
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
+/* Whether key is Symbol.iterator (registered by the symbol unit when the
+ * program names it); handle symbol_get ops outside that unit use it. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
 ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
@@ -2515,12 +2518,18 @@ bool scr_dyn_trusted_build(void);
  * (tag, method) that calls invoke on its `this`. length is the method's
  * Function.prototype.length; rejects marks a method whose call on another
  * receiver answers a rejected promise instead of throwing (the async
- * WebIDL operations: Body's json(), ReadableStream's cancel()). */
+ * WebIDL operations: Body's json(), ReadableStream's cancel()).
+ * same_as names another entry of the same table whose function this entry
+ * is: Node aliases a prototype method by assignment (`MIMEType.prototype
+ * .toJSON = MIMEType.prototype.toString`), so both reads answer one
+ * function and `mime.toJSON === mime.toString` holds. NULL = own
+ * function. */
 typedef struct ScrDynHandleMethod {
   const char *name;
   uint32_t length;
   bool rejects;
   const char *invalid_this; /* NULL = the class's (ScrDynHandleOps) */
+  const char *same_as;      /* NULL = this entry's own function */
 } ScrDynHandleMethod;
 
 typedef struct ScrDynHandleOps {

@@ -2042,6 +2042,40 @@ export function isPerfEntryShape(shape: IrRecordShape): boolean {
   );
 }
 
+/** The hidden field that marks performance.nodeTiming's row (type-mapper's
+ * perfNodeTimingShape). Unlike an entry, Node keeps its fields as own
+ * enumerable properties, so key walks and spreads see them; only the class
+ * (inspect, the dyn prototype, toJSON's dropped uvMetricsInfo) is special. */
+export const PERF_NODE_TIMING_MARKER = "%perfNodeTiming";
+
+/** performance.nodeTiming's row: the marker names the shape, and a dyn
+ * conversion takes the PerformanceNodeTiming prototype. */
+export function isPerfNodeTimingShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_NODE_TIMING_MARKER)
+  );
+}
+
+/** PerformanceNodeTiming.prototype.toJSON's fields, in toJSON's order.
+ * `JSON.stringify` of the value serializes this list (the runtime's
+ * scr_dyn_perf_node_timing_to_json writes the same one, and uvMetricsInfo
+ * is in neither): Node's toJSON answers an object without the metrics. */
+export const PERF_NODE_TIMING_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "bootstrapComplete",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "idleTime",
+];
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {

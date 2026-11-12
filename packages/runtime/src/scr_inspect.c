@@ -2965,9 +2965,13 @@ static size_t insp_proto_props(ScrDyn *d, double recurse, double depth, bool ren
 /* The object form of a rendered frame. `owner` is the value a getter runs
  * with as `this` (Node's formatProperty calls it on the inspected value):
  * `d` itself, except for a function's property table, whose owner is the
- * function. Borrows both. +1. */
+ * function. Borrows both. `skip_key`, when set, leaves one own key out of
+ * the key count and the printed fields: PerformanceNodeTiming's inspect is
+ * its toJSON (Node shows the eleven fields and never uvMetricsInfo,
+ * showHidden included). +1. */
 static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double depth,
-                            const char *cls) {
+                            const char *cls, const char *skip_key) {
+  const size_t skip_len = skip_key ? strlen(skip_key) : 0;
   /* A plain object with a tag takes Node's tagged prefix in all three
    * forms: `Object [Math] {}`, `[Object [Math]]` past the depth limit,
    * and `Object [Math] { key: value }`. */
@@ -2977,6 +2981,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double dep
   size_t shown = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (skip_key && ent.key_len == skip_len && memcmp(ent.key, skip_key, skip_len) == 0) continue;
     shown += insp_obj_shows(&ent);
   }
   size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
@@ -3007,6 +3012,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double dep
   scr_insp_begin(recurse + 1);
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (skip_key && ent.key_len == skip_len && memcmp(ent.key, skip_key, skip_len) == 0) continue;
     if (!insp_obj_shows(&ent)) continue;
     ScrStr *own_key = NULL;
     ScrDynProp held = insp_prop_hold(&ent, &own_key);
@@ -4273,7 +4279,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
   scr_str_release(tag);
   size_t nseen = g_nseen;
   g_pending_seen = identity;
-  ScrStr *rendered = scr_insp_obj(table, d, recurse, depth, prefix);
+  ScrStr *rendered = scr_insp_obj(table, d, recurse, depth, prefix, NULL);
   g_pending_seen = NULL;
   if (g_nseen > nseen) g_nseen = nseen;
   free(prefix);
@@ -4605,7 +4611,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (circular > 0) return scr_insp_circular(circular);
       size_t seen_before = g_nseen;
       g_pending_seen = self;
-      ScrStr *out = scr_insp_obj(d, d, recurse, depth, scr_dyn_class_name(d));
+      const char *cls = scr_dyn_class_name(d);
+      /* PerformanceNodeTiming's inspect is its toJSON: every field but
+       * uvMetricsInfo, under the class name. */
+      const char *skip = cls && strcmp(cls, "PerformanceNodeTiming") == 0 ? "uvMetricsInfo" : NULL;
+      ScrStr *out = scr_insp_obj(d, d, recurse, depth, cls, skip);
       g_pending_seen = NULL;
       if (g_nseen > seen_before) g_nseen = seen_before;
       return out;
@@ -4794,7 +4804,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(prefix);
         size_t nseen = g_nseen;
         g_pending_seen = instance;
-        out = scr_insp_obj(materialized, materialized, recurse, depth, cls);
+        out = scr_insp_obj(materialized, materialized, recurse, depth, cls, NULL);
         g_pending_seen = NULL;
         if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
@@ -4819,7 +4829,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         cls[name->len + tag_len] = '\0';
         size_t nseen = g_nseen;
         g_pending_seen = instance;
-        out = scr_insp_obj(materialized, materialized, recurse, depth, cls);
+        out = scr_insp_obj(materialized, materialized, recurse, depth, cls, NULL);
         g_pending_seen = NULL;
         if (g_nseen > nseen) g_nseen = nseen;
         free(cls);

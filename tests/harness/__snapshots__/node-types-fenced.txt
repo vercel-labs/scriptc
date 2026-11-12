@@ -88,15 +88,6 @@ fenced.ts:73:16 - error SC2020: 'crypto.createCipheriv with cipher 'aes-128-ocb'
 
   hint: the supported ciphers are aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1 and ofb modes and their wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20, and chacha20-poly1305
 
-fenced.ts:74:1 - error SC2020: 'crypto.secureHeapUsed' is typed by @types/node but has no scriptc lowering yet
-
-  73 | createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
-  74 | secureHeapUsed();
-     | ^~~~~~~~~~~~~~~~
-  75 | setFips(false);
-
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 fenced.ts:75:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
 
   74 | secureHeapUsed();

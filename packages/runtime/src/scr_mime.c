@@ -398,8 +398,16 @@ static ScrDyn *scr_mime_empty_view(void *h) {
 static const ScrDynHandleMethod scr_mime_params_methods[] = {
     {"delete", 1, false}, {"entries", 0, false}, {"get", 1, false},
     {"has", 1, false}, {"keys", 0, false}, {"set", 2, false},
-    {"values", 0, false}, {"toString", 0, false}, {"toJSON", 0, false},
+    {"values", 0, false}, {"toString", 0, false}, {"toJSON", 0, false, NULL, "toString"},
     {NULL, 0, false}};
+
+/* MIMEParams.prototype[Symbol.iterator] is entries itself: Node assigns one
+ * function to both names. */
+static ScrDyn *scr_mime_params_symbol_get(void *h, const ScrDyn *key) {
+  (void)h;
+  if (!scr_dyn_is_iterator_symbol(key)) return NULL;
+  return scr_dyn_handle_method_value(SCR_DYNH_MIME_PARAMS, "entries");
+}
 
 static ScrDyn *scr_mime_params_get(void *h, const char *key, size_t len) {
   (void)h;
@@ -416,6 +424,7 @@ static ScrDyn *scr_mime_params_box(ScrMimeParams *p) {
       .invoke = scr_mime_params_invoke,
       .get = scr_mime_params_get,
       .methods = scr_mime_params_methods,
+      .symbol_get = scr_mime_params_symbol_get,
       .iter_step = scr_mime_params_step,
       .inspect_view = scr_mime_empty_view,
       .inspect_view_empty = true,
@@ -475,7 +484,7 @@ static ScrStr *scr_mime_type_to_string(const ScrMimeType *t) {
 }
 
 static const ScrDynHandleMethod scr_mime_type_methods[] = {
-    {"toString", 0, false}, {"toJSON", 0, false}, {NULL, 0, false}};
+    {"toString", 0, false}, {"toJSON", 0, false, NULL, "toString"}, {NULL, 0, false}};
 
 static ScrDyn *scr_mime_type_get(void *h, const char *key, size_t len) {
   ScrMimeType *t = h;

@@ -48,6 +48,7 @@ import {
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
   isPerfEntryShape,
+  isPerfNodeTimingShape,
   boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -5337,7 +5338,7 @@ export class LlDyn {
         // names (PerformanceMark or PerformanceMeasure, inheriting
         // PerformanceEntry), so instanceof and util.inspect answer like
         // Node's.
-        if (isPerfEntryShape(shape)) {
+        if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
           host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
           B.line(`call void @scr_dyn_perf_entry_finish(ptr ${d})`);
         }

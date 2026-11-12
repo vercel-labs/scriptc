@@ -344,9 +344,27 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     ) {
       const stmts: IrStmt[] = [];
       reads = pairs.map((pair) => {
-        const local = lowerer.declareHiddenLocal("%spValue", pair.value.value.type);
-        stmts.push({ kind: "varDecl", localId: local.id, init: pair.value.value, loc });
-        return varRef(local.id, pair.value.value.type, loc);
+        const value = pair.value.value;
+        // A bare unit (`{ c: null }`) has no local slot: locals may not
+        // carry a bare unit type. A literal needs no read; a unit-typed
+        // value with effects (a call answering undefined) keeps them in
+        // the statement list, and the append below converts the literal.
+        if (isUnitType(value.type)) {
+          if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+          return (
+            value.kind === "unitLit"
+              ? value
+              : {
+                  kind: "unitLit",
+                  unit: value.type.kind === "nullT" ? "null" : "undefined",
+                  type: value.type,
+                  loc: value.loc,
+                }
+          ) as IrExpr;
+        }
+        const local = lowerer.declareHiddenLocal("%spValue", value.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+        return varRef(local.id, value.type, loc);
       });
       acc = {
         kind: "seqExpr",

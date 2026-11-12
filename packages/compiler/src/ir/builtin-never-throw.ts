@@ -35,6 +35,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
+  // counter; neither runs program code.
+  "perf.loopExit",
+  "perf.loopCount",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // scr_events_once_any turns every failure into the result promise's

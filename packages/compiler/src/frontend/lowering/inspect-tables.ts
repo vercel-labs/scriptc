@@ -87,19 +87,20 @@ function census(lowerer: Lowerer): boolean {
   for (const file of lowerer.program.getSourceFiles()) {
     if (file.isDeclarationFile) continue;
     let found = false;
-    const visit = (node: ts.Node): void => {
-      if (found) return;
+    // The walk is iterative: an expression nested thousands of levels deep
+    // must not overflow the JS stack before the expression lowering's own
+    // named depth fence can fire.
+    ts.walkPreorder(file, (node) => {
       if (
         (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) &&
         isInspectValue(lowerer, node) &&
         !unreachableUse(node)
       ) {
         found = true;
-        return;
+        return "stop";
       }
-      ts.forEachChild(node, visit);
-    };
-    ts.forEachChild(file, visit);
+      return undefined;
+    });
     if (found) return true;
   }
   return false;

@@ -168,13 +168,6 @@ function isArgumentsObject(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
-/** Whether `node` is an arguments object by the same test the answers below
- * use (the name, or a constant holding it). util.types.isArgumentsObject
- * answers true for it; every other value's brand is decided at run time. */
-export function isArgumentsObjectValue(lowerer: Lowerer, node: ts.Expression): boolean {
-  return isArgumentsObject(lowerer, node);
-}
-
 /** The read an answer about `operand` keeps: none for the name `arguments`,
  * the constant's own read for a constant that holds the object, because a
  * constant read before its declaration throws. */
@@ -485,6 +478,37 @@ export function lowerArgumentsObjectCall(
       ordinary,
     );
   return answerOfOrdinaryCall(tag, loc, ordinary);
+}
+
+/** A util.types brand question asked of the arguments object directly
+ * (lowerUtilTypeCall hands every `util.types.*(arguments)` call here):
+ * `isArgumentsObject` answers true and every other brand false, as Node
+ * answers for the object — the brands are internal slots, which nothing a
+ * program does can change, so the answer holds like `Array.isArray`'s. The
+ * answer keeps the constant's read and evaluates the call's other arguments
+ * in source order. An arguments object that has left for an untyped slot is
+ * the argument list, whose brands the runtime answers (an array's). Null for
+ * a first argument that is not the arguments object. */
+export function utilTypesArgumentsAnswer(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const first = expr.arguments.nodes[0];
+  if (first === undefined || !isArgumentsObject(lowerer, first)) return null;
+  const answer: IrExpr = {
+    kind: "boolLit",
+    value: member === "isArgumentsObject",
+    type: BOOL,
+    loc,
+  };
+  // The caller refused spread arguments, so every remaining argument
+  // evaluates once, in source order.
+  const stmts = heldConstantRead(lowerer, first);
+  for (const other of expr.arguments.nodes.slice(1))
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(other), loc: locOf(other) });
+  return stmts.length === 0 ? answer : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
 
 /** `arguments instanceof Array` (false) and `arguments instanceof Object`

@@ -6033,9 +6033,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "additionalHeaders",
   "altsvc",
   "origin",
-  // FinalizationRegistry's methods (scr_finalization_registry_new).
+  // FinalizationRegistry's methods (scr_finalization_registry_new) and
+  // WeakRef's (scr_weak_ref_new).
   "register",
   "unregister",
+  "deref",
   // Worker and MessagePort methods use the owning context's handle adapter.
   "postMessage",
   "terminate",

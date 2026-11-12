@@ -1080,8 +1080,6 @@ export function builtinConstantsEsmNamespace(lowerer: Lowerer, loc: SrcLoc): IrE
           type: DYN,
           loc,
         },
-        // The ES module namespace object (branded, as in Node).
-        { kind: "boolLit", value: true, type: BOOL, loc },
       ],
       type: DYN,
       loc,

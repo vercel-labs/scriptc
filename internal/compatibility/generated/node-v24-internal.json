@@ -19771,6 +19771,9 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs",
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-secure-heap-used.ts",
           "tests/corpus/crypto-sign-pipe.ts",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -20452,8 +20455,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.crypto.createMac",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21028,8 +21035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.getFips",
+        "tests": [
+          "tests/corpus/2556-crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21077,8 +21087,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.crypto.getMacs",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21648,8 +21661,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.secureHeapUsed",
+        "tests": [
+          "tests/corpus/crypto-secure-heap-used.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23918,8 +23934,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.Mac",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23941,8 +23961,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.mac.final",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23964,8 +23988,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.mac.update",
+        "tests": [
+          "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-create-mac-errors.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105641,10 +105669,13 @@
           "tests/corpus/util-timing-function-shape.ts",
           "tests/corpus/util-transferable-abort-args.cjs",
           "tests/corpus/util-transferable-abort.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
           "tests/corpus/util-types-brand-matrix.ts",
           "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
@@ -107821,6 +107852,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -107858,6 +107892,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -107888,19 +107925,23 @@
       },
       "static": {
         "status": "supported",
-        "evidence": "compiler-dedicated:util.types.isArgumentsObject",
+        "evidence": "compiler-feature:util.util.types.isArgumentsObject",
         "tests": [
           "tests/corpus/util-types-brand-matrix.ts",
           "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
-          "tests/corpus/node24-util-types.cjs"
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107931,6 +107972,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -107968,6 +108012,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108005,6 +108052,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108042,6 +108092,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108079,6 +108132,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108116,6 +108172,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108153,6 +108212,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108190,6 +108252,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108227,6 +108292,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108264,6 +108332,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108301,6 +108372,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108338,6 +108412,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108375,6 +108452,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108412,6 +108492,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108449,6 +108532,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108486,6 +108572,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108523,6 +108612,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108560,6 +108652,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108597,6 +108692,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108634,6 +108732,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108671,6 +108772,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108708,6 +108812,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108738,19 +108845,23 @@
       },
       "static": {
         "status": "supported",
-        "evidence": "compiler-dedicated:util.types.isModuleNamespaceObject",
+        "evidence": "compiler-feature:util.util.types.isModuleNamespaceObject",
         "tests": [
           "tests/corpus/util-types-brand-matrix.ts",
           "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
-          "tests/corpus/node24-util-types.cjs"
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
         ]
       },
       "anchorSource": "exact"
@@ -108781,6 +108892,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108818,6 +108932,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108855,6 +108972,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108892,6 +109012,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108929,6 +109052,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -108966,6 +109092,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109003,6 +109132,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109040,6 +109172,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109077,6 +109212,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109114,6 +109252,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109151,6 +109292,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109188,6 +109332,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109225,6 +109372,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109262,6 +109412,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109299,6 +109452,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109336,6 +109492,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -109373,6 +109532,9 @@
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
           "tests/corpus/5406-util-types-keys.ts",
@@ -111916,6 +112078,7 @@
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -113026,8 +113189,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.Argon2Params",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113049,8 +113216,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.associatedData",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113072,8 +113242,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.memory",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113095,8 +113268,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113118,8 +113294,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.nonce",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113141,8 +113320,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.parallelism",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113164,8 +113346,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.passes",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113187,8 +113372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.secretValue",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113210,8 +113398,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.version",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113417,8 +113608,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.EcdhKeyDeriveParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113440,8 +113635,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113463,8 +113661,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.public",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114588,8 +114789,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114611,8 +114816,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114634,8 +114842,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114657,8 +114868,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacKeyAlgorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114680,8 +114895,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114703,8 +114921,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114726,8 +114947,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacKeyGenParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114749,8 +114974,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.length",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114772,8 +115000,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114795,8 +115026,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.KmacParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114818,8 +115053,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.algorithm",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114841,8 +115079,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -114864,8 +115105,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115029,8 +115273,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaHashedImportParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115086,8 +115334,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115393,8 +115645,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.RsaOaepParams",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115416,8 +115672,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.label",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -115439,8 +115698,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "partial",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/compat-webcrypto-modern-params.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

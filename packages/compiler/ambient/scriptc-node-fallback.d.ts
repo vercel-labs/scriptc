@@ -790,6 +790,56 @@ interface RsaHashedImportParams extends Algorithm {
 interface RsaPssParams extends Algorithm {
   saltLength: number;
 }
+/* Node 24's modern algorithm parameter dictionaries. These are the
+ * documented type shapes: the algorithms that consume them (Argon2, cSHAKE,
+ * KMAC, ECDH, KangarooTwelve, RSA-OAEP and TurboSHAKE) are not implemented,
+ * so the dictionaries are declared for typed sources but not admitted by a
+ * SubtleCrypto method signature. */
+interface Argon2Params extends Algorithm {
+  nonce: BufferSource;
+  memory: number;
+  passes: number;
+  parallelism: number;
+  associatedData?: BufferSource;
+  secretValue?: BufferSource;
+  version?: number;
+}
+interface CShakeParams extends Algorithm {
+  outputLength: number;
+  functionName?: BufferSource;
+  customization?: BufferSource;
+}
+interface ContextParams extends Algorithm {
+  context?: BufferSource;
+}
+interface EcdhKeyDeriveParams extends Algorithm {
+  public: CryptoKey;
+}
+interface KangarooTwelveParams extends Algorithm {
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface KmacImportParams extends Algorithm {
+  length?: number;
+}
+interface KmacKeyAlgorithm extends KeyAlgorithm {
+  length: number;
+}
+interface KmacKeyGenParams extends Algorithm {
+  length?: number;
+}
+interface KmacParams extends Algorithm {
+  algorithm: string;
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface RsaOaepParams extends Algorithm {
+  label?: BufferSource;
+}
+interface TurboShakeParams extends Algorithm {
+  outputLength: number;
+  domainSeparation?: number;
+}
 interface EcKeyAlgorithm extends KeyAlgorithm {
   namedCurve: string;
 }

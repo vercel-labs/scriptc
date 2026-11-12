@@ -3748,6 +3748,10 @@ function buildLibFnSignatures() {
      * either one by its outputEncoding. */
     "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
     "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+    /** createMac(algorithm, key[, options]) answers a Mac native handle. */
+    "crypto.macNewDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** crypto.secureHeapUsed() answers Node's no-secure-heap object. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
     "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
     "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },
@@ -4412,7 +4416,7 @@ function buildLibFnSignatures() {
      * (scr_module_namespace_dyn_value): the module id, its sorted export
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
-    "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN, BOOL], result: DYN },
+    "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
     /** A module namespace built from its export values as a JavaScript
      * source takes one (scr_module_namespace_copy_value): the module id and
      * the object holding the values. One marked object per module, so the
@@ -4783,6 +4787,8 @@ function buildLibFnSignatures() {
     "weakSet.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.is": { argTypes: [DYN], result: BOOL },
+    "weakRef.new": { argTypes: [DYN], result: DYN },
+    "weakRef.is": { argTypes: [DYN], result: BOOL },
     "dyn.fromEntries": { argTypes: [DYN], result: DYN },
     "bytes.constructor": { argTypes: [STRING], result: DYN },
     "bytes.instanceOf": { argTypes: [DYN, DYN, STRING], result: BOOL },

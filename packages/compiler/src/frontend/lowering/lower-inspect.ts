@@ -4888,14 +4888,6 @@ function formatSValue(
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
   if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
-    // The runtime's %o refuses every function value when it runs: the
-    // build names the statement (SC6015).
-    if (lowerer.isFunctionValue(node, value))
-      lowerer.noteDeferredRefusal(
-        node,
-        "util.format %o of function values is not supported yet",
-        "format the function's name instead (`%s` of `f.name`)",
-      );
     return {
       kind: "libCall",
       fn: "insp.dynHidden",

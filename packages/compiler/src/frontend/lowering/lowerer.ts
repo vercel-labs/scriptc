@@ -15115,16 +15115,6 @@ export class Lowerer {
       this.deferredRefusalWarnings.push(diag);
   }
 
-  /** Whether the value of `node`, lowered as `value`, is a function the
-   * runtime holds as a plain function value: a typed function, or a held
-   * built-in constructor in an untyped slot. */
-  isFunctionValue(node: ts.Expression, value: IrExpr): boolean {
-    return (
-      value.type.kind === "func" ||
-      (value.type.kind === "dyn" && this.holdsBuiltinConstructor(node))
-    );
-  }
-
   /** Whether every value of `node` is a built-in primitive constructor
    * (`String`, a slot typed `typeof String | typeof Number`). */
   holdsBuiltinConstructor(node: ts.Expression): boolean {

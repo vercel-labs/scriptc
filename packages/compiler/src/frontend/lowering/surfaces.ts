@@ -2059,6 +2059,13 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      // Both answer at the call site where the compiler knows the value
+      // (lowerUtilTypeCall): the arguments object and ESM namespace
+      // bindings. At run time the brand check recognizes boxed program
+      // namespaces; the compiled arguments list and builtin module values
+      // carry neither brand (see docs/content/limitations).
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
       // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then

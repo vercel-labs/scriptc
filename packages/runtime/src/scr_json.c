@@ -84,6 +84,10 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+/* Set by scr_module_namespace_dyn.c when this thread boxes a module
+ * namespace. Thread-local like the boxes it answers for: a thread that
+ * boxed no namespace has no branded value. */
+SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value) = NULL;
 #ifdef SCR_JS_OBJECT_MODEL
 /* Set by scr_dyn_invoke.c when the object model build links it, so a
  * DataView's `constructor` is the global's own interned value. A program that
@@ -6431,11 +6435,19 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
+  /* Only a boxed program module namespace has Node's [[Module]] brand; the
+   * call site answers for the namespaces the compiler knows (see
+   * module-namespace-elements.ts). */
+  if (PROBE("isModuleNamespaceObject"))
+    return scr_module_namespace_dyn_is != NULL && scr_module_namespace_dyn_is(value);
   /* Boxed primitives, BigInt64Array, BigUint64Array, CryptoKey and external
-   * values cannot be created here, so no value has these brands. */
+   * values cannot be created here, so no value has these brands. An
+   * arguments object that left its function is the argument list, an array
+   * (arguments-object.ts), so no value here has that brand either. */
   if (PROBE("isNumberObject") || PROBE("isStringObject") || PROBE("isBooleanObject") ||
       PROBE("isBigIntObject") || PROBE("isSymbolObject") || PROBE("isBoxedPrimitive") ||
-      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal"))
+      PROBE("isBigInt64Array") || PROBE("isBigUint64Array") || PROBE("isCryptoKey") || PROBE("isExternal") ||
+      PROBE("isArgumentsObject"))
     return false;
   if (PROBE("isNativeError")) {
     ScrError *error = scr_errdyn_err_of(value);

@@ -3156,6 +3156,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isArgumentsObject",
+      "kind": "node-builtin",
+      "name": "util/types.isArgumentsObject",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isArrayBuffer",
       "kind": "node-builtin",
       "name": "util/types.isArrayBuffer",
@@ -3291,6 +3297,12 @@
       "id": "node-builtin.util.types.isMapIterator",
       "kind": "node-builtin",
       "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isModuleNamespaceObject",
+      "kind": "node-builtin",
+      "name": "util/types.isModuleNamespaceObject",
       "status": "static"
     },
     {

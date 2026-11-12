@@ -2,6 +2,7 @@ import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
 import { arrayOf, funcOf } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import {
+  BOOL,
   DYN,
   STRING,
   SYMBOL_T,
@@ -12,6 +13,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { canonicalBuiltinModule, locOf } from "../program.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import { builtinModuleMemberNames } from "./surfaces.js";
 
@@ -620,4 +622,70 @@ function builtinBoxMemberValue(
 function builtinSubModuleOf(module: string, key: string): string | null {
   if (!(BUILTIN_NAMESPACE_MEMBERS[module] ?? []).includes(key)) return null;
   return canonicalBuiltinModule(`${module}/${key}`);
+}
+
+/** How an expression holds an ESM module namespace value, or null when it
+ * does not provably hold one: a namespace import binding (`import * as ns`)
+ * evaluates nothing, while `await import(...)` and a constant initialized
+ * with either evaluate (the import suspends and can reject, and a constant
+ * read before its declaration throws). The checker's moduleNs type alone
+ * does not qualify: an assertion gives any object that type, and a builtin
+ * sub-module member (`fs.promises`) is Node's CommonJS exports object, which
+ * is no namespace. */
+function esmNamespaceOperand(lowerer: Lowerer, node: ts.Expression): "binding" | "read" | null {
+  const operand = withoutParenthesesTypeWrappers(node);
+  if (lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "moduleNs") return null;
+  if (ts.isAwaitExpression(operand)) {
+    const awaited = withoutParenthesesTypeWrappers(operand.expression);
+    return ts.isCallExpression(awaited) && awaited.expression.kind === ts.SyntaxKind.ImportKeyword
+      ? "read"
+      : null;
+  }
+  if (!ts.isIdentifier(operand)) return null;
+  // The binding's own declaration, not the module symbol the alias
+  // resolves to (whose declaration is the source file).
+  const declaration = lowerer.checker.getSymbolAtLocation(operand)?.declarations[0];
+  if (declaration === undefined) return null;
+  if (ts.isNamespaceImport(declaration)) return "binding";
+  return ts.isVariableDeclaration(declaration) &&
+    (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0 &&
+    declaration.initializer !== undefined &&
+    esmNamespaceOperand(lowerer, declaration.initializer) !== null
+    ? "read"
+    : null;
+}
+
+/** A util.types brand question asked of an ESM namespace value directly
+ * (lowerUtilTypeCall hands every `util.types.*(...)` call here):
+ * `isModuleNamespaceObject` answers true and every other brand false, as
+ * Node answers for a namespace object. The call site is where the compiler
+ * knows the value, so the answer also holds for the namespaces whose
+ * untyped form is a module value (`node:path`) or a per-source copy
+ * (JavaScript sources); a namespace that has left for an untyped slot
+ * answers through the runtime's brand check instead, which recognizes the
+ * boxed program namespaces. Null for a first argument that is not provably
+ * a namespace. */
+export function utilTypesNamespaceAnswer(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const first = expr.arguments.nodes[0];
+  const operand = first === undefined ? null : esmNamespaceOperand(lowerer, first);
+  if (first === undefined || operand === null) return null;
+  const answer: IrExpr = {
+    kind: "boolLit",
+    value: member === "isModuleNamespaceObject",
+    type: BOOL,
+    loc,
+  };
+  // The caller refused spread arguments, so every evaluation here runs
+  // once, in source order.
+  const stmts: IrStmt[] = [];
+  if (operand === "read")
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(first), loc: locOf(first) });
+  for (const other of expr.arguments.nodes.slice(1))
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(other), loc: locOf(other) });
+  return stmts.length === 0 ? answer : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }

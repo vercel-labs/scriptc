@@ -51,7 +51,12 @@ const char *scr_lib_arg(int i);
  * right after scr_lib_init, before process.argv is first read. True when
  * the flag was there. */
 bool scr_lib_take_flag(const char *flag);
-/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+/* Takes a leading `name=value` argument out of process.argv the same way,
+ * with *value (when not NULL) naming the text after the '='. True when the
+ * option was there. */
+bool scr_lib_take_flag_value(const char *name, const char **value);
+/* process.execArgv: the flags scr_lib_take_flag* took, in order, or [] (+1,
+ * fresh). */
 ScrArr *scr_process_exec_argv(void);
 /* process.allowedNodeEnvironmentFlags: one interned set of the option
  * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
@@ -71,6 +76,10 @@ ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
 bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
+/* Adds (or removes) a 'resize' listener on the process output stream of
+ * `fd` (1 or 2). The runtime's own terminal-interface refresh listener
+ * joins the program's listeners in the same order. */
+void scr_stdio_resize_listen(double fd, ScrDyn *listener, bool remove);
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);

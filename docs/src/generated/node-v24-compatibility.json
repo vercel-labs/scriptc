@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3782,
+    "matrixRows": 3764,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 107,
+      "not-applicable": 125,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 397,
-      "apiEntries": 397
+      "entries": 396,
+      "apiEntries": 396
     },
     {
       "slug": "events",
@@ -410,8 +410,8 @@
     {
       "slug": "zlib",
       "title": "Zlib",
-      "entries": 94,
-      "apiEntries": 94
+      "entries": 77,
+      "apiEntries": 77
     }
   ],
   "rows": [
@@ -10796,9 +10796,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -18064,24 +18064,6 @@
       }
     },
     {
-      "id": "errors:17fd1658ce09",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_brotli_compression_failed`",
-      "signature": "`ERR_BROTLI_COMPRESSION_FAILED`",
-      "label": "ERR_BROTLI_COMPRESSION_FAILED",
-      "apiSymbol": "ERR_BROTLI_COMPRESSION_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_brotli_compression_failed",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:bd30c3b4a68e",
       "chapter": "errors",
       "kind": "module",
@@ -18094,7 +18076,7 @@
       "anchor": "err_brotli_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -18148,8 +18130,8 @@
       "anchor": "err_buffer_too_large",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "zlib raises these with Node's message, code and errno when maxOutputLength is exhausted and when rejectGarbageAfterEnd finds bytes after the stream end, in the sync, callback and promisified one-shots and the stream classes.",
         "verification": "test-backed"
       }
     },
@@ -20956,7 +20938,7 @@
       "anchor": "err_invalid_cursor_pos",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -23292,8 +23274,8 @@
       "anchor": "err_trailing_junk_after_stream_end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "zlib raises these with Node's message, code and errno when maxOutputLength is exhausted and when rejectGarbageAfterEnd finds bytes after the stream end, in the sync, callback and promisified one-shots and the stream classes.",
         "verification": "test-backed"
       }
     },
@@ -23562,7 +23544,7 @@
       "anchor": "err_use_after_close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -24032,8 +24014,8 @@
       "anchor": "err_zlib_initialization_failed",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "zstd raises this with Node's message when a known parameter belongs to the other direction, when a compressor receives a decompression parameter or a decompressor a compression parameter, in the sync, callback and promisified one-shots and the stream classes; the zlib and Brotli constructors report the same code if their engine initialization fails.",
         "verification": "test-backed"
       }
     },
@@ -24050,7 +24032,7 @@
       "anchor": "err_zstd_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -24672,7 +24654,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -24695,7 +24677,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -24718,9 +24700,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24741,7 +24723,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -24764,7 +24746,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25201,7 +25183,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25224,7 +25206,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25247,7 +25229,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25270,7 +25252,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25293,7 +25275,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25316,7 +25298,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -25339,9 +25321,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25362,9 +25344,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25385,9 +25367,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25408,9 +25390,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25431,9 +25413,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25454,9 +25436,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25477,9 +25459,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25500,9 +25482,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25523,9 +25505,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25546,9 +25528,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25569,9 +25551,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25592,9 +25574,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -25661,7 +25643,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25684,7 +25666,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25707,7 +25689,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25730,7 +25712,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25753,7 +25735,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25799,7 +25781,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25822,7 +25804,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25845,7 +25827,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25868,7 +25850,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25891,7 +25873,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25914,7 +25896,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25937,7 +25919,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -25960,7 +25942,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26167,7 +26149,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26190,7 +26172,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26236,7 +26218,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26259,9 +26241,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -26282,7 +26264,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26305,7 +26287,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -26328,7 +26310,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -26351,7 +26333,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -26397,9 +26379,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34309,7 +34291,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -34332,7 +34314,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -34355,7 +34337,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -34424,7 +34406,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -34447,7 +34429,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -34470,7 +34452,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -56218,7 +56200,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56241,7 +56223,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56264,7 +56246,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56287,7 +56269,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56310,7 +56292,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56333,7 +56315,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56356,7 +56338,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56379,7 +56361,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56402,7 +56384,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56425,7 +56407,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56448,7 +56430,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56471,7 +56453,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56494,7 +56476,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56517,7 +56499,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56540,7 +56522,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56563,7 +56545,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -56586,7 +56568,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56609,7 +56591,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56632,7 +56614,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56678,7 +56660,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -56701,7 +56683,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56724,7 +56706,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56747,7 +56729,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56770,7 +56752,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56793,7 +56775,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56816,7 +56798,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56839,7 +56821,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56862,7 +56844,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56885,7 +56867,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56908,7 +56890,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56931,7 +56913,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56954,7 +56936,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56977,7 +56959,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57000,7 +56982,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57023,7 +57005,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57046,7 +57028,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57069,7 +57051,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57092,7 +57074,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57115,7 +57097,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57138,7 +57120,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -57161,7 +57143,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -64820,7 +64802,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -64843,7 +64825,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64866,7 +64848,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64889,7 +64871,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64912,7 +64894,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64935,7 +64917,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64958,7 +64940,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -64981,7 +64963,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65004,7 +64986,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65027,7 +65009,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65050,7 +65032,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65073,7 +65055,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65096,8 +65078,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -65119,7 +65101,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65142,7 +65124,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65165,7 +65147,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65188,7 +65170,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -65211,8 +65193,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -65234,9 +65216,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -65257,7 +65239,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65280,7 +65262,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65303,7 +65285,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65326,7 +65308,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -65349,8 +65331,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -65372,7 +65354,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -81822,377 +81804,9 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
-      }
-    },
-    {
-      "id": "zlib:b33e2218a29a",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressBrotli",
-      "signature": "`compressBrotli([options])`",
-      "label": "compressBrotli([options])",
-      "apiSymbol": "compressBrotli",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressbrotlioptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:f52bcb0441b4",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressBrotliSync",
-      "signature": "`compressBrotliSync([options])`",
-      "label": "compressBrotliSync([options])",
-      "apiSymbol": "compressBrotliSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressbrotlisyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:5d9b6e75680e",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressDeflate",
-      "signature": "`compressDeflate([options])`",
-      "label": "compressDeflate([options])",
-      "apiSymbol": "compressDeflate",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressdeflateoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:2f423bd21cab",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressDeflateSync",
-      "signature": "`compressDeflateSync([options])`",
-      "label": "compressDeflateSync([options])",
-      "apiSymbol": "compressDeflateSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressdeflatesyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:14600f289b64",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressGzip",
-      "signature": "`compressGzip([options])`",
-      "label": "compressGzip([options])",
-      "apiSymbol": "compressGzip",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressgzipoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:7354fd8fdadf",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressGzipSync",
-      "signature": "`compressGzipSync([options])`",
-      "label": "compressGzipSync([options])",
-      "apiSymbol": "compressGzipSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compressgzipsyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:c1b6e7dd5506",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressZstd",
-      "signature": "`compressZstd([options])`",
-      "label": "compressZstd([options])",
-      "apiSymbol": "compressZstd",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compresszstdoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:3ed321c39c37",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "compressZstdSync",
-      "signature": "`compressZstdSync([options])`",
-      "label": "compressZstdSync([options])",
-      "apiSymbol": "compressZstdSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "compresszstdsyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:2c89860f52a5",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressBrotli",
-      "signature": "`decompressBrotli([options])`",
-      "label": "decompressBrotli([options])",
-      "apiSymbol": "decompressBrotli",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressbrotlioptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:cb37070b5ee0",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressBrotliSync",
-      "signature": "`decompressBrotliSync([options])`",
-      "label": "decompressBrotliSync([options])",
-      "apiSymbol": "decompressBrotliSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressbrotlisyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:d829a0b75f6c",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressDeflate",
-      "signature": "`decompressDeflate([options])`",
-      "label": "decompressDeflate([options])",
-      "apiSymbol": "decompressDeflate",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressdeflateoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:f1a96211af38",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressDeflateSync",
-      "signature": "`decompressDeflateSync([options])`",
-      "label": "decompressDeflateSync([options])",
-      "apiSymbol": "decompressDeflateSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressdeflatesyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:b1209d1fe9bf",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressGzip",
-      "signature": "`decompressGzip([options])`",
-      "label": "decompressGzip([options])",
-      "apiSymbol": "decompressGzip",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressgzipoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:955fb7cb393c",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressGzipSync",
-      "signature": "`decompressGzipSync([options])`",
-      "label": "decompressGzipSync([options])",
-      "apiSymbol": "decompressGzipSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompressgzipsyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:d9ea319f8e5e",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressZstd",
-      "signature": "`decompressZstd([options])`",
-      "label": "decompressZstd([options])",
-      "apiSymbol": "decompressZstd",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompresszstdoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "zlib:e0d0e947882d",
-      "chapter": "zlib",
-      "kind": "method",
-      "name": "decompressZstdSync",
-      "signature": "`decompressZstdSync([options])`",
-      "label": "decompressZstdSync([options])",
-      "apiSymbol": "decompressZstdSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "decompresszstdsyncoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -82214,7 +81828,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -82237,7 +81851,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -82403,29 +82017,6 @@
       }
     },
     {
-      "id": "zlib:c58d0ed2b80a",
-      "chapter": "zlib",
-      "kind": "class",
-      "name": "zlib.ZlibBase",
-      "signature": "Class: `zlib.ZlibBase`",
-      "label": "zlib.ZlibBase",
-      "apiSymbol": "zlib.ZlibBase",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-zlibzlibbase",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
-        "verification": "test-backed"
-      }
-    },
-    {
       "id": "zlib:ede53f463eab",
       "chapter": "zlib",
       "kind": "method",
@@ -82433,7 +82024,7 @@
       "signature": "`zlib.close([callback])`",
       "label": "zlib.close([callback])",
       "apiSymbol": "zlib.close",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "zlibclosecallback",
       "nodeStability": {
@@ -82456,7 +82047,7 @@
       "signature": "`zlib.flush([kind, ]callback)`",
       "label": "zlib.flush([kind, ]callback)",
       "apiSymbol": "zlib.flush",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "zlibflushkind-callback",
       "nodeStability": {
@@ -82479,7 +82070,7 @@
       "signature": "`zlib.params(level, strategy, callback)`",
       "label": "zlib.params(level, strategy, callback)",
       "apiSymbol": "zlib.params",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "zlibparamslevel-strategy-callback",
       "nodeStability": {
@@ -82502,7 +82093,7 @@
       "signature": "`zlib.reset()`",
       "label": "zlib.reset()",
       "apiSymbol": "zlib.reset",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "zlibreset",
       "nodeStability": {
@@ -82525,7 +82116,7 @@
       "signature": "`bytesWritten` Type: {number}",
       "label": "bytesWritten",
       "apiSymbol": "bytesWritten",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "class-zlibzlibbase",
       "nodeStability": {
@@ -82559,7 +82150,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -82582,7 +82173,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -82605,7 +82196,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82628,7 +82219,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82651,7 +82242,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82674,7 +82265,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82697,7 +82288,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82720,7 +82311,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82743,7 +82334,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82766,7 +82357,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82789,7 +82380,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82812,7 +82403,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82835,7 +82426,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82858,7 +82449,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82881,7 +82472,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82904,7 +82495,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82927,7 +82518,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82950,7 +82541,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82973,7 +82564,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82996,7 +82587,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83019,7 +82610,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83042,7 +82633,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83065,7 +82656,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83088,7 +82679,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83111,7 +82702,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83134,7 +82725,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83157,7 +82748,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83180,7 +82771,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83203,7 +82794,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83226,7 +82817,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83249,7 +82840,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83272,7 +82863,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83295,7 +82886,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83318,7 +82909,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83341,7 +82932,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83364,7 +82955,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83409,8 +83000,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd; the info option and the largest chunkSize values are not supported yet.",
+        "status": "supported",
+        "detail": "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd, including the chunkSize output buffer's size limit and allocation-failure report; a literal info: true in a convenience method's options answers Node's { buffer, engine } result.",
         "verification": "test-backed"
       }
     },
@@ -83432,8 +83023,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "status": "supported",
+        "detail": "Brotli options validate with Node's rules: chunkSize at least 64, flush and finishFlush from 0 to 3, maxOutputLength, a params object whose keys must name a parameter Brotli accepts with number or boolean values, and dictionary as any byte input; unknown option keys are ignored, and a literal info: true answers the one-shots' { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -83455,8 +83046,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
+        "status": "supported",
+        "detail": "zstd options validate with Node's rules: chunkSize at least 64, flush and finishFlush from 0 to 2, maxOutputLength, a params object whose keys must name a parameter zstd accepts with number or boolean values, dictionary as any byte input, and pledgedSrcSize; unknown option keys are ignored, and a literal info: true answers the one-shots' { buffer, engine }.",
         "verification": "test-backed"
       }
     },
@@ -83479,7 +83070,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83502,7 +83093,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83525,7 +83116,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83548,7 +83139,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83571,7 +83162,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83594,7 +83185,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83617,7 +83208,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83640,7 +83231,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83663,7 +83254,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83686,7 +83277,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83709,7 +83300,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83732,7 +83323,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83755,7 +83346,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83778,7 +83369,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83801,7 +83392,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83824,7 +83415,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83847,7 +83438,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83870,7 +83461,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83893,7 +83484,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83916,7 +83507,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83939,7 +83530,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83962,7 +83553,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     }

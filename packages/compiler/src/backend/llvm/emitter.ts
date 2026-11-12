@@ -3013,6 +3013,7 @@ export class LlEmitter {
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
+      closureSources: () => this.closureSources(),
       threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
       pendingBailReleaseLines: (type, value) => this.pendingBailReleaseLines(type, value),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -3176,7 +3177,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
@@ -3470,6 +3472,29 @@ export class LlEmitter {
   /** The entry point of a closure of `fnName` (closureNames). */
   private closureEntry(fnName: string, target: IrFunction): string {
     return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  private closureSourceRows: readonly { entry: string; text: string }[] | undefined;
+  /** The source text Function.prototype.toString prints, by closure entry,
+   * of the functions the module boxes into checked values that keep their
+   * text (function-source-text.ts sets IrFunction.sourceText). The runtime
+   * asks the module for a closure's text through this table. */
+  closureSources(): readonly { entry: string; text: string }[] {
+    if (this.closureSourceRows !== undefined) return this.closureSourceRows;
+    const rows: { entry: string; text: string }[] = [];
+    const seen = new Set<string>();
+    for (const fn of this.mod.functions) {
+      if (fn.sourceText === undefined) continue;
+      const entry = this.closureEntry(fn.name, fn);
+      // A declared function's wrapper is defined where the table's entry
+      // resolves even when the emitter never reaches the closure (the
+      // closureNames scan's reason).
+      if (fn.captures === undefined) this.closureWrapperNames.add(fn.name);
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      rows.push({ entry, text: fn.sourceText });
+    }
+    return (this.closureSourceRows = rows);
   }
 
   /** The name the closure-name table gives a closure made of `fnName`
@@ -8153,13 +8178,20 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
-  /** Saved operands can feed later call arguments. Transfer ownership of a
-   * sequence's locals to this expression's frame so they survive those
-   * reads and still die on the path that created them, including inside
-   * lazy branches. */
-  private emitSequence<T>(body: () => T): T {
+  /** Opens an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). A function that compiles with the compiler opens the pair
+   * directly instead of passing a closure: emitReadReceiver lowered to 4,933
+   * stack slots with the closure #3563 passed it and to 409 with the pair,
+   * the difference between the bootstrap's second generation fitting its
+   * stack or not. */
+  beginSequenceScope(): void {
     this.scopes.push([]);
-    const result = body();
+  }
+
+  /** Closes the sequence beginSequenceScope opened. */
+  endSequenceScope(): void {
     for (const local of this.scopes.pop()!) {
       this.currentFrame().push({
         name: local.slot,
@@ -8169,6 +8201,16 @@ export class LlEmitter {
         ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
+  }
+
+  /** Saved operands can feed later call arguments. Transfer ownership of a
+   * sequence's locals to this expression's frame so they survive those
+   * reads and still die on the path that created them, including inside
+   * lazy branches. */
+  private emitSequence<T>(body: () => T): T {
+    this.beginSequenceScope();
+    const result = body();
+    this.endSequenceScope();
     return result;
   }
 
@@ -9693,6 +9735,12 @@ export class LlEmitter {
 
   zlibBytesThunkFor(cbT: IrType & { kind: "func" }): string {
     return zlibBytesThunkFor(this, cbT);
+  }
+
+  /** The `info: true` callback adapter: its result parameter is the
+   * checked { buffer, engine } object, passed through as a dyn value. */
+  zlibDynThunkFor(cbT: IrType & { kind: "func" }): string {
+    return zlibBytesThunkFor(this, cbT, false, "zlib", "dyn");
   }
 
   streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {

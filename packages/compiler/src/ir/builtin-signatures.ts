@@ -114,6 +114,42 @@ function buildLibFnSignatures() {
      * EventTarget: the target's limit, and its assignment. */
     "event.targetGetMax": { argTypes: [DYN], result: F64 },
     "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
+    /** events.once over an EventTarget (scr_event_target.c): [target,
+     * name] → a pending promise of the event's arguments, and the options
+     * form with the checked-dynamic options value last. Never throws: a
+     * receiver that is not an EventTarget, invalid options or a bad or
+     * aborted options.signal reject it. */
+    "event.onceTarget": {
+      argTypes: [DYN, STRING],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
+    "event.onceTargetSignal": {
+      argTypes: [DYN, STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
+    /** events.on (scr_event_target.c): the async iterator over a
+     * receiver's events. `event.on` resolves the protocol at runtime
+     * (receiver, name and options as checked-dynamic values: the name
+     * crosses as the value the receiver's `on` receives, a symbol keeping
+     * its identity, and the options ladder runs in the runtime);
+     * `event.onEmitter` is the same for a receiver compiled as an emitter,
+     * whose registry it registers in directly; both take the receiver's
+     * pause() and resume() as values (undefined when the static class has
+     * none) because a compiled class's methods are not reachable through
+     * its checked-dynamic view. */
+    "event.on": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "event.onEmitter": {
+      argTypes: [null, DYN, DYN, DYN, DYN, DYN],
+      result: DYN,
+    },
+    /** events.on over a receiver compiled as an emitter: [emitter, receiver,
+     * pauseFn, resumeFn, name, boxer, errorBoxer, listenForError, options] —
+     * the boxers turn the event's tuple and 'error''s into the iterator's
+     * arguments array (scr_events_on_typed, beside scr_events_on). */
+    "events.onTyped": {
+      argTypes: [null, DYN, DYN, DYN, DYN, null, null, BOOL, DYN],
+      result: DYN,
+    },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },
@@ -581,6 +617,18 @@ function buildLibFnSignatures() {
       result: F64,
     },
     "timers.clearTimeout": { argTypes: [F64], result: VOID },
+    /** Timeout.close() — clearTimeout(this) that returns the handle for
+     * chaining. Node's legacy cancel; mock-aware like clearTimeout. */
+    "timers.close": { argTypes: [F64], result: F64 },
+    /** Immediate.prototype[Symbol.dispose]() — clearImmediate(this), which
+     * acts on the handle itself rather than through the global clearTimeout
+     * and clearImmediate that mock.timers replaces. */
+    "timers.immediateClose": { argTypes: [F64], result: F64 },
+    /** Timeout.prototype[Symbol.dispose]() and Immediate.prototype
+     * [Symbol.dispose]() — the same handle-owned clears as close(), whose
+     * result Node discards: the call answers undefined, not the handle. */
+    "timers.dispose": { argTypes: [F64], result: VOID },
+    "timers.immediateDispose": { argTypes: [F64], result: VOID },
     /** Timeout.unref()/ref()/hasRef() — loop-liveness bookkeeping over the
      * handle id. unref/ref RETURN the handle (f64) for chaining; hasRef
      * returns bool. */
@@ -3994,6 +4042,17 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: BYTES_U8 },
     },
     "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+    /** Node's `info: true` results: the same one-shot runs, answering the
+     * { buffer, engine } checked object instead of the Buffer. The Cb form
+     * hands its (Error | null, { buffer, engine }) callback the checked
+     * value; the promise form settles with it. The Dyn twins take the JS
+     * lane's untyped data. */
+    "zlib.infoSync": { argTypes: [F64, BYTES_U8, DYN], result: DYN },
+    "zlib.infoCb": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+    "zlib.infoSyncDyn": { argTypes: [F64, DYN, DYN], result: DYN },
+    "zlib.infoCbDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+    "zlib.infoPromise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: DYN } },
+    "zlib.infoPromiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: DYN } },
     /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
      * streamNew takes Node's node_zlib_mode number and the options value
      * (undefined when absent), validates it with Node's ladder, and answers
@@ -4214,8 +4273,9 @@ function buildLibFnSignatures() {
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
-    // The Node runtime flag a node:test binary took out of process.argv
-    // (--test-update-snapshots), or [] — a fresh array per read.
+    // The Node runtime flags a node:test binary took out of process.argv
+    // (--test-update-snapshots and the reporter options), or []; a fresh
+    // array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
     /** process.allowedNodeEnvironmentFlags: the interned set of option
      * names the compatibility target accepts in NODE_OPTIONS (+1 read of
@@ -4743,6 +4803,11 @@ function buildLibFnSignatures() {
     "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
     "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
+    /** Object.prototype.isPrototypeOf(receiver, value) over checked-dynamic
+     * operands: ToObject throws on a nullish receiver, and the argument's
+     * prototype chain is walked comparing each link with the receiver by
+     * identity. */
+    "dyn.isPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
     "dyn.copyDataProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.objectRest": { argTypes: [DYN, DYN], result: DYN },
@@ -4789,6 +4854,9 @@ function buildLibFnSignatures() {
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
+    /** Function.prototype as a value: an anonymous function answering
+     * undefined, length 0 and name "", one value per program. */
+    "dyn.functionPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
@@ -5867,6 +5935,10 @@ function buildLibFnSignatures() {
     "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
     "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
     "rl.getPrompt": { argTypes: [F64], result: STRING },
+    /** getPrompt() for a checked-dynamic use: the stored prompt value
+     * itself (a number or object set through an untyped setPrompt keeps its
+     * identity). */
+    "rl.getPromptDyn": { argTypes: [F64], result: DYN },
     "rl.write": { argTypes: [F64, STRING], result: VOID },
     /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
      * ctrl, meta, shift] */
@@ -5958,9 +6030,9 @@ function buildLibFnSignatures() {
      * errorBoxer, listenForError] → a pending promise of any[]; the boxers
      * turn the event's and the 'error' tuple into that array. */
     "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
-    /** events.once(emitter, name, { signal }) (scr_events_once_signal.c):
-     * events.once's arguments plus the checked-dynamic signal (an
-     * AbortSignal or undefined). */
+    /** events.once(emitter, name, options) (scr_events_once_signal.c):
+     * events.once's arguments plus the checked-dynamic options value, whose
+     * `signal` the runtime validates as Node does. */
     "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
     /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
      * value's type that copies the borrowed already-resolved `value` promise
@@ -6267,6 +6339,11 @@ function buildLibFnSignatures() {
     "text.decoderEncoding": { argTypes: [DYN], result: F64 },
     "text.decoderName": { argTypes: [F64], result: STRING },
     "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+    /** TextEncoder.encodeInto over a statically typed string and Uint8Array:
+     * scr_bytes.c's typed entry, which boxes nothing. Borrowed args; the
+     * result is the call site's own `{ read, written }` record (the backend
+     * fills it from two slots), so the signature names none. */
+    "text.encodeIntoStr": { argTypes: [STRING, BYTES_U8], result: DYN },
     /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
      * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
      * Borrowed; never throws. */

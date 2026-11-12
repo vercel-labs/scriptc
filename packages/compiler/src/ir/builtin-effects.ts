@@ -245,7 +245,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetListenerCountDyn",
   "event.targetGetMax",
   "event.targetSetMax",
+  // events.on validates its options, reads the receiver's protocol and
+  // registers listeners (a throwing 'newListener' listener runs inside).
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   "event.call",
+  // events.once over an EventTarget or a NodeEventTarget: the receiver's own
+  // once()/addEventListener() runs, and a bad receiver or signal throws
+  // Node's ERR_INVALID_ARG_TYPE (the promise's rejection is a value).
+  "event.onceTarget",
+  "event.onceTargetSignal",
   "blob.new",
   "blob.fileNew",
   "blob.slice",
@@ -746,6 +756,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.promptWith",
   "rl.setPromptDyn",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.cursorPos",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
@@ -842,6 +853,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
+  // Object.prototype.isPrototypeOf: ToObject throws on a nullish receiver,
+  // and reading the argument's prototype chain can throw.
+  "dyn.isPrototypeOf",
   "dyn.assign",
   "dyn.copyDataProperties",
   "dyn.objectRest",
@@ -1171,6 +1185,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "zlib.cbOpts",
   "zlib.syncOptsDyn",
   "zlib.cbOptsDyn",
+  "zlib.infoSync",
+  "zlib.infoCb",
+  "zlib.infoSyncDyn",
+  "zlib.infoCbDyn",
   "zlib.streamFlush",
   "zlib.streamFlushCb",
   "zlib.streamParams",

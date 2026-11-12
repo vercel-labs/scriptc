@@ -16,15 +16,27 @@
  *   pnpm node-compat --local        rewrite the snapshot without fetching: reclassify
  *                                   the committed rows from the current sources
  *   pnpm node-compat:check          offline implementation/profile drift check
+ *
+ * Every mode writes or checks the two refusal-table artifacts as well:
+ * generated/node-v24-refusals.json and its published copy,
+ * packages/experimental/refusals.json.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { buildRefusals, renderRefusals } from "./refusals.mjs";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
+const refusalsOutputPath = `${packageRoot}generated/node-v24-refusals.json`;
+// Published from the experimental package so a program that reads the table
+// imports it from the installed package rather than an internal path.
+const publishedRefusalsPath = `${root}packages/experimental/refusals.json`;
+const compilerVersion = JSON.parse(
+  readFileSync(`${root}packages/compiler/package.json`, "utf8"),
+).version;
 // Files derived from the ledger elsewhere: the docs build computes the
 // metadata from the public artifact, and `pnpm node-compat:backlog` builds
 // the backlog in memory. A merge that keeps a branch's copy would bring
@@ -623,6 +635,18 @@ function render(snapshot) {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
+function refusalsRendered(snapshot) {
+  return renderRefusals(
+    buildRefusals(snapshot, { chapterModules: pin.chapterModules, compilerVersion }),
+  );
+}
+
+function writeRefusals(snapshot) {
+  const rendered = refusalsRendered(snapshot);
+  writeFileSync(refusalsOutputPath, rendered);
+  writeFileSync(publishedRefusalsPath, rendered);
+}
+
 function publicDetail(tier) {
   const source = tier.evidence ?? "";
   if (source === "derived:descendants") return "Derived from the exact API rows in this chapter.";
@@ -714,14 +738,30 @@ function publicDetail(tier) {
     if (source === "compiler-feature:errors.stack") {
       return "Native errors capture synchronous source frames; V8 stack customization and async stack stitching remain unsupported.";
     }
+    if (
+      source === "compiler-feature:errors.ERR_BUFFER_TOO_LARGE" ||
+      source === "compiler-feature:errors.ERR_TRAILING_JUNK_AFTER_STREAM_END"
+    ) {
+      return "zlib raises these with Node's message, code and errno when maxOutputLength is exhausted and when rejectGarbageAfterEnd finds bytes after the stream end, in the sync, callback and promisified one-shots and the stream classes.";
+    }
+    if (source === "compiler-feature:errors.ERR_ZLIB_INITIALIZATION_FAILED") {
+      return "zstd raises this with Node's message when a known parameter belongs to the other direction, when a compressor receives a decompression parameter or a decompressor a compression parameter, in the sync, callback and promisified one-shots and the stream classes; the zlib and Brotli constructors report the same code if their engine initialization fails.";
+    }
     if (source === "compiler-feature:process.allowedNodeEnvironmentFlags") {
       return "One stable set answers the compatibility target's NODE_OPTIONS flag names for exact spellings; Node's Set subclass also accepts undashed, underscored, and =value spellings in has(), and its add, delete, and clear do nothing.";
     }
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
+    if (
+      /^compiler-feature:zlib\.(?:compress|decompress)(?:Brotli|Deflate|Gzip|Zstd)(?:Sync)?$/.test(
+        source,
+      )
+    ) {
+      return "Outside the static execution model: Node registers the node:zlib/iter module only under --experimental-stream-iter (without the flag the import throws ERR_UNKNOWN_BUILTIN_MODULE), the helpers return node:stream/iter duplexes, and a compiled scriptc binary takes no Node command-line flags.";
+    }
     if (source === "compiler-feature:zlib.Options") {
-      return "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd; the info option and the largest chunkSize values are not supported yet.";
+      return "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd, including the chunkSize output buffer's size limit and allocation-failure report; a literal info: true in a convenience method's options answers Node's { buffer, engine } result.";
     }
     if (
       /^compiler-feature:zlib\.(?:zlib\.(?:Deflate|Inflate|Gzip|Gunzip|DeflateRaw|InflateRaw|Unzip|ZlibBase|close|flush|params|reset)|bytesWritten)$/.test(
@@ -735,33 +775,33 @@ function publicDetail(tier) {
         source,
       )
     ) {
-      return "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.";
+      return "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; a literal info: true answers Node's { buffer, engine } result in the sync, callback and promisified forms, the callback forms settle on the worker pool, and crc32 validates its uint32 seed.";
     }
     if (
       /^compiler-feature:zlib\.zlib\.(?:brotliCompress|brotliCompressSync|brotliDecompress|brotliDecompressSync|createBrotliCompress|createBrotliDecompress)$/.test(
         source,
       )
     ) {
-      return "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.";
+      return "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.";
     }
     if (
       /^compiler-feature:zlib\.zlib\.(?:zstdCompress|zstdCompressSync|zstdDecompress|zstdDecompressSync|createZstdCompress|createZstdDecompress)$/.test(
         source,
       )
     ) {
-      return "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.";
+      return "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; a literal info: true answers Node's { buffer, engine } result, and the callback forms settle on the worker pool.";
     }
-    if (
-      /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
-        source,
-      )
-    ) {
-      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.";
+    if (source === "compiler-feature:zlib.BrotliOptions") {
+      return "Brotli options validate with Node's rules: chunkSize at least 64, flush and finishFlush from 0 to 3, maxOutputLength, a params object whose keys must name a parameter Brotli accepts with number or boolean values, and dictionary as any byte input; unknown option keys are ignored, and a literal info: true answers the one-shots' { buffer, engine }.";
     }
-    if (
-      /^compiler-feature:zlib\.(?:zlib\.(?:ZstdCompress|ZstdDecompress)|ZstdOptions)$/.test(source)
-    ) {
-      return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.";
+    if (source === "compiler-feature:zlib.ZstdOptions") {
+      return "zstd options validate with Node's rules: chunkSize at least 64, flush and finishFlush from 0 to 2, maxOutputLength, a params object whose keys must name a parameter zstd accepts with number or boolean values, dictionary as any byte input, and pledgedSrcSize; unknown option keys are ignored, and a literal info: true answers the one-shots' { buffer, engine }.";
+    }
+    if (/^compiler-feature:zlib\.zlib\.(?:BrotliCompress|BrotliDecompress)$/.test(source)) {
+      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.";
+    }
+    if (/^compiler-feature:zlib\.zlib\.(?:ZstdCompress|ZstdDecompress)$/.test(source)) {
+      return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and their one-shots' literal info: true answers { buffer, engine }.";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
@@ -1257,6 +1297,12 @@ function checkLocal() {
   if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
     throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
   }
+  const refusals = refusalsRendered(snapshot);
+  for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
+    if (readFileSync(path, "utf8") !== refusals) {
+      throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+    }
+  }
   const publicRows = publicSnapshot(snapshot).rows;
   for (const row of publicRows) {
     if (row.depth > 0 && row.scope !== "api")
@@ -1311,6 +1357,7 @@ async function main() {
     const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
     writeFileSync(internalOutputPath, render(snapshot));
     writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
+    writeRefusals(snapshot);
     console.log(
       `reclassified the compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
     );
@@ -1344,6 +1391,11 @@ async function main() {
       throw new Error("internal Node compatibility snapshot is stale; run 'pnpm node-compat'");
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
       throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
+    const refusals = refusalsRendered(snapshot);
+    for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
+      if (readFileSync(path, "utf8") !== refusals)
+        throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+    }
     console.log(
       `Node compatibility snapshot matches ${pin.tag} (${snapshot.rows.length} API rows, commit ${pin.commit.slice(0, 12)})`,
     );
@@ -1351,6 +1403,7 @@ async function main() {
   }
   writeFileSync(internalOutputPath, internalRendered);
   writeFileSync(publicOutputPath, publicRendered);
+  writeRefusals(snapshot);
   console.log(
     `wrote compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
   );

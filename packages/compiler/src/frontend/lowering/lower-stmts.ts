@@ -2060,6 +2060,10 @@ function hoistVarBinding(
     return bound;
   }
   let type = varBindingType(lowerer, nameNode);
+  // A var analyzeJsWidenedBindings marked (it stores a member the checker
+  // types only from writes) holds that read's value.
+  const widened = lowerer.resolveValueSymbol(nameNode);
+  if (widened && lowerer.jsWidenedBindings.has(widened)) type = DYN;
   // The first value stored is an existing checked-dynamic object: keep it
   // (jsBindingKeepsCheckedObject). A checked-dynamic slot holds undefined
   // natively, so no runtime-optional widening applies.
@@ -6810,7 +6814,11 @@ export function bindPatternTarget(
     const symbol = lowerer.checker.getSymbolAtLocation(name);
     const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
     if (g) {
-      if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
+      if (
+        value.type.kind === "dyn" &&
+        (jsBindingKeepsCheckedObject(lowerer, name, g.type) ||
+          (symbol !== undefined && lowerer.jsWidenedBindings.has(symbol)))
+      )
         g.type = DYN;
       out.push({
         kind: "assign",
@@ -6841,13 +6849,16 @@ export function bindPatternTarget(
     // cannot represent them without a refusal or an alias-breaking copy.
     // A name destructured from a container of an evolving array
     // (evolvingArrayHold) may hold the array, which the checker types by
-    // the elements written before it.
+    // the elements written before it. A member the checker types only
+    // from writes (analyzeJsWidenedBindings) is absent at a read before
+    // the write runs, so its binding keeps the checked-dynamic read too.
     const dynStays =
       value.type.kind === "dyn" &&
       ((() => {
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(name));
         return mapped === null || jsBindingKeepsCheckedObject(lowerer, name, mapped);
       })() ||
+        (symbol !== undefined && lowerer.jsWidenedBindings.has(symbol)) ||
         readsHeldEvolvingArray(lowerer, name));
     let type = dynStays
       ? DYN
@@ -7799,6 +7810,13 @@ export function lowerVarDecl(
       keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
     )
       g.type = raw.type;
+    // A JavaScript binding widened by analyzeJsWidenedBindings (it reads a
+    // member the checker types only from writes) holds the read's
+    // checked-dynamic value, and reads of the binding keep it.
+    if (ts.isIdentifier(decl.name)) {
+      const symbol = lowerer.resolveValueSymbol(decl.name);
+      if (symbol && lowerer.jsWidenedBindings.has(symbol)) g.type = DYN;
+    }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -7872,6 +7890,11 @@ export function lowerVarDecl(
     if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
+    // A binding analyzeJsWidenedBindings marked (an assignment stores a
+    // member the checker types only from writes) holds that read's value,
+    // over the type the evolving-let inference read from the writes.
+    const widenedSymbol = lowerer.resolveValueSymbol(decl.name);
+    if (widenedSymbol && lowerer.jsWidenedBindings.has(widenedSymbol)) type = DYN;
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
     // the unit-only union (its undefined arm is the unassigned state,
     // which is also the only state).

@@ -164,6 +164,22 @@ function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
   return symbol !== null && symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
 }
 
+/** Whether the checker's own type for the binding `expr` reads is a union.
+ * A string-arithmetic binding keeps its result union at bare reads
+ * (runtimeOptionalArithmeticLocals) because an unchecked read can answer the
+ * other arm of the union even where the checker's declaration types one, as
+ * `const n = compute(4)` does for a `string` return that is NaN at runtime.
+ * A binding the checker itself declares as a union is different: its
+ * storage mirrors the declaration, so a use the checker narrowed to one arm
+ * (`typeof p === "number"` in a `string | number` binding) reads that arm,
+ * the way every other union-typed binding reads a narrowed use. */
+function declaresUnionBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
+  const symbol = lowerer.resolveValueSymbol(expr);
+  const decl = symbol?.valueDeclaration;
+  if (!decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
+  return lowerer.typeOf(decl.name).isUnionType();
+}
+
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
@@ -391,7 +407,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       (local.boxed === true ||
         lowerer.ctx.captureBySymbol.get(symbol) === local ||
         runtimeOptionalRoot !== local);
-    if (arithmetic && !runtimeOptionalUseOf(expr)) {
+    if (arithmetic && !runtimeOptionalUseOf(expr) && !declaresUnionBinding(lowerer, expr)) {
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
     if (active || captured) {
@@ -523,7 +539,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       throw new PoisonError();
     }
     const ref: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
-    if (lowerer.isRuntimeOptionalArithmeticGlobal(g) && !runtimeOptionalUseOf(expr)) {
+    if (
+      lowerer.isRuntimeOptionalArithmeticGlobal(g) &&
+      !runtimeOptionalUseOf(expr) &&
+      !declaresUnionBinding(lowerer, expr)
+    ) {
       return ref;
     }
     const storageHasUndefined =

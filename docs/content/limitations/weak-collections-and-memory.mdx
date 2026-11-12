@@ -12,7 +12,8 @@ Memory that a package frees only from a cleanup callback is not reclaimed until 
 For example, a wasm-bindgen package frees the WebAssembly memory behind a wrapper object from its cleanup callback, so a long-running server that drops such wrappers without calling their `free()` method keeps that memory.
 Call `free()` on wrappers the program no longer needs.
 Symbol targets and unregister tokens are unsupported.
-`WeakRef` is unsupported.
+`WeakRef` keeps its target alive for as long as the `WeakRef` itself, so `deref()` always answers the target, which is Node.js's answer for a target the collector has not freed.
+Constructing one checks its target as Node.js does: an object or a symbol, and a `TypeError` otherwise.
 
 Memory uses reference counting.
 Acyclic values are freed deterministically, and cycles are collected at defined collection points.

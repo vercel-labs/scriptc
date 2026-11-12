@@ -6840,6 +6840,7 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"WeakRef", SCR_DYNH_WEAK_REF},
     {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
@@ -12212,6 +12213,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY ||
+        d->v.handle.tag == SCR_DYNH_WEAK_REF ||
         d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP || d->v.handle.tag == SCR_DYNH_REGEXP ||
         d->v.handle.tag == SCR_DYNH_DATE || d->v.handle.tag == SCR_DYNH_BLOB ||
         d->v.handle.tag == SCR_DYNH_FILE || d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
@@ -23531,6 +23533,100 @@ ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup) {
 
 bool scr_finalization_registry_is(const ScrDyn *value) {
   return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY;
+}
+
+/* WeakRef. A target an object graph reaches only weakly is still reachable
+ * here: a compiled program keeps the target alive, so deref() answers it
+ * forever, which Node allows (the collector is free never to collect).
+ * Symbols are targets, as Node accepts them; every other primitive throws
+ * Node's TypeError. */
+typedef struct {
+  size_t rc;
+  ScrDyn *target;
+} ScrWeakRef;
+
+static void *scr_weak_ref_retain(void *ptr) {
+  ((ScrWeakRef *)ptr)->rc++;
+  return ptr;
+}
+
+static void scr_weak_ref_release(void *ptr) {
+  ScrWeakRef *ref = ptr;
+  if (--ref->rc) return;
+  scr_dyn_release(ref->target);
+  free(ref);
+}
+
+static bool scr_weak_ref_target_is_object(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BIGINT:
+    return false;
+  default:
+    return true;
+  }
+}
+
+static ScrDyn *scr_weak_ref_invoke(void *ptr, ScrDyn *self, const char *method,
+    ScrDyn *const *args, size_t argc, const char *what) {
+  (void)self; (void)args; (void)argc;
+  if (strcmp(method, "deref") == 0) return scr_dyn_retain(((ScrWeakRef *)ptr)->target);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what ? what : method);
+  scr_jb_puts(&b, " is not a function");
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+  scr_str_release(message);
+  return NULL;
+}
+
+/* A property read answers undefined for names the reference does not have.
+ * `deref` read as a value (`const deref = ref.deref`) is refused, as a
+ * finalization registry's methods are. */
+static ScrDyn *scr_weak_ref_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  if (len == 5 && memcmp(key, "deref", 5) == 0) {
+    static const char message[] = "WeakRef method values have no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  return NULL;
+}
+
+static ScrDyn *scr_weak_ref_view(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+
+ScrDyn *scr_weak_ref_new(ScrDyn *target) {
+  if (!scr_weak_ref_target_is_object(target)) {
+    static const char message[] = "WeakRef: invalid target";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  static const ScrDynHandleOps ops = {
+    .cls = "WeakRef",
+    .retain = &scr_weak_ref_retain,
+    .release = &scr_weak_ref_release,
+    .invoke = &scr_weak_ref_invoke,
+    .get = &scr_weak_ref_get,
+    .inspect_view = &scr_weak_ref_view,
+    .inspect_view_empty = true,
+    .json_empty_object = true,
+  };
+  scr_dyn_handle_install(SCR_DYNH_WEAK_REF, &ops);
+  ScrWeakRef *ref = calloc(1, sizeof *ref);
+  if (!ref) scr_json_oom();
+  ref->target = scr_dyn_retain(target);
+  return scr_dyn_new_handle(ref, SCR_DYNH_WEAK_REF);
+}
+
+bool scr_weak_ref_is(const ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WEAK_REF;
 }
 
 ScrDyn *scr_dyn_from_entries(ScrDyn *seed) {

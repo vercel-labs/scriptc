@@ -2516,14 +2516,15 @@ static const char dyn_s45[] SCR_DYN_COMPAT_STR = "BigUint64Array";
 static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
 static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
 static const char dyn_s48[] SCR_DYN_COMPAT_STR = "isPrototypeOf";
+static const char dyn_s49[] SCR_DYN_COMPAT_STR = "WeakRef";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
-  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46, dyn_s49,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
 /* Each constructor's own length, indexed like dyn_global_ctor_names. */
-static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2};
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2, 1};
 /* The first of the constructors that only `new` builds
  * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
 #define DYN_GLOBAL_NEW_ONLY 9
@@ -2582,6 +2583,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
+  else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
   else {
     char message[128];
     int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);

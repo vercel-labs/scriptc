@@ -19779,10 +19779,12 @@
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/cipher.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
+          "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
           "tests/harness/npm-static.test.ts"
         ]
@@ -24647,8 +24649,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.issuerCertificate",
+        "tests": [
+          "tests/corpus/x509-issuer-certificate.ts",
+          "tests/fixtures/node-types/x509-issuer-certificate.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

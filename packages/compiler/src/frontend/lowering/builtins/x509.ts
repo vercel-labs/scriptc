@@ -8,6 +8,7 @@ import {
   F64,
   STRING,
   UNDEFINED_T,
+  typeEquals,
   type IrExpr,
   type IrFunction,
   type IrLibFn,
@@ -19,6 +20,8 @@ import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { X509_DER_FIELD, X509_PUBLIC_KEY_FIELD } from "../../type-mapper.js";
 import { keyedHelperName } from "../stable-names.js";
 import { x509RecordCall } from "../lower-classes.js";
+import { checkedArmExtraction } from "../coercions/unions.js";
+import { staleReadMessage } from "../expressions/narrowing.js";
 
 /* node:crypto's X509Certificate members beyond its fields: the methods
  * and the publicKey getter. A certificate is the Dirent-style record
@@ -236,6 +239,114 @@ function optionalString(lowerer: Lowerer, text: IrExpr, type: IrType, loc: SrcLo
     });
   }
   return { kind: "call", callee: helper, args: [text], type, loc };
+}
+
+/** `x509.issuerCertificate`: Node's TLS layer attaches the issuer's
+ * certificate to a peer's certificate; a certificate the program built
+ * from PEM or DER has none, and neither does one a socket handed over
+ * (scriptc builds those from their DER alone), so the getter answers
+ * undefined. Node keeps it as a prototype getter, like the fields, so the
+ * record's shape does not carry it and own-key walks see none of it. The
+ * read still evaluates its receiver for its effects.
+ *
+ * Flow analysis trusts the getter where it should not: a use the checker
+ * narrowed to the certificate arm (`if (cert.issuerCertificate)
+ * cert.issuerCertificate.subject`) still reads undefined from the getter,
+ * so that read extracts the arm with the TypeError Node raises for the
+ * operation consuming it (the checked stale-getter stance). */
+export function lowerX509IssuerCertificate(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.name.text !== "issuerCertificate" || access.questionDotToken) return null;
+  if (!isX509Record(lowerer, access.expression)) return null;
+  const loc = locOf(access);
+  const site = lowerer.mapTypeOf(lowerer.typeOf(access));
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  const declared = symbol ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(symbol)) : null;
+  const def = declared?.kind === "union" ? lowerer.unions.get(declared.unionId) : undefined;
+  const undefinedTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+  const recordTag = def ? def.arms.findIndex((a) => isX509Type(lowerer, a)) : -1;
+  if (site?.kind === "dyn") {
+    const receiver = lowerer.lowerExpr(access.expression);
+    const value: IrExpr = {
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: DYN,
+      loc,
+    };
+    return receiver.kind === "varRef"
+      ? value
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result: value,
+          type: DYN,
+          loc,
+        };
+  }
+  if (declared?.kind !== "union" || !def || undefinedTag < 0 || recordTag < 0) {
+    lowerer.noLowering(
+      "X509Certificate.issuerCertificate with this result type",
+      access,
+      "its type is X509Certificate | undefined",
+    );
+  }
+  if (site === null || (site.kind !== "union" && !isX509Type(lowerer, site))) {
+    lowerer.noLowering(
+      "X509Certificate.issuerCertificate with this result type",
+      access,
+      "its type is X509Certificate | undefined",
+    );
+  }
+  const receiver = lowerer.lowerExpr(access.expression);
+  const value: IrExpr = {
+    kind: "unionWrap",
+    unionId: declared.unionId,
+    tag: undefinedTag,
+    value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+    type: declared,
+    loc,
+  };
+  const afterReceiver = (result: IrExpr, type: IrType): IrExpr =>
+    receiver.kind === "varRef"
+      ? result
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+          result,
+          type,
+          loc,
+        };
+  if (site.kind === "union") return afterReceiver(value, site);
+  const record = def.arms[recordTag]!;
+  if (!typeEquals(record, site)) {
+    lowerer.noLowering(
+      "X509Certificate.issuerCertificate with this result type",
+      access,
+      "its type is X509Certificate | undefined",
+    );
+  }
+  const slot = lowerer.declareHiddenLocal("%x509issuer", declared);
+  const extracted = checkedArmExtraction(
+    lowerer,
+    { kind: "varRef", localId: slot.id, type: declared, loc },
+    recordTag,
+    record,
+    (found) => staleReadMessage(access, found),
+  );
+  if (!extracted) {
+    lowerer.noLowering(
+      "X509Certificate.issuerCertificate with this result type",
+      access,
+      "its type is X509Certificate | undefined",
+    );
+  }
+  const stmts = [
+    ...(receiver.kind === "varRef" ? [] : [{ kind: "exprStmt" as const, expr: receiver, loc }]),
+    { kind: "varDecl" as const, localId: slot.id, init: value, loc },
+  ];
+  return { kind: "seqExpr", stmts, result: extracted, type: record, loc };
 }
 
 /** `x509.publicKey`: the cached KeyObject (a lifted helper fills the

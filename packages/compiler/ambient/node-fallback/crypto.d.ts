@@ -760,6 +760,11 @@ declare module "crypto" {
     readonly subjectAltName: string | undefined;
     readonly infoAccess: string | undefined;
     readonly issuer: string;
+    /* the issuer certificate Node's TLS layer attaches to a peer's
+     * certificate; undefined for a certificate the program built from PEM
+     * or DER, and for one a socket handed over (scriptc's certificates
+     * carry no issuer chain) */
+    readonly issuerCertificate: X509Certificate | undefined;
     readonly raw: Buffer;
     readonly serialNumber: string;
     readonly signatureAlgorithm: string | undefined;

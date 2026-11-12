@@ -47,6 +47,8 @@ import {
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
+  isPerfEntryShape,
+  isPerfNodeTimingShape,
   boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -339,6 +341,10 @@ export interface DynHost extends WalkerHost {
   /** The entry point and JavaScript name of each named function the module
    * makes closures of (LlEmitter.closureNames). */
   closureNames?(): readonly { entry: string; name: string }[];
+  /** The entry point and printed source text of each function the module
+   * boxes into a checked value that keeps its text
+   * (LlEmitter.closureSources). */
+  closureSources?(): readonly { entry: string; text: string }[];
   /** The module's mutable globals are per thread (a Worker program or a
    * thread-instanced library), so the state a helper keeps is too. */
   threadLocalState?: boolean;
@@ -5314,6 +5320,14 @@ export class LlDyn {
           host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
           B.line(`call void @scr_dyn_dirent_finish(ptr ${d})`);
         }
+        // A perf_hooks entry row takes the class prototype its entryType
+        // names (PerformanceMark or PerformanceMeasure, inheriting
+        // PerformanceEntry), so instanceof and util.inspect answer like
+        // Node's.
+        if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
+          host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+          B.line(`call void @scr_dyn_perf_entry_finish(ptr ${d})`);
+        }
         if (shape.indexValue) {
           const iv = shape.indexValue;
           host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
@@ -5967,7 +5981,23 @@ export class LlDyn {
       }
       B.startBlock(labels.get(DYN_KIND.FUNC)!);
       {
-        // Function.prototype.toString: the native-code form.
+        // Function.prototype.toString: the function's own source text when
+        // the program keeps it (a function the program wrote and boxes
+        // prints as Node prints it), else the native-code form.
+        if (this.fnSourceKept()) {
+          host.declare(`declare ptr @scr_dyn_fn_source_text(ptr)`);
+          const src = B.tmp();
+          B.line(`${src} = call ptr @scr_dyn_fn_source_text(ptr %d)`);
+          const kept = B.tmp();
+          B.line(`${kept} = icmp ne ptr ${src}, null`);
+          const lSource = B.newLabel("ds.fs");
+          const lNative = B.newLabel("ds.fn0");
+          B.condBr(kept, lSource, lNative);
+          B.startBlock(lSource);
+          B.line(`call void @scr_jb_puts(ptr %b, ptr ${src})`);
+          B.br(done);
+          B.startBlock(lNative);
+        }
         this.puts(B, "%b", "function ");
         const namep = B.tmp();
         const nm = B.tmp();
@@ -7280,13 +7310,66 @@ export class LlDyn {
    * function becomes a closure. */
   private closureNameTable(): { symbol: string; count: number } | null {
     if (this.closureNames !== undefined) return this.closureNames;
-    const entries = this.host.closureNames?.() ?? [];
-    if (entries.length === 0) return (this.closureNames = null);
+    this.closureNames = this.entryLookupTable(
+      "sc_closure_names",
+      "sc_closure_name",
+      "closure-name",
+      "the JavaScript name of a closure's function",
+      (this.host.closureNames?.() ?? []).map((e) => ({
+        entry: e.entry,
+        value: this.host.cstr(e.name),
+      })),
+    );
+    return this.closureNames;
+  }
+
+  private closureSources: { symbol: string; count: number } | null | undefined;
+
+  /** The module's function-source lookup, `sc_closure_source(closure)`: the
+   * closure-name lookup over the source text Function.prototype.toString
+   * prints for the function (function-source-text.ts). The runtime asks for
+   * a boxed function's text through it (scr_dyn_fn_source_install), so a
+   * function whose closure the module boxes answers with its text however
+   * that closure was boxed. Defined on first use; null when no function
+   * keeps its text. */
+  fnSourceTable(): { symbol: string; count: number } | null {
+    if (this.closureSources !== undefined) return this.closureSources;
+    this.closureSources = this.entryLookupTable(
+      "sc_closure_sources",
+      "sc_closure_source",
+      "function-source",
+      "the source text a closure's function prints",
+      (this.host.closureSources?.() ?? []).map((e) => ({
+        entry: e.entry,
+        value: this.host.cstr(e.text),
+      })),
+    );
+    return this.closureSources;
+  }
+
+  /** Whether the module keeps any function's source text (fnSourceTable). */
+  fnSourceKept(): boolean {
+    return (this.host.closureSources?.() ?? []).length > 0;
+  }
+
+  /** A binary search of `{ ptr entry, ptr value }` rows for a closure's
+   * entry point (an adapter's root's, ScrClosure.identity), shared by the
+   * closure-name and function-source lookups. Entry addresses are link-time
+   * values, so the lookup's first call sorts the rows by address; every
+   * call then costs the same few compares, however many rows the module
+   * has. The rows are distinct functions, so no two keys are equal. Null
+   * with no rows. */
+  private entryLookupTable(
+    table: string,
+    symbol: string,
+    what: string,
+    description: string,
+    entries: readonly { entry: string; value: string }[],
+  ): { symbol: string; count: number } | null {
+    if (entries.length === 0) return null;
     const host = this.host;
     const S = host.sizeType;
-    const table = "sc_closure_names";
-    const sorted = "sc_closure_names_sorted";
-    const symbol = "sc_closure_name";
+    const sorted = `${table}_sorted`;
     const count = entries.length;
     const rows = `[${count} x { ptr, ptr }]`;
     // The table and its run-once guard are module state: per thread where
@@ -7295,11 +7378,11 @@ export class LlDyn {
     host.declare(`declare void @qsort(ptr, ${S}, ${S}, ptr)`);
     this.defs.push(
       `@${table} = internal ${storage}global ${rows} [${entries
-        .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${host.cstr(e.name)} }`)
+        .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${e.value} }`)
         .join(", ")}]`,
       `@${sorted} = internal ${storage}global i1 false`,
       ``,
-      `define internal i32 @${symbol}_order(ptr %a, ptr %b) ${FN_ATTRS} { ; orders two closure-name rows by entry address`,
+      `define internal i32 @${symbol}_order(ptr %a, ptr %b) ${FN_ATTRS} { ; orders two ${what} rows by entry address`,
       `entry:`,
       `  %x = load ptr, ptr %a`,
       `  %y = load ptr, ptr %b`,
@@ -7311,14 +7394,14 @@ export class LlDyn {
       `  ret i32 %order`,
       `}`,
       ``,
-      `define internal void @${table}_sort() cold noinline ${FN_ATTRS} { ; sorts the closure-name rows by entry address, once`,
+      `define internal void @${table}_sort() cold noinline ${FN_ATTRS} { ; sorts the ${what} rows by entry address, once`,
       `entry:`,
       `  call void @qsort(ptr @${table}, ${S} ${count}, ${S} ptrtoint (ptr getelementptr ({ ptr, ptr }, ptr null, i32 1) to ${S}), ptr @${symbol}_order)`,
       `  store i1 true, ptr @${sorted}`,
       `  ret void`,
       `}`,
       ``,
-      `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; the JavaScript name of a closure's function`,
+      `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; ${description}`,
       `entry:`,
       `  %idp = getelementptr inbounds %ScrClosure, ptr %v, i64 0, i32 6`,
       `  %id = load ptr, ptr %idp`,
@@ -7358,7 +7441,7 @@ export class LlDyn {
       `}`,
       ``,
     );
-    return (this.closureNames = { symbol, count });
+    return { symbol, count };
   }
 
   private readonly unnamedFuncBoxes = new Map<string, string>();

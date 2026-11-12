@@ -13,7 +13,7 @@
  *     (`process.debugPort`, `performance.timeOrigin`), else the named
  *     refusal of the read. */
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, F64, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
+import { BOOL, DYN, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { nodeObjectMemberWriteDiag, nodeValueDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
@@ -32,6 +32,7 @@ import {
   processFunctionMemberValue,
   processHasIpc,
 } from "./builtins/process.js";
+import { perfNodeTimingValue, performanceTimeOrigin } from "./builtins/performance.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { hostGlobalValue } from "./host-global-values.js";
 import {
@@ -339,7 +340,8 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
  * exactly, as an expression that needs no local of its own (it becomes the
  * body of a getter): the process members a destructuring reads
  * (processDataMemberValue), the two process constants, and
- * `performance.timeOrigin`. Null for the others. */
+ * `performance.timeOrigin` and `performance.nodeTiming`. Null for the
+ * others. */
 function exactObjectMember(
   lowerer: Lowerer,
   object: string,
@@ -347,8 +349,14 @@ function exactObjectMember(
   node: ts.Node,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (object === "performance")
-    return member === "timeOrigin" ? performanceTimeOrigin(lowerer, loc) : null;
+  if (object === "performance") {
+    if (member === "timeOrigin") return performanceTimeOrigin(lowerer, loc);
+    // performance.nodeTiming: the milestone record, as a checked-dynamic
+    // object (its class carries the prototype's toJSON and inspect).
+    if (member === "nodeTiming")
+      return { kind: "dynFrom", value: perfNodeTimingValue(lowerer, loc), type: DYN, loc };
+    return null;
+  }
   if (object !== "process") return null;
   if (member === "debugPort") return numLit(9229, loc);
   if (member === "sourceMapsEnabled") return boolLit(false, loc);
@@ -603,51 +611,6 @@ function refusalCall(lowerer: Lowerer, display: string, node: ts.Node, loc: SrcL
   defineRefusingFunction(lowerer, lifted, diag, locatedFenceMessage(diag, node), loc);
   lowerer.noteEdge(lifted);
   return { kind: "call", callee: lifted, args: [], type: DYN, loc };
-}
-
-/** `performance.timeOrigin`: the Unix time, in fractional milliseconds, at
- * which `performance.now()` read zero. The runtime's clock is anchored at
- * process start, so the origin is the wall clock minus that clock, taken
- * once and kept: every read answers the same number, and
- * `timeOrigin + now()` is the wall clock, as in Node. */
-function performanceTimeOrigin(lowerer: Lowerer, loc: SrcLoc): IrExpr {
-  const helper = "%perf.timeOrigin";
-  if (lowerer.liftedFnNamed(helper) === undefined) {
-    const storage = `%g.${helper}`;
-    const ready = `${storage}%ready`;
-    lowerer.globalsList.push(
-      { id: storage, name: "performance.timeOrigin", type: F64, mutable: true },
-      { id: ready, name: "%ready", type: BOOL, mutable: true },
-    );
-    const body: IrStmt[] = [
-      {
-        kind: "if",
-        cond: varRef(ready, BOOL, loc),
-        then: [{ kind: "return", value: varRef(storage, F64, loc), loc }],
-        else_: null,
-        loc,
-      },
-      {
-        kind: "assign",
-        localId: storage,
-        value: {
-          kind: "bin",
-          op: "-",
-          left: { kind: "libCall", fn: "date.now", args: [], type: F64, loc },
-          right: { kind: "libCall", fn: "perf.now", args: [], type: F64, loc },
-          type: F64,
-          loc,
-        },
-        loc,
-      },
-      { kind: "assign", localId: ready, value: boolLit(true, loc), loc },
-      { kind: "return", value: varRef(storage, F64, loc), loc },
-    ];
-    lowerer.liftedFns.push({ name: helper, params: [], locals: [], returnType: F64, body, loc });
-    lowerer.shareHelper(helper);
-  }
-  lowerer.noteEdge(helper);
-  return { kind: "call", callee: helper, args: [], type: F64, loc };
 }
 
 /** Node's `typeof` for the Node value `expr` names (a builtin import

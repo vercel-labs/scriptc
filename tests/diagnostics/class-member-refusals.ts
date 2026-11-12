@@ -6,8 +6,8 @@
 // a method whose signature has no mapping
 class Store {
   count = 0;
-  watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 0 : 1;
+  watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 0 : 1;
   }
   add(): number {
     return ++this.count;
@@ -22,7 +22,7 @@ class Shelf extends Store {
     return super.watch(undefined as never);
   }
 }
-declare const ref: WeakRef<object>;
+declare const ref: BigInt64Array<ArrayBuffer>;
 const store = new Store();
 console.log(store.add());
 console.log(store.watch(ref));
@@ -72,7 +72,7 @@ other.v += "!";
 // an accessor whose type has no mapping
 class Holder {
   n = 1;
-  get held(): WeakRef<object> {
+  get held(): BigInt64Array<ArrayBuffer> {
     throw new Error("never");
   }
 }
@@ -83,8 +83,8 @@ console.log(holder.n, holder.held);
 // through a subclass
 class Registry {
   static count = 0;
-  static watch(target: WeakRef<object>): number {
-    return target.deref() === undefined ? 0 : 1;
+  static watch(target: BigInt64Array<ArrayBuffer>): number {
+    return target.length === 0 ? 0 : 1;
   }
 }
 class Local extends Registry {}

@@ -145,6 +145,7 @@ const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   sourceName: "other",
   jsEntry: "reference",
   displayName: "other",
+  sourceText: "other",
   asyncCacheGlobal: "other",
   asyncCycleCacheGlobal: "other",
   "params[].name": "other",

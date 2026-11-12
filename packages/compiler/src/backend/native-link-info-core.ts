@@ -409,7 +409,10 @@ export function noLinkFeatures(): NativeLinkFeatures {
 /** A link feature whose runtime units call into another feature's units,
  * with the features that own those units. */
 interface LinkFeatureRequirement {
-  feature: RequiredLinkFeatureName;
+  /** The feature that cannot link alone. Optional features may be named
+   * here too: an absent optional key is off, so the check reads the same,
+   * and a requirement only turns on the `requires` features. */
+  feature: keyof NativeLinkFeatures;
   requires: readonly RequiredLinkFeatureName[];
 }
 
@@ -428,9 +431,33 @@ interface LinkFeatureRequirement {
  * A reference that only a call selecting the other unit reaches needs no
  * line: the link's section collection drops it otherwise. The reference
  * check in tests/harness/runtime-unit-references.test.ts lists those, and
- * fails on a reference that is in neither list. */
+ * fails on a reference that is in neither list. Section collection is not
+ * the whole story on Windows, whose pack link keeps a selected object's
+ * functions together: scr_event_target.c and scr_events_once_signal.c call
+ * into the emitter unit from functions a target-only program reaches, so
+ * every feature that selects them requires `emitter`. The same holds for
+ * the symbol unit: scr_event_target.c's `events.on` iterator builds symbol
+ * keys and reads Symbol.asyncIterator and the watermark symbol through
+ * scr_symbol.c, and its object keeps those functions when Windows links
+ * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "http2", requires: ["http", "net"] },
+  // scr_event_target.c holds the events-module helpers over an EventTarget
+  // or a NodeEventTarget and the `events.on`/`events.once` target paths;
+  // they answer NodeEventTarget receivers through the emitter unit's
+  // registry and the iterator's symbol reads through the symbol unit. The
+  // unit is selected by eventTarget (a compiled EventTarget subclass,
+  // util.debounce/throttle, an abort.* call), by abortSignal and by
+  // nativeFetch, so each of those requires the emitter and the symbol with
+  // it.
+  { feature: "eventTarget", requires: ["emitter", "symbol"] },
+  { feature: "abortSignal", requires: ["emitter", "symbol"] },
+  { feature: "fetch", requires: ["emitter", "symbol"] },
+  // events.once with options registers the await through the emitter unit.
+  { feature: "eventsOnceSignal", requires: ["emitter"] },
+  // scr_perf.c resolves performance.measure's Node timing milestone names
+  // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
+  { feature: "dynAsync", requires: ["perfLoop"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

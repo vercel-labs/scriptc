@@ -141,11 +141,19 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
       scr_str_release(n);
     }
     return;
-  case SCR_DYN_FUNC:
+  case SCR_DYN_FUNC: {
+    /* A program function's printed text where the module keeps it, else the
+     * native-code form (scr_json.c's scr_dyn_fn_source_text). */
+    const char *source = scr_dyn_fn_source_text(d);
+    if (source != NULL) {
+      scr_jb_puts(b, source);
+      return;
+    }
     scr_jb_puts(b, "function ");
     if (d->v.fn.name) scr_jb_puts(b, d->v.fn.name);
     scr_jb_puts(b, "() { [native code] }");
     return;
+  }
   case SCR_DYN_HANDLE: {
     ScrStr *s = scr_dyn_to_string(d, NULL);
     scr_jb_write(b, s->data, s->len);
@@ -817,6 +825,35 @@ static bool dyn_fn_own_protocol_member(ScrDyn *recv, const char *method, ScrDyn 
   return own;
 }
 #endif
+
+static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key);
+
+/* Object.prototype.isPrototypeOf is inherited by every value whose own
+ * chain does not define the name — primitives included, through the wrapper
+ * object ToObject makes — and a call reads the callee before its arguments
+ * run, as it does for an own member. Answers the inherited method (+1) or
+ * NULL when the receiver's chain defines the name, or when it has no
+ * Object.prototype on it (a Proxy, a bytes view). */
+static ScrDyn *dyn_inherited_prototype_method(ScrDyn *recv, const char *method) {
+  if (method[0] != 'i' || strcmp(method, "isPrototypeOf") != 0) return NULL;
+  ScrStr *key = scr_str_new(method, strlen(method));
+  ScrDyn *member = dyn_inherited_member(recv, key);
+  scr_str_release(key);
+  return member;
+}
+
+/* scr_dyn_prepare_method for a call site whose method name is
+ * Object.prototype.isPrototypeOf: the inherited method when the receiver's
+ * chain does not define the name, else the ordinary preparation. The
+ * compiler emits this entry only at such a site, so a program that calls
+ * the method nowhere links none of the inherited-member machinery. */
+ScrDyn *scr_dyn_prepare_method_inherited(ScrDyn *recv, const char *method) {
+  if (recv->kind != SCR_DYN_UNDEF && recv->kind != SCR_DYN_NULL) {
+    ScrDyn *inherited = dyn_inherited_prototype_method(recv, method);
+    if (inherited || scr_exc_pending()) return inherited;
+  }
+  return scr_dyn_prepare_method(recv, method);
+}
 
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL)
@@ -2142,6 +2179,169 @@ static void dyn_builtin_methods_cleanup(void) {
   dyn_builtin_methods = NULL;
 }
 
+/* Whether `value` is a JavaScript object: only objects have a prototype
+ * chain for Object.prototype.isPrototypeOf to walk. */
+static bool dyn_is_object_value(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_OBJ: case SCR_DYN_ARR: case SCR_DYN_FUNC: case SCR_DYN_TYPED_REF:
+  case SCR_DYN_HANDLE: case SCR_DYN_PROMISE: case SCR_DYN_PROXY: case SCR_DYN_BYTES:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* Function.prototype as a value: the anonymous function every function's
+ * prototype chain links to, which answers undefined when called and carries
+ * Node's empty name and length 0. One per thread, so identity comparisons
+ * in a chain walk agree with every read of the same value. */
+static SCR_TL ScrDyn *dyn_function_prototype_value;
+
+static ScrDyn *dyn_function_prototype_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_undefined();
+}
+
+static void dyn_function_prototype_cleanup(void) {
+  scr_dyn_release(dyn_function_prototype_value);
+  dyn_function_prototype_value = NULL;
+}
+
+ScrDyn *scr_dyn_function_prototype(void) {
+  if (!dyn_function_prototype_value) {
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    dyn_function_prototype_value =
+        scr_dyn_new_func(closure, dyn_function_prototype_call, 0, "()", "");
+    scr_atexit(dyn_function_prototype_cleanup);
+  }
+  return scr_dyn_retain(dyn_function_prototype_value);
+}
+
+/* One link of Object.prototype.isPrototypeOf's walk. `builtin_tail` is set
+ * when the rest of the chain holds only builtin prototypes this runtime
+ * does not model as values — a native handle's class prototype, a promise's
+ * or a bytes view's — and ends at Object.prototype. A function's link is
+ * Function.prototype, which the runtime models as a value, so a walk that
+ * compares it ends there. A Proxy answers its target's prototype unless its
+ * handler traps getPrototypeOf, which is refused like the other traps the
+ * runtime does not run. +1, or NULL with an exception. */
+static ScrDyn *dyn_prototype_link(ScrDyn *value, bool *builtin_tail) {
+  switch (value->kind) {
+  case SCR_DYN_FUNC: {
+    /* Object.setPrototypeOf may have replaced the function's [[Prototype]];
+     * its property table carries the replacement, a null one included, and
+     * the chain continues there. */
+    ScrDyn *replaced = scr_dyn_function_prototype_override(value);
+    if (scr_exc_pending()) return NULL;
+    if (replaced) return replaced;
+    ScrDyn *prototype = scr_dyn_function_prototype();
+    bool self = value == prototype ||
+                scr_closure_identity_equal(value->v.fn.clo, prototype->v.fn.clo);
+    if (self) {
+      /* Function.prototype's own link is Object.prototype. */
+      scr_dyn_release(prototype);
+      *builtin_tail = true;
+      return NULL;
+    }
+    return prototype;
+  }
+  case SCR_DYN_HANDLE:
+  case SCR_DYN_PROMISE:
+  case SCR_DYN_BYTES:
+    *builtin_tail = true;
+    return NULL;
+  case SCR_DYN_PROXY: {
+    ScrDyn *trap = scr_dyn_obj_read(value->v.proxy.handler, "getPrototypeOf", 14);
+    bool none = !trap || trap->kind == SCR_DYN_UNDEF || trap->kind == SCR_DYN_NULL;
+    scr_dyn_release(trap);
+    if (scr_exc_pending()) return NULL;
+    if (none) return scr_dyn_get_prototype_for_identity(value->v.proxy.target);
+    scr_dyn_proxy_unsupported("getPrototypeOf traps");
+    return NULL;
+  }
+  case SCR_DYN_TYPED_REF:
+    /* A class instance is a live typed reference: its checked view carries
+     * the instance's prototype links, while reflection on the reference
+     * itself is refused. Walk the view's prototype. */
+    if (value->v.typed_ref.type_key_len >= 7 &&
+        memcmp(value->v.typed_ref.type_key, "object:", 7) == 0) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+      if (!view) return NULL;
+      ScrDyn *next = scr_dyn_get_prototype_for_identity(view);
+      scr_dyn_release(view);
+      return next;
+    }
+    return scr_dyn_get_prototype_for_identity(value);
+  default:
+    return scr_dyn_get_prototype_for_identity(value);
+  }
+}
+
+/* Object.prototype.isPrototypeOf: ToObject(this) throws for null and
+ * undefined; a primitive argument answers false; every other argument's
+ * prototype chain is walked and each link compared with the receiver by
+ * identity. */
+ScrDyn *scr_dyn_is_prototype_of(ScrDyn *receiver, ScrDyn *argument) {
+  /* The argument check comes first, as the specification orders it: a
+   * primitive argument answers false without converting `this`, so an
+   * unbound `Object.prototype.isPrototypeOf()` answers false rather than
+   * throwing. */
+  if (!dyn_is_object_value(argument)) return scr_dyn_new_bool(false);
+  if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *object_prototype = scr_dyn_object_prototype();
+  /* A chain that does not replace it ends at Object.prototype, which the
+   * builtin tail adds. */
+  bool tail_is_object_prototype = scr_dyn_strict_eq(receiver, object_prototype);
+  scr_dyn_release(object_prototype);
+  bool found = false;
+  ScrDyn *current = scr_dyn_retain(argument);
+  while (current) {
+    bool builtin_tail = false;
+    ScrDyn *next = dyn_prototype_link(current, &builtin_tail);
+    if (scr_exc_pending()) {
+      scr_dyn_release(next);
+      scr_dyn_release(current);
+      return NULL;
+    }
+    if (builtin_tail) {
+      found = tail_is_object_prototype;
+      scr_dyn_release(current);
+      break;
+    }
+    bool end = next->kind == SCR_DYN_NULL || next->kind == SCR_DYN_UNDEF;
+    if (!end && scr_dyn_strict_eq(next, receiver)) {
+      found = true;
+      scr_dyn_release(next);
+      scr_dyn_release(current);
+      break;
+    }
+    scr_dyn_release(current);
+    if (end) {
+      scr_dyn_release(next);
+      break;
+    }
+    current = next;
+  }
+  return scr_dyn_new_bool(found);
+}
+
+/* The bool-returning entry a compiled `receiver.isPrototypeOf(value)` call
+ * uses (the frontend's dyn.isPrototypeOf libCall). Borrows both args; the
+ * core's answer is boolean by construction. */
+bool scr_dyn_is_prototype_of_bool(ScrDyn *receiver, ScrDyn *argument) {
+  ScrDyn *result = scr_dyn_is_prototype_of(receiver, argument);
+  if (!result) return false;
+  bool found = result->kind == SCR_DYN_BOOL && result->v.b;
+  scr_dyn_release(result);
+  return found;
+}
+
 static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   ScrStr *prototype = scr_box_get_ref(closure->caps[0]);
   ScrStr *method = scr_box_get_ref(closure->caps[1]);
@@ -2158,6 +2358,10 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
     } else if (!strcmp(method->data, "propertyIsEnumerable")) {
       bool enumerable = scr_dyn_property_is_enumerable_computed(receiver, key);
       if (!scr_exc_pending()) result = scr_dyn_new_bool(enumerable);
+    } else if (!strcmp(method->data, "isPrototypeOf")) {
+      /* Before the nullish-receiver check: a primitive argument answers
+       * false without converting `this`, as the specification orders. */
+      result = scr_dyn_is_prototype_of(receiver, key);
     } else if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
       static const char message[] = "Cannot convert undefined or null to object";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -2229,7 +2433,8 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
        !strcmp(method->data, "delete") || !strcmp(method->data, "forEach") || !strcmp(method->data, "startsWith") ||
        !strcmp(method->data, "endsWith") || !strcmp(method->data, "padStart") || !strcmp(method->data, "toJSON") ||
        !strcmp(method->data, "charCodeAt") || !strcmp(method->data, "hasOwnProperty") ||
-       !strcmp(method->data, "propertyIsEnumerable") || (!strcmp(prototype->data, "Number") && !strcmp(method->data, "toString"))) ? 1 : 0;
+       !strcmp(method->data, "propertyIsEnumerable") || !strcmp(method->data, "isPrototypeOf") ||
+       (!strcmp(prototype->data, "Number") && !strcmp(method->data, "toString"))) ? 1 : 0;
     value = scr_dyn_new_func(closure, dyn_builtin_method_call, arity, "native:prototype", method->data);
     scr_dyn_obj_set(dyn_builtin_methods, key->data, key->len, value);
   }
@@ -2310,14 +2515,16 @@ static const char dyn_s44[] SCR_DYN_COMPAT_STR = "BigInt64Array";
 static const char dyn_s45[] SCR_DYN_COMPAT_STR = "BigUint64Array";
 static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
 static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
+static const char dyn_s48[] SCR_DYN_COMPAT_STR = "isPrototypeOf";
+static const char dyn_s49[] SCR_DYN_COMPAT_STR = "WeakRef";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
-  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46, dyn_s49,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
 /* Each constructor's own length, indexed like dyn_global_ctor_names. */
-static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2};
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2, 1};
 /* The first of the constructors that only `new` builds
  * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
 #define DYN_GLOBAL_NEW_ONLY 9
@@ -2376,6 +2583,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
+  else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
   else {
     char message[128];
     int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
@@ -2453,7 +2661,8 @@ static ScrDyn *dyn_inherited_from(const char *ctor, int methods, const ScrStr *k
   if (strcmp(key->data, dyn_s14) == 0) return ctor ? dyn_global_ctor(ctor) : NULL;
   bool applies = (strcmp(key->data, dyn_s23) == 0 && (methods & DYN_INHERIT_VALUE_OF)) ||
                  (strcmp(key->data, dyn_s18) == 0 && (methods & DYN_INHERIT_TO_STRING)) ||
-                 ((strcmp(key->data, dyn_s9) == 0 || strcmp(key->data, dyn_s4) == 0) &&
+                 ((strcmp(key->data, dyn_s9) == 0 || strcmp(key->data, dyn_s4) == 0 ||
+                   strcmp(key->data, dyn_s48) == 0) &&
                   (methods & DYN_INHERIT_OWN));
   if (!applies) return NULL;
   ScrStr *prototype = scr_str_new(dyn_s26, 6);
@@ -2502,18 +2711,59 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     /* A plain object, or an Object.create chain ending in Object.prototype;
      * a member present anywhere on the chain (even as undefined) stands. */
     ScrDyn *object_prototype = scr_dyn_object_prototype();
-    const ScrDyn *tail = d;
     bool present = false;
-    for (const ScrDyn *link = d; link; link = link->prototype) {
-      tail = link;
-      if (link == object_prototype) break;
-      if (link->kind != SCR_DYN_OBJ || scr_dyn_has_own(link, key)) {
-        present = true;
-        break;
+    bool null_proto_tail = false;
+    ScrDyn *held = NULL; /* a materialized prototype link, +1 */
+    for (const ScrDyn *link = d; link;) {
+      if (link->kind == SCR_DYN_OBJ) {
+        if (link == object_prototype) break;
+        if (scr_dyn_has_own(link, key)) {
+          present = true;
+          break;
+        }
+        if (!link->prototype) {
+          null_proto_tail = link->null_proto;
+          break;
+        }
+        link = link->prototype;
+        continue;
       }
+      if (link->kind == SCR_DYN_TYPED_REF) {
+        /* A live typed reference used as a prototype (`Object.create(record)`,
+         * `{ __proto__: instance }`): its checked view carries that value's
+         * own properties and its own prototype link, so the walk continues
+         * there instead of treating the link as the member. */
+        ScrDyn *view = scr_dyn_typed_ref_materialize((ScrDyn *)link);
+        if (!view) {
+          present = true; /* the materialization's exception is pending */
+          break;
+        }
+        ScrDyn *next = scr_dyn_get_prototype_for_identity(view);
+        bool own = scr_dyn_has_own(view, key);
+        null_proto_tail = view->null_proto;
+        scr_dyn_release(view);
+        if (scr_exc_pending()) {
+          scr_dyn_release(next);
+          present = true;
+          break;
+        }
+        if (own) {
+          scr_dyn_release(next);
+          present = true;
+          break;
+        }
+        scr_dyn_release(held);
+        held = next;
+        link = next;
+        continue;
+      }
+      /* Another kind's link (a function, a native handle): unchanged. */
+      present = true;
+      break;
     }
+    scr_dyn_release(held);
     scr_dyn_release(object_prototype);
-    if (present || (tail != object_prototype && tail->null_proto)) return NULL;
+    if (present || null_proto_tail) return NULL;
     /* Errors keep Error.prototype.toString and their constructor values. */
     if (scr_dyn_err_instanceof(d, 0)) return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
     return dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key);
@@ -2552,6 +2802,17 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
     case SCR_DYNH_WEAK_SET: return dyn_inherited_from(dyn_s24, DYN_INHERIT_ALL, key);
     default: return NULL;
     }
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+    /* A primitive's wrapper object inherits Object.prototype's own methods
+     * (ToObject on the receiver), so `(1).isPrototypeOf({})` answers false
+     * rather than "is not a function". The wrapper's own toString and
+     * valueOf come from the wrapper prototypes, which the primitive
+     * lowerings answer. */
+    return dyn_inherited_from(NULL, DYN_INHERIT_OWN, key);
   default:
     return NULL;
   }
@@ -2569,9 +2830,9 @@ ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key) {
 }
 
 /* A constant-key read of constructor/valueOf/toString/hasOwnProperty/
- * propertyIsEnumerable: `read` is the ordinary read's +1 result (NULL when
- * it threw). Takes it; answers the inherited member in place of an
- * undefined read, the read otherwise. */
+ * propertyIsEnumerable/isPrototypeOf: `read` is the ordinary read's +1
+ * result (NULL when it threw). Takes it; answers the inherited member in
+ * place of an undefined read, the read otherwise. */
 ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read) {
   if (!read || read->kind != SCR_DYN_UNDEF) return read;
   ScrDyn *member = dyn_inherited_member(d, key);

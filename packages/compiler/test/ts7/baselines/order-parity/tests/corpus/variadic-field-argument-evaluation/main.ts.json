@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/variadic-field-argument-evaluation/recorder.js",
+  "<repo>/tests/corpus/variadic-field-argument-evaluation/main.ts"
+ ],
+ "diags": []
+}

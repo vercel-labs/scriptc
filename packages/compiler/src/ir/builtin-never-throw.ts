@@ -19,10 +19,31 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_weak_ref_is compares the value's kind and handle tag.
+  "weakRef.is",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
+  // scr_dyn_function_prototype builds the one anonymous function answering
+  // undefined on first use and retains it; no user code runs.
+  "dyn.functionPrototype",
+  // Both instanceof predicates compare values: scr_dyn_perf_handle_is asks
+  // the handle tag, and scr_dyn_perf_entry_is asks an object's prototype
+  // chain (or, for a live record, the view its materializer builds, which
+  // runs no program code).
+  "perf.observerIs",
+  "perf.entryIs",
+  // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
+  // counter; neither runs program code.
+  "perf.loopExit",
+  "perf.loopCount",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
+  // scr_events_once_any turns every failure into the result promise's
+  // rejection: an invalid options object or signal, an aborted signal, a
+  // name that cannot key the registry, a throwing 'newListener' listener
+  // (which it takes off the cell) and the awaited event's own 'error'. It
+  // throws nothing to its caller.
+  "events.onceAny",
   // scr_ni_intrinsic_register stores the value in a table.
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.
@@ -111,6 +132,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
+  // timer the handle names: the loop's clear, or the mock's own entry
+  // removal when the program mocks timers. Neither throws nor runs a
+  // callback.
+  "timers.close",
+  "timers.immediateClose",
+  // The same clears in their disposal spelling, whose result is undefined
+  // rather than the handle.
+  "timers.dispose",
+  "timers.immediateDispose",
   // The header-limit properties are plain storage: the getters retain the
   // stored value (or answer null / 0) and the setters retain the new value
   // and release the old one. No accessor, coercion or listener runs, and

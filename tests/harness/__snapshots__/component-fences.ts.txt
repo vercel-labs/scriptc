@@ -23,18 +23,18 @@ component-fences.ts:10:13 - error SC2004: uses of 'queries' inherit the blocker 
 
   hint: the declaration of 'queries' did not compile — fix the diagnostic reported there and these sites clear with it
 
-component-fences.ts:35:7 - error SC2009: values of type '() => WeakRef<object>' cannot be compiled: the function shape is supported, but its return type 'WeakRef<object>' does not compile
+component-fences.ts:35:7 - error SC2009: values of type '() => BigInt64Array<ArrayBuffer>' cannot be compiled: the function shape is supported, but its return type 'BigInt64Array<ArrayBuffer>' does not compile
 
   34 | // Node's ReferenceError at the root instead).
-  35 | const makeWeak = (0 as unknown) as () => WeakRef<object>;
+  35 | const makeWeak = (0 as unknown) as () => BigInt64Array<ArrayBuffer>;
      |       ^~~~~~~~
   36 | const storedMake = makeWeak;
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-component-fences.ts:36:7 - error SC2009: values of type '() => WeakRef<object>' cannot be compiled: the function shape is supported, but its return type 'WeakRef<object>' does not compile
+component-fences.ts:36:7 - error SC2009: values of type '() => BigInt64Array<ArrayBuffer>' cannot be compiled: the function shape is supported, but its return type 'BigInt64Array<ArrayBuffer>' does not compile
 
-  35 | const makeWeak = (0 as unknown) as () => WeakRef<object>;
+  35 | const makeWeak = (0 as unknown) as () => BigInt64Array<ArrayBuffer>;
   36 | const storedMake = makeWeak;
      |       ^~~~~~~~~~
   37 | console.log(storedMake());
@@ -43,7 +43,7 @@ component-fences.ts:36:7 - error SC2009: values of type '() => WeakRef<object>' 
 
 component-fences.ts:36:20 - error SC2004: uses of 'makeWeak' inherit the blocker on its declaration
 
-  35 | const makeWeak = (0 as unknown) as () => WeakRef<object>;
+  35 | const makeWeak = (0 as unknown) as () => BigInt64Array<ArrayBuffer>;
   36 | const storedMake = makeWeak;
      |                    ^~~~~~~~
   37 | console.log(storedMake());
@@ -59,7 +59,7 @@ component-fences.ts:37:13 - error SC2004: uses of 'storedMake' inherit the block
 
   hint: the declaration of 'storedMake' did not compile — fix the diagnostic reported there and these sites clear with it
 
-component-fences.ts:44:7 - error SC2009: values of type 'Holder' cannot be compiled: the record shape is supported, but its member 'cache' has type 'WeakRef<object>', which does not compile
+component-fences.ts:44:7 - error SC2009: values of type 'Holder' cannot be compiled: the record shape is supported, but its member 'cache' has type 'BigInt64Array<ArrayBuffer>', which does not compile
 
   43 | }
   44 | const held = (0 as unknown) as Holder;
@@ -68,7 +68,7 @@ component-fences.ts:44:7 - error SC2009: values of type 'Holder' cannot be compi
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-component-fences.ts:45:7 - error SC2009: values of type 'Holder' cannot be compiled: the record shape is supported, but its member 'cache' has type 'WeakRef<object>', which does not compile
+component-fences.ts:45:7 - error SC2009: values of type 'Holder' cannot be compiled: the record shape is supported, but its member 'cache' has type 'BigInt64Array<ArrayBuffer>', which does not compile
 
   44 | const held = (0 as unknown) as Holder;
   45 | const kept = held;
@@ -95,7 +95,7 @@ component-fences.ts:46:13 - error SC2004: uses of 'kept' inherit the blocker on 
 
   hint: the declaration of 'kept' did not compile — fix the diagnostic reported there and these sites clear with it
 
-component-fences.ts:56:7 - error SC2009: values of type 'Handler' cannot be compiled: the function shape is supported, but its parameter 'session' has type 'Session', which does not compile: the record shape is supported, but its member 'cache' has type 'WeakRef<object>', which does not compile
+component-fences.ts:56:7 - error SC2009: values of type 'Handler' cannot be compiled: the function shape is supported, but its parameter 'session' has type 'Session', which does not compile: the record shape is supported, but its member 'cache' has type 'BigInt64Array<ArrayBuffer>', which does not compile
 
   55 | type Handler = (session: Session) => void;
   56 | const handled = (0 as unknown) as Handler;

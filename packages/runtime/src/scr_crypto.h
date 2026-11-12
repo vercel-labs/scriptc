@@ -43,6 +43,11 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *h);
 ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options);
 ScrCryptoHash *scr_crypto_hash_copy_opts(ScrCryptoHash *h, ScrDyn *options);
 ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options);
+/* createMac(algorithm, key[, options]) (+1): an HMAC-only Mac handle, with
+ * Node 24.22's validation order and errors. */
+ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options);
+/* crypto.secureHeapUsed() (+1): Node's no-secure-heap answer. */
+ScrDyn *scr_crypto_secure_heap_used(void);
 ScrCryptoHash *scr_crypto_hash_update_enc(ScrCryptoHash *h, ScrStr *data, ScrStr *enc);
 ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *h, ScrDyn *data, ScrDyn *enc);
 ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *h, ScrDyn *enc);

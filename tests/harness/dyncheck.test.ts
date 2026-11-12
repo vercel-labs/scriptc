@@ -2313,6 +2313,19 @@ try {
 } catch (error) {
   console.log((error as Error).message.includes("redefining the static field 'count'"));
 }
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  Object.defineProperty(Counter, key, { value: 9 });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"), conversions);
+}
 anyCounter.count = 5;
 Object.defineProperty(Counter, "extra", { value: 2, enumerable: true });
 console.log(Counter.count, Reflect.get(Counter, "count"), anyCounter.extra);
@@ -2325,7 +2338,7 @@ console.log(Counter.count);
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("true\n5 5 2\ntrue\n5\n");
+    expect(r.stdout).toBe("true\ntrue 1\n5 5 2\ntrue\n5\n");
   });
 
   test("deleting a reflected static field is refused, and other keys still delete", async () => {
@@ -2336,7 +2349,7 @@ console.log(Counter.count);
       `class Base {
   static count = 1;
 }
-function remove(C: any, key: string): boolean {
+function remove(C: any, key: any): boolean {
   return Reflect.deleteProperty(C, key);
 }
 try {
@@ -2344,13 +2357,27 @@ try {
 } catch (error) {
   console.log((error as Error).message.includes("deleting the static field 'count'"));
 }
+// A key object converts to the field's name: the refusal compares the
+// converted key, and the conversion runs once.
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  console.log(remove(Base, key));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"), conversions);
+}
 const added: any = Base;
 added.extra = 1;
 console.log(remove(Base, "extra"), added.extra, Base.count, Reflect.get(Base, "count"));
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe("true\ntrue undefined 1 1\n");
+    expect(r.stdout).toBe("true\ntrue 1\ntrue undefined 1 1\n");
   });
 
   test("a public static named like a private one never publishes the private value", async () => {

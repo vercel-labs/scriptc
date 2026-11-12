@@ -1645,6 +1645,38 @@ export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
  * continue through their existing runtime implementation. */
+/** `key = ToPropertyKey(key)` when `target` is a function (a class value):
+ * the first statement of a helper whose static-field refusals compare the
+ * key. */
+function staticKeyConversion(target: IrExpr, key: IrExpr, loc: SrcLoc): IrStmt {
+  if (key.kind !== "varRef")
+    throw new InternalCompilerError("static key conversion needs a local key");
+  return {
+    kind: "if",
+    cond: { kind: "dynTest", test: "function", value: target, type: BOOL, loc },
+    then: [
+      {
+        kind: "assign",
+        localId: key.localId,
+        value: { kind: "libCall", fn: "dyn.propertyKey", args: [key], type: DYN, loc },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+function isStaticKeyConversion(statement: IrStmt | undefined): boolean {
+  return (
+    statement?.kind === "if" &&
+    statement.then.length === 1 &&
+    statement.then[0]!.kind === "assign" &&
+    statement.then[0]!.value.kind === "libCall" &&
+    statement.then[0]!.value.fn === "dyn.propertyKey"
+  );
+}
+
 /** The deletes a listed static field can meet: each runs the static delete
  * guard first once a table is installed. */
 const STATIC_DELETE_CALLS = new Set<IrLibFn>([
@@ -2059,7 +2091,9 @@ export class ClassDynamicDispatch {
             const id = `${helper.name}\0${keyClass}\0${actual}\0${field.name}`;
             if (this.computedStaticWrites.has(id)) continue;
             this.computedStaticWrites.add(id);
-            helper.body.unshift({
+            // After the key's conversion, which leads the helper's body.
+            const at = isStaticKeyConversion(helper.body[0]) ? 1 : 0;
+            helper.body.splice(at, 0, {
               kind: "if",
               cond: {
                 kind: "logical",
@@ -2246,11 +2280,32 @@ export class ClassDynamicDispatch {
           const [target, key, ...rest] = mapped.args;
           const targetLocal = temp(target!.type);
           const keyLocal = temp(key!.type);
+          const targetRead = varRef(targetLocal, target!.type, loc);
+          // A key of any other kind converts with ToPropertyKey once, here,
+          // when the target is a function (a class value): the guard and the
+          // delete then see the same key, and its conversion runs once.
+          const keyInit: IrExpr =
+            key!.type.kind === "dyn"
+              ? {
+                  kind: "ternary",
+                  cond: {
+                    kind: "dynTest",
+                    test: "function",
+                    value: lowerer.coerceToExpected(targetRead, DYN),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: { kind: "libCall", fn: "dyn.propertyKey", args: [key!], type: DYN, loc },
+                  else_: key!,
+                  type: DYN,
+                  loc,
+                }
+              : key!;
           return {
             kind: "seqExpr",
             stmts: [
               { kind: "varDecl", localId: targetLocal, init: target!, loc },
-              { kind: "varDecl", localId: keyLocal, init: key!, loc },
+              { kind: "varDecl", localId: keyLocal, init: keyInit, loc },
               {
                 kind: "exprStmt",
                 expr: {
@@ -3691,9 +3746,13 @@ export class ClassDynamicDispatch {
                 id: param.localId,
                 name: param.name,
                 type: DYN,
-                mutable: false,
+                mutable: param.localId === "key",
               })),
               body: [
+                // A class value's key converts with ToPropertyKey once, before
+                // the static-field refusals (fenceStaticFieldKeys) compare it
+                // and the define reads it.
+                staticKeyConversion(target, key, loc),
                 {
                   kind: "if",
                   cond: { kind: "dynTest", test: "symbol", value: key, type: BOOL, loc },

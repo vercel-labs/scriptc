@@ -739,8 +739,12 @@ function buildLibFnSignatures() {
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
      * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
      * eldPercentile expects Node's validated range; eldStat(which) reads
-     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. loopExit is when
+     * the loop ended (-1 until then, Node's PerformanceNodeTiming.loopExit),
+     * loopCount the number of loop turns taken. */
     "perf.loopStart": { argTypes: [], result: F64 },
+    "perf.loopExit": { argTypes: [], result: F64 },
+    "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
     "perf.eldNew": { argTypes: [F64], result: F64 },
     "perf.eldEnable": { argTypes: [F64], result: BOOL },
@@ -3730,6 +3734,10 @@ function buildLibFnSignatures() {
      * either one by its outputEncoding. */
     "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
     "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+    /** createMac(algorithm, key[, options]) answers a Mac native handle. */
+    "crypto.macNewDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** crypto.secureHeapUsed() answers Node's no-secure-heap object. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
     "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
     "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },

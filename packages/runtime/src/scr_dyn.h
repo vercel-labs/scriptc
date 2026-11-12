@@ -263,6 +263,7 @@ typedef enum {
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
+  Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */

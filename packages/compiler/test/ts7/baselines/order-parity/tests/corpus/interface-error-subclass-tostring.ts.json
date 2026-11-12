@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/interface-error-subclass-tostring.ts"],
+  "diags": []
+}

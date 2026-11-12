@@ -712,6 +712,28 @@ function buildLibFnSignatures() {
     "perf.entryDetail": { argTypes: [F64], result: DYN },
     "perf.entryKeep": { argTypes: [DYN], result: VOID },
     "perf.entryRef": { argTypes: [F64], result: DYN },
+    /** new PerformanceMark(name, options?): Node's constructor (MAY
+     * THROW) — the mark timings update, the marks buffer does not; the
+     * new entry is view index 0. observerNew(args) constructs a
+     * PerformanceObserver from the call's argument vector and answers the
+     * handle (MAY THROW). The observer methods take the receiver handle:
+     * observe(obs, args) takes observe's argument vector, take(obs) moves
+     * the buffered entries into the view (both answer a count for the
+     * scr_perf_entry_* accessors), disconnect(obs) stops it. listEntries
+     * (list, args, which) selects from a PerformanceObserverEntryList
+     * (which: 0 getEntries, 1 getEntriesByName, 2 getEntriesByType).
+     * observerIs(value, which) and entryIs(value, which) are the
+     * `instanceof` tests for values whose static type is not the class:
+     * observer/list classes 0 and 1, and PerformanceEntry 0,
+     * PerformanceMark 1, PerformanceMeasure 2. */
+    "perf.markNew": { argTypes: [DYN], result: F64 },
+    "perf.observerNew": { argTypes: [DYN], result: DYN },
+    "perf.observerObserve": { argTypes: [DYN, DYN], result: VOID },
+    "perf.observerDisconnect": { argTypes: [DYN], result: VOID },
+    "perf.observerTake": { argTypes: [DYN], result: F64 },
+    "perf.listEntries": { argTypes: [DYN, DYN, F64], result: F64 },
+    "perf.observerIs": { argTypes: [DYN, F64], result: BOOL },
+    "perf.entryIs": { argTypes: [DYN, F64], result: BOOL },
     /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
      * loop's start in performance.now() ms (0 before it), idleTime the idle
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
@@ -3901,6 +3923,10 @@ function buildLibFnSignatures() {
      * either one by its outputEncoding. */
     "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
     "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+    /** createMac(algorithm, key[, options]) answers a Mac native handle. */
+    "crypto.macNewDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** crypto.secureHeapUsed() answers Node's no-secure-heap object. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
     "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
     "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },
@@ -4466,8 +4492,9 @@ function buildLibFnSignatures() {
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
-    // The Node runtime flag a node:test binary took out of process.argv
-    // (--test-update-snapshots), or [] — a fresh array per read.
+    // The Node runtime flags a node:test binary took out of process.argv
+    // (--test-update-snapshots and the reporter options), or []; a fresh
+    // array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
     /** process.allowedNodeEnvironmentFlags: the interned set of option
      * names the compatibility target accepts in NODE_OPTIONS (+1 read of
@@ -4926,6 +4953,8 @@ function buildLibFnSignatures() {
     "weakSet.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.is": { argTypes: [DYN], result: BOOL },
+    "weakRef.new": { argTypes: [DYN], result: DYN },
+    "weakRef.is": { argTypes: [DYN], result: BOOL },
     "dyn.fromEntries": { argTypes: [DYN], result: DYN },
     "bytes.constructor": { argTypes: [STRING], result: DYN },
     "bytes.instanceOf": { argTypes: [DYN, DYN, STRING], result: BOOL },
@@ -4995,6 +5024,11 @@ function buildLibFnSignatures() {
     "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
     "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
+    /** Object.prototype.isPrototypeOf(receiver, value) over checked-dynamic
+     * operands: ToObject throws on a nullish receiver, and the argument's
+     * prototype chain is walked comparing each link with the receiver by
+     * identity. */
+    "dyn.isPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
     "dyn.copyDataProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.objectRest": { argTypes: [DYN, DYN], result: DYN },
@@ -5041,6 +5075,9 @@ function buildLibFnSignatures() {
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
+    /** Function.prototype as a value: an anonymous function answering
+     * undefined, length 0 and name "", one value per program. */
+    "dyn.functionPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
@@ -6218,6 +6255,18 @@ function buildLibFnSignatures() {
      * events.once's arguments plus the checked-dynamic options value, whose
      * `signal` the runtime validates as Node does. */
     "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
+    /** events.once over a name the program does not resolve to one of its
+     * typed tuples (scr_events_once_signal.c): [emitter, name, options] → a
+     * pending promise of the event's arguments. The listeners are
+     * checked-dynamic function values, so the name crosses as the value the
+     * receiver's once() receives and the promise carries the emit's
+     * arguments as the emit provides them. Never throws: invalid options, a
+     * name that cannot key the registry, an aborted signal, a throwing
+     * 'newListener' listener and every event failure reject it. */
+    "events.onceAny": {
+      argTypes: [null, DYN, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
     /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
      * value's type that copies the borrowed already-resolved `value` promise
      * when the timer (or immediate) fires; ref false unrefs it. The result

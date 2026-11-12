@@ -790,6 +790,56 @@ interface RsaHashedImportParams extends Algorithm {
 interface RsaPssParams extends Algorithm {
   saltLength: number;
 }
+/* Node 24's modern algorithm parameter dictionaries. These are the
+ * documented type shapes: the algorithms that consume them (Argon2, cSHAKE,
+ * KMAC, ECDH, KangarooTwelve, RSA-OAEP and TurboSHAKE) are not implemented,
+ * so the dictionaries are declared for typed sources but not admitted by a
+ * SubtleCrypto method signature. */
+interface Argon2Params extends Algorithm {
+  nonce: BufferSource;
+  memory: number;
+  passes: number;
+  parallelism: number;
+  associatedData?: BufferSource;
+  secretValue?: BufferSource;
+  version?: number;
+}
+interface CShakeParams extends Algorithm {
+  outputLength: number;
+  functionName?: BufferSource;
+  customization?: BufferSource;
+}
+interface ContextParams extends Algorithm {
+  context?: BufferSource;
+}
+interface EcdhKeyDeriveParams extends Algorithm {
+  public: CryptoKey;
+}
+interface KangarooTwelveParams extends Algorithm {
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface KmacImportParams extends Algorithm {
+  length?: number;
+}
+interface KmacKeyAlgorithm extends KeyAlgorithm {
+  length: number;
+}
+interface KmacKeyGenParams extends Algorithm {
+  length?: number;
+}
+interface KmacParams extends Algorithm {
+  algorithm: string;
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface RsaOaepParams extends Algorithm {
+  label?: BufferSource;
+}
+interface TurboShakeParams extends Algorithm {
+  outputLength: number;
+  domainSeparation?: number;
+}
 interface EcKeyAlgorithm extends KeyAlgorithm {
   namedCurve: string;
 }
@@ -1581,10 +1631,22 @@ declare function clearInterval(handle?: Timeout | number | null | undefined): vo
  * fractional milliseconds. The .bind(performance) spelling lowers to the
  * same clock as a plain () => number function value (the mockable-clock idiom's
  * getTimestamp). mark, measure, the getEntries family and the clears run
- * over the thread's performance timeline with Node's validation; everything
- * else fences per member. */
+ * over the thread's performance timeline with Node's validation; new
+ * PerformanceMark records a mark without adding it to the timeline, and
+ * PerformanceObserver delivers the entries a mark or measure produced.
+ * Everything else fences per member. */
 declare module "node:perf_hooks" {
-  export type EntryType = "mark" | "measure";
+  export type EntryType =
+    | "dns"
+    | "function"
+    | "gc"
+    | "http2"
+    | "http"
+    | "mark"
+    | "measure"
+    | "net"
+    | "node"
+    | "resource";
   export class PerformanceEntry {
     protected constructor();
     readonly duration: number;
@@ -1594,13 +1656,37 @@ declare module "node:perf_hooks" {
     toJSON(): any;
   }
   export class PerformanceMark extends PerformanceEntry {
+    constructor(name: string, options?: PerformanceMarkOptions);
     readonly detail: any;
     readonly duration: 0;
     readonly entryType: "mark";
   }
+  export interface PerformanceMarkOptions {
+    detail?: any;
+    startTime?: number;
+  }
   export class PerformanceMeasure extends PerformanceEntry {
     readonly detail: any;
     readonly entryType: "measure";
+  }
+  export class PerformanceObserverEntryList {
+    getEntries(): PerformanceEntry[];
+    getEntriesByName(name: string, type?: EntryType): PerformanceEntry[];
+    getEntriesByType(type: EntryType): PerformanceEntry[];
+  }
+  export type PerformanceObserverCallback = (
+    list: PerformanceObserverEntryList,
+    observer: PerformanceObserver,
+  ) => void;
+  export class PerformanceObserver {
+    constructor(callback: PerformanceObserverCallback);
+    disconnect(): void;
+    observe(
+      options:
+        | { entryTypes: readonly EntryType[]; buffered?: boolean | undefined }
+        | { type: EntryType; buffered?: boolean | undefined },
+    ): void;
+    takeRecords(): PerformanceEntry[];
   }
   export interface MarkOptions {
     detail?: unknown | undefined;
@@ -1613,6 +1699,7 @@ declare module "node:perf_hooks" {
     start?: number | string | undefined;
   }
   export interface Performance {
+    readonly timeOrigin: number;
     now(): number;
     mark(name: string, options?: MarkOptions): PerformanceMark;
     measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
@@ -1664,6 +1751,17 @@ declare module "perf_hooks" {
  * stands down and its wider global serves; the lowered surface stays
  * performance.now() either way. */
 declare var performance: import("node:perf_hooks").Performance;
+/* Node 24 also defines the perf_hooks classes as globals (the module export
+ * and the global are the same class, as with performance itself): new
+ * PerformanceMark(name, options?), PerformanceObserver with observe,
+ * disconnect and takeRecords, and the three Node keeps unconstructible
+ * (PerformanceEntry, PerformanceMeasure and PerformanceObserverEntryList
+ * throw ERR_ILLEGAL_CONSTRUCTOR). */
+declare var PerformanceEntry: typeof import("node:perf_hooks").PerformanceEntry;
+declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
+declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
+declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
+declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/logical-assignment-dynamic-members.js"
+ ],
+ "diags": []
+}

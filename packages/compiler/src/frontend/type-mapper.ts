@@ -55,7 +55,7 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import { BIGINT_T, KEY_ORDER_FIELD, PERF_ENTRY_MARKER } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
@@ -180,6 +180,17 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "Pbkdf2Params",
   "HkdfParams",
   "AesDerivedKeyParams",
+  "Argon2Params",
+  "CShakeParams",
+  "ContextParams",
+  "EcdhKeyDeriveParams",
+  "KangarooTwelveParams",
+  "KmacImportParams",
+  "KmacKeyAlgorithm",
+  "KmacKeyGenParams",
+  "KmacParams",
+  "RsaOaepParams",
+  "TurboShakeParams",
 ]);
 
 /** node:crypto's key, signature and X509Certificate check option
@@ -222,6 +233,8 @@ export const FETCH_AMBIENT_TYPES = [
   "CustomEventInit",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
   "Headers",
   "ReadableStream",
   "ReadableStreamDefaultReader",
@@ -1239,8 +1252,10 @@ function esOwnKeyOrder(names: string[]): string[] {
   return indices.length === 0 ? names : [...indices, ...names.filter((n) => !isArrayIndex(n))];
 }
 
-/** The hidden field that marks the perf_hooks entry record shape. */
-export const PERF_ENTRY_MARKER = "%perfEntry";
+/** The hidden field that marks the perf_hooks entry record shape
+ * (ir/ir.ts defines it: the backend's dyn conversion needs it too);
+ * re-exported here so frontend call sites keep their import path. */
+export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
 export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
@@ -2990,6 +3005,8 @@ const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
   "Response",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
 ]);
 
 /** The native fetch handles (Headers, Request, Response, AbortController,
@@ -4918,6 +4935,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
   // FinalizationRegistry is a native handle with register and unregister.
   if (isStdlibInterface("FinalizationRegistry")) return DYN;
+  // WeakRef is a native handle with deref.
+  if (isStdlibInterface("WeakRef")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.
@@ -5281,6 +5300,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return psymName === "Hash" ? CRYPTOHASH_T : CRYPTOHMAC_T;
+  }
+  // crypto.Mac (createMac): the HMAC-only native Mac handle (scr_lib.c).
+  // Module-checked like Hash and Hmac, so a user class named Mac keeps its
+  // own representation.
+  if (
+    psym !== undefined &&
+    psymName === "Mac" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
   }
   // fs.FSWatcher: the fs.watch handle (scr_watch.c). Module-checked like
   // net.Server — @types/node declares `interface FSWatcher extends
@@ -6043,6 +6077,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // every result.
   if (
     isStdlibInterface("CipherInfo") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
+  // crypto.secureHeapUsed()'s report: the runtime builds Node's object as a
+  // checked-dynamic value (its utilization is NaN), so the declared interface
+  // reads dynamically.
+  if (
+    isStdlibInterface("SecureHeapUsage") &&
     psym!.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
     )

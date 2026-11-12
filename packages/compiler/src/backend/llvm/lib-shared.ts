@@ -89,6 +89,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "weakSet.new": "scr_weak_set_new",
   "finalizationRegistry.new": "scr_finalization_registry_new",
   "finalizationRegistry.is": "scr_finalization_registry_is",
+  "weakRef.new": "scr_weak_ref_new",
+  "weakRef.is": "scr_weak_ref_is",
   "dyn.fromEntries": "scr_dyn_from_entries",
   "bytes.constructor": "scr_bytes_constructor",
   "bytes.construct": "scr_bytes_construct",
@@ -396,6 +398,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.entryDetail": "scr_perf_entry_detail",
   "perf.entryKeep": "scr_perf_entry_keep",
   "perf.entryRef": "scr_perf_entry_ref",
+  "perf.markNew": "scr_perf_mark_new",
+  "perf.observerNew": "scr_perf_observer_new",
+  "perf.observerObserve": "scr_perf_observer_observe",
+  "perf.observerDisconnect": "scr_perf_observer_disconnect",
+  "perf.observerTake": "scr_perf_observer_take",
+  "perf.listEntries": "scr_perf_list_entries",
+  "perf.observerIs": "scr_dyn_perf_handle_is",
+  "perf.entryIs": "scr_dyn_perf_entry_is",
   "perf.loopStart": "scr_perf_loop_start",
   "perf.idleTime": "scr_perf_idle_time",
   "perf.eldNew": "scr_eld_new",
@@ -799,6 +809,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.hmacDigestBuffer": "scr_crypto_hash_digest_buffer",
   "crypto.hashNewOpts": "scr_crypto_hash_new_opts",
   "crypto.hmacNewDyn": "scr_crypto_hmac_new_dyn",
+  "crypto.macNewDyn": "scr_crypto_mac_new_dyn",
+  "crypto.secureHeapUsed": "scr_crypto_secure_heap_used",
   "crypto.hashCopyOpts": "scr_crypto_hash_copy_opts",
   "crypto.hashUpdateEnc": "scr_crypto_hash_update_enc",
   "crypto.hmacUpdateEnc": "scr_crypto_hash_update_enc",
@@ -1217,6 +1229,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "blob.arrayBuffer": "scr_blob_array_buffer",
   "blob.is": "scr_blob_is",
   "events.addAbortListener": "scr_events_add_abort_listener",
+  "events.onceAny": "scr_events_once_any",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",
   "abort.any": "scr_fetch_abort_any",
@@ -2018,6 +2031,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.objKeyStrings": "scr_dyn_obj_key_strs",
   "dyn.hasOwn": "scr_dyn_has_own",
   "dyn.propertyIsEnumerable": "scr_dyn_property_is_enumerable",
+  // Object.prototype.isPrototypeOf over checked-dynamic receiver and
+  // argument (ToObject TypeError on a nullish receiver).
+  "dyn.isPrototypeOf": "scr_dyn_is_prototype_of_bool",
   "dyn.assign": "scr_dyn_assign",
   "dyn.copyDataProperties": "scr_dyn_copy_data_properties",
   "dyn.objectRest": "scr_dyn_object_rest",
@@ -2042,6 +2058,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.arrayPrototype": "scr_dyn_array_prototype",
   "dyn.arrayConstructor": "scr_dyn_array_constructor",
   "dyn.objectPrototype": "scr_dyn_object_prototype",
+  // Function.prototype as a value: the anonymous function every function's
+  // prototype chain links to.
+  "dyn.functionPrototype": "scr_dyn_function_prototype",
   "dyn.errorPrototype": "scr_dyn_error_prototype",
   "dyn.inheritsErrorPrototype": "scr_dyn_inherits_error_prototype",
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
@@ -2226,6 +2245,10 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "abort.timeout",
   // EventTarget listeners report their exceptions from a nextTick.
   "event.targetNew",
+  // A connected PerformanceObserver delivers from an immediate; without the
+  // loop a program that only marks would never run the callback (Node's
+  // loop drains that immediate), and the queued dispatch would leak.
+  "perf.observerNew",
   "abort.controllerNew",
   "abort.any",
   "fetch.streamNew",

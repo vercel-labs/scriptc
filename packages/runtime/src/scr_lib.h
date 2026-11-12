@@ -51,7 +51,12 @@ const char *scr_lib_arg(int i);
  * right after scr_lib_init, before process.argv is first read. True when
  * the flag was there. */
 bool scr_lib_take_flag(const char *flag);
-/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+/* Takes a leading `name=value` argument out of process.argv the same way,
+ * with *value (when not NULL) naming the text after the '='. True when the
+ * option was there. */
+bool scr_lib_take_flag_value(const char *name, const char **value);
+/* process.execArgv: the flags scr_lib_take_flag* took, in order, or [] (+1,
+ * fresh). */
 ScrArr *scr_process_exec_argv(void);
 /* process.allowedNodeEnvironmentFlags: one interned set of the option
  * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
@@ -228,6 +233,10 @@ double scr_eld_stat(double handle, double which);
  * timeline call. which: 0 getEntries, 1 getEntriesByName, 2
  * getEntriesByType. Accessor results are +1. */
 double scr_perf_mark(ScrDyn *args);
+/* new PerformanceMark(name, options?): Node's constructor — the mark
+ * timings update, the global buffer does not — answers 1 with the new
+ * entry readable through the accessors at index 0 (MAY THROW). */
+double scr_perf_mark_new(ScrDyn *args);
 double scr_perf_measure(ScrDyn *args);
 double scr_perf_entries(ScrDyn *args, double which);
 void scr_perf_clear_marks(ScrDyn *args);
@@ -243,6 +252,37 @@ ScrDyn *scr_perf_entry_detail(double i);
  * mark() and measure() did. */
 void scr_perf_entry_keep(ScrDyn *ref);
 ScrDyn *scr_perf_entry_ref(double i);
+/* perf_hooks PerformanceObserver (scr_perf.c). observer_new(args) is
+ * Node's constructor over the call's checked-dynamic argument vector and
+ * answers the observer handle (MAY THROW Node's callback type error). The
+ * methods take the observer (or entry-list) handle and apply Node's
+ * validation:
+ * observe(obs, args) takes observe's dyn argument vector, take(obs) moves
+ * the observer's buffered entries into the answer view and list_entries
+ * (list, args, which) fills it from an entry list (which: 0 getEntries,
+ * 1 getEntriesByName, 2 getEntriesByType), both answering a count the
+ * scr_perf_entry_* accessors read; disconnect(obs). Buffered entries
+ * reach an observer at the mark or measure that produced them and its
+ * callback runs from an immediate, as Node's. observer_is(value, which)
+ * is `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1). */
+ScrDyn *scr_perf_observer_new(ScrDyn *args);
+void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args);
+void scr_perf_observer_disconnect(ScrDyn *observer);
+double scr_perf_observer_take(ScrDyn *observer);
+double scr_perf_list_entries(ScrDyn *list, ScrDyn *args, double which);
+/* The class tests for values whose static type is not the class (a union or
+ * a checked-dynamic slot). scr_dyn_perf_handle_is(value, which) is
+ * `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1); scr_dyn_perf_entry_is(value, which)
+ * is `instanceof PerformanceEntry` (0), `PerformanceMark` (1) or
+ * `PerformanceMeasure` (2) through the entry prototypes the dyn core
+ * installs, and scr_dyn_perf_entry_finish gives a converted entry row that
+ * prototype. All three live in scr_json.c (the dyn core), which is linked
+ * whether or not a program calls perf_hooks. */
+bool scr_dyn_perf_handle_is(const ScrDyn *value, double which);
+bool scr_dyn_perf_entry_is(const ScrDyn *value, double which);
+void scr_dyn_perf_entry_finish(ScrDyn *object);
 uint64_t scr_hrtime_ns(void);
 ScrDyn *scr_process_hrtime_value(void);
 double scr_cpu_user(void);
@@ -451,6 +491,9 @@ void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 /* The mode the last TTY setRawMode call set (process.stdin.isRaw). */
 bool scr_process_stdin_raw(void);
+/* Put the terminal back in the mode it had before the first raw entry
+ * (libuv's uv_tty_reset_mode): at process exit and on process.exit(). */
+void scr_process_stdin_restore_mode(void);
 
 /* Terminal width for process.stdout/stderr.columns (fd 1/2):
  * ioctl(TIOCGWINSZ), -1 when the fd is not a TTY or the ioctl refuses —

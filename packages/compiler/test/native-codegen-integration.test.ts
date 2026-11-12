@@ -532,6 +532,94 @@ done:
     }
   });
 
+  test("runtime-pack FFI builds publish and reuse a proven executable", async () => {
+    // A profile's listed libraries are plan inputs, and the link trace names
+    // the archives the driver opened for them, so the executable is provable
+    // like any other. Without publishing it, every FFI build stopped at the
+    // frontend entry and linked the program again.
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-ffi-publish-"));
+    dirs.push(dir);
+    const entry = join(dir, "main.ts");
+    const profile = join(dir, "ffi.json");
+    const source = join(dir, "probe.c");
+    const object = join(dir, "probe.o");
+    const library = join(dir, "libscriptc_publish_probe.a");
+    const cache = join(dir, "cache");
+    const output = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    const rebuildLibrary = async (value: number) => {
+      await writeFile(source, `double scriptc_publish_probe(void) { return ${value}; }\n`);
+      await execFileAsync("clang", ["-c", source, "-o", object]);
+      await execFileAsync("ar", ["rcs", library, object]);
+    };
+    try {
+      await writeFile(
+        entry,
+        ["declare function nativeValue(): number;", "console.log(nativeValue());", ""].join("\n"),
+      );
+      await writeFile(
+        profile,
+        JSON.stringify({
+          ffi_format: 1,
+          functions: [
+            {
+              name: "nativeValue",
+              symbol: "scriptc_publish_probe",
+              params: [],
+              returns: "f64",
+            },
+          ],
+          libraries: [library],
+          system_libraries: [],
+        }),
+      );
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const options = {
+        outDir: dir,
+        outPath: output,
+        backend: "llvm" as const,
+        ffiProfilePath: profile,
+      };
+
+      await rebuildLibrary(7);
+      const first = await compile(entry, options);
+      if (!first.ok) throw new Error(first.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("7");
+
+      const stamps = (await readdir(join(cache, "early-exe"), { recursive: true }))
+        .filter((path) => path.endsWith("stamp.json"))
+        .map((path) => join(cache, "early-exe", path));
+      const published = await Promise.all(
+        stamps.map(
+          async (path) =>
+            JSON.parse(await readFile(path, "utf8")) as {
+              files: { executable: { name: string } | null };
+              nativeDependencies: { path: string }[] | null;
+            },
+        ),
+      );
+      const complete = published.filter((stamp) => stamp.files.executable !== null);
+      expect(complete).toHaveLength(1);
+      expect(complete[0]!.files.executable!.name).toBe("program.bin");
+      // The proof names the archive the link opened.
+      expect(complete[0]!.nativeDependencies?.map((entry) => entry.path)).toContain(library);
+
+      // A library rebuilt in place behind the same path is not the executable
+      // the entry published: the build links the new bytes.
+      await rebuildLibrary(9);
+      const second = await compile(entry, options);
+      if (!second.ok) throw new Error(second.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("9");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  });
+
   test("runtime-pack FFI system libraries are relinked after an in-place rebuild", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-ffi-cache-"));
     dirs.push(dir);

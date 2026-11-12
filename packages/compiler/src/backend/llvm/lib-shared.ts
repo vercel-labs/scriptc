@@ -1993,6 +1993,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.objKeyStrings": "scr_dyn_obj_key_strs",
   "dyn.hasOwn": "scr_dyn_has_own",
   "dyn.propertyIsEnumerable": "scr_dyn_property_is_enumerable",
+  // Object.prototype.isPrototypeOf over checked-dynamic receiver and
+  // argument (ToObject TypeError on a nullish receiver).
+  "dyn.isPrototypeOf": "scr_dyn_is_prototype_of_bool",
   "dyn.assign": "scr_dyn_assign",
   "dyn.copyDataProperties": "scr_dyn_copy_data_properties",
   "dyn.objectRest": "scr_dyn_object_rest",
@@ -2017,6 +2020,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.arrayPrototype": "scr_dyn_array_prototype",
   "dyn.arrayConstructor": "scr_dyn_array_constructor",
   "dyn.objectPrototype": "scr_dyn_object_prototype",
+  // Function.prototype as a value: the anonymous function every function's
+  // prototype chain links to.
+  "dyn.functionPrototype": "scr_dyn_function_prototype",
   "dyn.errorPrototype": "scr_dyn_error_prototype",
   "dyn.inheritsErrorPrototype": "scr_dyn_inherits_error_prototype",
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",

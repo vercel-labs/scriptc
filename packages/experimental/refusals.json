@@ -4,6 +4,86 @@
   "compilerVersion": "0.4.12",
   "refusals": [
     {
+      "row": "crypto:d61ebc090db7",
+      "layer": "static",
+      "chapter": "crypto",
+      "apiSymbol": "crypto.setFips",
+      "kind": "method",
+      "label": "crypto.setFips(bool)",
+      "manifestId": "node-builtin.crypto.setFips",
+      "binding": {
+        "module": "node:crypto",
+        "path": [
+          "setFips"
+        ],
+        "access": "call"
+      }
+    },
+    {
+      "row": "tls:34b3563433b2",
+      "layer": "static",
+      "chapter": "tls",
+      "apiSymbol": "tls.connect",
+      "kind": "method",
+      "label": "tls.connect(path[, options][, callback])",
+      "manifestId": "node-builtin.tls.connect",
+      "binding": {
+        "module": "node:tls",
+        "path": [
+          "connect"
+        ],
+        "access": "call"
+      }
+    },
+    {
+      "row": "tls:afd15ddeeaeb",
+      "layer": "static",
+      "chapter": "tls",
+      "apiSymbol": "tls.connect",
+      "kind": "method",
+      "label": "tls.connect(port[, host][, options][, callback])",
+      "manifestId": "node-builtin.tls.connect",
+      "binding": {
+        "module": "node:tls",
+        "path": [
+          "connect"
+        ],
+        "access": "call"
+      }
+    },
+    {
+      "row": "tls:26fef81aa33d",
+      "layer": "static",
+      "chapter": "tls",
+      "apiSymbol": "tls.createSecureContext",
+      "kind": "method",
+      "label": "tls.createSecureContext([options])",
+      "manifestId": "node-builtin.tls.createSecureContext",
+      "binding": {
+        "module": "node:tls",
+        "path": [
+          "createSecureContext"
+        ],
+        "access": "call"
+      }
+    },
+    {
+      "row": "webstreams:d39eca07e53e",
+      "layer": "static",
+      "chapter": "webstreams",
+      "apiSymbol": "streamConsumers.blob",
+      "kind": "method",
+      "label": "streamConsumers.blob(stream)",
+      "manifestId": "node-builtin.stream.consumers.blob",
+      "binding": {
+        "module": "node:stream/consumers",
+        "path": [
+          "blob"
+        ],
+        "access": "call"
+      }
+    },
+    {
       "binding": {
         "module": "node:_http_agent",
         "access": "import"

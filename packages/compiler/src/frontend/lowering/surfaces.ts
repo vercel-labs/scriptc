@@ -28,7 +28,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
-import { V8_MEMBER_REASON } from "../builtin-modules.js";
+import { NODE_BUILTIN_MODULES_V24, V8_MEMBER_REASON } from "../builtin-modules.js";
 import { globalObjectMember } from "./global-object-names.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
@@ -3544,88 +3544,6 @@ export function builtinConstLit(
   if (typeof value === "number") return { kind: "numLit", value, type: F64, loc };
   return { kind: "boolLit", value, type: BOOL, loc };
 }
-
-/** node:module's builtinModules, BAKED — Node v24's exact list (verbatim
- * order: the bare names, then the node:-prefix-only tails), pinned to
- * the compat target rather than read from the COMPILING host's Node so
- * emitted programs are host-independent (the cache-identity contract).
- * Node ships one frozen singleton; each read here mints a fresh string
- * array — a divergence only mutation could observe, and mutating Node's
- * frozen array throws anyway. */
-export const NODE_BUILTIN_MODULES_V24: readonly string[] = [
-  "_http_agent",
-  "_http_client",
-  "_http_common",
-  "_http_incoming",
-  "_http_outgoing",
-  "_http_server",
-  "_stream_duplex",
-  "_stream_passthrough",
-  "_stream_readable",
-  "_stream_transform",
-  "_stream_wrap",
-  "_stream_writable",
-  "_tls_common",
-  "_tls_wrap",
-  "assert",
-  "assert/strict",
-  "async_hooks",
-  "buffer",
-  "child_process",
-  "cluster",
-  "console",
-  "constants",
-  "crypto",
-  "dgram",
-  "diagnostics_channel",
-  "dns",
-  "dns/promises",
-  "domain",
-  "events",
-  "fs",
-  "fs/promises",
-  "http",
-  "http2",
-  "https",
-  "inspector",
-  "inspector/promises",
-  "module",
-  "net",
-  "os",
-  "path",
-  "path/posix",
-  "path/win32",
-  "perf_hooks",
-  "process",
-  "punycode",
-  "querystring",
-  "readline",
-  "readline/promises",
-  "repl",
-  "stream",
-  "stream/consumers",
-  "stream/promises",
-  "stream/web",
-  "string_decoder",
-  "sys",
-  "timers",
-  "timers/promises",
-  "tls",
-  "trace_events",
-  "tty",
-  "url",
-  "util",
-  "util/types",
-  "v8",
-  "vm",
-  "wasi",
-  "worker_threads",
-  "zlib",
-  "node:sea",
-  "node:sqlite",
-  "node:test",
-  "node:test/reporters",
-];
 
 /** The array-literal read of module.builtinModules — both value paths
  * (the named-import binding and the namespace member read) mint the

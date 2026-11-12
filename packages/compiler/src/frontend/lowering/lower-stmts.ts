@@ -368,6 +368,7 @@ import {
   dereferencedElementWrite,
   dynMemberReference,
   jsHoldsDynObject,
+  lowerDynMemberAssignment,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
@@ -11027,6 +11028,19 @@ export function lowerExprStatement(
           const arrayType = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
           if (arrayType?.kind === "array") {
             const arr = lowerer.lowerExpr(expr.left.expression);
+            // A JavaScript value keeps its array as a checked-dynamic value
+            // when its declared `Array` type reaches it that way (a parameter
+            // of an untyped source): the write is the dynamic property write
+            // Node's `length` set makes, with the array-length rules the
+            // runtime applies, not a native array operation on storage this
+            // value does not have.
+            if (arr.type.kind === "dyn") {
+              return {
+                kind: "exprStmt",
+                expr: lowerDynMemberAssignment(lowerer, expr, arr),
+                loc: locOf(expr),
+              };
+            }
             if (arr.type.kind !== "array") {
               lowerer.unsupported(
                 "SC1090",

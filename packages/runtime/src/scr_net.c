@@ -15,6 +15,9 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <io.h>      /* _get_osfhandle: the CRT-descriptor form of the fd audit */
+#include <windows.h> /* GetFileType/GetConsoleMode: uv_guess_handle's arm */
+#include <stdint.h>  /* intptr_t: the SOCKET value carried in the int fd */
 #else
 #include <arpa/inet.h>
 #include <netdb.h> /* getaddrinfo — the client bridges' blocking lookup */
@@ -3727,6 +3730,33 @@ static void scr_net_invalid_ip(const ScrDyn *v) {
  * types createHandle accepts are TCP (a socket) and PIPE; every other
  * descriptor is ERR_INVALID_FD_TYPE("Unsupported fd type: FILE"). */
 static const char *scr_net_fd_type(int fd) {
+#ifdef _WIN32
+  /* uv_guess_handle's Windows arm asks GetFileType for the handle family:
+   * a socket and a named pipe both ride FILE_TYPE_PIPE (which is why
+   * Node's createHandle takes the PIPE path for a socket here), a
+   * console answers FILE_TYPE_CHAR unless GetConsoleMode refuses it, and
+   * a disk file answers FILE_TYPE_DISK. This runtime's int fd carries a
+   * SOCKET, so the handle is the value itself; a CRT descriptor (an
+   * fs.open fd) is no such handle, and resolves through _get_osfhandle
+   * the way libuv's uv__get_osfhandle does. A negative or closed fd
+   * answers UNKNOWN, as uv_guess_handle does. */
+  HANDLE h;
+  DWORD mode;
+  intptr_t crt;
+  if (fd < 0) return "UNKNOWN";
+  h = (HANDLE)(intptr_t)fd;
+  if (GetFileType(h) == FILE_TYPE_UNKNOWN) {
+    crt = _get_osfhandle(fd);
+    if (crt == -1) return "UNKNOWN";
+    h = (HANDLE)crt;
+  }
+  switch (GetFileType(h)) {
+  case FILE_TYPE_CHAR: return GetConsoleMode(h, &mode) ? "TTY" : "FILE";
+  case FILE_TYPE_PIPE: return "PIPE";
+  case FILE_TYPE_DISK: return "FILE";
+  default: return "UNKNOWN";
+  }
+#else
   struct stat st;
   if (fstat(fd, &st) != 0) return "UNKNOWN";
   if (S_ISSOCK(st.st_mode)) return "TCP";
@@ -3734,6 +3764,7 @@ static const char *scr_net_fd_type(int fd) {
   if (S_ISDIR(st.st_mode)) return "DIR";
   if (S_ISCHR(st.st_mode)) return isatty(fd) ? "TTY" : "FILE";
   return "FILE";
+#endif
 }
 
 static void scr_net_throw_fd_type(const char *type) {

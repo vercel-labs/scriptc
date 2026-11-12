@@ -52,6 +52,25 @@ report("key-private", () => createMac("hmac", privateKey, { digest: "sha256" }))
 report("digest-unknown", () => createMac("hmac", key, { digest: "no-such-digest" }));
 report("digest-xof", () => createMac("hmac", key, { digest: "shake128" }));
 
+// The digest is fetched from OpenSSL's providers, which do not resolve the
+// RSA signature aliases createHash() accepts, nor the legacy "dss1" spelling.
+report("digest-rsa-alias", () => createMac("hmac", key, { digest: "RSA-SHA256" }));
+report("digest-rsa-oid-alias", () =>
+  createMac("hmac", key, { digest: "id-rsassa-pkcs1-v1_5-with-sha3-256" }),
+);
+report("digest-dss1", () => createMac("hmac", key, { digest: "dss1" }));
+
+// The canonical name, its object identifier and a trailing-space spelling
+// all fetch the same digest.
+const macHex = (digest) => {
+  const hmac = createMac("hmac", createSecretKey(key), { digest });
+  hmac.update("payload");
+  return hmac.final("hex");
+};
+const sha256Hex = macHex("sha256");
+console.log("digest-oid-matches", macHex("2.16.840.1.101.3.4.2.1") === sha256Hex);
+console.log("digest-trailing-space-matches", macHex("sha256 ") === sha256Hex);
+
 // update(): an ArrayBuffer is not a view, and an unknown encoding is
 // rejected before the data is read.
 const mac = createMac("hmac", createSecretKey(key), { digest: "sha256" });

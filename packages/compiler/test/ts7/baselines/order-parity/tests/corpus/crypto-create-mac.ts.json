@@ -2,24 +2,5 @@
  "order": [
   "<repo>/tests/corpus/crypto-create-mac.ts"
  ],
- "diags": [
-  {
-   "code": "SC0001",
-   "message": "Argument of type '\"\"' is not assignable to parameter of type 'Encoding'.",
-   "loc": {
-    "file": "<repo>/tests/corpus/crypto-create-mac.ts",
-    "start": 1355,
-    "end": 1357
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Argument of type '\"\"' is not assignable to parameter of type 'Encoding'.",
-   "loc": {
-    "file": "<repo>/tests/corpus/crypto-create-mac.ts",
-    "start": 1511,
-    "end": 1513
-   }
-  }
- ]
+ "diags": []
 }

@@ -9555,6 +9555,31 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
   return false;
 }
 
+/* createMac() fetches its digest from OpenSSL's providers (EVP_MD_fetch),
+ * which resolves the canonical names, their object identifiers and the OID
+ * aliases, but not the RSA signature aliases of OpenSSL's object table, and
+ * it does not map the legacy "dss1" spelling that createHash accepts. */
+static bool scr_digest_mac_alg(const char *name, size_t len, ScrDigestAlg *out) {
+  const char *nul = memchr(name, '\0', len);
+  if (nul) len = (size_t)(nul - name);
+  if ((len == 4 && memcmp(name, "dss1", 4) == 0) || (len == 4 && memcmp(name, "DSS1", 4) == 0))
+    return false;
+  size_t trimmed = len;
+  while (trimmed > 0 && name[trimmed - 1] == ' ') trimmed--;
+  for (size_t i = 0; i < sizeof scr_digest_names / sizeof scr_digest_names[0]; i++) {
+    size_t n = scr_digest_names[i].len;
+    if (n != len && n != trimmed) continue;
+    const char *literal = scr_digest_names[i].name;
+    if (scr_digest_name_exact_only(literal)) continue;
+    if (scr_digest_name_is(name, len, literal) ||
+        (trimmed != len && scr_digest_name_is(name, trimmed, literal))) {
+      *out = scr_digest_names[i].alg;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool scr_digest_known(const char *name, size_t len) {
   ScrDigestAlg alg;
   return scr_digest_alg(name, len, &alg);
@@ -11100,7 +11125,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     return NULL;
   }
   ScrDigestAlg kind;
-  if (!scr_digest_alg(digest->v.str->data, digest->v.str->len, &kind)) {
+  if (!scr_digest_mac_alg(digest->v.str->data, digest->v.str->len, &kind)) {
     scr_crypto_mac_digest_unsupported();
     scr_bytes_release(bytes);
     return NULL;

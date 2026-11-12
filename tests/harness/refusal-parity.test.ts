@@ -15,6 +15,7 @@
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { builtinModules, isBuiltin } from "node:module";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
@@ -45,6 +46,37 @@ for (const row of rows) {
   if (typeof specifier !== "string" || typeof row.code !== "string") continue;
   if (!expected.has(specifier)) expected.set(specifier, row);
 }
+
+/** The specifiers a program can write for a refused module: the row's
+ * spelling and, where Node serves it, the other one (`vm` for `node:vm`).
+ * The compiler's message quotes the spelling the source used, and the hook
+ * must quote the same one. */
+const variants: { specifier: string; row: RefusalRow }[] = [];
+for (const [specifier, row] of expected) {
+  variants.push({ specifier, row });
+  const alias = specifier.startsWith("node:") ? specifier.slice(5) : `node:${specifier}`;
+  if (isBuiltin(alias)) variants.push({ specifier: alias, row });
+}
+
+/** The load rows by the bare name the preload indexes them under. */
+const rowsByModule = new Map<string, RefusalRow>();
+for (const [specifier, row] of expected) {
+  const name = specifier.replace(/^node:/, "");
+  if (!rowsByModule.has(name)) rowsByModule.set(name, row);
+}
+
+/** Every spelling of every builtin this Node.js serves, as a program can
+ * write it. The compiler probe imports all of them, so a builtin the
+ * compiler refuses but the refusal data omits shows up as an unmatched
+ * diagnostic instead of passing because no row named it. */
+const builtinSpellings = [
+  ...new Set(
+    builtinModules.flatMap((entry) => {
+      const bare = entry.startsWith("node:") ? entry.slice(5) : entry;
+      return [`node:${bare}`, ...(isBuiltin(bare) ? [bare] : [])];
+    }),
+  ),
+];
 
 /** A probe directory keyed by its contents, so a re-run compiles from the
  * executable cache instead of rebuilding. */
@@ -86,7 +118,7 @@ function refusalLines(stdout: string): string[] {
 
 test("Refuses every load-layer module with the compiler's code and message", async () => {
   expect(expected.size).toBeGreaterThan(0);
-  const specifiers = [...expected.keys()];
+  const specifiers = variants.map((variant) => variant.specifier);
 
   const dir = join(cacheDir, "driver");
   mkdirSync(dir, { recursive: true });
@@ -108,34 +140,65 @@ for (const specifier of specifiers) {
 `,
   );
 
-  const wanted = specifiers.map(
-    (specifier) =>
-      `${specifier}\t${expected.get(specifier)!.code}\t${expected.get(specifier)!.message}`,
-  );
-  for (const flag of ["--require", "--import"] as const) {
-    const stdout = await runWithHook(flag, [driverPath, listPath], dir);
-    expect(refusalLines(stdout), flag).toEqual(wanted);
-  }
-
   // The compiler's side of the same program: one side-effect import per
-  // module. analyze() rather than compile(), because the build stops before
-  // code generation and so has no binary to run.
-  const source = `${specifiers.map((specifier) => `import ${JSON.stringify(specifier)};\n`).join("")}`;
+  // spelling, plus every other builtin this Node.js serves, so the compiler's
+  // complete refusal set is on record and a missing row cannot pass unnoticed.
+  // analyze() rather than compile(), because the build stops before code
+  // generation and so has no binary to run.
+  const probeSpecifiers = [...new Set([...specifiers, ...builtinSpellings])];
+  const source = `${probeSpecifiers.map((specifier) => `import ${JSON.stringify(specifier)};\n`).join("")}`;
   const probe = probeDir("modules", source);
   const probePath = join(probe, "modules.ts");
   writeFileSync(probePath, source);
   const diagnostics = analyze(probePath).coverage.diagnostics;
-  for (const specifier of specifiers) {
-    const row = expected.get(specifier)!;
-    const diagnostic = diagnostics.find(
-      (candidate) => candidate.code === row.code && candidate.message === row.message,
+
+  // Each row is the compiler's answer for the spelling it stores.
+  for (const [specifier, row] of expected) {
+    expect(
+      diagnostics.filter(
+        (candidate) => candidate.code === row.code && candidate.message === row.message,
+      ),
+      `the refusal data for ${specifier} is the compiler's ${row.code} ${row.message}`,
+    ).toHaveLength(1);
+  }
+
+  // And every builtin the compiler refuses has a row, with the compiler's
+  // text for the spelling it stores. A builtin Node serves that the compiler
+  // rejects is exactly the case a preload without a row would let through.
+  for (const diagnostic of diagnostics.filter((candidate) => candidate.code === "SC1010")) {
+    const specifier = probeSpecifiers.find((candidate) =>
+      diagnostic.message.includes(`'${candidate}'`),
+    );
+    expect(specifier, `the refused specifier in ${diagnostic.message}`).toBeDefined();
+    const name = specifier!.replace(/^node:/, "");
+    const row = rowsByModule.get(name);
+    expect(
+      row,
+      `the compiler refuses ${specifier}, so the refusal data lists ${name}: ${diagnostic.message}`,
+    ).toBeDefined();
+    expect(diagnostic.message).toBe(
+      row!.message.replace(`'${row!.binding.module}'`, `'${specifier}'`),
+    );
+  }
+
+  // And each spelling, including the alias, gets the message quoting that
+  // spelling, which is what the hook must raise.
+  const wanted = variants.map(({ specifier, row }) => {
+    const matches = diagnostics.filter(
+      (candidate) => candidate.code === row.code && candidate.message.includes(`'${specifier}'`),
     );
     expect(
-      diagnostic,
-      `the compiler reports ${specifier} the way the hook does: ${row.code} ${row.message} (got ${diagnostics
+      matches,
+      `the compiler reports ${specifier}: ${row.code} (got ${diagnostics
         .map((candidate) => `${candidate.code} ${candidate.message}`)
         .join("; ")})`,
-    ).toBeDefined();
+    ).toHaveLength(1);
+    return `${specifier}\t${matches[0]!.code}\t${matches[0]!.message}`;
+  });
+
+  for (const flag of ["--require", "--import"] as const) {
+    const stdout = await runWithHook(flag, [driverPath, listPath], dir);
+    expect(refusalLines(stdout), flag).toEqual(wanted);
   }
 });
 

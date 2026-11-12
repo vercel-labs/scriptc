@@ -34,6 +34,14 @@ function refusal(code, message) {
   return error;
 }
 
+/** The refusal for a module, quoting the specifier the program wrote. A row
+ * stores one spelling, but the compiler's message quotes whichever spelling
+ * the source used, so `vm` and `node:vm` both read as the build reports
+ * them. */
+function moduleRefusal(row, specifier) {
+  return refusal(row.code, row.message.replace(`'${row.binding.module}'`, `'${specifier}'`));
+}
+
 /** The canonical bare name of a builtin specifier, or null for anything
  * Node does not serve as a builtin. Bare `test` and `sea` are Node's only
  * prefix-only builtins, so they never match. */
@@ -51,7 +59,7 @@ function resolve(specifier, context, nextResolve) {
   const name = builtinName(specifier);
   if (name !== null) {
     const row = refusedModules.get(name);
-    if (row !== undefined) throw refusal(row.code, row.message);
+    if (row !== undefined) throw moduleRefusal(row, specifier);
   }
   const resolved = nextResolve(specifier, context);
   if (typeof resolved?.url === "string" && fileUrl(resolved.url).endsWith(".node")) {

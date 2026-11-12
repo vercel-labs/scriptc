@@ -19,6 +19,16 @@ const Held = WeakRef;
 const built = new Held(target);
 console.log(built.deref() === target, built instanceof WeakRef, built instanceof Held);
 
+// A registered symbol is permanent, so it is not a target; an unregistered
+// one is.
+const local = Symbol("local");
+console.log(new WeakRef(local).deref() === local);
+try {
+  new WeakRef(Symbol.for("table.key"));
+} catch (err) {
+  console.log(err.constructor.name, err.message);
+}
+
 // Invalid targets, in the order Node checks them.
 for (const invalid of [null, undefined, 1, "x", true, 10n]) {
   try {

@@ -7,9 +7,16 @@ console.log(ref.deref()?.name, ref.deref()?.rows.length);
 console.log(ref.deref() === ref.deref());
 console.log(ref instanceof WeakRef, typeof ref, typeof WeakRef);
 
-// A symbol is a valid target.
+// A symbol is a valid target when it is unregistered; one from the global
+// registry is permanent, so Node refuses it.
 const key = Symbol("key");
 console.log(new WeakRef(key).deref() === key);
+console.log(new WeakRef(Symbol.iterator).deref() === Symbol.iterator);
+try {
+  new WeakRef(Symbol.for("table.key"));
+} catch (error) {
+  console.log((error as Error).message);
+}
 
 // A function target.
 const handler = (): string => "called";

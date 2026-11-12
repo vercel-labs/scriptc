@@ -2794,6 +2794,7 @@ ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*r
   d->v.symbol.release = release;
   d->v.symbol.render = render;
   d->v.symbol.description = description;
+  d->v.symbol.registered = false;
   return d;
 }
 
@@ -23538,8 +23539,9 @@ bool scr_finalization_registry_is(const ScrDyn *value) {
 /* WeakRef. A target an object graph reaches only weakly is still reachable
  * here: a compiled program keeps the target alive, so deref() answers it
  * forever, which Node allows (the collector is free never to collect).
- * Symbols are targets, as Node accepts them; every other primitive throws
- * Node's TypeError. */
+ * Unregistered symbols are targets, as Node accepts them; a `Symbol.for`
+ * registry symbol is permanent, so it throws the same TypeError as the other
+ * primitives. */
 typedef struct {
   size_t rc;
   ScrDyn *target;
@@ -23557,7 +23559,7 @@ static void scr_weak_ref_release(void *ptr) {
   free(ref);
 }
 
-static bool scr_weak_ref_target_is_object(const ScrDyn *value) {
+static bool scr_weak_ref_target_allowed(const ScrDyn *value) {
   switch (value->kind) {
   case SCR_DYN_NULL:
   case SCR_DYN_BOOL:
@@ -23566,6 +23568,8 @@ static bool scr_weak_ref_target_is_object(const ScrDyn *value) {
   case SCR_DYN_UNDEF:
   case SCR_DYN_BIGINT:
     return false;
+  case SCR_DYN_SYMBOL:
+    return !value->v.symbol.registered;
   default:
     return true;
   }
@@ -23603,7 +23607,7 @@ static ScrDyn *scr_weak_ref_view(void *ptr) {
 }
 
 ScrDyn *scr_weak_ref_new(ScrDyn *target) {
-  if (!scr_weak_ref_target_is_object(target)) {
+  if (!scr_weak_ref_target_allowed(target)) {
     static const char message[] = "WeakRef: invalid target";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;

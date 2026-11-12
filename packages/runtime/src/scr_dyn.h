@@ -578,8 +578,10 @@ struct ScrDyn {
     ScrStr *str; /* owned */
     ScrBytes *bytes; /* owned (SCR_DYN_BYTES) */
     ScrBigInt *bigint; /* owned (SCR_DYN_BIGINT) */
-    /* Callbacks keep the optional symbol unit out of symbol-free binaries. */
-    struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); } symbol;
+    /* Callbacks keep the optional symbol unit out of symbol-free binaries.
+     * `registered` marks a `Symbol.for` symbol, which lives in the global
+     * registry and is therefore not a weak target. */
+    struct { ScrSym *value; void (*release)(ScrSym *); ScrStr *(*render)(ScrSym *); ScrStr *(*description)(ScrSym *); bool registered; } symbol;
     /* `len` is the DENSE prefix: items[0…len-1] are the values a direct
      * items[i] read may touch, and every consumer of this payload is
      * written against it. `length` is the array's own length, which

@@ -963,6 +963,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (helper)
       return { kind: "call", callee: helper, args: [expr], type: narrowed, loc: expr.loc };
   }
+  // A union narrowed to its class arms (`if (isDirectory(entry)) continue`
+  // over `Map<string, Entry> | FileNode | LinkNode` leaves the node
+  // classes): re-tag into the class union, so the read converts to their
+  // base class, destructures and assigns fields as a class union does. The
+  // arms the checker ruled out trap (narrowedRetagHelper).
+  if (
+    narrowed?.kind === "union" &&
+    narrowed.unionId !== expr.type.unionId &&
+    (lowerer.unions.get(narrowed.unionId)?.arms ?? []).every((arm) => arm.kind === "object") &&
+    (lowerer.unions.get(expr.type.unionId)?.arms ?? []).some(
+      (arm) => arm.kind !== "object" && !isUnitType(arm),
+    )
+  ) {
+    const helper = lowerer.narrowedRetagHelper(node, expr.type.unionId, narrowed.unionId, expr.loc);
+    if (helper)
+      return { kind: "call", callee: helper, args: [expr], type: narrowed, loc: expr.loc };
+  }
   // A checker type narrowed to a UNIT arm (the `=== undefined` branch)
   // also stays union-typed: a unit arm has no payload to extract, and
   // nothing useful reads such a value anyway. (Standalone undefined maps

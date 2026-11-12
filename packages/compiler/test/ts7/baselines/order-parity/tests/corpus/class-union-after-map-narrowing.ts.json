@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-union-after-map-narrowing.ts"
+ ],
+ "diags": []
+}

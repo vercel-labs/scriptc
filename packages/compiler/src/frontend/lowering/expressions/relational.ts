@@ -1101,13 +1101,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // Records, arrays and scalar values are no instances of a class that
     // does not extend Array (lowerArrayClassInstanceOf tests the classes
     // that do), and neither is a promise: every compiled promise is the
-    // standard library's own, and no program class extends it. Dynamic/opaque
-    // runtime objects keep their existing instanceof fences.
+    // standard library's own, and no program class extends it. Maps and Sets
+    // are the standard library's too: a program class cannot extend them
+    // (lower-classes.ts refuses the built-in base), so a Map or Set arm (a
+    // directory held as a Map beside node classes) never answers true.
+    // Dynamic/opaque runtime objects keep their existing instanceof fences.
     if (
       arms?.every(
         (arm) =>
           arm.kind === "object" ||
           arm.kind === "promise" ||
+          arm.kind === "map" ||
+          arm.kind === "set" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||

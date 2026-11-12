@@ -1334,6 +1334,17 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
         break;
       }
     }
+    /* The SIGWINCH handler exists for these listeners alone, so the last
+     * one leaving unregisters it and releases it: a closed readline
+     * interface must hold nothing when the program exits. */
+    if (scr_stdio_winch != NULL && scr_stdio_streams[1].nresizes == 0 &&
+        scr_stdio_streams[2].nresizes == 0) {
+      ScrStr *winch = scr_str_new("SIGWINCH", 8);
+      scr_signal_off(winch, scr_stdio_winch);
+      scr_str_release(winch);
+      scr_dyn_release(scr_stdio_winch);
+      scr_stdio_winch = NULL;
+    }
     return;
   }
   if (stream->nresizes == 0) {
@@ -1354,6 +1365,14 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
     scr_str_release(name);
   }
 #endif
+}
+
+/* The listener a readline terminal interface keeps on a process output:
+ * a function value of the runtime's own, in the same list the program's
+ * listeners use, so a resize fires them all in registration order. */
+void scr_stdio_resize_listen(double fd, ScrDyn *listener, bool remove) {
+  if (fd != 1 && fd != 2) return;
+  scr_stdio_resize_listener(&scr_stdio_streams[fd == 2 ? 2 : 1], listener, remove, false);
 }
 
 /* stream.write(chunk[, encoding][, callback]) on a process output stream:

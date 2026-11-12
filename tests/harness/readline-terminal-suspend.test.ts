@@ -14,8 +14,11 @@ const fixture = join(import.meta.dirname, "../fixtures/readline-terminal-suspend
  * Ctrl+Z (or on a SIGTSTP from outside), and SIGCONT pauses the interface,
  * emits 'SIGCONT' and redraws the line — an external stop and resume emits
  * no 'SIGCONT'. The observer pins the stop signal, the marker order and the
- * refresh, and compares every byte of the terminal output with Node's. */
-for (const mode of ["listener", "default", "external"] as const) {
+ * refresh, and compares every byte of the terminal output with Node's. The
+ * "blocked" mode runs the same Ctrl+Z flow with SIGTSTP blocked in the
+ * observer, so the program inherits a blocked stop, the way a program
+ * started by a service manager or a CI runner can. */
+for (const mode of ["listener", "default", "blocked", "external"] as const) {
   test.skipIf(process.platform === "win32")(
     `a terminal readline interface suspends and resumes the way Node does (${mode})`,
     async () => {

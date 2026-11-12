@@ -456,6 +456,9 @@ void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 /* The mode the last TTY setRawMode call set (process.stdin.isRaw). */
 bool scr_process_stdin_raw(void);
+/* Put the terminal back in the mode it had before the first raw entry
+ * (libuv's uv_tty_reset_mode): at process exit and on process.exit(). */
+void scr_process_stdin_restore_mode(void);
 
 /* Terminal width for process.stdout/stderr.columns (fd 1/2):
  * ioctl(TIOCGWINSZ), -1 when the fd is not a TTY or the ioctl refuses —

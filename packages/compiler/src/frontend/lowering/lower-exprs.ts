@@ -2402,9 +2402,9 @@ export function runtimeOptionalLocalOf(lowerer: Lowerer, node: ts.Expression): I
 /** JS ToBoolean: bool passes through; f64/string get a `toBool` wrapper
  * (falsy: 0, -0, NaN, ""); unions get the same wrapper answered by a
  * per-union interned helper (unit arms falsy; scalar/string arms by
- * value; ref arms always truthy). A `void`-typed operand has no runtime
- * value (its lowering produced none), so ToBoolean of it is false: the
- * operand evaluates once for its effects, as Node evaluates it. */
+ * value; ref arms always truthy). A `void`-typed operand reaches here
+ * only where it is `undefined` at run time, so ToBoolean of it is false:
+ * the operand evaluates once for its effects, as Node evaluates it. */
 export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "f64" || e.type.kind === "string") {
@@ -2436,10 +2436,12 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
     return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
   }
   // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
-  // JavaScript source, tsc-codes.ts TS1345): the lowering produced no value,
-  // so Node's ToBoolean is of `undefined` — false — and the operand still
-  // runs once for its effects and any exception. Typed sources never reach
-  // this: the checker's TS1345 stops them at preflight.
+  // JavaScript source, tsc-codes.ts TS1345): the row admits only operands
+  // that are `undefined` whenever they run (a call of a function whose body
+  // returns no value), so Node's ToBoolean is false, and the operand still
+  // runs once for its effects and any exception. Typed sources and every
+  // other void-typed operand never reach this: TS1345 stops them at
+  // preflight.
   if (e.type.kind === "void") {
     return {
       kind: "seqExpr",

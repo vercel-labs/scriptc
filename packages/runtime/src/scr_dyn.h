@@ -2838,6 +2838,10 @@ typedef struct ScrDynTypedRefRecipe {
   int view;
   const void *ops;
 } ScrDynTypedRefRecipe;
+/* The live checked-dynamic view of `ptr` boxed with `recipe` (+1): the same
+ * interned capsule eager boxing of that value answers, with the recipe's
+ * array, record or class view bound. ptr is BORROWED. */
+ScrDyn *scr_dyn_typed_box(void *ptr, const ScrDynTypedRefRecipe *recipe);
 /* A class instance as the window's receiver, boxed with its recipe only when
  * read. ptr is BORROWED: the caller holds the instance across the window. */
 void scr_dyn_this_push_typed(void *ptr, const ScrDynTypedRefRecipe *recipe);

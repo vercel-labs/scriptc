@@ -29,6 +29,7 @@ import {
   throughBundledShimForwarder,
 } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
+import { SCRIPTC_CONDITION, scriptcConditionFirst } from "./scriptc-condition.js";
 import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
@@ -446,16 +447,12 @@ function loadAsJsDirectory(base: string): string | null {
  * failedLookupLocations there), so substitution maps .js targets to their
  * declaration twins only. */
 
-/** scriptc's own export condition: a package can point the code scriptc
- * compiles at an adapter built for it. Every world scriptc resolves carries
- * it, and resolveExports tries it before node, import, require and default
- * regardless of key order; a types branch still wins, so declarations
- * describe the code the condition selects. */
-const SCRIPTC_CONDITION = "scriptc";
-
 /** The conditions 5.9.3's bundler resolution enables for import sites
- * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched). */
-const EXPORT_CONDITIONS = new Set(["types", "import", "default"]);
+ * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched), and
+ * scriptc's own: the checker's host serves each manifest with the scriptc
+ * branch under those keys (scriptc-condition.ts), so the declarations and
+ * sources this world finds are the ones the checker types. */
+const EXPORT_CONDITIONS = new Set(["types", "import", "default", SCRIPTC_CONDITION]);
 
 /** The bundler condition set minus "types" — what an opted-in --npm-static
  * package resolves with (its declarations are hidden from resolution; the
@@ -468,29 +465,10 @@ const JS_REQUIRE_CONDITIONS = new Set(["require", "default", SCRIPTC_CONDITION])
  * the executable branch rather than the checker-only "types" branch. */
 const RUNTIME_IMPORT_CONDITIONS = new Set(["import", "node", "default", SCRIPTC_CONDITION]);
 
-/** The subject keys of a condition object with the scriptc branch moved
- * ahead of node, import, require and default whatever order the package
- * lists them in, so a package can add a scriptc adapter without
- * repositioning its existing keys. A matched types entry keeps its lead:
- * the declarations of the types branch describe the scriptc code too. */
-function scriptcConditionFirst(
-  entries: [string, unknown][],
-  conditions: ReadonlySet<string>,
-): [string, unknown][] {
-  if (!conditions.has(SCRIPTC_CONDITION)) return entries;
-  const index = entries.findIndex(([key]) => key === SCRIPTC_CONDITION);
-  if (index <= 0) return entries;
-  const ordered = entries.slice();
-  const scriptc = ordered.splice(index, 1)[0];
-  if (scriptc === undefined) return entries;
-  const types = ordered.findIndex(([key]) => key === "types" && conditions.has("types"));
-  ordered.splice(types >= 0 ? types + 1 : 0, 0, scriptc);
-  return ordered;
-}
-
 /** package.json "exports" lookup: exact subpath keys, then '*' patterns
  * (longest literal prefix wins), condition objects matched against the
- * supplied set in object-key order, arrays first-resolvable. Returns the
+ * supplied set in object-key order (a scriptc entry first, behind a types
+ * entry the set matches), arrays first-resolvable. Returns the
  * target path relative to the package directory, or null. */
 export function resolveExports(
   exports: unknown,
@@ -509,7 +487,11 @@ export function resolveExports(
       return null;
     }
     if (target && typeof target === "object") {
-      for (const [key, value] of scriptcConditionFirst(Object.entries(target), conditions)) {
+      const entries = Object.entries(target);
+      const ordered = conditions.has(SCRIPTC_CONDITION)
+        ? scriptcConditionFirst(entries, conditions.has("types"))
+        : entries;
+      for (const [key, value] of ordered) {
         if (key.startsWith(".")) continue;
         if (conditions.has(key)) {
           const r = resolveTarget(value, wildcard);

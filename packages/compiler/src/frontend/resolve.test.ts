@@ -302,6 +302,59 @@ test("the scriptc export condition is selected before node, require and default"
   }
 });
 
+test("the scriptc export condition leads in the typed world, for self-references and package imports", async () => {
+  const dir = await projectTree({
+    // scriptc listed after default in each map: its branch still wins.
+    "package.json": JSON.stringify({
+      name: "adapter-app",
+      type: "module",
+      exports: { ".": { default: "./src/index.ts", scriptc: "./src/adapter.ts" } },
+      imports: { "#impl": { default: "./src/a.ts", scriptc: "./src/b.ts" } },
+    }),
+    "src/index.ts": 'export const value: string = "default";\n',
+    "src/adapter.ts": 'export const value: string = "scriptc";\n',
+    "src/a.ts": 'export const which: string = "a";\n',
+    "src/b.ts": 'export const which: string = "b";\n',
+    "main.ts": "",
+    "node_modules/typed-choice/package.json": JSON.stringify({
+      name: "typed-choice",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { default: "./index.js", scriptc: "./adapter.js" } },
+    }),
+    "node_modules/typed-choice/index.js": 'export const value = "default";\n',
+    "node_modules/typed-choice/index.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-choice/adapter.js": 'export const value = "scriptc";\n',
+    "node_modules/typed-choice/adapter.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/package.json": JSON.stringify({
+      name: "typed-first",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { import: "./index.js", scriptc: "./adapter.js", types: "./types.d.ts" } },
+    }),
+    "node_modules/typed-first/types.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/index.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/adapter.d.ts": "export declare const value: string;\n",
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    expect(resolveProjectModule(main, "adapter-app")).toBe(join(dir, "src/adapter.ts"));
+    expect(resolveProjectModule(main, "#impl")).toBe(join(dir, "src/b.ts"));
+    // A typed package's declarations are the scriptc branch's twins.
+    expect(resolveBareModule(main, "typed-choice")?.typesFile).toBe(
+      join(dir, "node_modules/typed-choice/adapter.d.ts"),
+    );
+    // A types entry leads the scriptc branch wherever the map lists it.
+    expect(resolveBareModule(main, "typed-first")?.typesFile).toBe(
+      join(dir, "node_modules/typed-first/types.d.ts"),
+    );
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a module without declarations in node_modules is found under a type root", async () => {
   const dir = await projectTree({
     "node_modules/pantry-units/package.json":

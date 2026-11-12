@@ -355,12 +355,47 @@ test("JavaScript drops the diagnostic of a consumed negation of a void call", ()
   ).toEqual([]);
 });
 
+test.for([
+  // An annotation types the callback `void`, and its body answers 1.
+  "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = cb() ? 'truthy' : 'falsy';",
+  "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = !cb();",
+  // A parameter typed `() => void` receives whatever function the caller passes.
+  "/** @param {() => void} f */\nfunction run(f) { return f() ? 'yes' : 'no'; }\nexport const ok = run(() => 'x');",
+  // A binding or property a write can replace holds the replacement.
+  "let g = function () {};\ng = () => 's';\nexport const ok = g() ? 'yes' : 'no';",
+  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
+  // A body that returns a value: the checker's `void` comes from the
+  // documented result, not from the body.
+  "/** @returns {void} */\nfunction lie() { return 5; }\nexport const ok = lie() ? 'yes' : 'no';",
+])("a void-typed operand that can hold a value keeps the truthiness refusal: %s", (library) => {
+  const result = diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);');
+  expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+test("JavaScript drops the diagnostic where the void-typed operand is undefined", () => {
+  // Each operand is a call of a function whose body returns no value, or a
+  // const holding one: Node's ToBoolean of it is false.
+  expect(
+    diagnostics(
+      [
+        "function plain() {}",
+        "const arrow = () => { plain(); };",
+        "class Router { find() {} route(e) { const r = this.find(e); return r ? r : null; } }",
+        "const held = plain();",
+        "export const ok = [plain() ? 1 : 2, !arrow(), new Router().route({}), held ? 3 : 4];",
+      ].join("\n"),
+      'import { ok } from "./library.js"; console.log(ok);',
+    ),
+  ).toEqual([]);
+});
+
 test("a checked JavaScript file keeps the consumed void-negation diagnostic", () => {
+  // Named here by the code's triage row, as for the discarded negation.
   const kept = diagnostics(
     '// @ts-check\nfunction register() { console.log("registered"); }\nexport const ok = !register();',
     'import { ok } from "./library.js"; console.log(ok);',
   );
-  expect(kept.some((d) => d.message.includes("cannot be tested for truthiness"))).toBe(true);
+  expect(kept.some((d) => d.message.includes("truthiness"))).toBe(true);
 });
 
 /* The triage rows' descriptions (tsc-codes.ts, TRIAGE_ROWS) must state what

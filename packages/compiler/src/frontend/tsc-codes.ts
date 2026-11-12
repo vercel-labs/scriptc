@@ -289,6 +289,118 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
   return false;
 };
 
+/** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
+ * `!function () { … }();`): the operand still evaluates once for its
+ * effects and any exception, while the value the negation would read is
+ * never consumed. */
+const discardedVoidNegation = (node: ts.Node): boolean => {
+  // The diagnostic's span is the void-typed OPERAND (the call), so climb
+  // to the `!` that tests it, then out of any parentheses.
+  let operand: ts.Node = node;
+  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
+    operand = operand.parent;
+  const negation = operand.parent;
+  if (
+    negation === undefined ||
+    !ts.isPrefixUnaryExpression(negation) ||
+    negation.operator !== ts.SyntaxKind.ExclamationToken
+  )
+    return false;
+  let outer: ts.Node = negation;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+};
+
+/** Whether the function `decl` always completes with `undefined`: a plain
+ * function or method with a block body and no `return` of a value. An
+ * async function answers a promise, a generator an iterator, and an arrow
+ * with an expression body answers that expression, so none qualifies. */
+const answersUndefined = (decl: ts.Node): boolean => {
+  if (
+    !(
+      ts.isFunctionDeclaration(decl) ||
+      ts.isFunctionExpression(decl) ||
+      ts.isArrowFunction(decl) ||
+      ts.isMethodDeclaration(decl)
+    ) ||
+    decl.asteriskToken ||
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    return false;
+  const body = decl.body as ts.Node | undefined;
+  if (body === undefined || !ts.isBlock(body)) return false;
+  let value = false;
+  ts.walkPreorder(body, (node) => {
+    if (value || (node !== body && ts.isFunctionLike(node))) return "skip";
+    if (ts.isReturnStatement(node) && node.expression && !ts.isVoidExpression(node.expression))
+      value = true;
+    return undefined;
+  });
+  return !value;
+};
+
+/** A `const` declarator whose initializer is `node`. */
+const constInitializerOf = (node: ts.Node): boolean => {
+  const decl = node.parent;
+  return (
+    decl !== undefined &&
+    ts.isVariableDeclaration(decl) &&
+    decl.initializer === node &&
+    decl.parent !== undefined &&
+    (decl.parent.flags & ts.NodeFlags.Const) !== 0
+  );
+};
+
+/** Whether the void-typed `node` is `undefined` whenever it runs: a call
+ * whose callee is a JavaScript function that answers undefined
+ * (answersUndefined) and that a write cannot replace while the type stays
+ * `void` (a function declaration, whose reassignment SC1090 refuses; a
+ * class method, which an override answers through the class's dispatch; a
+ * function a `const` holds; a function called where it is written), or a
+ * `const` holding such a call. A function typed `() => void` by an
+ * annotation or a declaration file can answer any value, and so can a
+ * reassignable binding, so their calls are not. */
+const undefinedAtRunTime = (node: ts.Node, checker: ts.TypeChecker, depth = 0): boolean => {
+  if (depth > 8) return false;
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const decl = checker.getSymbolAtLocation(expr)?.valueDeclaration;
+    return (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      constInitializerOf(decl.initializer) &&
+      undefinedAtRunTime(decl.initializer, checker, depth + 1)
+    );
+  }
+  if (!ts.isCallExpression(expr) || expr.questionDotToken) return false;
+  const decl = checker.getResolvedSignature(expr)?.declaration;
+  if (
+    decl === undefined ||
+    !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
+    !answersUndefined(decl)
+  )
+    return false;
+  if (ts.isFunctionDeclaration(decl)) return true;
+  if (ts.isMethodDeclaration(decl))
+    return decl.parent !== undefined && ts.isClassLikeDeclaration(decl.parent);
+  let callee: ts.Node = expr.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (callee === decl) return true;
+  let held: ts.Node = decl;
+  while (held.parent !== undefined && ts.isParenthesizedExpression(held.parent)) held = held.parent;
+  return constInitializerOf(held);
+};
+
+/** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
+ * discarded negation is never read, and an operand that is always
+ * `undefined` tests false. Any other void-typed operand keeps the triage
+ * row, because the lowering has no runtime value for it. */
+const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
+  discardedVoidNegation(node) || undefinedAtRunTime(node, program.getTypeChecker());
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -1097,21 +1209,24 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
-  // 1345, a truthiness test of a void-typed operand (`!register();`,
-  // `if (this["~findRoute"](event))`): the checker infers the operand's type
-  // from the function body it sees, while Node reads whatever the call
-  // returned — a method or callback typed `void` can be overridden to answer
-  // a value. The lowering already carries such a call as a checked-dynamic
-  // value (the dynamic class and callback paths return `dyn`), and a value
-  // that really is `undefined` tests false; the operand still evaluates once
-  // for its effects and any exception. A checked project keeps the
-  // diagnostic: it asked tsc to judge the test.
+  // 1345, a truthiness test of a void-typed operand whose answer is known
+  // (`!register();`, `if (this["~findRoute"](event))` on an empty base
+  // method): a discarded negation's boolean is never read, and a call of a
+  // function whose own body never returns a value answers undefined, which
+  // tests false; the operand still evaluates once for its effects and any
+  // exception. A class method overridden to answer a value is dispatched by
+  // the class, which carries that value. Every other void-typed operand keeps
+  // the triage row below. A checked project keeps the diagnostic: it asked
+  // tsc to judge the test.
   [
     1345,
     inCheckedJs(
-      CHECKER(
-        "a void-typed value tests for truthiness as Node's ToBoolean of whatever the call returned; the lowering carries the value and its effects",
-        ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
+      at(
+        voidTruthinessKnown,
+        CHECKER(
+          "a discarded negation's boolean is never read, and a call of a function whose body returns no value is undefined, which tests false; the lowering evaluates the operand once for its effects",
+          ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
+        ),
       ),
     ),
   ],
@@ -1351,6 +1466,17 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
+  // The 1345 opinion row admits the sites whose truthiness is known; any
+  // other void-typed operand (a callback typed `() => void`, a function a
+  // binding can replace) can hold a value at run time, and the test needs a
+  // runtime value that the lowering does not model.
+  [
+    1345,
+    REWRITE(
+      "a truthiness test of a void-typed expression that can hold a value",
+      "the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model",
+    ),
+  ],
   [1359, KEEP(KEEP_GRAMMAR)],
   [1368, KEEP(KEEP_GRAMMAR)],
   [1451, KEEP(KEEP_GRAMMAR)],

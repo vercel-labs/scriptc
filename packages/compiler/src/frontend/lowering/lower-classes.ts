@@ -254,7 +254,7 @@ import {
   construction,
   constructionPrefix,
 } from "./js-class-fields.js";
-import { lowerObjectFactoryNew } from "./object-factory-new.js";
+import { lowerObjectFactoryNew, objectReturningConstructorRefusal } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
@@ -12175,6 +12175,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
   if (objectFactory) return objectFactory;
+  const constructorRefusal = objectReturningConstructorRefusal(lowerer, expr);
+  if (constructorRefusal !== null) lowerer.unsupported("SC1090", expr, constructorRefusal);
   let selected: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(selected)) selected = selected.expression;
   if (ts.isConditionalExpression(selected)) {

@@ -1774,6 +1774,10 @@ ScrBytes *scr_dyn_bytes_unbox(const ScrDyn *d);
 bool scr_dyn_bytes_is(const ScrDyn *d, int elem);
 bool scr_dyn_typed_array_is(const ScrDyn *d, int elem);
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe);
+/* isModuleNamespaceObject's brand over this thread's boxed namespaces. Set
+ * by scr_module_namespace_dyn.c (linked only into programs that box one);
+ * NULL means no value on this thread has the brand. */
+extern SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value);
 
 /* Primitive wrapper objects (scr_js_wrapper.c, linked only into programs
  * that create one): `new String/Number/Boolean` (kind 0/1/2) and ToObject,

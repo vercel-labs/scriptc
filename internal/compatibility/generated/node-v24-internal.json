@@ -105482,7 +105482,11 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-format-json-error.ts",
-          "tests/diagnostics/compat-absent-lowerings.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
@@ -107518,6 +107522,8 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/util-types.ts"
         ]
       },
@@ -107599,8 +107605,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.types.isArgumentsObject",
+        "tests": [
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -108282,10 +108295,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:util.util.types.isModuleNamespaceObject",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace.cjs"
         ]
       },
       "anchorSource": "exact"

@@ -1046,8 +1046,23 @@ static ScrEmitter *scr_node_event_target_emitter_of(const ScrDyn *self) {
   return ((ScrWorkerView *)self->v.handle.ptr)->events;
 }
 
+/* events.getMaxListeners over a Worker reads the EventEmitter's
+ * `_maxListeners`; a MessagePort keeps its limit in kMaxEventTargetListeners,
+ * which the static helper does not read, so it stays at the process
+ * default. Both kinds store the limit in the emitter registry here, so only
+ * the Worker answers from it. */
+static bool scr_node_event_target_emitter_max(const ScrDyn *self, double *out) {
+  if (!self || self->kind != SCR_DYN_HANDLE) return false;
+  if (self->v.handle.tag != SCR_DYNH_WORKER) return false;
+  ScrWorkerView *view = self->v.handle.ptr;
+  if (view->port) return false;
+  *out = scr_emitter_get_max(view->events);
+  return true;
+}
+
 static const ScrNodeEventTargetOps scr_node_event_target_ops_value = {
     scr_node_event_target_emitter_of,
+    scr_node_event_target_emitter_max,
 };
 
 static bool scr_worker_events_install(void) {

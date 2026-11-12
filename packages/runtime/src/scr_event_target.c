@@ -1488,17 +1488,22 @@ double scr_event_target_listener_count_dyn(const ScrDyn *self, const ScrDyn *typ
 }
 
 /* events.getMaxListeners(emitterOrTarget) — the module's static helper.
- * Node reads `_maxListeners` off a value that has getMaxListeners: a
- * NodeEventTarget (Worker, MessagePort) keeps its limit in
- * kMaxEventTargetListeners instead, so the static form answers the process
- * default even though the instance method reports the target's own. Plain
- * EventTargets have no getMaxListeners and are read through
+ * Node reads `_maxListeners` off a value that has getMaxListeners: a Worker
+ * is an EventEmitter, so its configured limit comes back. A NodeEventTarget
+ * (MessagePort) keeps its limit in kMaxEventTargetListeners instead, so the
+ * static form answers the process default even though its instance method
+ * reports the target's own; the worker unit's kind query makes that split.
+ * Plain EventTargets have no getMaxListeners and are read through
  * kMaxEventTargetListeners, which our cores hold as max_listeners. */
 double scr_event_target_get_max(const ScrDyn *self) {
   ScrEventTargetCore *core =
       scr_et_helper_target_of(self, "emitter", "getMaxListeners", false);
-  if (!core) return scr_emitter_default_max;
-  return core->max_listeners;
+  if (core) return core->max_listeners;
+  double out;
+  if (scr_node_event_target_ops && scr_node_event_target_ops->emitter_max &&
+      scr_node_event_target_ops->emitter_max(self, &out))
+    return out;
+  return scr_emitter_default_max;
 }
 
 /* Node's validateNumber(n, 'setMaxListeners', 0): a negative or NaN limit

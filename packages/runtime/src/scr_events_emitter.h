@@ -302,6 +302,12 @@ bool scr_emitter_has(ScrEmitter *em, const char *name);
  * can exist. Answers the view's emitter, borrowed, or NULL. */
 typedef struct ScrNodeEventTargetOps {
   ScrEmitter *(*emitter_of)(const ScrDyn *self);
+  /* events.getMaxListeners(value) over a NodeEventTarget-shaped handle:
+   * Node reads `_maxListeners` off an EventEmitter (a Worker), while a
+   * MessagePort keeps its limit in kMaxEventTargetListeners and the static
+   * helper answers the process default. Writes the emitter's limit and
+   * answers true for the emitter kind; false leaves the default. */
+  bool (*emitter_max)(const ScrDyn *self, double *out);
 } ScrNodeEventTargetOps;
 extern SCR_TL const ScrNodeEventTargetOps *scr_node_event_target_ops;
 /* Post-registration hook (one registrant: scr_stream_install) — called at

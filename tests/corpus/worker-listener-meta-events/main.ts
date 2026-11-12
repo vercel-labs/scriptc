@@ -3,7 +3,11 @@
 // add/remove, keeps duplicate registrations, and emit delivers every
 // argument with EventEmitter's unhandled-'error' throw. A MessagePort is a
 // NodeEventTarget: same seeded listeners, no meta events, one entry per
-// listener, and raw one-argument emit.
+// listener, and raw one-argument emit. The same split decides the module
+// helpers: events.getMaxListeners reads a Worker's configured limit, while
+// a port answers the process default there and its own limit only through
+// its method.
+import { getMaxListeners } from "node:events";
 import { MessageChannel, Worker } from "node:worker_threads";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url));
@@ -68,6 +72,13 @@ try {
   portThrew = (err as Error).message;
 }
 console.log("port emit error", portThrew);
+
+console.log("worker max", getMaxListeners(worker), worker.getMaxListeners());
+worker.setMaxListeners(20);
+console.log("worker max after set", getMaxListeners(worker), worker.getMaxListeners());
+console.log("port max", getMaxListeners(channel.port1), channel.port1.getMaxListeners());
+channel.port1.setMaxListeners(20);
+console.log("port max after set", getMaxListeners(channel.port1), channel.port1.getMaxListeners());
 
 worker.off("removeListener", onRemove);
 worker.off("newListener", onNew);

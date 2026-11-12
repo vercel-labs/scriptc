@@ -57,3 +57,23 @@ const worker = fileURLToPath(new URL(`./worker.${extension}`, import.meta.url));
 const forked = fork(worker, [], { stdio: [null, null, null, "ipc"] });
 console.log("fork", forked.stdin !== null, forked.stdout !== null, forked.stderr !== null);
 console.log("fork exit", await closed(forked));
+
+// A nullish scalar stdio is not an entry list: fork resolves it to its own
+// default, which is inherit unless `silent` is set. (A nullish *entry*, pinned
+// above, is spawn's default "pipe".)
+const nullFork = fork(worker, [], { stdio: null });
+console.log("fork null", nullFork.stdin === null, nullFork.stdout === null, nullFork.stderr === null);
+console.log("fork null exit", await closed(nullFork));
+
+const undefinedFork = fork(worker, [], { stdio: undefined });
+console.log("fork undefined", undefinedFork.stdin === null, undefinedFork.stdout === null, undefinedFork.stderr === null);
+console.log("fork undefined exit", await closed(undefinedFork));
+
+// `silent` flips that default to pipe whatever order the two appear in.
+const silentFirst = fork(worker, [], { silent: true, stdio: null });
+console.log("fork silent null", silentFirst.stdin !== null, silentFirst.stdout !== null, silentFirst.stderr !== null);
+console.log("fork silent null exit", await closed(silentFirst));
+
+const nullFirst = fork(worker, [], { stdio: null, silent: true });
+console.log("fork null silent", nullFirst.stdin !== null, nullFirst.stdout !== null, nullFirst.stderr !== null);
+console.log("fork null silent exit", await closed(nullFirst));

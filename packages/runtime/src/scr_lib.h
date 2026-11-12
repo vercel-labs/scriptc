@@ -71,6 +71,10 @@ ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
 bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
+/* Adds (or removes) a 'resize' listener on the process output stream of
+ * `fd` (1 or 2). The runtime's own terminal-interface refresh listener
+ * joins the program's listeners in the same order. */
+void scr_stdio_resize_listen(double fd, ScrDyn *listener, bool remove);
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);

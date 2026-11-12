@@ -260,6 +260,17 @@ test("a binary tree drops its reference-count word", () => {
   expect([...plan.rejected]).toEqual([]);
 });
 
+test.each([
+  ["undefined", [{ kind: "undefinedT" as const }, NODE]],
+  ["null | undefined", [{ kind: "nullT" as const }, NODE, { kind: "undefinedT" as const }]],
+])("`Node | %s` is the same node as `Node | null`", (_label, arms) => {
+  const mod = tree();
+  mod.unions = [{ id: "u0", arms }];
+  const plan = planTreeClasses(mod, FACTS);
+  expect([...plan.classes]).toEqual(["Node"]);
+  expect([...plan.rejected]).toEqual([]);
+});
+
 test("the accepted plan names the reads that transfer a node", () => {
   const plan = planTreeClasses(tree(), FACTS);
   // The constructor's two field stores are the reads that hand each

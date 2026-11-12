@@ -2078,6 +2078,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   let outMode = 1;
   let errMode = 1;
   let sawStdio = false;
+  let sawNullishScalar = false;
   let silent = false;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -2085,8 +2086,11 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 
   const stdioMode = (node: ts.Expression, label: string): number => {
     const type = lowerer.typeOf(node);
-    // null and undefined mean the default "pipe" entry, as Node treats them.
-    if (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return 3;
+    // A null/undefined entry takes spawn's default "pipe"; a null/undefined
+    // scalar takes fork's own default, which the caller resolves once
+    // `silent` is known (inherit unless silent, as Node's fork does for
+    // every non-array, non-string stdio value).
+    if (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return -1;
     const value = type.isStringLiteralType() ? type.value : null;
     if (value !== "ignore" && value !== "inherit" && value !== "pipe") {
       lowerer.noLowering(
@@ -2144,12 +2148,17 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
                 'the fourth stdio entry must be "ipc"',
               );
             }
-            inMode = stdioMode(member.value.elements.nodes[0]!, "stdin");
-            outMode = stdioMode(member.value.elements.nodes[1]!, "stdout");
-            errMode = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            sawNullishScalar = false;
+            const inEntry = stdioMode(member.value.elements.nodes[0]!, "stdin");
+            const outEntry = stdioMode(member.value.elements.nodes[1]!, "stdout");
+            const errEntry = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            inMode = inEntry === -1 ? 3 : inEntry;
+            outMode = outEntry === -1 ? 3 : outEntry;
+            errMode = errEntry === -1 ? 3 : errEntry;
           } else {
             const mode = stdioMode(member.value, "scalar");
-            inMode = outMode = errMode = mode;
+            sawNullishScalar = mode === -1;
+            if (mode !== -1) inMode = outMode = errMode = mode;
           }
           sawStdio = true;
           break;
@@ -2184,6 +2193,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
       }
     }
   }
+  if (sawNullishScalar) inMode = outMode = errMode = silent ? 3 : 1;
   if (!sawStdio && silent) inMode = outMode = errMode = 3;
 
   return withChildArgsCheck(

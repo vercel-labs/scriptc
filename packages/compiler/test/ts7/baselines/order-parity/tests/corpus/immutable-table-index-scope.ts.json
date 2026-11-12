@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/immutable-table-index-scope.ts"
+ ],
+ "diags": []
+}

@@ -426,7 +426,7 @@ static ScrError *scr_child_max_error(const char *stream, const char *display) {
 
 /* exec/execFile's own limit on a child it just started (below, after
  * both arms): reads the pending maxBuffer and watches both captures. */
-static void scr_exec_limit_install(ScrChild *c);
+static void scr_exec_limit_install(ScrChild *c, double max_buffer, int kill_signo);
 /* exec/execFile's timeout and killSignal option checks (below, after both
  * arms): Node's validateTimeout and setTimeout's overflow clamp, and
  * sanitizeKillSignal's name resolution. The entries release the callback
@@ -3177,6 +3177,7 @@ static void scr_exec_file_fire(ScrChild *c) {
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
                         ScrExecFileFn fn, bool shell) {
+  double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
@@ -3191,7 +3192,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -3830,6 +3831,7 @@ ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
 /* exec/execFile (the callback slice) with the `cwd` option. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
+  double max_buffer = scr_child_max_take();
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -3841,7 +3843,7 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -3854,6 +3856,9 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
                              ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+  /* Consume the armed maxBuffer before the first throw path: a rejected
+   * option must not leave its limit for the next unrelated capture. */
+  double max_buffer = scr_child_max_take();
   if (!scr_exec_timeout_ok(timeout_ms)) {
     scr_closure_release(cb);
     scr_exec_timeout_throw(timeout_ms);
@@ -3883,7 +3888,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, signo);
   double delay = scr_exec_timeout_delay(timeout_ms);
   if (delay > 0) {
     c->deadline_ms = scr_now_ms() + delay;
@@ -7127,6 +7132,7 @@ static void scr_exec_file_fire(ScrChild *c) {
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
                         ScrExecFileFn fn, bool shell) {
+  double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
@@ -7141,7 +7147,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -8081,6 +8087,7 @@ ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
  * registration over the spawn core's cwd argument. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
+  double max_buffer = scr_child_max_take();
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -8092,7 +8099,7 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -8105,6 +8112,9 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
                              ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+  /* Consume the armed maxBuffer before the first throw path: a rejected
+   * option must not leave its limit for the next unrelated capture. */
+  double max_buffer = scr_child_max_take();
   if (!scr_exec_timeout_ok(timeout_ms)) {
     scr_closure_release(cb);
     scr_exec_timeout_throw(timeout_ms);
@@ -8134,7 +8144,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, signo);
   double delay = scr_exec_timeout_delay(timeout_ms);
   if (delay > 0) {
     c->deadline_ms = scr_now_ms() + delay;
@@ -8384,6 +8394,7 @@ typedef struct {
   size_t rc;
   ScrChild *child;     /* borrowed while the child holds the callback wrapper; NULL after */
   double max_buffer;
+  int kill_signo;      /* the exec call's killSignal: what a pass of the limit sends */
   double text_len[2];  /* Node's count per stream: stdout, stderr */
   size_t seen[2];      /* the capture bytes already counted */
   ScrError *over;      /* the maxBuffer error once a stream passed the limit (+1) */
@@ -8437,7 +8448,7 @@ static void scr_exec_limit_data(ScrClosure *cb) {
         streams[i]->capture = streams[i]->n_data == 0; /* a listener keeps it watched */
         scr_exec_stream_cut(streams[i]);
       }
-      (void)scr_child_kill_num(c, (double)SIGTERM);
+      (void)scr_child_kill_signo(c, l->kill_signo);
     }
   }
   scr_exec_limit_release_v(l);
@@ -8456,12 +8467,13 @@ static void scr_exec_limit_fire(ScrClosure *wrap, ScrError *error, ScrStr *out, 
   scr_exec_limit_release_v(l);
 }
 
-static void scr_exec_limit_install(ScrChild *c) {
+static void scr_exec_limit_install(ScrChild *c, double max_buffer, int kill_signo) {
   ScrExecLimit *l = calloc(1, sizeof *l);
   if (!l) scr_child_oom();
   l->rc = 1;
   l->child = c;
-  l->max_buffer = scr_child_max_take();
+  l->max_buffer = max_buffer;
+  l->kill_signo = kill_signo;
   l->cb = c->exec_cb;
   l->fn = c->exec_fn;
   ScrClosure *wrap = scr_closure_new((void *)&scr_exec_limit_fire, 1);
@@ -9155,9 +9167,24 @@ static void scr_ipc_stream_data(ScrClosure *closure, ScrBytes *chunk) {
   scr_ipc_release(ipc);
 }
 
+/* A disconnected channel stops keeping the loop alive: Node's Control
+ * drops its handle from the keep-alive set when the pipe closes, on either
+ * side. The channel holds no back-pointer, so find its child in the pending
+ * registry; a settled child has already cleared both flags. */
+static void scr_ipc_channel_released(ScrIpc *ipc) {
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc != ipc) continue;
+    bool before = scr_child_liveness(c);
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
+    return;
+  }
+}
+
 static void scr_ipc_mark_disconnected(ScrIpc *ipc, bool write_failed,
                                       ScrStr *message) {
   ipc->connected = false;
+  scr_ipc_channel_released(ipc);
   ipc->local_closing = false;
   if (write_failed && ipc->send_error == NULL) {
     ipc->send_error = message
@@ -9267,6 +9294,7 @@ static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
 static void scr_ipc_disconnect(ScrIpc *ipc) {
   if (!ipc || !ipc->connected) return;
   ipc->connected = false;
+  scr_ipc_channel_released(ipc);
   ipc->local_closing = true;
   scr_child_writer_end(ipc->writer);
 }

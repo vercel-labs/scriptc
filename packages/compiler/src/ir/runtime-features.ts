@@ -362,6 +362,9 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
   "transform.",
   "writable.",
   "zlib.stream",
+  // The `info: true` one-shots answer the stream the call used: the
+  // fabricated engine is a runtime Transform (scr_zlib_stream.c).
+  "zlib.info",
 ];
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
@@ -839,6 +842,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.cursor",
   "rl.cursorPos",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.history",
   "rl.isPromises",
   "rl.isTerminal",

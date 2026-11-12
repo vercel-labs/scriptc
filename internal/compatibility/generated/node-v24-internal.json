@@ -33466,7 +33466,10 @@
           "tests/corpus/5213-perf-timing-errors.ts",
           "tests/corpus/5254-cipher-errors.js",
           "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5341-readable-from-dynamic.cjs",
+          "tests/corpus/5378-zlib-sync-options.cjs",
+          "tests/corpus/5379-zlib-callback-options.ts",
           "tests/corpus/5444-crypto-timing-safe-equal.js",
           "tests/corpus/5450-fs-glob-validation.js",
           "tests/corpus/5562-https-verify-errors.ts",
@@ -33516,6 +33519,7 @@
           "tests/corpus/http-response-header-errors.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
@@ -34366,8 +34370,8 @@
       "anchor": "err_brotli_compression_failed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_BROTLI_COMPRESSION_FAILED"
       },
       "anchorSource": "exact"
     },
@@ -34384,10 +34388,11 @@
       "anchor": "err_brotli_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_BROTLI_INVALID_PARAM",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/zlib-codec-invalid-params.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -34444,9 +34449,11 @@
       "anchor": "err_buffer_too_large",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_BUFFER_TOO_LARGE",
         "tests": [
+          "tests/corpus/5378-zlib-sync-options.cjs",
+          "tests/corpus/5379-zlib-callback-options.ts",
           "tests/corpus/7715-zlib-brotli-decompress.cjs"
         ]
       },
@@ -37525,7 +37532,7 @@
       "anchor": "err_invalid_cursor_pos",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_CURSOR_POS",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs"
@@ -40326,9 +40333,11 @@
       "anchor": "err_trailing_junk_after_stream_end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TRAILING_JUNK_AFTER_STREAM_END",
         "tests": [
+          "tests/corpus/5378-zlib-sync-options.cjs",
+          "tests/corpus/5379-zlib-callback-options.ts",
           "tests/corpus/7715-zlib-brotli-decompress.cjs"
         ]
       },
@@ -40689,10 +40698,11 @@
       "anchor": "err_use_after_close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_USE_AFTER_CLOSE",
         "tests": [
-          "tests/corpus/5295-readline-promises-question.ts"
+          "tests/corpus/5295-readline-promises-question.ts",
+          "tests/corpus/5297-readline-callback-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -41201,10 +41211,10 @@
       "anchor": "err_zlib_initialization_failed",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ZLIB_INITIALIZATION_FAILED",
         "tests": [
-          "tests/corpus/7715-zlib-brotli-decompress.cjs"
+          "tests/corpus/zlib-codec-invalid-params.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -41222,10 +41232,11 @@
       "anchor": "err_zstd_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ZSTD_INVALID_PARAM",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zlib-codec-invalid-params.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85518,7 +85529,22 @@
           "tests/corpus/5873-readline-promises-namespace.cjs",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
           "tests/corpus/5877-readline-question-query.cjs",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-history-live.cjs",
+          "tests/corpus/readline-history-live.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/corpus/readline-line-listener-changes.ts",
+          "tests/corpus/readline-line-separators.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -85564,17 +85590,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.Interface",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
           "tests/corpus/5873-readline-promises-namespace.cjs",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-prompt-values.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85597,17 +85625,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.question",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
-          "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85630,7 +85656,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.Readline",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85657,7 +85683,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.clearLine",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85684,7 +85710,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.clearScreenDown",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85711,7 +85737,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.commit",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85738,7 +85764,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.cursorTo",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85765,7 +85791,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.moveCursor",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85792,7 +85818,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.rollback",
         "tests": [
           "tests/corpus/5788-readline-promises-readline.ts",
@@ -85819,17 +85845,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readlinePromises.createInterface",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
-          "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5872-readline-positional-create-interface.mjs",
           "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5876-readline-dispose-instanceof.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85852,7 +85876,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.completer",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -85905,15 +85929,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.Interface",
         "tests": [
-          "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/readline-line-separators.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-listener-changes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85936,17 +85963,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.question",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
           "tests/corpus/5296-readline-lines.ts",
           "tests/corpus/5298-readline-abort.cjs",
           "tests/corpus/5299-readline-stdin.ts",
-          "tests/corpus/5872-readline-positional-create-interface.mjs",
-          "tests/corpus/5873-readline-promises-namespace.cjs",
-          "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/8790-readline-question-dyn-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85969,7 +85994,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.clearLine",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -85996,7 +86021,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.clearScreenDown",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -86023,11 +86048,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readline.createInterface",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86050,7 +86082,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.completer",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -86080,7 +86112,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.cursorTo",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -86107,7 +86139,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.moveCursor",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
@@ -86157,8 +86189,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-applicable",
-        "evidence": "compiler-feature:readline.InterfaceConstructor"
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:readline"
       },
       "anchorSource": "exact"
     },
@@ -86180,11 +86212,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:rl.close",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
-          "tests/corpus/5878-readline-dynamic-streams.mjs"
+          "tests/corpus/5296-readline-lines.ts",
+          "tests/corpus/5297-readline-callback-events.cjs",
+          "tests/corpus/5299-readline-stdin.ts",
+          "tests/corpus/5872-readline-positional-create-interface.mjs",
+          "tests/corpus/5878-readline-dynamic-streams.mjs",
+          "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-line-close-history.ts",
+          "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86207,7 +86246,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86215,7 +86254,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86238,7 +86284,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.pause",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86246,7 +86292,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86269,7 +86322,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.prompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86277,7 +86330,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86300,7 +86360,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.resume",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86308,7 +86368,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86331,7 +86398,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.setPrompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86339,7 +86406,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86362,7 +86436,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.getPrompt",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86370,7 +86444,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86393,7 +86474,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.write",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86401,7 +86482,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86424,7 +86512,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86432,7 +86520,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86455,11 +86550,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.rl.getCursorPos",
         "tests": [
           "tests/corpus/5787-readline-cursor-helpers.cjs",
-          "tests/corpus/5789-readline-cursor-pos.cjs"
+          "tests/corpus/5789-readline-cursor-pos.cjs",
+          "tests/corpus/readline-prompt-values.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86482,7 +86578,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.line",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -86512,7 +86608,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.cursor",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
@@ -86542,7 +86638,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'close'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86550,7 +86646,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86573,7 +86676,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'error'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86581,7 +86684,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86604,7 +86714,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'line'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86612,7 +86722,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86635,11 +86752,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'history'",
         "tests": [
           "tests/corpus/5780-readline-history-options.ts",
-          "tests/corpus/5781-readline-history-options.cjs"
+          "tests/corpus/5781-readline-history-options.cjs",
+          "tests/corpus/readline-history-live.ts",
+          "tests/corpus/readline-history-live.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86662,7 +86781,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'pause'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86670,7 +86789,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86693,7 +86819,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'resume'",
         "tests": [
           "tests/corpus/5295-readline-promises-question.ts",
@@ -86701,7 +86827,14 @@
           "tests/corpus/5297-readline-callback-events.cjs",
           "tests/corpus/5299-readline-stdin.ts",
           "tests/corpus/5876-readline-dispose-instanceof.ts",
-          "tests/corpus/5877-readline-question-query.cjs"
+          "tests/corpus/5877-readline-question-query.cjs",
+          "tests/corpus/readline-listener-management.ts",
+          "tests/corpus/readline-listener-values.cjs",
+          "tests/corpus/readline-prepend-listeners.ts",
+          "tests/corpus/readline-prompt-values.cjs",
+          "tests/corpus/readline-output-resize.cjs",
+          "tests/corpus/6862-readline-chained-listeners.cjs",
+          "tests/corpus/readline-line-close-history.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86724,14 +86857,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGCONT'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86754,14 +86888,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGINT'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
-          "tests/corpus/5783-readline-terminal-completion.cjs",
-          "tests/corpus/5784-readline-terminal-promises.ts",
-          "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5783-readline-terminal-completion.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86784,14 +86915,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGTSTP'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86814,7 +86946,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.readline.emitKeypressEvents",
         "tests": [
           "tests/corpus/5790-readline-keypress-events.ts",
@@ -120081,7 +120213,11 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts",
+          "tests/corpus/zlib-codec-option-edges.ts",
+          "tests/corpus/zlib-codec-params.ts",
           "tests/corpus/zlib-constants-object.ts",
+          "tests/corpus/zlib-info-option.ts",
           "tests/corpus/zlib-stream-classes.ts",
           "tests/corpus/zlib-typed-view-inputs.ts",
           "tests/corpus/zstd-compress.cjs",
@@ -120201,8 +120337,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressBrotli"
       },
       "anchorSource": "exact"
     },
@@ -120224,8 +120360,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressBrotliSync"
       },
       "anchorSource": "exact"
     },
@@ -120247,8 +120383,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressDeflate"
       },
       "anchorSource": "exact"
     },
@@ -120270,8 +120406,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressDeflateSync"
       },
       "anchorSource": "exact"
     },
@@ -120293,8 +120429,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressGzip"
       },
       "anchorSource": "exact"
     },
@@ -120316,8 +120452,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressGzipSync"
       },
       "anchorSource": "exact"
     },
@@ -120339,8 +120475,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressZstd"
       },
       "anchorSource": "exact"
     },
@@ -120362,8 +120498,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.compressZstdSync"
       },
       "anchorSource": "exact"
     },
@@ -120385,8 +120521,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressBrotli"
       },
       "anchorSource": "exact"
     },
@@ -120408,8 +120544,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressBrotliSync"
       },
       "anchorSource": "exact"
     },
@@ -120431,8 +120567,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressDeflate"
       },
       "anchorSource": "exact"
     },
@@ -120454,8 +120590,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressDeflateSync"
       },
       "anchorSource": "exact"
     },
@@ -120477,8 +120613,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressGzip"
       },
       "anchorSource": "exact"
     },
@@ -120500,8 +120636,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressGzipSync"
       },
       "anchorSource": "exact"
     },
@@ -120523,8 +120659,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressZstd"
       },
       "anchorSource": "exact"
     },
@@ -120546,8 +120682,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:zlib"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.decompressZstdSync"
       },
       "anchorSource": "exact"
     },
@@ -120569,10 +120705,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.BrotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120595,11 +120736,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.BrotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120633,7 +120778,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120667,7 +120813,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120701,7 +120848,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120735,7 +120883,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120769,7 +120918,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120803,7 +120953,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120837,7 +120988,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120860,13 +121012,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:zlib.zlib.ZlibBase",
-        "tests": [
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5374-zlib-stream-flush-params.ts",
-          "tests/corpus/zlib-stream-classes.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-feature:zlib.zlib.ZlibBase"
       },
       "anchorSource": "exact"
     },
@@ -120899,7 +121046,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120933,7 +121081,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120967,7 +121116,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121001,7 +121151,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121035,7 +121186,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121058,11 +121210,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.ZstdCompress",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121085,11 +121241,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.ZstdDecompress",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121139,10 +121299,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createBrotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createBrotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121165,11 +121330,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createBrotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createBrotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121203,7 +121372,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121237,7 +121407,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121271,7 +121442,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121305,7 +121477,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121339,7 +121512,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121373,7 +121547,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121407,7 +121582,8 @@
           "tests/corpus/5375-zlib-stream-promises.ts",
           "tests/corpus/5377-zlib-stream-backpressure.cjs",
           "tests/corpus/5975-zlib-class-values.ts",
-          "tests/corpus/zlib-stream-classes.ts"
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121430,10 +121606,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createZstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createZstdCompress",
         "tests": [
-          "tests/corpus/zstd-streams.ts"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121456,10 +121637,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createZstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createZstdDecompress",
         "tests": [
-          "tests/corpus/zstd-streams.ts"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121482,10 +121668,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121508,10 +121699,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompressSync",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121534,11 +121730,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121561,11 +121761,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompressSync",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121603,7 +121807,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121641,7 +121846,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121679,7 +121885,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121717,7 +121924,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121755,7 +121963,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121793,7 +122002,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121831,7 +122041,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121869,7 +122080,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121907,7 +122119,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121945,7 +122158,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121983,7 +122197,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122021,7 +122236,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122059,7 +122275,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122097,7 +122314,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122120,10 +122338,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompress",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122146,10 +122369,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompressSync",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122172,10 +122400,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompress",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122198,10 +122431,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompressSync",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122620,13 +122858,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.Options",
         "tests": [
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5633-zlib-typed-options.ts"
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/zlib-codec-option-edges.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122649,10 +122889,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.BrotliOptions",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-codec-option-edges.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122675,11 +122918,14 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.ZstdOptions",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-codec-option-edges.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122725,10 +122971,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122751,10 +123002,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompressSync",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122777,11 +123033,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122804,11 +123064,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompressSync",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122846,7 +123110,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122884,7 +123149,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122922,7 +123188,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122960,7 +123227,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122998,7 +123266,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123036,7 +123305,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123074,7 +123344,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123112,7 +123383,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123150,7 +123422,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123188,7 +123461,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123226,7 +123500,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123264,7 +123539,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123302,7 +123578,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123340,7 +123617,8 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
-          "tests/corpus/zlib-typed-view-inputs.ts"
+          "tests/corpus/zlib-typed-view-inputs.ts",
+          "tests/corpus/zlib-info-option.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123363,10 +123641,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompress",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123389,10 +123672,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompressSync",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123415,10 +123703,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompress",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123441,10 +123734,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompressSync",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts",
+          "tests/corpus/zlib-info-option.ts",
+          "tests/corpus/zlib-brotli-zstd-one-shots.ts"
         ]
       },
       "anchorSource": "ancestor"

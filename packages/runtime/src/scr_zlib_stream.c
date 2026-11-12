@@ -538,10 +538,12 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
 
 /* The one-shot convenience methods' `info` result: the engine object the
  * call used, boxed as the %Transform typed reference the { buffer, engine }
- * record carries. Node's sync form leaves its engine open with the
- * transformed byte count (its handle is closed, so later writes complete
- * without transforming); the callback and promise forms hand over an
- * engine that has ended and been destroyed, its 'close' on a later tick. */
+ * record carries. Node's sync form leaves its engine open with bytesWritten
+ * set to the input bytes the run consumed — a decoder stops at the end of
+ * its stream, so trailing bytes after it are not counted (its handle is
+ * closed, so later writes complete without transforming); the callback and
+ * promise forms hand over an engine that has ended and been destroyed, its
+ * 'close' on a later tick. */
 static void *scr_zs_stream_retain_v(void *p) {
   return scr_stream_retain((ScrStream *)p);
 }
@@ -576,14 +578,14 @@ static ScrDyn *scr_zs_info_result(ScrBytes *buffer /* moves */, ScrDyn *engine /
 
 /* The builder the one-shot forms (scr_zlib.c) pair the run with: the
  * engine ends and is destroyed, its 'close' on a later tick, and the
- * record carries the transformed input length. A NULL Buffer means the
+ * record carries the input bytes the run consumed. A NULL Buffer means the
  * call failed and only the engine is released. */
-static ScrDyn *scr_zs_info_build(void *engine, double input_len, ScrBytes *buffer /* moves */) {
+static ScrDyn *scr_zs_info_build(void *engine, double bytes_written, ScrBytes *buffer /* moves */) {
   if (buffer == NULL) {
     scr_stream_release((ScrStream *)engine);
     return NULL;
   }
-  return scr_zs_info_result(buffer, scr_zlib_info_engine((ScrStream *)engine, input_len, true));
+  return scr_zs_info_result(buffer, scr_zlib_info_engine((ScrStream *)engine, bytes_written, true));
 }
 
 ScrDyn *scr_zlib_sync_opts_info(double mode_d, const ScrBytes *data, ScrDyn *opts) {
@@ -595,12 +597,13 @@ ScrDyn *scr_zlib_sync_opts_info(double mode_d, const ScrBytes *data, ScrDyn *opt
     scr_stream_release(engine);
     return NULL;
   }
-  ScrBytes *out = scr_zlib_run_opts(mode, data, &o);
+  size_t consumed = 0;
+  ScrBytes *out = scr_zlib_run_opts(mode, data, &o, &consumed);
   if (out == NULL) {
     scr_stream_release(engine);
     return NULL;
   }
-  return scr_zs_info_result(out, scr_zlib_info_engine(engine, (double)data->len, false));
+  return scr_zs_info_result(out, scr_zlib_info_engine(engine, (double)consumed, false));
 }
 
 ScrDyn *scr_zlib_sync_opts_info_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
@@ -612,15 +615,17 @@ ScrDyn *scr_zlib_sync_opts_info_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
     scr_stream_release(engine);
     return NULL;
   }
-  double len = (double)input->len;
+  size_t consumed = 0;
   ScrZlibOptions o;
-  ScrBytes *out = scr_zlib_options_parse(mode, opts, &o) ? scr_zlib_run_opts(mode, input, &o) : NULL;
+  ScrBytes *out = scr_zlib_options_parse(mode, opts, &o)
+                      ? scr_zlib_run_opts(mode, input, &o, &consumed)
+                      : NULL;
   scr_bytes_release(input);
   if (out == NULL) {
     scr_stream_release(engine);
     return NULL;
   }
-  return scr_zs_info_result(out, scr_zlib_info_engine(engine, len, false));
+  return scr_zs_info_result(out, scr_zlib_info_engine(engine, (double)consumed, false));
 }
 
 void scr_zlib_codec_async_opts_info(const ScrBytes *data, double mode_d, ScrDyn *opts, ScrClosure *cb,

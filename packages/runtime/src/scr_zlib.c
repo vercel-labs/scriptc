@@ -615,6 +615,10 @@ ScrError *scr_zlib_error_new(const ScrZlibError *ze) {
 typedef struct {
   unsigned char *data;
   size_t len, cap;
+  /* The input bytes the engine consumed, which is what Node's bytesWritten
+   * reports: a decoder stops at the end of its stream, so trailing bytes
+   * (padding zeros included) stay unconsumed. */
+  size_t consumed;
   int status; /* 0 ok, 1 engine error, 2 past maxOutputLength, 3 trailing data */
   ScrZlibError err;
 } ScrZlibRun;
@@ -669,6 +673,7 @@ static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_le
     }
     if (avail_out_after != 0) break;
   }
+  out->consumed = in_off;
   if (avail_in_after > 0 && reject) out->status = 3;
 }
 
@@ -734,7 +739,7 @@ ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback) {
   return NULL;
 }
 
-ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o);
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o, size_t *consumed);
 
 ScrBytes *scr_zlib_sync_opts_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
   int mode = (int)mode_d;
@@ -749,7 +754,7 @@ ScrBytes *scr_zlib_sync_opts_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
     scr_zlib_options_drop(&o);
     return NULL;
   }
-  ScrBytes *out = scr_zlib_run_opts(mode, input, &o);
+  ScrBytes *out = scr_zlib_run_opts(mode, input, &o, NULL);
   scr_bytes_release(input);
   return out;
 }
@@ -762,18 +767,21 @@ ScrBytes *scr_zlib_sync_opts(double mode_d, const ScrBytes *data, ScrDyn *opts) 
     scr_zlib_options_drop(&o);
     return NULL;
   }
-  return scr_zlib_run_opts(mode, data, &o);
+  return scr_zlib_run_opts(mode, data, &o, NULL);
 }
 
-/* Runs the whole input and drops *o. */
-ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o_) {
+/* Runs the whole input and drops *o. *consumed, when non-NULL, receives the
+ * input bytes the engine consumed (the decoding stream's end, before any
+ * trailing bytes). */
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o_, size_t *consumed) {
   SCR_BYTES_SNAPSHOT(data);
   ScrZlibOptions o = *o_;
   ScrZlibEngine *e = scr_zlib_engine_from_options(mode, &o);
-  ScrZlibRun run = {NULL, 0, 0, 0, {NULL, NULL, 0}};
+  ScrZlibRun run = {NULL, 0, 0, 0, 0, {NULL, NULL, 0}};
   scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush,
                (int)o.finish_flush, o.max_output, o.reject_garbage, &run);
   ScrBytes *result = NULL;
+  if (consumed != NULL) *consumed = run.consumed;
   if (run.status != 0) {
     ScrError *err = scr_zlib_run_error(&run, o.max_output);
     scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
@@ -823,7 +831,7 @@ static void scr_zlib_opts_after(void *payload) {
     if (op->run.len) memcpy(value->data, op->run.data, op->run.len);
     if (op->info_build) {
       /* moves the engine and value */
-      ScrDyn *result = op->info_build(op->info_engine, (double)op->len, value);
+      ScrDyn *result = op->info_build(op->info_engine, (double)op->run.consumed, value);
       op->info_engine = NULL;
       if (op->promise) {
         /* moves result */

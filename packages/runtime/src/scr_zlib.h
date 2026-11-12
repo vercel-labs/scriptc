@@ -122,9 +122,12 @@ ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode, ScrDyn *opts);
 /* The one-shot run over an already-parsed options value, which it drops
  * (Node's processChunkSync): borrows data, answers +1 bytes, throws Node's
  * errors (errno and code, ERR_BUFFER_TOO_LARGE,
- * ERR_TRAILING_JUNK_AFTER_STREAM_END). Exported for the stream unit's
- * `info` forms, which pair the run with the engine object they answer. */
-ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o);
+ * ERR_TRAILING_JUNK_AFTER_STREAM_END). *consumed, when non-NULL, receives
+ * the input bytes the engine consumed — the decoding stream's end, so
+ * trailing bytes after it are not counted — which is Node's bytesWritten.
+ * Exported for the stream unit's `info` forms, which pair the run with the
+ * engine object they answer. */
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o, size_t *consumed);
 /* Node's `info: true` convenience methods answer the +1 { buffer, engine }
  * checked object in place of the Buffer. The engine object is a runtime
  * Transform of the mode, so scr_zlib_stream.c owns it and hands it over
@@ -136,7 +139,7 @@ ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o);
  * do. */
 typedef void (*ScrZlibDynFn)(ScrClosure *cb, ScrError *err,
                              ScrDyn *value /* moves, NULL on error */);
-typedef ScrDyn *(*ScrZlibInfoBuildFn)(void *engine /* moves */, double input_len,
+typedef ScrDyn *(*ScrZlibInfoBuildFn)(void *engine /* moves */, double bytes_written,
                                       ScrBytes *buffer /* moves, NULL to discard */);
 void scr_zlib_info_async_submit(const ScrBytes *data, double mode, ScrDyn *opts,
                                 ScrClosure *cb /* moves */, ScrZlibDynFn fn,

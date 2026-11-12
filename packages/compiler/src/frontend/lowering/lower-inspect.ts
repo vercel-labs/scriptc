@@ -2,15 +2,7 @@ import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { elementMayBeForeign } from "./array-values.js";
 import { classPrototypeView } from "./class-prototypes.js";
-import {
-  dynUndefinedExpr,
-  boolLit,
-  helperLoc,
-  nodeThrowExpr,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
 import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
@@ -669,18 +661,6 @@ function jsonErrorHelper(
   return name;
 }
 
-/** `info` and its descendants that declare fields, most-derived first (a
- * runtime instance tests against its own class before an ancestor's). */
-function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
-  const out: ClassInfo[] = [];
-  const visit = (c: ClassInfo): void => {
-    for (const s of c.subclasses) visit(s);
-    if (!c.builtinError && !c.def.runtime && ownErrorFields(c).length > 0) out.push(c);
-  };
-  visit(info);
-  return out;
-}
-
 /** Why a fielded error class's own properties have no static rendering,
  * or null when every field renders. `visiting` and `out` are the caller's
  * inspectSupport walk: a field typed as the class itself (`next?: Chain`)
@@ -698,15 +678,24 @@ function fieldedErrorReason(
   }
   visiting.add(key);
   try {
+    // A JavaScript class's fields exist once its constructor creates them,
+    // which can be conditional; the layout reads every field. A field some
+    // class of the chain creates unconditionally — a declared field, or an
+    // assignment at the constructor's top level — is on every constructed
+    // instance, so only the rest fence.
+    let jsChain = false;
+    const created = new Set<string>();
+    for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+      if (c.decl && isJsSourceFile(c.decl.getSourceFile())) jsChain = true;
+      for (const f of c.fieldOrder) if (f.deferredCreation !== true) created.add(f.name);
+    }
+    if (jsChain && ownErrorFields(info).some((f) => !created.has(f.name)))
+      return "its fields are JavaScript properties, which its constructor may not create";
     for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
       // Node prints the own properties in creation order, which puts a
       // declared `cause` among the fields; the cause renders after them.
       if (c.fieldOrder.some((f) => f.errorCause))
         return "its field 'cause' is one Node's error inspector treats specially";
-      // A JavaScript class's fields exist once its constructor creates them,
-      // which can be conditional; the layout reads every field.
-      if (c.decl && isJsSourceFile(c.decl.getSourceFile()) && ownErrorFields(c).length > 0)
-        return "its fields are JavaScript properties, which its constructor may not create";
     }
     for (const f of ownErrorFields(info)) {
       if (ERROR_SPECIAL_KEYS.has(f.name))
@@ -722,13 +711,15 @@ function fieldedErrorReason(
 
 /** True when an instance of `c` can contain itself: its fields reach `c`
  * or one of its bases, whose slots can hold a `c` (`next: Chain` in a
- * subclass of Chain, a field typed as Error). */
+ * subclass of Chain, a field typed as Error), or a checked-dynamic field,
+ * whose box can hold any value. */
 function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
   const holders = new Set<string>();
   for (let a: ClassInfo | null = c; a; a = a.base) holders.add(a.def.name);
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
     for (const x of typeConstituents(lowerer, u)) {
+      if (x.kind === "dyn") return true;
       if (x.kind === "object" && holders.has(x.className)) return true;
       const k = typeKey(x);
       if (!seen.has(k)) {
@@ -949,18 +940,21 @@ function errorInspectHelper(
     const why = fields.length > 0 ? fieldedErrorReason(lowerer, c) : null;
     let arm: IrStmt[];
     if (why !== null) {
-      // An instance of a subclass whose own properties have no rendering
-      // throws a named refusal instead of printing a partial object.
+      // A subclass whose own properties have no static rendering — fields a
+      // JavaScript constructor creates conditionally, a declared `cause` among
+      // them, a field type the static walkers do not carry — renders through
+      // the checked-dynamic view, which lists exactly the own properties the
+      // instance has, in creation order, as Node does.
       arm = [
         {
           kind: "return",
-          value: nodeThrowExpr(
-            0,
-            "SC2020",
-            `inspecting a '${display}' error (${why}) is not supported yet`,
-            STRING,
+          value: {
+            kind: "libCall",
+            fn: "insp.dyn",
+            args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+            type: STRING,
             loc,
-          ),
+          },
           loc,
         },
       ];
@@ -1017,9 +1011,10 @@ function errorInspectHelper(
   };
   // Dynamic stores (a JavaScript class's `this.x = ...` outside its
   // declared fields, or a write through an untyped reference) add a
-  // property bag to a class after this helper was built. The rendering
-  // reads only a `cause` from it, so an instance whose bag holds another
-  // property throws a named refusal instead of printing a partial object.
+  // property bag to a class after this helper was built. The static
+  // rendering reads only the declared fields, so an instance whose bag
+  // holds properties renders through the checked-dynamic view, which lists
+  // them where Node does.
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const bagged = [info, ...userErrorClasses(info)].filter(
       (c) =>
@@ -1065,13 +1060,13 @@ function errorInspectHelper(
         then: [
           {
             kind: "return",
-            value: nodeThrowExpr(
-              0,
-              "SC2020",
-              `inspecting a '${c.def.jsName ?? c.def.name.replace(/^%/, "")}' error with properties created at run time is not supported yet`,
-              STRING,
+            value: {
+              kind: "libCall",
+              fn: "insp.dyn",
+              args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+              type: STRING,
               loc,
-            ),
+            },
             loc,
           },
         ],
@@ -1382,13 +1377,10 @@ function inspectSupport(
           return "error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet";
         if (errorRenderable(info)) return null;
         // Subclasses with declared fields render the error base followed
-        // by their own properties. The static class's own fields must
-        // render; a subclass whose fields cannot is a runtime refusal on
-        // its own instances only (see errorInspectHelper).
-        const own = fieldedErrorClasses(info).find((c) => c === info);
-        const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
-        if (ownWhy !== null)
-          return `'${t.className.replace(/^%(m\d+\.)?/, "")}' error values (${ownWhy})`;
+        // by their own properties; a class whose fields have no static
+        // rendering (a JavaScript field created conditionally, a declared
+        // `cause`) renders through its checked-dynamic view (see
+        // errorInspectHelper).
         return null;
       }
       // A class with subclasses, or a JavaScript class, renders through its
@@ -2185,10 +2177,6 @@ export function customInspectRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStm
   const stmts: IrStmt[] = [];
   for (const info of lowerer.classes.values()) {
     if (info.def.runtime || info.def.abstract) continue;
-    // Error classes register when their own properties render statically
-    // (fieldedErrorReason): the others keep no method to call.
-    if (isErrorClass(lowerer, info.def.name) && fieldedErrorReason(lowerer, info) !== null)
-      continue;
     if (!lowerer.findMethodOn(info, INSPECT_CUSTOM_MEMBER)) continue;
     // Only constructed classes have instances, and only their methods lower
     // (the constructor edge reaches the method).

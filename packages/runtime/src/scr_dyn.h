@@ -1342,6 +1342,15 @@ ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read)
 /* The member `key` read on Object.prototype itself, or NULL for any other
  * receiver (scr_dyn_invoke.c). */
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
+/* Object.prototype.isPrototypeOf called with the receiver it was read on
+ * and one argument: Node's ToObject TypeError on a nullish receiver, false
+ * for a primitive argument, otherwise a walk of the argument's prototype
+ * chain comparing each link with the receiver by identity (scr_dyn_invoke.c).
+ * +1 answer, or NULL with the exception pending. */
+ScrDyn *scr_dyn_is_prototype_of(ScrDyn *receiver, ScrDyn *argument);
+/* scr_dyn_is_prototype_of as the bool a compiled call answers (false with
+ * the exception pending when it threw). */
+bool scr_dyn_is_prototype_of_bool(ScrDyn *receiver, ScrDyn *argument);
 bool scr_dyn_arr_has_index(const ScrDyn *arr, size_t index);
 void scr_dyn_arr_push_hole(ScrDyn *arr);
 ScrDyn *scr_dyn_new_obj(void);
@@ -2063,7 +2072,20 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc);
  * null-prototype dictionary throws "<what> is not a function" — its
  * prototype chain has no toString (Node's answer). */
 ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrStr *what);
+/* Function.prototype.toString over the program's own functions: the module
+ * emits its functions' printed text keyed by closure entry point and
+ * installs the lookup at startup (function-source-text.ts in the compiler,
+ * scr_closure_source in dyn.ts). scr_dyn_fn_source_text answers the text for
+ * a function box with a row, NULL for one without (a builtin, which prints
+ * the native-code form). Neither throws; the text is static storage. */
+typedef const char *(*ScrDynFnSourceLookup)(const void *closure);
+void scr_dyn_fn_source_install(ScrDynFnSourceLookup lookup);
+const char *scr_dyn_fn_source_text(const ScrDyn *fn);
 ScrDyn *scr_dyn_object_prototype(void);
+/* Function.prototype as a value: the anonymous function (length 0, empty
+ * name) every function's prototype chain links to, and `Function.prototype`
+ * reads answer. +1, one function per thread. */
+ScrDyn *scr_dyn_function_prototype(void);
 ScrDyn *scr_dyn_error_prototype(void);
 bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
@@ -2241,6 +2263,12 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
  * function"; OBJ receivers call the own member. recv/args borrowed,
  * result owned (+1). MAY THROW (NULL with the exception pending). */
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method);
+/* scr_dyn_prepare_method for a call site named Object.prototype.
+ * isPrototypeOf: answers the inherited method when the receiver's chain
+ * does not define the name (see scr_dyn_is_prototype_of). The compiler
+ * emits it only at such a site. Borrowed recv, result owned (+1), MAY
+ * THROW (NULL with the exception pending). */
+ScrDyn *scr_dyn_prepare_method_inherited(ScrDyn *recv, const char *method);
 ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args, size_t argc, const char *what);
 /* scr_dyn_invoke_prepared for a call site whose method name is a constant:
  * *mid_slot, the site's -1-initialized slot, caches the name's method id
@@ -2279,6 +2307,10 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
 /* The table a function value already has. +1, or NULL. */
 ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
+/* The [[Prototype]] a function's own property table carries once
+ * Object.setPrototypeOf replaced it (+1, null included as the null value), or
+ * NULL while the function still links to Function.prototype. */
+ScrDyn *scr_dyn_function_prototype_override(const ScrDyn *function);
 /* Object.defineProperties over dyn values: every descriptor of the map is
  * read and converted (scr_dyn_define_props_pending), then each is defined
  * through scr_dyn_define_property, which decides what a target accepts.

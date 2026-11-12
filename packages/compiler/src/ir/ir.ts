@@ -2182,6 +2182,11 @@ export interface IrFunction {
    * object literal's method. Present only in modules that box function
    * values into checked values (function-names.ts). */
   displayName?: string;
+  /** The function's source text with its TypeScript syntax erased, as
+   * Function.prototype.toString prints it. Present only for a function a
+   * module boxes into a checked value while the module converts dynamic
+   * values to text (function-source-text.ts). */
+  sourceText?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];

@@ -4441,14 +4441,24 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       g_pending_seen = self;
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength counts output entries; a run of holes is
-       * one `<n empty items>` entry (formatSpecialArray). */
-      const unsigned char *presence = d->v.arr.presence;
+       * one `<n empty items>` entry (formatSpecialArray). Rendering an
+       * entry runs the palette getter for the number style, and that code
+       * can grow or shrink the array being inspected: growing reallocates
+       * the presence bitmap, and shrinking releases the elements past the
+       * new length. Nothing about the array is cached across a render --
+       * membership, length and the item are read from the live value, and
+       * the item is held for as long as its entry is used. `len` is the
+       * entry length Node's formatArray captures, which bounds the
+       * positions this walk renders; the trailing `... N more items`
+       * count reads the live length, as formatSpecialArray does. */
       size_t i = 0;
       size_t shown = 0;
       for (; i < len && (double)shown < g_max_array_length; shown++) {
-        if (presence && !presence[i]) {
+        size_t live_len = d->v.arr.len;
+        if (i >= live_len) break; /* the array shrank past this position */
+        if (!scr_dyn_arr_has_index(d, i)) {
           size_t next = i + 1;
-          while (next < len && !presence[next]) next++;
+          while (next < len && next < live_len && !scr_dyn_arr_has_index(d, next)) next++;
           char hole[48];
           int hn = snprintf(hole, sizeof hole, "<%zu empty item%s>", next - i, next - i == 1 ? "" : "s");
           ScrStr *s = insp_styled_lit(hole, (size_t)hn, INSP_UNDEFINED);
@@ -4457,20 +4467,22 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           i = next;
           continue;
         }
-        ScrDyn *item = d->v.arr.items[i++];
+        ScrDyn *item = scr_dyn_retain(d->v.arr.items[i++]);
         ScrStr *s = scr_insp_dyn(item, recurse + 1, depth);
         scr_insp_entry(s, item->kind == SCR_DYN_NUM);
         scr_str_release(s);
+        scr_dyn_release(item);
         if (scr_exc_pending()) break;
       }
-      bool more = i < len;
+      size_t live_len = d->v.arr.len;
+      bool more = i < len && live_len > i;
       size_t entries = shown + (more ? 1 : 0);
       /* The own-property entries trailing the elements and the hidden
        * `[length]`; sorted orders those. */
       size_t sort_tail = g_show_hidden ? 1 : 0;
       if (more) {
-        ScrStr *m = scr_insp_more_items((double)(len - i));
-        scr_insp_entry(m, d->v.arr.items[i]->kind == SCR_DYN_NUM);
+        ScrStr *m = scr_insp_more_items((double)(live_len - i));
+        scr_insp_entry(m, scr_dyn_arr_has_index(d, i) && d->v.arr.items[i]->kind == SCR_DYN_NUM);
         scr_str_release(m);
       }
       if (g_show_hidden) {
@@ -4480,13 +4492,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         char line[48];
         int n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)len);
         ScrStr *s = scr_str_new(line, (size_t)n);
-        scr_insp_entry(s, entries < len && (!presence || presence[entries]) &&
-                              d->v.arr.items[entries]->kind == SCR_DYN_NUM);
+        scr_insp_entry(s, scr_dyn_arr_has_index(d, entries) && d->v.arr.items[entries]->kind == SCR_DYN_NUM);
         scr_str_release(s);
         entries++;
       }
-      for (size_t k = 0; props && k < scr_dyn_obj_count(props); k++) {
-        ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
+      for (size_t k = 0;; k++) {
+        /* A getter above may have rematerialized the array's view, which
+         * swaps its properties table: resolve it for each entry. */
+        const ScrDyn *live_props = d->v.arr.properties;
+        if (!live_props || k >= scr_dyn_obj_count(live_props)) break;
+        ScrDynProp ent = scr_dyn_obj_prop_at(live_props, k);
         if (!insp_obj_shows(&ent)) continue;
         ScrStr *own_key = NULL;
         ScrDynProp held = insp_prop_hold(&ent, &own_key);
@@ -4510,22 +4525,25 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ScrStr *entry = ib_take(&eb);
         /* Node's grouping pads by the array element at the entry's output
          * position (value[i] in groupArrayElements), not by the entry. */
-        bool number = entries < len && (!presence || presence[entries]) &&
+        bool number = scr_dyn_arr_has_index(d, entries) &&
                       d->v.arr.items[entries]->kind == SCR_DYN_NUM;
         scr_insp_entry(entry, number);
         scr_str_release(entry);
         entries++;
         sort_tail++;
       }
-      for (size_t k = 0; k < nsymbols && k < (d->symbol_keys ? d->symbol_keys->v.arr.len : 0);
-           k++) {
+      for (size_t k = 0;; k++) {
+        const ScrDyn *live_keys = d->symbol_keys;
+        if (!live_keys || k >= live_keys->v.arr.len) break;
         ScrDynProp ent;
-        ScrDyn *symbol = d->symbol_keys->v.arr.items[k];
+        ScrDyn *symbol = live_keys->v.arr.items[k];
         if (!scr_dyn_own_symbol_prop(d, symbol, &ent)) continue;
         if (!(ent.enumerable || g_show_hidden)) continue;
         ScrStr *own_key = NULL;
         ScrDynProp held = insp_prop_hold(&ent, &own_key);
-        ScrStr *key = scr_insp_dyn(symbol, recurse + 1, depth);
+        ScrDyn *held_symbol = scr_dyn_retain(symbol);
+        ScrStr *key = scr_insp_dyn(held_symbol, recurse + 1, depth);
+        scr_dyn_release(held_symbol);
         /* The array itself is the getter's `this` (Node's formatProperty
          * calls it with the value it formats), not the property table. */
         ScrStr *val = held.accessor ? insp_accessor_value(&held, d, recurse + 1, depth)
@@ -4546,7 +4564,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(val);
         insp_prop_drop(&held, own_key);
         ScrStr *entry = ib_take(&eb);
-        bool number = entries < len && (!presence || presence[entries]) &&
+        bool number = scr_dyn_arr_has_index(d, entries) &&
                       d->v.arr.items[entries]->kind == SCR_DYN_NUM;
         scr_insp_entry(entry, number);
         scr_str_release(entry);
@@ -4844,21 +4862,21 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       double circular = scr_insp_circ_check(p);
       if (circular > 0) return scr_insp_circular(circular);
       if (recurse > depth) return insp_styled_lit("[Promise]", 9, INSP_SPECIAL);
-      bool pending = scr_promise_is_pending(p);
-      bool rejected = !pending && scr_promise_is_rejected(p);
+      bool pending = false;
+      bool rejected = false;
       ScrDyn *value = NULL;
-      if (!pending) {
-        value = scr_promise_settled_dyn_fn ? scr_promise_settled_dyn_fn(p) : NULL;
-        if (!value) {
-          /* Only a box from scr_async_dyn.c reaches this case, and that
-           * unit installs the reader; without it the shape is unknown. */
-          InspBuf refused = {0};
-          ib_cstr(&refused, "util.inspect of a promise value is not supported yet");
-          ScrStr *text = ib_take(&refused);
-          scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
-          scr_str_release(text);
-          return scr_str_new("", 0);
-        }
+      if (scr_promise_inspect_dyn_fn) scr_promise_inspect_dyn_fn(p, &pending, &rejected, &value);
+      if (!scr_promise_inspect_dyn_fn || (!pending && !value)) {
+        /* Only a box from scr_async_dyn.c reaches this case, and that
+         * unit installs the reader (the hook itself lives in scr_lib.c, so
+         * this unit links without the async unit); without it the shape is
+         * unknown. A settled box always carries an outcome to render. */
+        InspBuf refused = {0};
+        ib_cstr(&refused, "util.inspect of a promise value is not supported yet");
+        ScrStr *text = ib_take(&refused);
+        scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
+        scr_str_release(text);
+        return scr_str_new("", 0);
       }
       size_t seen_before = g_nseen;
       g_pending_seen = p;

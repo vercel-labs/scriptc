@@ -128,9 +128,20 @@ static bool util_deep_find_prop(const ScrDyn *table, const char *key, size_t len
   return false;
 }
 
-static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b,
-                                 const ScrDyn *owner_a, const ScrDyn *owner_b,
-                                 bool skip, const ScrDeepFrame *frame) {
+/* The table an owner keeps its named (or symbol-keyed) properties in right
+ * now. A getter the comparison runs can rematerialize a typed view, which
+ * swaps an array's properties table for a fresh one in place and releases
+ * the old table; a table pointer is therefore only used until the next
+ * callback and re-resolved afterwards. */
+static const ScrDyn *util_deep_table(const ScrDyn *owner, bool symbols) {
+  if (symbols) return owner->symbol_properties;
+  return owner->kind == SCR_DYN_ARR ? owner->v.arr.properties : owner;
+}
+
+static bool util_deep_properties(const ScrDyn *owner_a, const ScrDyn *owner_b,
+                                 bool symbols, bool skip, const ScrDeepFrame *frame) {
+  const ScrDyn *a = util_deep_table(owner_a, symbols);
+  const ScrDyn *b = util_deep_table(owner_b, symbols);
   if (util_deep_key_count(a) != util_deep_key_count(b)) return false;
   if (!b) return true;
   /* Node's keyCheck snapshots Object.keys(b) before any Get runs and then
@@ -159,7 +170,11 @@ static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b,
   bool same = true;
   for (size_t i = 0; same && i < nkeys; i++) {
     ScrDynProp xp;
-    if (!util_deep_find_prop(a, keys[i].key, keys[i].len, &xp) || !xp.enumerable) {
+    /* The comparison's own callbacks can replace either table (see
+     * util_deep_table), so each Get looks its descriptor up in the table the
+     * owner has at that moment. */
+    if (!util_deep_find_prop(util_deep_table(owner_a, symbols), keys[i].key, keys[i].len, &xp) ||
+        !xp.enumerable) {
       same = false;
       break;
     }
@@ -172,7 +187,7 @@ static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b,
     ScrDyn *yv = NULL;
     if (xv && !scr_exc_pending()) {
       ScrDynProp yp;
-      yv = util_deep_find_prop(b, keys[i].key, keys[i].len, &yp)
+      yv = util_deep_find_prop(util_deep_table(owner_b, symbols), keys[i].key, keys[i].len, &yp)
                ? util_deep_property_value(owner_b, &yp)
                : scr_dyn_retain(scr_dyn_undefined());
     }
@@ -478,8 +493,8 @@ static bool util_deep_date_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
     ScrDeepFrame frame = { a, b, parent };
     same = util_deep_same_keys(va, vb) &&
            util_deep_same_keys(va->symbol_properties, vb->symbol_properties) &&
-           util_deep_properties(va, vb, va, vb, skip, &frame) &&
-           util_deep_properties(va->symbol_properties, vb->symbol_properties, va, vb, skip, &frame);
+           util_deep_properties(va, vb, false, skip, &frame) &&
+           util_deep_properties(va, vb, true, skip, &frame);
   }
   scr_dyn_release(va);
   scr_dyn_release(vb);
@@ -562,8 +577,8 @@ static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
   if (same && ((ea->error_cause != NULL) != (eb->error_cause != NULL))) same = false;
   if (same && !scr_exc_pending())
     same = util_deep_same_keys(a, b) && util_deep_same_keys(a->symbol_properties, b->symbol_properties) &&
-           util_deep_properties(a, b, a, b, skip, &frame) &&
-           util_deep_properties(a->symbol_properties, b->symbol_properties, a, b, skip, &frame);
+           util_deep_properties(a, b, false, skip, &frame) &&
+           util_deep_properties(a, b, true, skip, &frame);
   if (ca) scr_dyn_release(ca);
   if (cb) scr_dyn_release(cb);
   scr_error_release(ea);
@@ -716,11 +731,11 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
       scr_dyn_release(xb);
       if (!same_element) return false;
     }
-    if (!util_deep_properties(a->v.arr.properties, b->v.arr.properties, a, b, skip, &frame)) return false;
+    if (!util_deep_properties(a, b, false, skip, &frame)) return false;
   } else if (a->kind == SCR_DYN_OBJ) {
-    if (!util_deep_properties(a, b, a, b, skip, &frame)) return false;
+    if (!util_deep_properties(a, b, false, skip, &frame)) return false;
   }
-  return util_deep_properties(a->symbol_properties, b->symbol_properties, a, b, skip, &frame);
+  return util_deep_properties(a, b, true, skip, &frame);
 }
 
 bool scr_util_is_deep_strict_equal(const ScrDyn *a, const ScrDyn *b, const ScrDyn *skip) {

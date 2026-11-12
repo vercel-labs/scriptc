@@ -102,7 +102,6 @@ import {
   UNDEFINED_T,
   arrayOf,
   canBoxFuncIntoDyn,
-  funcOf,
   isDynTypedRefType,
   isUnitType,
   typeEquals,
@@ -2945,33 +2944,12 @@ export function lowerIntrinsicProperty(
   if (isErrorPrototypeValue(lowerer, expr))
     return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Function.prototype as a VALUE (a prototype-chain link:
-  // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
-  // anonymous function answering undefined, length 0 — a zero-capture
-  // closure of a compiler helper, so every read is the same function
-  // (closure identity) and shares its property table. Reads through it
-  // find the function members the checked runtime models for every
-  // function (apply, constructor, name, length). Member forms keep their
-  // own lowerings.
-  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
-    const loc = locOf(expr);
-    const name = "%dyn.functionPrototype";
-    if (lowerer.liftedFnNamed(name) === undefined)
-      lowerer.liftedFns.push({
-        name,
-        params: [],
-        locals: [],
-        returnType: DYN,
-        body: [{ kind: "return", value: dynUndefinedExpr(loc), loc }],
-        loc,
-      });
-    return {
-      kind: "dynFrom",
-      value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
-      fnName: "",
-      type: DYN,
-      loc,
-    };
-  }
+  // `Object.setPrototypeOf(F.prototype, Function.prototype)`, chain walks):
+  // the runtime's one anonymous function answering undefined, with length 0
+  // and an empty name, so every read is that same function and every
+  // function's chain reaches it. Member forms keep their own lowerings.
+  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype")
+    return { kind: "libCall", fn: "dyn.functionPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Array.isArray, Object.keys, Date.now, Error.captureStackTrace (`if
   // (Error.captureStackTrace) ...`) and the other statics with function
   // values: the same values a read through the constructor's untyped value

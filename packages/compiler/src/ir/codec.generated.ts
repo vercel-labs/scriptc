@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "32c6b20b67805dd2";
+export const IR_CODEC_LAYOUT = "9100c57293044915";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -25,7 +25,7 @@ export function decodeIrFunction(r: IrReader): IrFunction {
 }
 
 const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","weakKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
-const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
+const KEYS1: readonly string[] = ["name","sourceName","displayName","sourceText","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
 const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays"];
@@ -439,6 +439,11 @@ function encIrFunction(w: IrWriter, v: IrFunction): void {
     w.byte(1);
     w.str(v.displayName);
   }
+  if (v.sourceText === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.sourceText);
+  }
   if (v.ownsPrototype === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -514,25 +519,26 @@ function decIrFunction(r: IrReader): IrFunction {
   const f0 = r.str();
   const f1 = r.tag(2, "IrFunction.sourceName") === 0 ? undefined : r.str();
   const f2 = r.tag(2, "IrFunction.displayName") === 0 ? undefined : r.str();
-  const f3 = r.tag(2, "IrFunction.ownsPrototype") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["ownsPrototype"]>);
-  const f4 = decT16(r);
-  const f5 = decIrType(r);
-  const f6 = decT18(r);
-  const f7 = r.tag(2, "IrFunction.captures") === 0 ? undefined : decT16(r);
-  const f8 = r.tag(2, "IrFunction.classCaptures") === 0 ? undefined : decT19(r);
-  const f9 = decT20(r);
-  const f10 = decSrcLoc(r);
-  const f11 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
-  const f12 = r.tag(2, "IrFunction.boxesSource") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["boxesSource"]>);
-  const f13 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
-  const f14 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
-  const f15 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
-  const f16 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
-  const f17 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
-  const f18 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
-  const f19 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
-  const f20 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
-  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { ownsPrototype: f3 } : {}), params: f4, returnType: f5, locals: f6, ...(f7 !== undefined ? { captures: f7 } : {}), ...(f8 !== undefined ? { classCaptures: f8 } : {}), body: f9, loc: f10, ...(f11 !== undefined ? { jsEntry: f11 } : {}), ...(f12 !== undefined ? { boxesSource: f12 } : {}), ...(f13 !== undefined ? { tier: f13 } : {}), ...(f14 !== undefined ? { speculativeDispatch: f14 } : {}), ...(f15 !== undefined ? { fastRead: f15 } : {}), ...(f16 !== undefined ? { plainLoops: f16 } : {}), ...(f17 !== undefined ? { async: f17 } : {}), ...(f18 !== undefined ? { generator: f18 } : {}), ...(f19 !== undefined ? { asyncCacheGlobal: f19 } : {}), ...(f20 !== undefined ? { asyncCycleCacheGlobal: f20 } : {}) };
+  const f3 = r.tag(2, "IrFunction.sourceText") === 0 ? undefined : r.str();
+  const f4 = r.tag(2, "IrFunction.ownsPrototype") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["ownsPrototype"]>);
+  const f5 = decT16(r);
+  const f6 = decIrType(r);
+  const f7 = decT18(r);
+  const f8 = r.tag(2, "IrFunction.captures") === 0 ? undefined : decT16(r);
+  const f9 = r.tag(2, "IrFunction.classCaptures") === 0 ? undefined : decT19(r);
+  const f10 = decT20(r);
+  const f11 = decSrcLoc(r);
+  const f12 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
+  const f13 = r.tag(2, "IrFunction.boxesSource") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["boxesSource"]>);
+  const f14 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
+  const f15 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
+  const f16 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
+  const f17 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
+  const f18 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
+  const f19 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
+  const f20 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
+  const f21 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
+  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { sourceText: f3 } : {}), ...(f4 !== undefined ? { ownsPrototype: f4 } : {}), params: f5, returnType: f6, locals: f7, ...(f8 !== undefined ? { captures: f8 } : {}), ...(f9 !== undefined ? { classCaptures: f9 } : {}), body: f10, loc: f11, ...(f12 !== undefined ? { jsEntry: f12 } : {}), ...(f13 !== undefined ? { boxesSource: f13 } : {}), ...(f14 !== undefined ? { tier: f14 } : {}), ...(f15 !== undefined ? { speculativeDispatch: f15 } : {}), ...(f16 !== undefined ? { fastRead: f16 } : {}), ...(f17 !== undefined ? { plainLoops: f17 } : {}), ...(f18 !== undefined ? { async: f18 } : {}), ...(f19 !== undefined ? { generator: f19 } : {}), ...(f20 !== undefined ? { asyncCacheGlobal: f20 } : {}), ...(f21 !== undefined ? { asyncCycleCacheGlobal: f21 } : {}) };
   return o;
 }
 

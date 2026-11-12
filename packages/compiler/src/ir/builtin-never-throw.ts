@@ -24,6 +24,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.registerClassToString",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
+  // scr_dyn_function_prototype builds the one anonymous function answering
+  // undefined on first use and retains it; no user code runs.
+  "dyn.functionPrototype",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // scr_ni_intrinsic_register stores the value in a table.

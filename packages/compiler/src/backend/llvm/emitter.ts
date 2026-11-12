@@ -2996,6 +2996,7 @@ export class LlEmitter {
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
+      closureSources: () => this.closureSources(),
       threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
       pendingBailReleaseLines: (type, value) => this.pendingBailReleaseLines(type, value),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -3454,6 +3455,29 @@ export class LlEmitter {
   /** The entry point of a closure of `fnName` (closureNames). */
   private closureEntry(fnName: string, target: IrFunction): string {
     return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
+  }
+
+  private closureSourceRows: readonly { entry: string; text: string }[] | undefined;
+  /** The source text Function.prototype.toString prints, by closure entry,
+   * of the functions the module boxes into checked values that keep their
+   * text (function-source-text.ts sets IrFunction.sourceText). The runtime
+   * asks the module for a closure's text through this table. */
+  closureSources(): readonly { entry: string; text: string }[] {
+    if (this.closureSourceRows !== undefined) return this.closureSourceRows;
+    const rows: { entry: string; text: string }[] = [];
+    const seen = new Set<string>();
+    for (const fn of this.mod.functions) {
+      if (fn.sourceText === undefined) continue;
+      const entry = this.closureEntry(fn.name, fn);
+      // A declared function's wrapper is defined where the table's entry
+      // resolves even when the emitter never reaches the closure (the
+      // closureNames scan's reason).
+      if (fn.captures === undefined) this.closureWrapperNames.add(fn.name);
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      rows.push({ entry, text: fn.sourceText });
+    }
+    return (this.closureSourceRows = rows);
   }
 
   /** The name the closure-name table gives a closure made of `fnName`

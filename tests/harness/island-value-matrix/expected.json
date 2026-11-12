@@ -1020,7 +1020,6 @@
  },
  "fn-rec.u": {
   "n2i/I.inspect": "clone=message,own=wrong",
-  "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },
@@ -1072,7 +1071,6 @@
  },
  "fn-this.u": {
   "n2i/I.inspect": "clone=message,own=wrong",
-  "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },

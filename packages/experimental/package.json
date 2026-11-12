@@ -17,6 +17,14 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
+    "./dual-run": {
+      "types": "./dual-run.d.ts",
+      "default": "./dual-run.js"
+    },
+    "./dual-run/reporter": {
+      "types": "./dual-run/reporter.d.ts",
+      "default": "./dual-run/reporter.js"
+    },
     "./register": {
       "types": "./register.d.ts",
       "default": "./register.js"
@@ -26,6 +34,11 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "dual-run.js",
+    "dual-run.d.ts",
+    "dual-run-core.js",
+    "dual-run/reporter.js",
+    "dual-run/reporter.d.ts",
     "register.js",
     "register.d.ts",
     "refusals.json",

@@ -4273,8 +4273,9 @@ function buildLibFnSignatures() {
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
-    // The Node runtime flag a node:test binary took out of process.argv
-    // (--test-update-snapshots), or [] — a fresh array per read.
+    // The Node runtime flags a node:test binary took out of process.argv
+    // (--test-update-snapshots and the reporter options), or []; a fresh
+    // array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
     /** process.allowedNodeEnvironmentFlags: the interned set of option
      * names the compatibility target accepts in NODE_OPTIONS (+1 read of

@@ -663,6 +663,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     lowerer.collectJsonImports(parts);
     collectJsonRequires(lowerer, parts);
   }
+  // Every module's globals exist now, so a conditional whole export can name
+  // the table globals its writes have to forward to.
+  collectCjsConditionalExportMirrors(lowerer, parts);
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
     const wasCollecting: boolean = lowerer.collecting;
@@ -1915,8 +1918,107 @@ function registerCjsConditionalWholeExportGlobals(
       deferJsCollectionDiags(lowerer, sf, diagsBefore);
     }
   }
-  if (slots.size > 0) lowerer.cjsConditionalWholeExportGlobals.set(sf, slots);
+  if (slots.size > 0) {
+    lowerer.cjsConditionalWholeExportGlobals.set(sf, slots);
+    // The branch statement stores the 1-based index of the table it took;
+    // 0 means the module has not chosen yet. A table member written later
+    // forwards into these slots when they belong to the chosen table.
+    const select: IrGlobal = {
+      id: `%g.${tag}%exportSelect`,
+      name: "%exportSelect",
+      type: F64,
+      mutable: true,
+    };
+    lowerer.cjsConditionalWholeExportSelectGlobals.set(sf, select);
+    lowerer.globalsList.push(select);
+  }
   for (const g of slots.values()) lowerer.globalsList.push(g);
+}
+
+/** Register the forwarding edges a conditional whole export needs: Node's
+ * `module.exports = require("./prod.cjs")` makes the conditional module's
+ * export object the table's own exports object, so a member the table
+ * assigns later (through a function it exported, say) is visible to the
+ * conditional module's requirers. Each edge names the table's member global
+ * (the one its writes update), the conditional module's selection global, and
+ * the value that selects this table. Runs after every file's globals exist,
+ * since the edge is keyed by the table's registered global. */
+function collectCjsConditionalExportMirrors(lowerer: Lowerer, parts: FileParts[]): void {
+  for (const fp of parts) {
+    const sf = fp.sf;
+    const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+    if (targets === null) continue;
+    const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(sf);
+    if (select === undefined) continue;
+    targets.forEach((target, index) => {
+      for (const name of target.names) {
+        const slot = lowerer.cjsConditionalWholeExportSlotOf(sf, name);
+        if (slot === null) continue;
+        const symbol = lowerer.cjsModuleExportSymbol(target.req.dep, name);
+        if (symbol === undefined) continue;
+        const g = lowerer.globalsBySymbol.get(symbol);
+        if (g === undefined || g.id === slot.id) continue;
+        const edges = lowerer.cjsConditionalExportMirrors.get(g.id) ?? [];
+        if (
+          edges.some(
+            (edge) =>
+              edge.select === select.id &&
+              edge.selectValue === index + 1 &&
+              edge.slot.id === slot.id,
+          )
+        )
+          continue;
+        edges.push({ select: select.id, selectValue: index + 1, slot });
+        lowerer.cjsConditionalExportMirrors.set(g.id, edges);
+      }
+    });
+  }
+}
+
+/** How many places in the file write the export member `name`: member
+ * assignments in any position (statement, chain, nested arm) plus table
+ * entries that name it. Sharing an immutable source binding's storage is
+ * only sound while the export is written once, so this answers whether the
+ * export has any other write that would land on the shared binding. */
+function cjsExportMemberWriteCount(lowerer: Lowerer, sf: ts.SourceFile, name: string): number {
+  let count = 0;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+      node.operatorToken.kind > ts.SyntaxKind.LastAssignment
+    )
+      return undefined;
+    const left = node.left;
+    const target =
+      ts.isPropertyAccessExpression(left) &&
+      !left.questionDotToken &&
+      ts.isIdentifier(left.name) &&
+      left.name.text === name
+        ? left.expression
+        : ts.isElementAccessExpression(left) &&
+            ts.isStringLiteralLike(left.argumentExpression) &&
+            left.argumentExpression.text === name
+          ? left.expression
+          : null;
+    if (
+      target !== null &&
+      (isCjsExportsIdentifier(lowerer, target) || isCjsModuleExports(lowerer, target))
+    )
+      count++;
+    return undefined;
+  });
+  for (const stmt of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind !== "table") continue;
+    const table = cjs.obj ?? cjsExportTargetLiteral(cjs.expr.right, sf);
+    for (const prop of table?.properties?.nodes ?? []) {
+      const propName = prop.name;
+      if (propName !== undefined && !ts.isComputedPropertyName(propName) && propName.text === name)
+        count++;
+    }
+  }
+  return count;
 }
 
 /** Register the module global that stores one CommonJS export member: keyed
@@ -1970,8 +2072,12 @@ function registerCjsExportGlobal(
       if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
     }
     // An immutable export source shares its live storage and native
-    // callable ABI. Mutable sources need a separate snapshot slot:
-    // later writes to the binding do not change the exported value.
+    // callable ABI — while this write is the export's only one. A second
+    // write (another arm of the same conditional, a later statement) would
+    // store through the shared binding and change the source's value, which
+    // Node never does: the export object is a copy. Mutable sources always
+    // need a separate snapshot slot: later writes to the binding do not
+    // change the exported value.
     {
       let rhs: ts.Node = typeNode;
       while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
@@ -1979,7 +2085,7 @@ function registerCjsExportGlobal(
         const vSym = lowerer.checker.getSymbolAtLocation(rhs);
         const vG = vSym && lowerer.globalsBySymbol.get(vSym);
         if (vG) {
-          if (!vG.mutable) {
+          if (!vG.mutable && cjsExportMemberWriteCount(lowerer, sf, name) === 1) {
             lowerer.globalsBySymbol.set(symbol, vG);
             for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
             note(vG);
@@ -1988,7 +2094,7 @@ function registerCjsExportGlobal(
           const g: IrGlobal = {
             id: `%g.${tag}%export.${name}`,
             name,
-            type: vG.type,
+            type: vG.mutable ? vG.type : t,
             mutable: false,
           };
           lowerer.globalsBySymbol.set(symbol, g);

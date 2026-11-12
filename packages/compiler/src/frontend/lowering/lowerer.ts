@@ -3133,6 +3133,15 @@ export interface AbsentSlot {
   optional?: true;
 }
 
+/** One live forwarding edge of a module whose whole export is chosen at run
+ * time: while `select` holds `selectValue`, a write to the export global keeps
+ * `slot` equal to it. */
+export interface CjsConditionalExportMirror {
+  select: string;
+  selectValue: number;
+  slot: IrGlobal;
+}
+
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
@@ -3697,6 +3706,16 @@ export class Lowerer {
    * the same tables, so the slot a module's statements fill and its
    * importers read is keyed by module, never by symbol. */
   readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** The selection global of each module whose whole export is chosen at run
+   * time between static tables: every branch statement stores the index
+   * (+ 1) of the table it selected. */
+  readonly cjsConditionalWholeExportSelectGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Live forwarding edges of those modules: by the written export global's
+   * id, the slots that must follow the write while the module's selection
+   * global names that table. Node's `module.exports` IS the table's exports
+   * object, so a member the table assigns through a function it exports
+   * still shows through the conditional module. */
+  readonly cjsConditionalExportMirrors = new Map<string, CjsConditionalExportMirror[]>();
   /** Each module's own export member globals by member name, registered
    * where the write or table registered them. A name lookup that the
    * checker's export symbols cannot answer (a member attached inside a
@@ -6120,6 +6139,8 @@ export class Lowerer {
     "cjsConditionalAliases",
     "cjsConditionalAliasGlobals",
     "cjsConditionalWholeExportGlobals",
+    "cjsConditionalWholeExportSelectGlobals",
+    "cjsConditionalExportMirrors",
     "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
@@ -8602,6 +8623,53 @@ export class Lowerer {
    * modules that re-export the same tables. */
   cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
     return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
+  }
+
+  /** Whether a write of export global `globalId` also has to reach the slots
+   * of modules whose conditional whole export selected its table. */
+  hasCjsConditionalExportMirrors(globalId: string): boolean {
+    return (this.cjsConditionalExportMirrors.get(globalId)?.length ?? 0) !== 0;
+  }
+
+  /** Statements that forward a write of export global `globalId` to the
+   * slots of every module whose conditional whole export selected the table
+   * that owns it. Node hands out that table's exports object itself, so a
+   * member the table assigns after the conditional module ran is visible
+   * through it; copying the member once at selection time is not. `value`
+   * must be side-effect free (a temporary the caller already stored). */
+  cjsConditionalExportMirrorStmts(
+    globalId: string,
+    value: IrExpr,
+    blame: ts.Node,
+    loc: SrcLoc,
+  ): IrStmt[] {
+    const mirrors = this.cjsConditionalExportMirrors.get(globalId);
+    if (mirrors === undefined || mirrors.length === 0) return [];
+    const stmts: IrStmt[] = [];
+    for (const mirror of mirrors) {
+      stmts.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: mirror.select, type: F64, loc },
+          right: { kind: "numLit", value: mirror.selectValue, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "assign",
+            localId: mirror.slot.id,
+            value: this.coerceInto(blame, value, mirror.slot.type),
+            loc,
+          },
+        ],
+        else_: [],
+        loc,
+      });
+    }
+    return stmts;
   }
 
   /** The compiled module behind a require-like namespace binding: an

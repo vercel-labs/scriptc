@@ -48,8 +48,10 @@ export function importTypeIndexedAccessSources(program: ts.Program): Map<string,
   for (const sf of program.getImplementationSourceFiles()) {
     // The prefilter: the site spells `import(` in the file's text, JSDoc
     // comments included. Reading the syntax tree of every file would decode
-    // the whole program for a form hardly any program writes.
-    if (!sf.text.includes("import(")) continue;
+    // the whole program for a form hardly any program writes. Asking through
+    // the observer records the question's answer, not a read of the whole
+    // text, so a comment edit of a file without the form stays cacheable.
+    if (!ts.sourceTextIncludes(sf, "import(")) continue;
     const starts = siteStarts(sf);
     if (starts.length === 0) continue;
     let text = sf.text;

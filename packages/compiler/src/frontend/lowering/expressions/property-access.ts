@@ -112,7 +112,7 @@ import { lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
-  cjsConditionalAliasMemberGlobalOf,
+  cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
@@ -485,12 +485,15 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   // `l.renderToString` where `l` is a module-local variable whose whole value
   // is a require() chosen at run time among static export tables
-  // (react-dom/server.node.js): the slot the executed write filled
-  // (cjs-inline-require.ts).
+  // (react-dom/server.node.js): the slot the executed write filled, or Node's
+  // TypeError when the read runs before that write (cjs-inline-require.ts).
   if (ts.isIdentifier(expr.expression) && expr.questionDotToken === undefined) {
-    const aliasMember = cjsConditionalAliasMemberGlobalOf(lowerer, expr.expression, expr.name.text);
-    if (aliasMember !== null)
-      return { kind: "varRef", localId: aliasMember.id, type: aliasMember.type, loc };
+    const aliasMember = cjsConditionalAliasMemberReadOf(lowerer, expr.expression, expr.name.text);
+    if (aliasMember !== null) {
+      if ("throwMessage" in aliasMember)
+        return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
+      return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
+    }
   }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a

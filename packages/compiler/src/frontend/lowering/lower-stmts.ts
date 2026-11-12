@@ -10484,10 +10484,11 @@ function lowerCjsConditionalWholeExportStatement(
   expr: ts.BinaryExpression,
 ): IrStmt | null {
   const sf = ts.getSourceFileOfNode(expr);
-  const target = cjsConditionalWholeExportTargetsOf(lowerer, sf)?.find(
-    (entry) => entry.assign === expr,
-  );
-  if (target === undefined) return null;
+  const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+  if (targets === null) return null;
+  const index = targets.findIndex((entry) => entry.assign === expr);
+  if (index < 0) return null;
+  const target = targets[index]!;
   const loc = locOf(expr);
   const body: IrStmt[] = [];
   const init = lowerer.requireInitStmt(target.req.spec, target.req.call);
@@ -10502,6 +10503,12 @@ function lowerCjsConditionalWholeExportStatement(
       value: lowerer.coerceInto(expr, value, g.type),
       loc,
     });
+  }
+  // Record which table was taken, after the copies: a member the table
+  // assigns later forwards to these slots only while they are its own.
+  const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(sf);
+  if (select !== undefined) {
+    body.push({ kind: "assign", localId: select.id, value: numLit(index + 1, loc), loc });
   }
   return { kind: "block", body, loc };
 }
@@ -11849,11 +11856,24 @@ export function lowerExprStatement(
       if (ts.isPropertyAccessExpression(expr.left)) {
         const g = cjsExportMemberWriteGlobalOf(lowerer, expr.left);
         if (g) {
+          const loc = locOf(expr);
+          const value = lowerer.lowerExprExpecting(expr.right, g.type);
+          if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {
+            return { kind: "assign", localId: g.id, value, loc };
+          }
+          // A module that chose this table for its own `module.exports` while
+          // it ran answers Node's shared exports object: the member keeps
+          // following the write. The temp keeps the RHS evaluated once.
+          const tmp = lowerer.declareHiddenLocal("%exportValue", value.type);
+          const stored = varRef(tmp.id, value.type, loc);
           return {
-            kind: "assign",
-            localId: g.id,
-            value: lowerer.lowerExprExpecting(expr.right, g.type),
-            loc: locOf(expr),
+            kind: "block",
+            body: [
+              { kind: "varDecl", localId: tmp.id, init: value, loc },
+              { kind: "assign", localId: g.id, value: stored, loc },
+              ...lowerer.cjsConditionalExportMirrorStmts(g.id, stored, expr.right, loc),
+            ],
+            loc,
           };
         }
       }

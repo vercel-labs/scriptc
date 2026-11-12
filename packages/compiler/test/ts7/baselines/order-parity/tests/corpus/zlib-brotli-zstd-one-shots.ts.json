@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/zlib-brotli-zstd-one-shots.ts"
+ ],
+ "diags": []
+}

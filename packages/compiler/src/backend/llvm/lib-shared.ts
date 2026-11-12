@@ -1571,6 +1571,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "rl.setPrompt": "scr_rl_set_prompt",
   "rl.setPromptDyn": "scr_rl_set_prompt_dyn",
   "rl.getPrompt": "scr_rl_get_prompt",
+  "rl.getPromptDyn": "scr_rl_get_prompt_dyn",
   "rl.write": "scr_rl_write",
   "rl.writeKey": "scr_rl_write_key",
   "rl.off": "scr_rl_off",

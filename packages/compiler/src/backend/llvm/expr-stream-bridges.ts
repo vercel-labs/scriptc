@@ -13,6 +13,7 @@ import {
   classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
+  isPerfEntryShape,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
@@ -1326,6 +1327,13 @@ export function streamTypedRefMaterializeAdapter(
       if (dirent) {
         host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
         B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
+      }
+      // A perf_hooks entry row's live view takes the entry class prototype
+      // its entryType names, as its copied view does, so instanceof and
+      // util.inspect answer like Node's from either path.
+      if (isPerfEntryShape(shape)) {
+        host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+        B.line(`call void @scr_dyn_perf_entry_finish(ptr ${out})`);
       }
       B.terminate(`ret ptr ${out}`);
     }

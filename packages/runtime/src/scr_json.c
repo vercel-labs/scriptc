@@ -3202,6 +3202,97 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype) {
   return object;
 }
 
+/* ── the perf_hooks entry classes' prototypes ───────────────────────────
+ * PerformanceEntry, PerformanceMark and PerformanceMeasure values are one
+ * record shape in compiled code, but in Node each is an instance of the
+ * class its entryType names: util.inspect prints that class name, and
+ * `instanceof` walks the class chain (PerformanceMark.prototype inherits
+ * PerformanceEntry.prototype). A checked-dynamic conversion of the record
+ * therefore takes the matching prototype (scr_dyn_perf_entry_finish), and
+ * scr_dyn_perf_entry_is answers the three entry classes for a value whose
+ * static type is not an entry (a union or a checked-dynamic slot).
+ *
+ * This lives in the dyn core rather than scr_perf.c because a program can
+ * convert an entry-typed value to dyn without calling a perf_hooks
+ * function, and the dyn core is linked either way. The prototypes are
+ * fixed per thread and released at thread exit, as compiled class
+ * prototypes are. */
+static SCR_TL ScrDyn *scr_dyn_perf_entry_base_proto;
+static SCR_TL ScrDyn *scr_dyn_perf_mark_proto;
+static SCR_TL ScrDyn *scr_dyn_perf_measure_proto;
+
+static void scr_dyn_perf_entry_init(void) {
+  if (scr_dyn_perf_entry_base_proto) return;
+  ScrDyn *base = scr_dyn_new_obj();
+  base->v.obj.class_name = "PerformanceEntry";
+  scr_dyn_fix_prototype(base);
+  ScrDyn *mark = scr_dyn_new_obj();
+  mark->prototype = scr_dyn_retain(base);
+  mark->v.obj.class_name = "PerformanceMark";
+  scr_dyn_fix_prototype(mark);
+  ScrDyn *measure = scr_dyn_new_obj();
+  measure->prototype = scr_dyn_retain(base);
+  measure->v.obj.class_name = "PerformanceMeasure";
+  scr_dyn_fix_prototype(measure);
+  scr_dyn_perf_entry_base_proto = base;
+  scr_dyn_perf_mark_proto = mark;
+  scr_dyn_perf_measure_proto = measure;
+  /* The registry's references are the ones that outlive the program; the
+   * statics borrow them. The creation references drop here, or the three
+   * values would never reach zero and the RC audit would report them at
+   * exit. Entries that still hold a prototype keep it alive past the
+   * registry's release either way (scr_dyn_release is counted). */
+  scr_dyn_release(mark);
+  scr_dyn_release(measure);
+  scr_dyn_release(base);
+}
+
+void scr_dyn_perf_entry_finish(ScrDyn *object) {
+  if (!object || object->kind != SCR_DYN_OBJ) return;
+  scr_dyn_perf_entry_init();
+  bool measure = false;
+  size_t i = scr_dyn_obj_index_of(object, "entryType", 9);
+  if (i != SIZE_MAX) {
+    ScrDynProp prop = scr_dyn_obj_prop_at(object, i);
+    const ScrDyn *type = prop.value;
+    measure = type && type->kind == SCR_DYN_STR && type->v.str->len == 7 &&
+              memcmp(type->v.str->data, "measure", 7) == 0;
+  }
+  scr_dyn_region_store(object, NULL); /* a prototype store (ScrDynRegion) */
+  scr_dyn_release(object->prototype);
+  object->prototype =
+      scr_dyn_retain(measure ? scr_dyn_perf_measure_proto : scr_dyn_perf_mark_proto);
+}
+
+bool scr_dyn_perf_entry_is(const ScrDyn *value, double which) {
+  static const char *const classes[] = {"PerformanceEntry", "PerformanceMark",
+                                        "PerformanceMeasure"};
+  if (!value || !(which >= 0 && which <= 2)) return false;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    /* A live record capsule carries the brand on its view, whose converter
+     * runs the finish hook (the compiler's materializer), so ask that. */
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    bool answer = scr_dyn_perf_entry_is(view, which);
+    scr_dyn_release(view);
+    return answer;
+  }
+  if (value->kind != SCR_DYN_OBJ) return false;
+  const char *name = classes[(size_t)which];
+  for (const ScrDyn *p = value->prototype; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && p->v.obj.class_name && strcmp(p->v.obj.class_name, name) == 0)
+      return true;
+  return false;
+}
+
+/* `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1): both are runtime handle kinds. */
+bool scr_dyn_perf_handle_is(const ScrDyn *value, double which) {
+  if (!value || value->kind != SCR_DYN_HANDLE) return false;
+  if (which == 0) return value->v.handle.tag == SCR_DYNH_PERF_OBSERVER;
+  if (which == 1) return value->v.handle.tag == SCR_DYNH_PERF_ENTRY_LIST;
+  return false;
+}
+
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);

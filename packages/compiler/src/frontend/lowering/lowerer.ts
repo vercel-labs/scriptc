@@ -155,6 +155,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
   lowerWebStreamNew,
@@ -17995,8 +17996,18 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    strandUnrouted = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(
+      this,
+      fromId,
+      toId,
+      loc,
+      trappable,
+      classRoutes,
+      checked,
+      strandUnrouted,
+    );
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -18484,6 +18495,29 @@ export class Lowerer {
     if (!typeEquals(e.type, expected) && expected.kind === "union") {
       const routed = siteDiscriminantConversion(this, node, e, expected);
       if (routed) e = routed;
+    }
+    // A JavaScript value whose source union the destination cannot hold
+    // whole (`number | Vector3` into `Vector3 | undefined`): the checker
+    // records no narrowing for the guard the program wrote, but the run-time
+    // value is one of the arms. The arms the destination holds convert on
+    // their tag and the others throw the catchable TypeError at the
+    // conversion, the checked boundary every untyped JavaScript flow takes.
+    if (
+      !typeEquals(e.type, expected) &&
+      e.type.kind === "union" &&
+      expected.kind === "union" &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const helper = this.unionRetagHelper(
+        e.type.unionId,
+        expected.unionId,
+        e.loc,
+        undefined,
+        undefined,
+        false,
+        true,
+      );
+      if (helper) e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
     }
     this.requireExactShape(node, e.type, expected);
     return e;
@@ -22561,6 +22595,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??

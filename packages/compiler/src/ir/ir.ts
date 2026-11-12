@@ -2026,6 +2026,22 @@ export function isDirentShape(shape: IrRecordShape): boolean {
   );
 }
 
+/** The hidden field that marks the perf_hooks entry row (type-mapper's
+ * perfEntryShape). */
+export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** perf_hooks entry rows: the marker field names the shape (nothing else
+ * interns a '%perfEntry' field; user object literals with a '%' key get a
+ * shape of their own, as the spread fence assumes). A dyn conversion of
+ * this row takes the entry class prototype its entryType field names. */
+export function isPerfEntryShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_ENTRY_MARKER)
+  );
+}
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {

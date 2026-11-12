@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
-test("native deep equality compares built-ins and classes, keeping accessors refused", async () => {
+test("native deep equality compares built-ins, classes and accessor properties", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-deep-equality-"));
   try {
     const entry = join(dir, "main.cjs");
@@ -43,7 +43,7 @@ console.log("after");
         "true\n" +
         "true\n" +
         "true\n" +
-        "TypeError SC2020 util.isDeepStrictEqual over native accessor properties is not supported yet\n" +
+        "true\n" +
         "TypeError SC2020 util.isDeepStrictEqual over native own constructor functions is not supported yet\nafter\n",
     );
   } finally {

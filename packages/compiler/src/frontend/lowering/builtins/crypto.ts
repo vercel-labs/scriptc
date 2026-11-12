@@ -1,5 +1,6 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
+import { voidizedCallback } from "../lower-server.js";
 import { lowerCreateEcdh } from "./ecdh.js";
 import { lowerCreateDiffieHellman, lowerGetDiffieHellman } from "./dh.js";
 import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
@@ -24,6 +25,7 @@ import {
   type SrcLoc,
   VOID,
   arrayOf,
+  funcOf,
 } from "../../../ir/ir.js";
 
 /** The composed crypto pattern: `randomBytes(n).toString(enc)` lowers
@@ -211,6 +213,22 @@ function cryptoNumberArgs(lowerer: Lowerer, nodes: readonly ts.Expression[]): bo
   return nodes.every((node) => lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "f64");
 }
 
+/** Whether a value of this type could be a function at run time: a
+ * function type, a checked-dynamic value (any/unknown), or a union with
+ * one of those arms. A call whose callback position cannot be a function
+ * never schedules anything, so it takes the synchronous entry point. */
+function typeHoldsFunction(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (!type) return true;
+  const holds = (t: IrType): boolean => {
+    if (t.kind === "func" || t.kind === "dyn") return true;
+    if (t.kind === "union")
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).some((arm) => holds(arm));
+    return false;
+  };
+  return holds(type);
+}
+
 /** A view's bytes as the Uint8Array the byte-input libCalls take: other
  * TypedArrays and DataViews become a u8 view of the same memory. */
 function cryptoByteView(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr {
@@ -235,7 +253,11 @@ function dropArg(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrStmt | n
   const value = lowerer.lowerExpr(node);
   // A call that throws (a `never` value) has no value to hold.
   if (value.type.kind === "void") return { kind: "exprStmt", expr: value, loc };
-  if (value.type.kind === "undefinedT" || value.type.kind === "nullT") return null;
+  // A literal `undefined` or `null` has no side effect to keep; a call
+  // that only *answers* one still evaluates (and may throw).
+  if (value.kind === "unitLit") return null;
+  if (value.type.kind === "undefinedT" || value.type.kind === "nullT")
+    return { kind: "exprStmt", expr: value, loc };
   const dropped = lowerer.declareHiddenLocal("%cryptoDropped", value.type);
   return { kind: "varDecl", localId: dropped.id, init: value, loc };
 }
@@ -387,14 +409,24 @@ export function lowerCryptoModuleCall(
       args.length === 2 ? lowerer.mapTypeOf(lowerer.typeOf(args[1]!)) : undefined;
     // A missing or surplus argument, a size of another type, and a callback
     // that does not fit (error, buffer) take Node's checks at run time; an
-    // explicit `undefined` callback selects the synchronous result.
+    // explicit `undefined` callback selects the synchronous result. A
+    // callback position that cannot hold a function never schedules one,
+    // so it takes the same checks through the synchronous entry.
     if (
       args.length < 1 ||
       args.length > 2 ||
       lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "f64" ||
       (args.length === 2 && (callbackType?.kind !== "func" || callbackType.params.length > 2))
     ) {
-      return dynCall(lowerer, expr, 2, "crypto.randomBytesAny", DYN);
+      return dynCall(
+        lowerer,
+        expr,
+        2,
+        args.length >= 2 && typeHoldsFunction(lowerer, args[1]!)
+          ? "crypto.randomBytesAnyCb"
+          : "crypto.randomBytesAny",
+        DYN,
+      );
     }
     if (args.length === 1) return null;
     return {
@@ -495,8 +527,11 @@ export function lowerCryptoModuleCall(
   if (bi.member === "scrypt" || bi.member === "scryptSync") {
     const async = bi.member === "scrypt";
     const minimum = async ? 4 : 3;
+    // The callback is the last argument: the options position when no
+    // options are passed (scrypt(password, salt, keylen, callback)), and
+    // the fifth argument otherwise.
     const callbackType =
-      async && args.length === minimum + 1
+      async && args.length >= minimum
         ? lowerer.mapTypeOf(lowerer.typeOf(args[args.length - 1]!))
         : undefined;
     // A missing or surplus argument and a value of another type take Node's
@@ -843,7 +878,19 @@ export function lowerCryptoModuleCall(
       extra > 2 ||
       (third !== undefined && (third.kind !== "func" || third.params.length > 2))
     ) {
-      return dynCall(lowerer, expr, 3, "crypto.randomIntAny", DYN);
+      // The callback is the callable value in the max or the callback
+      // position; when neither can hold a function, the synchronous entry
+      // runs Node's same checks and no scheduling.
+      const callbackCapable =
+        (args.length >= 2 && typeHoldsFunction(lowerer, args[1]!)) ||
+        (args.length >= 3 && typeHoldsFunction(lowerer, args[2]!));
+      return dynCall(
+        lowerer,
+        expr,
+        3,
+        callbackCapable ? "crypto.randomIntAnyCb" : "crypto.randomIntAny",
+        DYN,
+      );
     }
     const min =
       numbers.length === 1
@@ -941,10 +988,13 @@ export function lowerCryptoModuleCall(
     // checks the callback before the type and options.
     const optionsNode = args.length === 2 && isFunction(args[1]) ? undefined : args[1];
     const callbackNode = args.length === 2 && isFunction(args[1]) ? args[1] : args[2];
-    const callbackType = callbackNode ? lowerer.mapTypeOf(lowerer.typeOf(callbackNode)) : undefined;
+    // A callback position that cannot hold a function throws Node's check
+    // here; a checked-dynamic or unmappable one may be a function at run
+    // time and takes the real callback path, where the call site's function
+    // check runs.
     const type = lowerer.lowerExprExpecting(args[0]!, DYN);
     const options = dynArg(lowerer, optionsNode, loc);
-    if (callbackType?.kind !== "func" && callbackType?.kind !== "dyn") {
+    if (callbackNode === undefined || !typeHoldsFunction(lowerer, callbackNode)) {
       const got = callbackNode
         ? lowerer.lowerExprExpecting(callbackNode, DYN)
         : dynUndefinedExpr(loc);
@@ -969,17 +1019,71 @@ export function lowerCryptoModuleCall(
         loc,
       };
     }
-    const callback = errorFirstCallback(
-      lowerer,
-      callbackNode!,
-      "crypto.generateKey",
-      () => false,
-      "KeyObject",
-    );
+    if (lowerer.mapTypeOf(lowerer.typeOf(callbackNode))?.kind === "func") {
+      const callback = errorFirstCallback(
+        lowerer,
+        callbackNode,
+        "crypto.generateKey",
+        () => false,
+        "KeyObject",
+      );
+      return {
+        kind: "libCall",
+        fn: "crypto.generateKeyCb",
+        args: [type, options, callback],
+        type: VOID,
+        loc,
+      };
+    }
+    // A callback only the dynamic checker can see: the values are evaluated
+    // in source order, then Node's function gate runs where Node validates
+    // the callback — after every argument, before the type and options.
+    const gkType = lowerer.declareHiddenLocal("%generateKeyType", DYN);
+    const gkOptions = lowerer.declareHiddenLocal("%generateKeyOptions", DYN);
+    const gkCallback = lowerer.declareHiddenLocal("%generateKeyCallback", DYN);
     return {
-      kind: "libCall",
-      fn: "crypto.generateKeyCb",
-      args: [type, options, callback],
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: gkType.id, init: type, loc },
+        { kind: "varDecl", localId: gkOptions.id, init: options, loc },
+        {
+          kind: "varDecl",
+          localId: gkCallback.id,
+          init: lowerer.lowerExprExpecting(callbackNode, DYN),
+          loc,
+        },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "crypto.checkCallback",
+            args: [varRef(gkCallback.id, DYN, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "crypto.generateKeyCb",
+        args: [
+          varRef(gkType.id, DYN, loc),
+          varRef(gkOptions.id, DYN, loc),
+          voidizedCallback(
+            lowerer,
+            {
+              kind: "dynCheck",
+              value: varRef(gkCallback.id, DYN, loc),
+              type: funcOf([DYN, DYN], VOID),
+              loc,
+            },
+            loc,
+          ),
+        ],
+        type: VOID,
+        loc,
+      },
       type: VOID,
       loc,
     };

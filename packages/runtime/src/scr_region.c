@@ -706,6 +706,11 @@ static void scr_rgn_enter(ScrRgnWalk *w, void *p, int kind, void (*walk)(void *,
 
 static void scr_rgn_ref(ScrRgnWalk *w, void *obj) {
   if (!obj) return;
+  /* An immortal value (a static literal, a published object, the module's
+   * null sentinel) is never freed, so a reference to it needs no counting;
+   * it also need not be in a region chunk, which is why the test comes
+   * before the chunk is derived from its address. */
+  if (SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL) return;
   ScrRgnChunk *c = scr_rgn_chunk_of(obj);
   if (c->region != w->region) return; /* another region's: counted there */
   c->found++;

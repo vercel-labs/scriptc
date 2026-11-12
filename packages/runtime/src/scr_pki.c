@@ -3650,6 +3650,23 @@ static bool sp_x931_digest(mbedtls_md_type_t md) {
   return false;
 }
 
+/* The DigestInfo OpenSSL signs under X9.31 padding: the digest's
+ * AlgorithmIdentifier and the digest itself, as the PKCS#1 v1.5 prefix
+ * carries them (RSA_add_pkcs1_prefix). Written ending at em + bytes; its
+ * length, or 0 when it does not fit or the ASN.1 writer fails. */
+static size_t sp_x931_digest_info(mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
+                                  unsigned char *em, size_t bytes) {
+  unsigned char *c = em + bytes;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_octet_string(&c, em, hash, hash_len)) < 0) return 0;
+  len += r;
+  if ((r = sp_write_md_alg(&c, em, md)) < 0) return 0;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, em, (size_t)len)) < 0) return 0;
+  if ((r = mbedtls_asn1_write_tag(&c, em, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0) return 0;
+  return (size_t)(em + bytes - c);
+}
+
 /* Applies the RSA padding of a signature operation. */
 static bool sp_rsa_padding(SpSigKey *key, mbedtls_md_type_t md) {
   if (!sp_is_rsa(key->key)) return true;
@@ -3794,19 +3811,20 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
             : mbedtls_rsa_rsassa_pss_sign_ext(rsa, sp_random, NULL, md, (unsigned)hash_len, hash, salt, sig);
     sig_len = bytes;
   } else if (sp_is_rsa(key->key) && key->padding == 5) {
-    /* X9.31: 0x6A || 0xBB... || 0xBA || H, then the private operation. */
+    /* X9.31: 0x6A || 0xBB... || 0xBA || DigestInfo, then the private
+     * operation. */
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
     if (!sp_x931_digest(md)) return NULL;
-    if (hash_len + 2 > bytes) {
+    unsigned char em[MBEDTLS_MPI_MAX_SIZE];
+    size_t info = sp_x931_digest_info(md, hash, hash_len, em, bytes);
+    if (info == 0 || bytes < info + 2) {
       sp_throw_openssl("1C8000AB", "Provider routines", "key size too small", "ERR_OSSL_KEY_SIZE_TOO_SMALL", true);
       return NULL;
     }
-    unsigned char em[MBEDTLS_MPI_MAX_SIZE];
-    memset(em, 0xBB, bytes);
+    memset(em, 0xBB, bytes - info - 1);
     em[0] = 0x6A;
-    em[bytes - hash_len - 1] = 0xBA;
-    memcpy(em + bytes - hash_len, hash, hash_len);
+    em[bytes - info - 1] = 0xBA;
     r = mbedtls_rsa_private(rsa, sp_random, NULL, em, sig);
     mbedtls_platform_zeroize(em, sizeof em);
     sig_len = bytes;
@@ -3858,17 +3876,21 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
     return mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, any, sig) == 0;
   }
   if (sp_is_rsa(key->key) && key->padding == 5) {
-    /* X9.31: recover the encoding and check its shape and digest. */
+    /* X9.31: recover the encoding and check its header, filler, trailer
+     * and the DigestInfo it carries. */
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
     if (!sp_x931_digest(md)) return false;
-    if (sig_len != bytes || hash_len + 2 > bytes) return false;
+    if (sig_len != bytes) return false;
     unsigned char em[MBEDTLS_MPI_MAX_SIZE];
+    unsigned char expected[MBEDTLS_MPI_MAX_SIZE];
     if (mbedtls_rsa_public(rsa, sig, em) != 0) return false;
-    bool ok = em[0] == 0x6A && em[bytes - hash_len - 1] == 0xBA &&
-              memcmp(em + bytes - hash_len, hash, hash_len) == 0;
-    for (size_t i = 1; ok && i < bytes - hash_len - 1; i++) ok = em[i] == 0xBB;
+    size_t info = sp_x931_digest_info(md, hash, hash_len, expected, bytes);
+    bool ok = info != 0 && bytes >= info + 2 && em[0] == 0x6A && em[bytes - info - 1] == 0xBA &&
+              memcmp(em + bytes - info, expected + bytes - info, info) == 0;
+    for (size_t i = 1; ok && i < bytes - info - 1; i++) ok = em[i] == 0xBB;
     mbedtls_platform_zeroize(em, sizeof em);
+    mbedtls_platform_zeroize(expected, sizeof expected);
     return ok;
   }
   if (sp_is_ec(key->key) && key->p1363) {
@@ -5437,9 +5459,8 @@ static ScrDyn *sp_encode(ScrBytes *bytes, const ScrDyn *encoding) {
   scr_str_release(normalized);
   scr_bytes_release(bytes);
   if (!text) return NULL;
-  ScrDyn *result = sp_dyn_str(text);
-  scr_str_release(text);
-  return result;
+  /* sp_dyn_str consumes the string's reference. */
+  return sp_dyn_str(text);
 }
 
 /* update(data[, inputEncoding]): strings encode with the encoding, which
@@ -6592,12 +6613,17 @@ static bool sp_spkac_size_ok(size_t len) {
 bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding) {
   ScrBytes *input = sp_spkac_input(spkac, encoding);
   if (!input) return false;
-  SCR_BYTES_SNAPSHOT(input);
-  size_t len = (size_t)scr_bytes_byte_len(input);
+  /* The snapshot goes in its own view: when the bytes are shared,
+   * SCR_BYTES_SNAPSHOT rebinds the view to a cleanup-owned copy, while the
+   * reference sp_spkac_input returned is still the caller's to release.
+   * Snapshotting `input` itself would release that copy twice. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
   bool verified = false;
   unsigned char *der = NULL;
   SpSpkac s;
-  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(input->data, len, &der, &s)) {
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(view->data, len, &der, &s)) {
     unsigned char *p = (unsigned char *)s.alg;
     const unsigned char *end = s.alg + s.alg_len;
     size_t n;
@@ -6631,12 +6657,14 @@ bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding) {
 ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding) {
   ScrBytes *input = sp_spkac_input(spkac, encoding);
   if (!input) return NULL;
-  SCR_BYTES_SNAPSHOT(input);
-  size_t len = (size_t)scr_bytes_byte_len(input);
+  /* See scr_crypto_spkac_verify: the view may be a snapshot copy. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
   unsigned char *der = NULL;
   SpSpkac s;
   bool parsed = false;
-  if (len > 0 && sp_spkac_size_ok(len)) parsed = sp_spkac_parse(input->data, len, &der, &s);
+  if (len > 0 && sp_spkac_size_ok(len)) parsed = sp_spkac_parse(view->data, len, &der, &s);
   /* ASN1_STRING_to_UTF8: an IA5String's bytes become UTF-8, so a byte
    * with the high bit set takes two bytes. */
   size_t out_len = 0;
@@ -6660,12 +6688,14 @@ ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding) {
 ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding) {
   ScrBytes *input = sp_spkac_input(spkac, encoding);
   if (!input) return NULL;
-  SCR_BYTES_SNAPSHOT(input);
-  size_t len = (size_t)scr_bytes_byte_len(input);
+  /* See scr_crypto_spkac_verify: the view may be a snapshot copy. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
   unsigned char *der = NULL;
   SpSpkac s;
   ScrStr *pem = NULL;
-  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(input->data, len, &der, &s)) {
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(view->data, len, &der, &s)) {
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
     if (mbedtls_pk_parse_public_key(&pk, s.spki, s.spki_len) == 0) {

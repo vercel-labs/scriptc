@@ -1,4 +1,5 @@
 import { arrayClassDescriptor } from "./classes.js";
+import { mangleRecordNew } from "../mangle.js";
 import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
@@ -27,6 +28,7 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
+import { typedRefRecipe } from "./expr-calls.js";
 import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
@@ -196,6 +198,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     const once = host.emitExpr(e.args[3]!);
     host.toHeap(cb);
     let adapter = "null";
+    let box = "null";
     if (evArg.value === 0 || evArg.value === 4) {
       const param = cbT.params[0];
       const kind =
@@ -204,15 +207,21 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     } else if (evArg.value === 5 && cbT.params.length === 1) {
-      const name =
-        cbT.params[0]!.kind === "dyn" ? "scr_rl_history_thunk_dyn" : "scr_rl_history_thunk_arr";
-      host.declare(`declare void @${name}(ptr, ptr)`);
-      adapter = `@${name}`;
+      if (cbT.params[0]!.kind === "dyn") {
+        // A checked-dynamic listener receives the interface's history array
+        // itself: the runtime boxes it with the same interned live capsule a
+        // typed `rl.history` read yields, so `h === rl.history` holds and the
+        // listener's writes land in the array.
+        box = typedRefRecipe(host, { kind: "array", elem: { kind: "string" } });
+      } else {
+        host.declare(`declare void @scr_rl_history_thunk_arr(ptr, ptr)`);
+        adapter = "@scr_rl_history_thunk_arr";
+      }
     }
     const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
-    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
+    host.declare(`declare void @${target}(double, double, ptr, ptr, ptr, i1)`);
     B.line(
-      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, ptr ${box}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -256,6 +265,38 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   }
   if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple")
     return emitPromiseAllTuple(host, e);
+  if (e.fn === "text.encodeIntoStr") {
+    // TextEncoder.encodeInto over a statically typed string and Uint8Array:
+    // the runtime writes the two counts into slots of ours, and the result
+    // is the { read, written } record itself, so no operand or result is a
+    // checked-dynamic value.
+    if (e.args.length !== 2 || e.type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: text.encodeIntoStr signature");
+    const text = host.emitExpr(e.args[0]!);
+    const destination = host.emitExpr(e.args[1]!);
+    const readSlot = B.slot();
+    const writtenSlot = B.slot();
+    B.entryAllocas.push(`${readSlot} = alloca double`, `${writtenSlot} = alloca double`);
+    host.declare("declare void @scr_text_encode_into_str(ptr, ptr, ptr, ptr)");
+    B.line(
+      `call void @scr_text_encode_into_str(ptr ${text.name}, ptr ${destination.name}, ptr ${readSlot}, ptr ${writtenSlot})`,
+    );
+    const shapeId = e.type.shapeId;
+    const record = B.tmp();
+    B.line(`${record} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
+    for (const [field, slot] of [
+      ["read", readSlot],
+      ["written", writtenSlot],
+    ] as const) {
+      const { ptr, type } = host.recordFieldPtr(record, shapeId, field);
+      if (type.kind !== "f64")
+        throw new InternalCompilerError(`llvm emitter bug: text.encodeIntoStr ${field} slot`);
+      const value = B.tmp();
+      B.line(`${value} = load double, ptr ${slot}`);
+      B.line(`store double ${value}, ptr ${ptr}`);
+    }
+    return host.own({ name: record, type: e.type });
+  }
   if (e.fn === "promise.entryRejected") {
     // Whether a settled entry promise rejected (borrowed operand).
     const promise = host.emitExpr(e.args[0]!);
@@ -1098,6 +1139,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return out;
   }
+  // events.on over a compiled emitter builds its typed listener adapters
+  // beside the emitter calls (lib-process.ts), like events.once: the
+  // dedicated arm below the generic table, and a call that may throw.
+  if (e.fn === "events.onTyped") return host.emitErrorsEventsLibCall(e);
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }

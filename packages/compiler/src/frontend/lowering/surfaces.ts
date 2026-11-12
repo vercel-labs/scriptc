@@ -2592,6 +2592,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       // Node's own argument checks for the sizes, callbacks and surplus
       // arguments the declared overloads do not describe.
       "crypto.randomBytesAny",
+      "crypto.randomBytesAnyCb",
     ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
@@ -2616,8 +2617,12 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       // Node's own checks for the bounds and callback forms the declared
       // overloads do not describe.
       "crypto.randomIntAny",
+      "crypto.randomIntAnyCb",
     ],
     randomUUID: ["crypto.randomUUIDOpts"],
+    // A callback only the dynamic checker can see takes the function gate
+    // before the deferred call.
+    generateKey: ["crypto.checkCallback"],
     // A sign or verify callback of a type the checker cannot prove is a
     // function may be undefined at run time, where Node answers
     // synchronously; a function takes the asynchronous entry point.

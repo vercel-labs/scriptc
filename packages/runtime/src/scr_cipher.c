@@ -589,13 +589,27 @@ static ScrDyn *sc_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *
      * and Node deprecates the CryptoKey. */
     size_t len = key_object ? key_object_len : crypto_key_len;
     const unsigned char *data = key_object ? key_object : crypto_key;
-    if (crypto_key && scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    if (crypto_key && scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      /* A replaced process.emitWarning throws here, before the rest of the
+       * argument checks (Node's emitter call comes first). */
+      if (scr_exc_pending()) {
+        scr_dyn_release(encoding);
+        return NULL;
+      }
+    }
     key_bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
     if (len) memcpy(key_bytes->data, data, len);
   } else if (crypto_key_kind) {
     /* A public or private CryptoKey: DEP0203, then Node's key type error. */
+    if (scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      if (scr_exc_pending()) {
+        scr_dyn_release(encoding);
+        return NULL;
+      }
+    }
     scr_dyn_release(encoding);
-    if (scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
     scr_crypto_invalid_key_object_type(crypto_key_kind == 3);
     return NULL;
   } else if (scr_crypto_is_key_object(key)) {

@@ -66,12 +66,6 @@ function isCertificateRecord(lowerer: Lowerer, node: ts.Expression): boolean {
   return sym !== undefined && ts.symbolName(sym) === "Certificate" && lowerer.isStdlibSymbol(sym);
 }
 
-/** Whether `node` is the `new Certificate()` expression, whose evaluation
- * has no side effect to keep. */
-function isCertificateNew(lowerer: Lowerer, node: ts.Expression): boolean {
-  return ts.isNewExpression(node) && isCertificateClassValue(lowerer, node.expression);
-}
-
 /** The Certificate methods, static or on an instance. */
 export function lowerCertificateCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
@@ -97,8 +91,9 @@ export function lowerCertificateCall(lowerer: Lowerer, call: ts.CallExpression):
   const value: IrExpr = { kind: "libCall", fn: method.fn, args: [spkac, encoding], type, loc };
   // A static receiver is a compile-time value; an instance receiver
   // evaluates, as Node's method call does, and its record is otherwise
-  // unused.
-  if (isStatic || ts.isIdentifier(recv) || isCertificateNew(lowerer, recv)) return value;
+  // unused. That includes `new Certificate(args).verifySpkac(…)`, whose
+  // construction still evaluates its arguments (and throws from them).
+  if (isStatic || ts.isIdentifier(recv)) return value;
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(recv), loc }],

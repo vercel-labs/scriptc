@@ -37,6 +37,9 @@ const runtimeSources = [
   "scr_bigint.c",
   "scr_async.c",
   "scr_async_dyn.c",
+  // scr_pki.c's callback-style sign and verify complete through the loop's
+  // defer queue, which lives in scr_crypto_async.c.
+  "scr_crypto_async.c",
   "scr_child.c",
   "scr_path.c",
   "scr_url.c",

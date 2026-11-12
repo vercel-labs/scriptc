@@ -88,6 +88,9 @@ ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash);
 /* Secret KeyObjects (scr_lib.c). */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
+/* Node's synchronous callback gate for generateKey: a non-function throws
+ * ERR_INVALID_ARG_TYPE, a function passes. */
+void scr_crypto_check_callback(const ScrDyn *callback);
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key);
 bool scr_crypto_is_key_object(const ScrDyn *value);
 /* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a private or public

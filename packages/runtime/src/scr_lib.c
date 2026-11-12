@@ -10564,12 +10564,20 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
      * and a CryptoKey reports DEP0203. */
     size_t len = key_object ? key_object_len : crypto_key_len;
     const unsigned char *data = key_object ? key_object : crypto_key;
-    if (crypto_key && scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    if (crypto_key && scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      /* A replaced process.emitWarning throws here, before the digest check
+       * (Node's emitter call comes first). */
+      if (scr_exc_pending()) return NULL;
+    }
     bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
     if (len) memcpy(bytes->data, data, len);
   } else if (crypto_key_kind) {
     /* A public or private CryptoKey: DEP0203, then Node's key type error. */
-    if (scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    if (scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      if (scr_exc_pending()) return NULL;
+    }
     scr_crypto_invalid_key_object_type(crypto_key_kind == 3);
     return NULL;
   } else if (scr_crypto_is_key_object(key)) {
@@ -11178,6 +11186,42 @@ double scr_crypto_random_int(double min, double max) { return scr_random_int_syn
 
 double scr_crypto_random_int_max(double max) { return scr_random_int_sync(0, max, false); }
 
+/* crypto.randomBytes(n) → a real Buffer. The entry lives here rather than
+ * beside the fs/promises code in scr_bytes_io.c: a localized library
+ * archive links only the runtime objects its program reaches, and
+ * scr_bytes_io.o carries fs/promises code whose promise helpers live in the
+ * event-loop unit library links exclude, so a reference to that unit
+ * drags in a closure that cannot link. This unit always links, and the
+ * entry depends only on scr_bytes_new and the system CSPRNG. */
+ScrBytes *scr_crypto_random_bytes(double n) {
+  if (!(n >= 0 && n <= 2147483647)) {
+    char num[32];
+    size_t numlen = scr_f64_to_str(n, num);
+    char msg[128];
+    int mlen = snprintf(
+        msg, sizeof msg,
+        "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
+        (int)numlen, num);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, n);
+  b->is_buffer = true; /* Node's randomBytes answers a Buffer */
+  if (b->len > 0) arc4random_buf(b->data, b->len);
+  return b;
+}
+
+/* The checked-dynamic completion lives in scr_crypto_async.c, a unit the
+ * runtime unit tests do not link beside scr_lib.c. Declared weak, before
+ * its first use, so a test binary that links scr_lib.c on its own still
+ * links; an executable's link features always select the defining unit for
+ * a program that reaches it. Library builds drop the reference entirely
+ * (#ifndef SCR_LIB at its uses), so nothing of that unit reaches a library
+ * archive, which SC4005 guarantees first. */
+#ifndef SCR_LIB
+extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
+#endif
+
 /* randomBytes and randomInt over any values: Node's checks in its order,
  * then a Buffer or a number, or the callback with (null, value) in a later
  * macrotask. */
@@ -11190,7 +11234,12 @@ ScrDyn *scr_crypto_random_bytes_any(ScrDyn *size, ScrDyn *callback) {
    * the callback's. */
   ScrBytes *bytes = scr_crypto_random_bytes(size->v.num);
   if (!bytes) return NULL;
-  if (callback->kind == SCR_DYN_UNDEF) return scr_dyn_new_buffer(bytes);
+  if (callback->kind == SCR_DYN_UNDEF) {
+    /* Boxing retains the Buffer. */
+    ScrDyn *result = scr_dyn_new_buffer(bytes);
+    scr_bytes_release(bytes);
+    return result;
+  }
   if (!scr_dyn_is_callable(callback)) {
     scr_bytes_release(bytes);
     scr_dyn_arg_type_fail("callback", "of type function", callback);
@@ -11400,18 +11449,6 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
 
-/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c). Library mode
- * leaves that unit and its loop out of the archive (LIB_RUNTIME_SOURCES),
- * and its async_free gate refuses the callback form before emission
- * (SC4005), so no reference exists there at all: a library archive's symbol
- * table says nothing about this unit. Executable builds and the runtime
- * unit tests, which link scr_lib.c on its own, take the reference as weak:
- * the pack's unit always defines it, and a build without the unit still
- * links. */
-#ifndef SCR_LIB
-extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
-#endif
-
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
 /* DEP0203, once per process: passing a CryptoKey to node:crypto functions
@@ -11602,6 +11639,15 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   ScrDyn *result = scr_key_object_new(bytes->data, (size_t)scr_bytes_byte_len(bytes));
   scr_bytes_release(bytes);
   return result;
+}
+
+/* Node's synchronous callback gate: a callback that is not a function
+ * throws ERR_INVALID_ARG_TYPE before the operation is scheduled. The
+ * generateKey lowering sequences it after the argument expressions, where
+ * Node validates the callback — before its type and options checks. */
+void scr_crypto_check_callback(const ScrDyn *callback) {
+  if (!scr_dyn_is_callable(callback))
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
 }
 
 /* generateKeySync(type, options) for "hmac" (options.length in bits,

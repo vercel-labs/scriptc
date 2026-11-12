@@ -148,4 +148,30 @@ function visit(list: NodeList): void {
 - Two reads of the field need not give the same array, so the arrays fields hold are never compared by identity: with `===` or `!==`, as an `indexOf` or `includes` argument, or as a Map key or Set element. Compare the elements instead, or keep a copy made with `slice()` where identity matters.
 - Instances of the class are not constructed through a class value. They may become dynamic values, for example through a conversion to `unknown` or an interface several classes implement, when the dynamic code that sees them uses the class's own members and does not read the field: scriptc follows such values through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, the members of dynamic objects and arrays, calls through function values, and the callbacks of array methods such as `map` and `forEach`, and finds the first that reaches a read or write of the field's name or of a computed key, a checked cast to a record, array or collection type that has a record member of the field's name or holds a dynamic value, a call through a value no compiled function reaches (also as an array method's callback), or a library call other than printing, `JSON.stringify` without a replacer, `publish`, a worker's `workerData`, and class tests and casts. A dynamic view of an inline field would read it as a new array each time, so when such an operation exists the field keeps its elements in an ordinary array, which behaves as under Node.js, and scriptc reports a warning (SC6105).
 
-scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux, the elements stay in an ordinary array object.
+scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux and macOS, the elements stay in an ordinary array object.
+
+## Load hook
+
+`@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.
+
+```console
+node --require @scriptc/experimental/register app.ts
+```
+
+`--import` works the same way. Node.js 24 or newer is required.
+
+The hook applies the refusals in `refusals.json`, the same data the compiler uses:
+
+- Importing a builtin module that scriptc does not support fails with the compiler's code and message (`SC1010`).
+- Loading a native addon (`.node`) fails with the compiler's code and message (`SC2020`).
+- `process.getBuiltinModule` of an unsupported builtin throws the error a compiled program throws for that call.
+
+A program can therefore run under Node.js with the hook, fail where the build fails, and give the same code and message. Running both in CI catches a refusal before a binary is built or deployed.
+
+scriptc refuses code generation from strings, which Node.js does only with `--disallow-code-generation-from-strings`. The hook cannot set the flag for the process it joins, so add it to `NODE_OPTIONS`:
+
+```console
+NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/experimental/register app.ts
+```
+
+The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.

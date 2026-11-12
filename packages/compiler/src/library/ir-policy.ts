@@ -61,6 +61,22 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["crypto.dhGroupNew", "crypto.getDiffieHellman and createDiffieHellmanGroup"],
   ["crypto.checkPrime", "crypto.checkPrime and checkPrimeSync"],
   ["crypto.generatePrime", "crypto.generatePrime and generatePrimeSync"],
+  // crypto's callback forms run their callback from the crypto defer
+  // queue (or the thread pool), which library links exclude: a program
+  // that calls one must refuse rather than derive and discard the result.
+  // The synchronous spellings (pbkdf2Any, randomBytesAny, …) stay.
+  ["crypto.pbkdf2Cb", "the async crypto callback surface (pbkdf2)"],
+  ["crypto.pbkdf2AnyCb", "the async crypto callback surface (pbkdf2)"],
+  ["crypto.hkdfCb", "the async crypto callback surface (hkdf)"],
+  ["crypto.hkdfAnyCb", "the async crypto callback surface (hkdf)"],
+  ["crypto.scryptCb", "the async crypto callback surface (scrypt)"],
+  ["crypto.scryptAnyCb", "the async crypto callback surface (scrypt)"],
+  ["crypto.randomBytesCb", "the async crypto callback surface (randomBytes)"],
+  ["crypto.randomBytesAnyCb", "the async crypto callback surface (randomBytes)"],
+  ["crypto.randomIntCb", "the async crypto callback surface (randomInt)"],
+  ["crypto.randomIntAnyCb", "the async crypto callback surface (randomInt)"],
+  ["crypto.randomFillCb", "the async crypto callback surface (randomFill)"],
+  ["crypto.generateKeyCb", "the async crypto callback surface (generateKey)"],
   ["crypto.createPrivateKey", "asymmetric KeyObjects, generateKeyPair, sign and verify"],
   ["crypto.createPublicKey", "asymmetric KeyObjects, generateKeyPair, sign and verify"],
   ["crypto.createSign", "asymmetric KeyObjects, generateKeyPair, sign and verify"],

@@ -59,6 +59,26 @@ console.log("instance", cert.verifySpkac(SPKAC), cert.verifySpkac(SIGFLIP) === C
 console.log("instance challenge", hex(cert.exportChallenge(SPKAC)), cert.exportPublicKey(SPKAC).equals(pem));
 console.log("instance shape", JSON.stringify(Object.keys(cert)), JSON.stringify({ ...cert }), JSON.stringify(cert), typeof cert);
 
+// Node's constructor ignores its arguments but still evaluates them, so a
+// method called on a fresh instance keeps their side effects (and throws).
+let constructed = 0;
+const observed = (): string => {
+  constructed += 1;
+  return "ignored";
+};
+// @ts-expect-error -- Node's constructor declares no parameters; its call evaluates one anyway.
+const fresh = new Certificate(observed());
+console.log("constructor argument", fresh.verifySpkac(SPKAC), constructed);
+// @ts-expect-error -- the receiver's construction evaluates the argument before the call.
+console.log("receiver argument", new Certificate(observed()).exportChallenge(SPKAC).toString(), constructed);
+const throwingArgument = (): string => {
+  throw new Error("constructor argument ran");
+};
+show("receiver throwing argument", () => {
+  // @ts-expect-error -- the receiver's construction evaluates (and throws from) the argument.
+  return new Certificate(throwingArgument()).verifySpkac(SPKAC);
+});
+
 show("verify number", () => Certificate.verifySpkac(7 as any));
 show("verify undefined", () => Certificate.verifySpkac(undefined as any));
 show("verify null", () => Certificate.verifySpkac(null as any));

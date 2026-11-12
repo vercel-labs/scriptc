@@ -6278,9 +6278,14 @@ static void scr_stream_rl_hooks_free(void) {
     scr_rl_hooks = h->next;
     free(h);
   }
+  /* An interface left open at exit still owns its 'resize' listener
+   * (+1 here): releasing it lets the last reference go, so the RC audit
+   * sees nothing live. The input hooks above borrow the emitter's
+   * closures, so freeing their nodes is all they need. */
   while (scr_rl_resize_hooks) {
     ScrRlResizeHook *h = scr_rl_resize_hooks;
     scr_rl_resize_hooks = h->next;
+    scr_dyn_release(h->cb);
     free(h);
   }
 }

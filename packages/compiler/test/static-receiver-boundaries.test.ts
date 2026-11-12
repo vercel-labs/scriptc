@@ -5,24 +5,8 @@ import { analyze } from "../src/index.js";
 
 test.each([
   [
-    "constructor reads this",
-    "function Make() { console.log(this); return { value: 1 }; } new Make();",
-  ],
-  [
-    "constructor arrow captures this",
-    "function Make() { return { read: () => this }; } new Make();",
-  ],
-  [
-    "constructor default reads this",
-    "function Make({value = this} = {}) { return { value }; } new Make();",
-  ],
-  [
     "constructor reads new.target",
     "function Make() { console.log(new.target); return { value: 1 }; } new Make();",
-  ],
-  [
-    "constructor returns a primitive on one branch",
-    "function Make(flag) { if (flag) return 1; return { value: 1 }; } new Make(true);",
   ],
   [
     "constructor binding reassigned",
@@ -35,6 +19,40 @@ test.each([
     writeFileSync(entry, source);
     const { coverage } = analyze(entry);
     expect([...coverage.diagnostics, ...(coverage.runtimeFences ?? [])].length).toBeGreaterThan(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Observing `this` (directly, through an arrow the returned object holds, or
+// in a parameter default) and returning a primitive on one branch and an
+// object on another no longer fence: the constructor keeps its receiver in
+// the hidden foreign-result slot, so these lower and run as Node does.
+test.each([
+  [
+    "constructor reads this",
+    "function Make() { console.log(this); return { value: 1 }; } new Make();",
+  ],
+  [
+    "constructor arrow captures this",
+    "function Make() { return { read: () => this }; } new Make();",
+  ],
+  [
+    "constructor default reads this",
+    "function Make({value = this} = {}) { return { value }; } new Make();",
+  ],
+  [
+    "constructor returns a primitive on one branch",
+    "function Make(flag) { if (flag) return 1; return { value: 1 }; } new Make(true);",
+  ],
+] as const)("object-returning constructor lowers through the receiver when %s", (_name, source) => {
+  const dir = mkdtempSync("/tmp/scriptc-constructor-boundary-");
+  try {
+    const entry = join(dir, "main.mjs");
+    writeFileSync(entry, source);
+    const { coverage } = analyze(entry);
+    expect(coverage.diagnostics).toHaveLength(0);
+    expect(coverage.runtimeFences ?? []).toHaveLength(0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

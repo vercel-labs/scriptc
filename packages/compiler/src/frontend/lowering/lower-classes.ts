@@ -12175,27 +12175,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
   if (objectFactory) return objectFactory;
-  if (ts.isIdentifier(expr.expression)) {
-    const symbol = lowerer.resolveValueSymbol(expr.expression);
-    const declaration =
-      symbol &&
-      symbol.declarations.find((node) => ts.isFunctionDeclaration(node) && node.body !== undefined);
-    if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) {
-      const last = declaration.body.statements.nodes.at(-1);
-      if (
-        last &&
-        ts.isReturnStatement(last) &&
-        last.expression &&
-        ts.isObjectLiteralExpression(last.expression)
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          expr,
-          "object-returning constructors that observe this or return mixed primitive/object values",
-        );
-      }
-    }
-  }
   let selected: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(selected)) selected = selected.expression;
   if (ts.isConditionalExpression(selected)) {

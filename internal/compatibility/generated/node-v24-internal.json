@@ -53903,6 +53903,12 @@
           "tests/corpus/js-abort-portable.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/structured-clone-regexp.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/timers-callback-this.cjs",
           "tests/corpus/timers-cross-kind-clears.ts",
@@ -53923,7 +53929,6 @@
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
           "tests/diagnostics/compat-absent-lowerings.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -54798,10 +54803,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceEntry",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -54824,10 +54831,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceMark",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -54850,10 +54859,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceMeasure",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -54876,10 +54887,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.PerformanceObserver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -54902,8 +54916,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.PerformanceObserverEntryList",
+        "tests": [
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55914,6 +55932,7 @@
         "evidence": "compiler-feature:globals.structuredClone",
         "tests": [
           "tests/corpus/2283-structured-clone.cjs",
+          "tests/corpus/structured-clone-regexp.ts",
           "tests/corpus/5324-structured-clone-documents.ts",
           "tests/corpus/9917-structured-clone-errors.ts"
         ]
@@ -78412,7 +78431,11 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-constructors.cjs",
+          "tests/corpus/perf-entry-globals.cjs",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-observer-family.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
       },
@@ -78772,7 +78795,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceEntry",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78907,7 +78931,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceMark",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78934,7 +78959,8 @@
         "evidence": "compiler-feature:perf_hooks.detail",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -78961,7 +78987,8 @@
         "evidence": "compiler-feature:perf_hooks.PerformanceMeasure",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79954,10 +79981,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.PerformanceObserver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-constructors.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79980,8 +80009,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.disconnect",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80003,8 +80037,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.observe",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80026,8 +80065,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserver.takeRecords",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80072,8 +80116,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceObserverEntryList",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80095,8 +80144,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntries",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80118,8 +80172,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntriesByName",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80141,8 +80200,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceObserverEntryList.getEntriesByType",
+        "tests": [
+          "tests/corpus/perf-observer-family.ts",
+          "tests/corpus/perf-observer-delivers-at-exit.ts",
+          "tests/corpus/perf-entry-globals.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -585,6 +585,8 @@ describe("library profile fences", () => {
     // default to performance.now()), and so do the event-loop metrics, so
     // they join the perf_hooks family.
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
+      "node-builtin.perf_hooks.PerformanceMark",
+      "node-builtin.perf_hooks.PerformanceObserver",
       "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",

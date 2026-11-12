@@ -52,7 +52,25 @@ function sequences(mod: IrModule): Extract<IrExpr, { kind: "seqExpr" }>[] {
   return found;
 }
 
-test("a function value's constructor evaluates the receiver, then the arguments, then refuses", async () => {
+/** The dynamic call a `<function>.constructor(...)` site lowers to, found by
+ * the `%constructorReceiver` slot its receiver is evaluated into. */
+function constructorCall(mod: IrModule): {
+  slot: string;
+  init: IrExpr;
+  call: Extract<IrExpr, { kind: "dynCall" }>;
+} | null {
+  for (const sequence of sequences(mod)) {
+    const decl = sequence.stmts[0];
+    if (decl?.kind !== "varDecl" || !decl.localId.startsWith("%constructorReceiver")) continue;
+    for (const result of [sequence.result]) {
+      if (result.kind === "dynCall" && result.receiver?.kind === "varRef")
+        return { slot: decl.localId, init: decl.init, call: result };
+    }
+  }
+  return null;
+}
+
+test("a function value's constructor read and call go through the value", async () => {
   const mod = await compileToIr(
     `function pick(): () => number {
   return () => 1;
@@ -64,16 +82,60 @@ pick().constructor(argument());
 `,
     "ts",
   );
+  // No static refusal: a callable return type cannot prove the function has
+  // no own `constructor` property, so the value decides.
+  expect(codeGenerationThrows(mod)).toEqual([]);
+  const dispatched = constructorCall(mod);
+  expect(dispatched).not.toBeNull();
+  // The receiver is evaluated once, before the arguments reach the call.
+  expect(dispatched!.init.kind).toBe("dynFrom");
+  expect((dispatched!.init as Extract<IrExpr, { kind: "dynFrom" }>).value).toMatchObject({
+    kind: "call",
+    callee: "pick",
+  });
+  expect(dispatched!.call.calleeName).toBe("pick(...).constructor");
+  expect(dispatched!.call.receiver).toMatchObject({ kind: "varRef", localId: dispatched!.slot });
+  expect(dispatched!.call.args).toHaveLength(1);
+});
+
+test("a nullable function receiver reads the member before the arguments", async () => {
+  const mod = await compileToIr(
+    `const maybe: (() => number) | undefined = undefined;
+function argument(): string {
+  return "return 1";
+}
+maybe!.constructor(argument());
+`,
+    "ts",
+  );
+  // The receiver may be undefined at run time, where Node throws the
+  // property-read TypeError instead of reaching the constructor at all, so
+  // the read keeps deciding on the value.
+  expect(codeGenerationThrows(mod)).toEqual([]);
+  const dispatched = constructorCall(mod);
+  expect(dispatched).not.toBeNull();
+  expect(dispatched!.call.calleeName).toBe("maybe.constructor");
+  // Only the receiver is evaluated into a statement of its own; the
+  // argument stays in the call, so the member read (the call's callee) runs
+  // before it and a nullish receiver throws first.
+  expect(sequences(mod).find((seq) => seq.result === dispatched!.call)!.stmts).toHaveLength(1);
+  expect(dispatched!.call.args).toHaveLength(1);
+});
+
+test("a class value's constructor keeps the static refusal", async () => {
+  const mod = await compileToIr(
+    `class Example {
+  method() {
+    return 4;
+  }
+}
+Example.constructor("return 1");
+`,
+    "ts",
+  );
+  // A class object answers the Function constructor, which the compiler
+  // refuses without running the arguments' conversions.
   expect(codeGenerationThrows(mod)).toHaveLength(1);
-  // The receiver and the argument reach the call, in source order.
-  const refusal = sequences(mod).find(
-    (seq) => seq.result.kind === "libCall" && seq.result.fn === "error.nodeThrow",
-  );
-  expect(refusal).toBeDefined();
-  const callees = refusal!.stmts.map((s) =>
-    s.kind === "exprStmt" && s.expr.kind === "call" ? s.expr.callee : s.kind,
-  );
-  expect(callees).toEqual(["pick", "argument"]);
 });
 
 test("a function the program gives its own constructor property keeps it", async () => {

@@ -50,6 +50,34 @@ report("element access", () => {
   expression["constructor"]("return 1");
 });
 
+// A callable return type cannot hide the function's own `constructor`
+// property: the value answers the read.
+function make(): () => number {
+  const made = () => 1;
+  made.constructor = () => 2;
+  return made;
+}
+report("own constructor", () => {
+  console.log(make().constructor());
+});
+
+// A nullish receiver throws the property-read TypeError before any
+// argument runs.
+const absent: (() => number) | undefined = undefined;
+const nothing: (() => number) | null = null;
+const skipped: string[] = [];
+function recorded(tag: string): string {
+  skipped.push(tag);
+  return "return 5";
+}
+report("undefined receiver", () => {
+  absent!.constructor(recorded("never"));
+});
+report("null receiver", () => {
+  nothing!.constructor(recorded("never"));
+});
+console.log(skipped.join(","));
+
 // The receiver is read first, then the arguments, in order.
 const order: string[] = [];
 function receiver(): () => number {

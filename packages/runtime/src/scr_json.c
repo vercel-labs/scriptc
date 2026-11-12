@@ -18248,9 +18248,19 @@ static void scr_function_constructors_cleanup(void) {
 }
 
 static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)closure; (void)args; (void)argc;
-  static const char message[] = "constructing functions from source text is not supported in static code";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2010");
+  (void)closure;
+  /* Function(...) is the Function constructor itself, which a compiled
+   * program answers as `node --disallow-code-generation-from-strings` does.
+   * V8 converts every parameter and the body to a string in order before it
+   * checks, so the program sees its toString calls and their exceptions
+   * first. */
+  for (size_t i = 0; i < argc; i++) {
+    ScrStr *text = scr_dyn_string_coerce_js(args[i]);
+    if (!text) return NULL; /* the conversion threw */
+    scr_str_release(text);
+  }
+  static const char message[] = "Code generation from strings disallowed for this context";
+  scr_throw_error_msg(SCR_ERR_EVAL, message, sizeof message - 1);
   return NULL;
 }
 

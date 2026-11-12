@@ -24,6 +24,7 @@ Reached through an untyped value, those members answer a function whose call thr
 Replacing a console member, such as `console.log = capture`, is refused in TypeScript and throws `SC2020` through an untyped value, because direct console calls never read the member.
 `console` passed into a Node island is the island's own console; a console nested in an object that crosses into an island throws.
 Members of custom `Console` instances as values are unsupported.
+A custom `Console` instance lowers the prototype's whole method set — `log`, `info`, `debug`, `error`, `warn`, `assert`, `dir`, `dirxml`, `table`, `trace`, `count`, `countReset`, `time`, `timeEnd`, `timeLog`, `group`, `groupCollapsed`, `groupEnd`, and `clear` — with its own counters, timers, and group indentation, and `new Console({ ..., groupIndentation })` validates the width as Node does; `profile`, `profileEnd`, `timeStamp`, `colorMode`, and `inspectOptions` are refused.
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
 The replacement can be assigned through a stored stream as well, such as `out.write = wrapper` where `out` is a `NodeJS.WriteStream` parameter holding `process.stdout`.

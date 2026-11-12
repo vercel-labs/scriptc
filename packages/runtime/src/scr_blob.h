@@ -60,16 +60,24 @@ ScrDyn *scr_console_native(void);
  * around the call, a completion handler that swallows the write's own
  * error, synchronous throws discarded); the global console handle writes
  * the process streams like console.log/error. */
+/* The counters and timers Node keeps per Console instance (count/countReset
+ * and time/timeEnd/timeLog). Defined in scr_console_native.c. */
+typedef struct ScrConsoleStore ScrConsoleStore;
+
 typedef struct ScrConsoleInst {
   size_t rc;
   double fd[2];                /* 1/2 process stdio targets; 0 when stream[i] is bound */
   ScrStream *stream[2];        /* owned */
   ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
   bool ignore_errors;
+  double group_width;          /* the groupIndentation option; 2 by default */
+  size_t group_indent;         /* spaces prefixed to every line while grouped */
+  ScrConsoleStore *counts;     /* owned; allocated by the first count */
+  ScrConsoleStore *timers;     /* owned; allocated by the first time */
   void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
 } ScrConsoleInst;
-ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors, double group_width);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);

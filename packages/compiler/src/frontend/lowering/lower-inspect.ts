@@ -5235,10 +5235,13 @@ export function lowerFormatCall(
   return concatAll(parts, loc);
 }
 
-/** One space-joined argument of util.format, as Node's formatter renders
- * it after the format string: strings verbatim, everything else through
- * inspect at the default depth. */
-function formatRestValue(
+/** One util.format rest argument as a string, as Node's formatter renders
+ * it after the format string: strings verbatim, numbers and booleans by
+ * their String() text (a number through inspect, so -0 prints "-0"),
+ * everything else through the static inspect machinery at the default
+ * depth. The console paths join these with spaces, as formatWithOptions
+ * does. */
+export function formatRestValue(
   lowerer: Lowerer,
   node: ts.Expression,
   value: IrExpr,

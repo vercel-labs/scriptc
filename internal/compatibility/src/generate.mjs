@@ -862,7 +862,7 @@ function publicDetail(tier) {
       return "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.";
     }
     if (source === "compiler-feature:console.Console") {
-      return "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.";
+      return "Instances over process.stdout, process.stderr, or stream writables lower the whole prototype (log, info, debug, error, warn, assert, dir, dirxml, table, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, clear, and trace), with per-instance counters, timers, and group indentation, Node's ignoreErrors handling, and groupIndentation validation; profile, profileEnd, timeStamp, colorMode, and inspectOptions remain refused.";
     }
     if (source.startsWith("compiler-feature:webstreams.streamConsumers.")) {
       return "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.";

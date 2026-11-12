@@ -271,13 +271,19 @@
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_inst_invoke",
-  "message": "Format strings through dynamic Console calls have no lowering",
+  "function": "scr_console_inst_invoke_all",
+  "message": "Calling Console.%s through a stored value has no lowering; call it on the instance",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
   "function": "scr_console_inst_write",
+  "message": "This Console value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_state",
   "message": "This Console value has no lowering",
   "code": "SC2020"
  },
@@ -301,25 +307,25 @@
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_inst_table",
   "message": "console.table of this value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_inst_table",
   "message": "console.table of an Error value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_inst_table",
   "message": "console.table with a properties argument other than an array of strings has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_inst_table",
   "message": "console.table rows of this kind have no lowering",
   "code": "SC2020"
  },

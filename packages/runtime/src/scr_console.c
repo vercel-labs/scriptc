@@ -528,6 +528,34 @@ static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args, bo
  * it. */
 SCR_TL char *(*scr_console_indenter)(const char *line, size_t *used) = NULL;
 
+/* kWriteToConsole's indentation (scr_console_native.c calls it for both the
+ * global console's rewrite and a Console instance's line): `indent` spaces
+ * before the line and after every newline that a further character follows.
+ * A final newline is the one the write appends AFTER indenting, as Node
+ * does, so nothing is added after it. Heap copy; its length in *used. */
+char *scr_console_indent_copy(const char *line, size_t n, size_t indent, size_t *used) {
+  size_t breaks = 0;
+  for (size_t i = 0; i < n; i++)
+    if (line[i] == '\n' && i + 1 != n) breaks++;
+  if (indent != 0 && breaks >= (SIZE_MAX - n) / indent)
+    scr_trap("scriptc: console indentation is too large\n");
+  size_t total = n + indent * (breaks + 1);
+  char *out = malloc(total ? total : 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t o = 0;
+  memset(out, ' ', indent);
+  o += indent;
+  for (size_t i = 0; i < n; i++) {
+    out[o++] = line[i];
+    if (line[i] == '\n' && i + 1 != n) {
+      memset(out + o, ' ', indent);
+      o += indent;
+    }
+  }
+  *used = o;
+  return out;
+}
+
 /* Console methods submit one formatted chunk to their backing stream before
  * returning, as Node's console does: a caller observing a live child sees
  * this line before the next JS turn. With ignoreErrors (the global console,

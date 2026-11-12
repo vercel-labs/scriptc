@@ -2328,6 +2328,31 @@ console.log(Counter.count);
     expect(r.stdout).toBe("true\n5 5 2\ntrue\n5\n");
   });
 
+  test("deleting a reflected static field is refused, and other keys still delete", async () => {
+    // The table entry would go while the class's compiled code kept reading
+    // the field's own storage, so the delete is refused before it runs.
+    const r = await compileAndRun(
+      "static-delete",
+      `class Base {
+  static count = 1;
+}
+function remove(C: any, key: string): boolean {
+  return Reflect.deleteProperty(C, key);
+}
+try {
+  console.log(remove(Base, "count"));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"));
+}
+const added: any = Base;
+added.extra = 1;
+console.log(remove(Base, "extra"), added.extra, Base.count, Reflect.get(Base, "count"));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue undefined 1 1\n");
+  });
+
   test("a public static named like a private one never publishes the private value", async () => {
     // \`static ["#secret"]\` is a public key, distinct from the private
     // \`#secret\`. The class keeps its reflection refusal instead of listing

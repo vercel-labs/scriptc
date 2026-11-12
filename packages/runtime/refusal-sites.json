@@ -1357,6 +1357,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_weak_ref_get",
+  "message": "WeakRef method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_native_set_get",
   "message": "Native Set method values have no lowering",
   "code": "SC2020"

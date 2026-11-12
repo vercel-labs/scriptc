@@ -12,8 +12,9 @@ import {
   type IrType,
 } from "../../../ir/ir.js";
 import { varRef } from "../../../ir/build.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
+import { callableBox } from "../callable-properties.js";
 import {
   arrayNumberRead,
   arrayValueRead,
@@ -122,8 +123,18 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
       const probed = tryLowerExpression(lowerer, target.expression);
       // `value.#x ??= v` on a checked-dynamic value names the brand-checked
       // field (fieldTarget), never a property called "#x".
-      if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(target.name)) {
-        const receiver = save(probed, "%shortCircuitReceiver");
+      // A callable receiver joins this path: the identity-preserving box
+      // shares the closure's own-property table, so the same keyed read and
+      // write address `fn.x` exactly as a plain `fn.x = v` does
+      // (callable-properties.ts).
+      const dynReceiver =
+        probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(target.name)
+          ? probed
+          : probed?.type.kind === "func" && !ts.isPrivateIdentifier(target.name)
+            ? callableBox(lowerer, probed)
+            : null;
+      if (dynReceiver !== null) {
+        const receiver = save(dynReceiver, "%shortCircuitReceiver");
         const key: IrExpr = { kind: "strLit", value: target.name.text, type: STRING, loc };
         storage = DYN;
         read = { kind: "dynKeyGet", key, value: receiver, type: DYN, loc };
@@ -292,6 +303,41 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         storage = field.fieldType;
         read = lowerer.fieldGetExpr(field, locOf(target), target);
         write = (value) => lowerer.fieldSetStmt(field, value, loc, target);
+      } else if (
+        isJsSourceFile(ts.getSourceFileOfNode(target)) &&
+        lowerer.dynConvertible(receiver.type) &&
+        (receiver.type.kind === "object" || lowerer.jsDynamicMemberTarget(receiver.type))
+      ) {
+        // `this[key] ||= v` in JavaScript, a key the static type does not
+        // declare: the property lives in the checked-dynamic view, whose
+        // capsule shares the receiver's storage (a record's or array's
+        // named-property store, an instance's property bag), so the read and
+        // the write are the keyed operations a plain `this[key] = v` emits
+        // (element-access.ts, lower-stmts.ts).
+        const boxed = save(lowerer.coerceToExpected(receiver, DYN), "%shortCircuitReceiver");
+        const dynKey = save(
+          {
+            kind: "libCall",
+            fn: "dyn.propertyKey",
+            args: [lowerer.coerceInto(target.argumentExpression, key, DYN)],
+            type: DYN,
+            loc,
+          },
+          "%shortCircuitKey",
+        );
+        storage = DYN;
+        read = { kind: "dynKeyGet", key: dynKey, value: boxed, type: DYN, loc };
+        write = (value) => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySetComputed",
+            args: [boxed, dynKey, value],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
       } else {
         lowerer.unsupported(
           "SC1090",

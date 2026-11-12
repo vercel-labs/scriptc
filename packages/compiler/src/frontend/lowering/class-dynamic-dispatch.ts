@@ -1645,6 +1645,14 @@ export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
  * continue through their existing runtime implementation. */
+/** The deletes a listed static field can meet: each runs the static delete
+ * guard first once a table is installed. */
+const STATIC_DELETE_CALLS = new Set<IrLibFn>([
+  "dyn.keyDelete",
+  "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
+]);
+
 /** A native static write the table sync already rewrote: its first
  * statement declares the sync's temporary. */
 function isStaticTableSync(node: IrStmt): boolean {
@@ -2007,8 +2015,35 @@ export class ClassDynamicDispatch {
    * subclass) would leave behind: those are refused at run time before the
    * table changes. */
   private branchStaticDescriptorWrites(lowerer: Lowerer): boolean {
-    const helper = this.descriptorHelper;
-    if (!helper || this.staticTablesInstalled.size === 0) return false;
+    let changed = false;
+    if (this.descriptorHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.descriptorHelper,
+          (field, owner) =>
+            `redefining the static field '${field}' of '${owner}' with 'Object.defineProperty' is not supported yet (the class's compiled code reads the field's own storage)`,
+        ) || changed;
+    if (this.staticDeleteHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.staticDeleteHelper,
+          (field, owner) =>
+            `deleting the static field '${field}' of '${owner}' is not supported yet (the class's compiled code keeps reading the field's own storage)`,
+        ) || changed;
+    return changed;
+  }
+
+  /** Refuses, at the head of `helper` (parameters `target` and `key`), an
+   * operation on a static field an installed table lists: one branch per
+   * class object the target can hold and field visible on it. */
+  private fenceStaticFieldKeys(
+    lowerer: Lowerer,
+    helper: IrFunction,
+    message: (field: string, owner: string) => string,
+  ): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
     let changed = false;
     const loc = helper.loc;
     const target = varRef("target", DYN, loc);
@@ -2043,7 +2078,7 @@ export class ClassDynamicDispatch {
                   kind: "logical",
                   op: "&&",
                   // The installer defines the table's own entries through
-                  // this helper before the table is ready.
+                  // the defineProperty helper before the table is ready.
                   left: varRef(staticTableReadyGlobal(info), BOOL, loc),
                   right: classValueIdentity(target, keyClass, actual, loc),
                   type: BOOL,
@@ -2056,7 +2091,7 @@ export class ClassDynamicDispatch {
                 {
                   kind: "runtimeFence",
                   code: "SC1090",
-                  message: `redefining the static field '${field.name}' of '${info.def.jsName ?? info.def.name}' with 'Object.defineProperty' is not supported yet (the class's compiled code reads the field's own storage)`,
+                  message: message(field.name, info.def.jsName ?? info.def.name),
                   loc,
                 },
               ],
@@ -2068,6 +2103,33 @@ export class ClassDynamicDispatch {
         }
       }
     return changed;
+  }
+
+  /** Runs ahead of every property delete once a static table is installed
+   * (syncStaticTableWrites): a delete of a listed static field is refused
+   * there, because the table entry would go while the class's compiled
+   * code kept reading the field's native storage. */
+  private staticDeleteHelper: IrFunction | null = null;
+
+  private staticDeleteGuard(lowerer: Lowerer, loc: SrcLoc): IrFunction {
+    if (this.staticDeleteHelper) return this.staticDeleteHelper;
+    const params = ["target", "key"].map((name) => ({ localId: name, name, type: DYN }));
+    this.staticDeleteHelper = {
+      name: "%dyn.class.staticDelete",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.generated.add(this.staticDeleteHelper);
+    lowerer.liftedFns.push(this.staticDeleteHelper);
+    return this.staticDeleteHelper;
   }
 
   /** Native writes to a field an installed table lists, by global id. */
@@ -2088,9 +2150,9 @@ export class ClassDynamicDispatch {
     return globals;
   }
 
-  /** The bodies whose native static writes already update the tables, by
-   * body array, with the number of installed tables they were synced for. */
-  private readonly syncedBodies = new WeakMap<IrStmt[], number>();
+  /** Per function, the body whose native static writes already update the
+   * tables and the number of installed tables it was synced for. */
+  private readonly syncedBodies = new Map<IrFunction, { body: IrStmt[]; version: number }>();
 
   /** Keeps each installed table's data properties equal to the native
    * storage. The table holds a static field as an own data property, as
@@ -2110,7 +2172,8 @@ export class ClassDynamicDispatch {
       changed = true;
     }
     for (const fn of functions) {
-      if (this.syncedBodies.get(fn.body) === version) continue;
+      const synced = this.syncedBodies.get(fn);
+      if (synced?.body === fn.body && synced.version === version) continue;
       const writes = (body: IrStmt[]): boolean => {
         let found = false;
         const stmt = (node: IrStmt): boolean => {
@@ -2123,13 +2186,14 @@ export class ClassDynamicDispatch {
           if (found) return false;
           if (isStaticTableSyncExpr(node)) return true;
           if (node.kind === "incDec" && globals.has(node.localId)) found = true;
+          if (node.kind === "libCall" && STATIC_DELETE_CALLS.has(node.fn)) found = true;
           return !found && everyExprChild(node, expr, stmt);
         };
         body.every(stmt);
         return found;
       };
       if (!writes(fn.body)) {
-        this.syncedBodies.set(fn.body, version);
+        this.syncedBodies.set(fn, { body: fn.body, version });
         continue;
       }
       const tableStore = (globalId: string, stored: IrExpr, loc: SrcLoc): IrStmt => {
@@ -2176,6 +2240,44 @@ export class ClassDynamicDispatch {
       const expr = (node: IrExpr): IrExpr => {
         if (isStaticTableSyncExpr(node)) return node;
         const mapped = mapExprChildren(node, expr, stmt);
+        if (mapped.kind === "libCall" && STATIC_DELETE_CALLS.has(mapped.fn)) {
+          // The delete's target and key, evaluated once, pass the guard first.
+          const loc = mapped.loc;
+          const [target, key, ...rest] = mapped.args;
+          const targetLocal = temp(target!.type);
+          const keyLocal = temp(key!.type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: targetLocal, init: target!, loc },
+              { kind: "varDecl", localId: keyLocal, init: key!, loc },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "call",
+                  callee: this.staticDeleteGuard(lowerer, loc).name,
+                  args: [
+                    lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN),
+                    lowerer.coerceToExpected(varRef(keyLocal, key!.type, loc), DYN),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            result: {
+              ...mapped,
+              args: [
+                varRef(targetLocal, target!.type, loc),
+                varRef(keyLocal, key!.type, loc),
+                ...rest,
+              ],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
         if (mapped.kind !== "incDec" || !globals.has(mapped.localId)) return mapped;
         const { type } = globals.get(mapped.localId)!;
         const loc = mapped.loc;
@@ -2235,7 +2337,7 @@ export class ClassDynamicDispatch {
         };
       };
       fn.body = fn.body.map(stmt);
-      this.syncedBodies.set(fn.body, version);
+      this.syncedBodies.set(fn, { body: fn.body, version });
       this.sites.forget(fn);
       changed = true;
     }
@@ -8852,6 +8954,7 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "valueOf",
   "toString",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
 ]);
 

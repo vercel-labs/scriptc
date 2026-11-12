@@ -268,16 +268,20 @@ export function emitDynamicExpr(
       // BORROWED by scr_dyn_invoke; the result is owned and may ride a
       // pending exception.
       const recv = emitBorrowedInput(host, e.recv);
-      host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
+      // A call named isPrototypeOf reads the inherited Object.prototype
+      // method when the receiver's chain does not define it.
+      const prepare =
+        e.method === "isPrototypeOf"
+          ? "scr_dyn_prepare_method_inherited"
+          : "scr_dyn_prepare_method";
+      host.declare(`declare ptr @${prepare}(ptr, ptr)`);
       let prepared: string;
       if (jsIcMethods(host)) {
         // Dynamic-tier code reads the method through the site's cache.
         prepared = emitJsIcMethod(host, e, recv.name);
       } else {
         prepared = B.tmp();
-        B.line(
-          `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
-        );
+        B.line(`${prepared} = call ptr @${prepare}(ptr ${recv.name}, ptr ${host.cstr(e.method)})`);
       }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
@@ -1539,6 +1543,7 @@ export const INHERITED_OBJECT_MEMBERS: ReadonlySet<string> = new Set([
   "toString",
   "hasOwnProperty",
   "propertyIsEnumerable",
+  "isPrototypeOf",
 ]);
 
 /** EventEmitter methods that register their second argument as a listener. */

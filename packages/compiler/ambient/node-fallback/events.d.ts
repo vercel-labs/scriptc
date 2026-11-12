@@ -16,6 +16,9 @@ declare module "events" {
     /* Listeners registered under this symbol observe 'error' emits first
      * (an emit with no 'error' listener still throws). */
     static readonly errorMonitor: unique symbol;
+    /* The key an emitter's rejection handler is registered under:
+     * Symbol.for('nodejs.rejection'), the same symbol `events` exports. */
+    static readonly captureRejectionSymbol: unique symbol;
     static addAbortListener(signal: AbortSignal, listener: (event: Event) => void): Disposable;
     on(eventName: string | symbol, listener: (...args: any[]) => void): this;
     addListener(eventName: string | symbol, listener: (...args: any[]) => void): this;
@@ -41,12 +44,49 @@ declare module "events" {
   }
   import internal = require("node:events");
   namespace EventEmitter {
+    /* The async iterator events.on answers. Node's AsyncIterator subclass
+     * over one event's argument tuples: next() resolves the next event's
+     * arguments (the iterator answers `{ value, done }`), return() ends the
+     * iteration, throwing one waiter with an Error ends it the way an
+     * 'error' emit does, and the iterator is its own async iterator. The
+     * class is Node's internal one, not an export: it stays private to this
+     * namespace so `import { EventEmitterAsyncIterator }` keeps failing
+     * the way it does in Node. */
+    class EventEmitterAsyncIterator {
+      next(): Promise<{ value: any; done: boolean }>;
+      return(): Promise<{ value: any; done: boolean }>;
+      throw(err: Error): Promise<{ value: any; done: boolean }>;
+      [Symbol.asyncIterator](): EventEmitterAsyncIterator;
+    }
+    /* Iterates one event's argument tuples until the iterator is closed, an
+     * 'error' arrives, `options.signal` aborts or one of `options.close`'s
+     * events is emitted. */
+    export function on(
+      emitter: EventEmitter | EventTarget,
+      eventName: string | symbol,
+      options?: {
+        signal?: AbortSignal;
+        close?: string[];
+        highWaterMark?: number;
+        highWatermark?: number;
+        lowWaterMark?: number;
+        lowWatermark?: number;
+      },
+    ): EventEmitterAsyncIterator;
     // The class under its own name, so `import { EventEmitter }` resolves
     // (the @types/node namespace-alias pattern).
     export { internal as EventEmitter };
     // The event's arguments, as checked-dynamic values.
     export function once(
       emitter: EventEmitter | NodeJS.ReadableStream | NodeJS.WritableStream,
+      eventName: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown[]>;
+    /* An EventTarget has no 'error' event semantics: the promise settles
+     * with the event at the front of the array, and a signal's abort
+     * rejects it with an AbortError. */
+    export function once(
+      target: EventTarget,
       eventName: string,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;

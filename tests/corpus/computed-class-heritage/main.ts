@@ -87,3 +87,19 @@ class Taken extends (on.on ? logged(Base) : Base) {
 }
 const Bound = on.on ? logged(Base) : Base;
 console.log(seen.join(","), Taken.own, Skipped.own, new Bound().v);
+
+// An instance of the conditional class held through a binding typed with an
+// ancestor answers `instanceof` from the arm its class statement selected,
+// as does a class below it, a class value parameter, and an untyped value.
+const asBase: Base = picked;
+const deepAsBase: Base = deep;
+const plainAsBase: Base = plainPick;
+console.log(asBase instanceof Sub, deepAsBase instanceof Sub, plainAsBase instanceof Sub);
+function isInstance(value: Base, C: typeof Base): boolean {
+  return value instanceof C;
+}
+console.log(isInstance(picked, Sub), isInstance(plainPick, Sub), isInstance(new Base(), Sub));
+const mixed: Base[] = [picked, plainPick, new Base(), new Sub(), deep];
+console.log(mixed.map((value) => value instanceof Sub).join(","));
+const untyped: unknown = picked;
+console.log(untyped instanceof Sub, (plainPick as unknown) instanceof Sub);

@@ -33,3 +33,12 @@ conditional-class-heritage.ts:34:16 - error SC2004: uses of 'Narrow' inherit the
   35 | console.log(narrow.name);
 
   hint: the declaration of 'Narrow' did not compile — fix the diagnostic reported there and these sites clear with it
+
+conditional-class-heritage.ts:53:42 - error SC1090: narrowing a 'Shape' to 'Square', a class that a conditional heritage's selected arm can make it an instance of is not supported yet
+
+  52 | const shape: Shape = new Tile();
+  53 | if (shape instanceof Square) console.log(shape.area());
+     |                                          ^~~~~
+  54 | 
+
+  hint: the instance keeps the layout of the class it was built as: use the value at its declared type (the 'instanceof' test itself answers as Node does)

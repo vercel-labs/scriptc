@@ -1031,6 +1031,9 @@ export interface ClassInfo {
     initializer: ts.Expression;
     globalId: string;
     readonly: boolean;
+    /** The declaration the field was collected from: a public key that
+     * spells a private name (`static ["#x"]`) is a different member. */
+    declaration?: ts.PropertyDeclaration;
   }[];
   /** The names of the static members this class declares in its own body,
    * whether or not they collect below (an accessor whose type has no
@@ -3122,6 +3125,7 @@ export function collectClassShapeInner(
             initializer: member.initializer,
             globalId: `%g.s.${lowerer.classNamer(decl)}.${member.name.text}`,
             readonly: modifiers.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword),
+            declaration: member,
           });
         }
         // Async statics collect like any static method: the module

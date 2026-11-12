@@ -1,4 +1,5 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
+import { heritageArmReaches } from "./relational.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
 import { declBoundaryOrigin } from "../../decl-projection.js";
 import {
@@ -844,6 +845,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         const checked = checkedClassAssertion(lowerer, expr, narrowed, expr.loc);
         if (checked) return checked;
       }
+      // An instance of a class whose conditional heritage selected the
+      // narrowed class's arm passes the test without being laid out, or
+      // dispatched, as the narrowed class: a downcast would fail its check,
+      // and calls through the narrowed type could skip the instance's
+      // overrides.
+      if (heritageArmReaches(lowerer, expr.type.className, narrowed.className))
+        lowerer.unsupported(
+          "SC1090",
+          node,
+          `narrowing a '${lowerer.fmt(expr.type)}' to '${lowerer.fmt(narrowed)}', a class that a conditional heritage's selected arm can make it an instance of`,
+          "the instance keeps the layout of the class it was built as: use the value at its declared type (the 'instanceof' test itself answers as Node does)",
+        );
       return { kind: "downcast", value: expr, type: narrowed, loc: expr.loc };
     }
     return expr;

@@ -102,6 +102,15 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
       // A symbol or run-time key defines a property no source name reads,
       // and the table could not list it: reflectively it would go missing.
       if (classMemberNameOf(lowerer, name) === null) return false;
+      // A computed field's value has no native storage the table could
+      // answer from (`static ["#x"] = v` is a public key, not the private
+      // `#x`): the class keeps its fence rather than list it as undefined.
+      if (
+        ts.isPropertyDeclaration(member) &&
+        member.initializer !== undefined &&
+        !info.staticFields.some((candidate) => candidate.declaration === member)
+      )
+        return false;
       continue;
     }
     if (ts.isPrivateIdentifier(name))
@@ -123,7 +132,7 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
       // An initializer-less field defines an own data property whose value
       // is `undefined`; the installer defines it, so it is representable.
       if (member.initializer === undefined) continue;
-      const field = info.staticFields.find((candidate) => candidate.name === text);
+      const field = info.staticFields.find((candidate) => candidate.declaration === member);
       if (!field) return false;
       if (!canConvertToDyn(field.type, shapesOf(lowerer), unionsOf(lowerer))) return false;
       if (!canDynCheckTo(field.type, shapesOf(lowerer), unionsOf(lowerer))) return false;
@@ -272,7 +281,7 @@ export function classStaticsInstaller(
     const name = classMemberNameOf(lowerer, member.name);
     if (name === null) continue;
     const at = locOf(member);
-    const field = info.staticFields.find((candidate) => candidate.name === name);
+    const field = info.staticFields.find((candidate) => candidate.declaration === member);
     const value =
       field === undefined
         ? dynUndefinedExpr(at)
@@ -293,6 +302,22 @@ export function classStaticsInstaller(
       ),
     );
   }
+  // From here on a native write to a listed field also updates its entry
+  // (syncStaticTableWrites), so the table and the native storage agree.
+  const ready = staticTableReadyGlobal(info);
+  if (!lowerer.globalsList.some((global) => global.id === ready))
+    lowerer.globalsList.push({
+      id: ready,
+      name: `${info.def.jsName ?? info.def.name} statics table`,
+      type: BOOL,
+      mutable: true,
+    });
+  statements.push({
+    kind: "assign",
+    localId: ready,
+    value: { kind: "boolLit", value: true, type: BOOL, loc },
+    loc,
+  });
   const fn: IrFunction = {
     name,
     params: [{ localId: "p.0", name: "value", type: DYN }],
@@ -303,6 +328,33 @@ export function classStaticsInstaller(
   };
   lowerer.liftedFns.push(fn);
   return fn;
+}
+
+/** The global that turns true when `info`'s static table is installed. */
+export function staticTableReadyGlobal(info: ClassInfo): string {
+  return `%g.${info.def.name}.staticsTable`;
+}
+
+/** The static fields `info`'s table lists as own data properties, with the
+ * native global that holds each one: the public, non-`declare` static
+ * fields the class declares, in declaration order. */
+export function staticTableFields(
+  lowerer: Lowerer,
+  info: ClassInfo,
+): { name: string; globalId: string }[] {
+  const fields: { name: string; globalId: string }[] = [];
+  for (const member of info.decl?.members.nodes ?? []) {
+    if (!ts.isPropertyDeclaration(member)) continue;
+    const modifiers = ts.getModifiers(member);
+    if (!modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)) continue;
+    if (modifiers.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) continue;
+    if (ts.isPrivateIdentifier(member.name)) continue;
+    const name = classMemberNameOf(lowerer, member.name);
+    if (name === null) continue;
+    const field = info.staticFields.find((candidate) => candidate.declaration === member);
+    if (field) fields.push({ name, globalId: field.globalId });
+  }
+  return fields;
 }
 
 /** Inserts the install call at the class declaration's position in its

@@ -33,3 +33,21 @@ class Narrow extends (pick ? Sub : Base) {
 
 const narrow = Narrow;
 console.log(narrow.name);
+
+// An `instanceof` test answers from the arm the conditional selected, but a
+// value it proves to be an instance of that arm is still laid out, and
+// dispatches, as the class it was built as: narrowing it to the arm is
+// refused.
+class Shape {
+  area(): number {
+    return 0;
+  }
+}
+class Square extends Shape {}
+class Tile extends (pick ? Square : Shape) {
+  override area(): number {
+    return 4;
+  }
+}
+const shape: Shape = new Tile();
+if (shape instanceof Square) console.log(shape.area());

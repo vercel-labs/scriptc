@@ -2262,6 +2262,99 @@ console.log(s);
     expect(r.stdout).toBe("[class Plain]\n[class S extends Plain] { count: 3 }\n");
   });
 
+  test("a static field written through a subclass value is refused, never stored on the base", async () => {
+    // Node defines an own property on the subclass. The subclass's compiled
+    // reads take the inherited field from the base's storage, so the write is
+    // refused, whether the value is the subclass or a slot typed with the base
+    // that holds it.
+    const r = await compileAndRun(
+      "static-write-through-subclass",
+      `class Base {
+  static count = 1;
+}
+class Sub extends Base {
+  static own = "a";
+}
+function write(C: any, key: string, value: unknown): void {
+  C[key] = value;
+}
+function writeCount(C: any, value: unknown): void {
+  C.count = value;
+}
+const held: typeof Base = Sub;
+for (const attempt of [() => write(held, "count", 40), () => writeCount(held, 41), () => writeCount(Sub, 42)]) {
+  try {
+    attempt();
+    console.log("stored");
+  } catch (error) {
+    console.log((error as Error).message.includes("inherited static 'count'"));
+  }
+}
+console.log(Base.count, Sub.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n1 1\n");
+  });
+
+  test("redefining a reflected static field is refused before the table changes", async () => {
+    // The class's compiled code reads the field's own storage, which a
+    // redefinition (a new value or a non-writable property) would leave
+    // behind. A key the class does not declare still defines.
+    const r = await compileAndRun(
+      "static-redefinition",
+      `class Counter {
+  static count = 1;
+}
+const anyCounter: any = Counter;
+try {
+  Object.defineProperty(Counter, "count", { value: 9, writable: false });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"));
+}
+anyCounter.count = 5;
+Object.defineProperty(Counter, "extra", { value: 2, enumerable: true });
+console.log(Counter.count, Reflect.get(Counter, "count"), anyCounter.extra);
+try {
+  Reflect.set(Counter, "count", 6, {});
+} catch (error) {
+  console.log((error as Error).message.includes("receiver other than the class"));
+}
+console.log(Counter.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\n5 5 2\ntrue\n5\n");
+  });
+
+  test("a public static named like a private one never publishes the private value", async () => {
+    // \`static ["#secret"]\` is a public key, distinct from the private
+    // \`#secret\`. The class keeps its reflection refusal instead of listing
+    // the private storage under the public name, and Reflect.get refuses
+    // rather than answering undefined.
+    const r = await compileAndRun(
+      "public-key-spelled-private",
+      `class Holder {
+  static #secret = 41;
+  static ["#secret"] = 5;
+  static count = 3;
+}
+const anyHolder: any = Holder;
+for (const read of [() => Reflect.get(Holder, "#secret"), () => anyHolder["#secret"], () => Object.getOwnPropertyDescriptor(Holder, "#secret")?.value]) {
+  try {
+    console.log(read());
+  } catch (error) {
+    console.log((error as Error).message.includes("not supported"));
+  }
+}
+console.log(Holder.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n3\n");
+  });
+
   test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
     // Node's showHidden adds a function's length/name/prototype and an
     // error's enumerable properties; %o throws the 'not supported yet'

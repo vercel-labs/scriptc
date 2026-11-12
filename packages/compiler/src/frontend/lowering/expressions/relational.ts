@@ -63,6 +63,7 @@ import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../pr
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
+  classValueRef,
   findGenericMethodOn,
   parameterPropertiesFirst,
   type ClassInfo,
@@ -178,6 +179,199 @@ function conditionalHeritageTest(
   // class's heritage selection, so only the operand's side effects remain.
   const stmts: IrStmt[] = left.kind === "varRef" ? [] : [{ kind: "exprStmt", expr: left, loc }];
   return readsClassAfter(lowerer, target, right, stmts, result);
+}
+
+/** Whether `right` names a class declaration directly, so the class it
+ * holds is the declared class itself rather than whatever a slot typed
+ * with it holds at run time. */
+function namesClassDeclaration(lowerer: Lowerer, right: ts.Expression): boolean {
+  let expression = right;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return false;
+  const declaration = lowerer.resolveValueSymbol(expression)?.valueDeclaration;
+  return declaration !== undefined && ts.isClassDeclaration(declaration);
+}
+
+/** The classes a conditional heritage's arm adds to a class's prototype
+ * chain: the arm and its ancestors strictly below the class's typed base.
+ * The static chain holds every class from the typed base up. */
+function armOnlyClasses(lowerer: Lowerer, arm: string, typedBase: string): string[] {
+  const classes: string[] = [];
+  for (
+    let current: ClassInfo | null = lowerer.classes.get(arm) ?? null;
+    current && current.def.name !== typedBase;
+    current = current.base
+  )
+    classes.push(current.def.name);
+  return classes;
+}
+
+/** Whether a value whose class is `className` can be an instance of
+ * `target` only through a conditional heritage's selected arm: some class
+ * at, below or above `className` extends a conditional whose arm adds
+ * `target` to its prototype chain. Such a value is not laid out as a
+ * `target` instance, so narrowing it to `target` is refused. */
+export function heritageArmReaches(lowerer: Lowerer, className: string, target: string): boolean {
+  for (const [conditional, recorded] of lowerer.computedHeritageArms) {
+    const info = lowerer.classes.get(conditional);
+    if (!info?.base) continue;
+    if (
+      conditional !== className &&
+      !lowerer.isSubclassOf(conditional, className) &&
+      !lowerer.isSubclassOf(className, conditional)
+    )
+      continue;
+    if (
+      recorded.arms.some((arm) =>
+        armOnlyClasses(lowerer, arm, info.base!.def.name).includes(target),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+/** `x instanceof T` where x's run-time class may extend a conditional
+ * heritage whose selected arm puts T on the class's prototype chain while
+ * the static chain does not: a class C below x's static class (a slot typed
+ * as the common base can hold a C instance), or above it when the right
+ * side is a class value the slot can fill with an arm.
+ *
+ * The answer is the static test, or, for each such C, the operand is a C
+ * instance AND C's class statement selected the arm that holds T. A class
+ * value on the right holds T only at run time, so that arm also has to
+ * name the class the value holds. Null when no conditional heritage can
+ * change the static answer. `base` builds the static test over the bound
+ * operand (and class value). */
+function heritageSelectionInstanceOf(
+  lowerer: Lowerer,
+  left: IrExpr,
+  lhsInfo: ClassInfo,
+  target: { className: string } | { classValue: IrExpr; slotClass: ClassInfo },
+  right: ts.Expression,
+  loc: SrcLoc,
+  base: (value: IrExpr, classValue: IrExpr | null) => IrExpr,
+): IrExpr | null {
+  if (lowerer.computedHeritageArms.size === 0) return null;
+  const lhs = lhsInfo.def.name;
+  const holds = (className: string): boolean =>
+    "className" in target
+      ? className === target.className
+      : className === target.slotClass.def.name ||
+        lowerer.isSubclassOf(className, target.slotClass.def.name);
+  const candidates: { className: string; condGlobal: string; arm: 0 | 1; held: string[] }[] = [];
+  for (const [className, recorded] of lowerer.computedHeritageArms) {
+    const info = lowerer.classes.get(className);
+    if (!info?.base) continue;
+    if (
+      className !== lhs &&
+      !lowerer.isSubclassOf(className, lhs) &&
+      !lowerer.isSubclassOf(lhs, className)
+    )
+      continue;
+    for (const arm of [0, 1] as const) {
+      const added = armOnlyClasses(lowerer, recorded.arms[arm], info.base.def.name);
+      const held = added.filter(holds);
+      if (held.length === 0) continue;
+      if (recorded.condGlobal === undefined)
+        lowerer.unsupported(
+          "SC1090",
+          right,
+          "'instanceof' against a class whose conditional heritage is evaluated again at each class expression",
+          "the test reads the arm the conditional selected, which one evaluation of the class expression owns: evaluate the class expression once (a module-level class declaration) and test against that class",
+        );
+      // An arm whose own heritage is a conditional has a selection of its
+      // own that this test would also have to read.
+      if (added.some((name) => lowerer.computedHeritageArms.has(name)))
+        lowerer.unsupported(
+          "SC1090",
+          right,
+          "'instanceof' through a conditional heritage whose arm itself extends a conditional heritage",
+        );
+      candidates.push({ className, condGlobal: recorded.condGlobal, arm, held });
+    }
+  }
+  if (candidates.length === 0) return null;
+  const operand = lowerer.declareHiddenLocal("%heritageOperand", left.type);
+  const value = varRef(operand.id, left.type, loc);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: operand.id, init: left, loc }];
+  let classValue: IrExpr | null = null;
+  if ("classValue" in target) {
+    const local = lowerer.declareHiddenLocal("%heritageClass", target.classValue.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: target.classValue, loc });
+    classValue = varRef(local.id, target.classValue.type, loc);
+  }
+  const and = (a: IrExpr, b: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left: a,
+    right: b,
+    type: BOOL,
+    loc,
+  });
+  const or = (a: IrExpr, b: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "||",
+    left: a,
+    right: b,
+    type: BOOL,
+    loc,
+  });
+  let result = base(value, classValue);
+  for (const candidate of candidates) {
+    const selection = varRef(candidate.condGlobal, BOOL, loc);
+    let term = and(
+      { kind: "instanceOf", value, className: candidate.className, type: BOOL, loc },
+      candidate.arm === 0
+        ? selection
+        : { kind: "unary", op: "!", operand: selection, type: BOOL, loc },
+    );
+    if (classValue !== null) {
+      const conditional = lowerer.classes.get(candidate.className)!;
+      const arm = lowerer.computedHeritageArms.get(candidate.className)!.arms[candidate.arm];
+      const selectedBaseId = conditional.def.baseValueGlobal;
+      const selectedBaseType = lowerer.globalsList.find(
+        (global) => global.id === selectedBaseId,
+      )?.type;
+      const selectedBase =
+        selectedBaseId !== undefined && selectedBaseType?.kind === "classval"
+          ? varRef(selectedBaseId, selectedBaseType, loc)
+          : undefined;
+      const names = candidate.held.map((className): IrExpr => {
+        const info = lowerer.classes.get(className)!;
+        // The selected arm itself is the base value the class statement
+        // stored, whatever class object its evaluation built.
+        if (className === arm && selectedBase !== undefined)
+          return {
+            kind: "bin",
+            op: "===",
+            left: classValue!,
+            right: selectedBase,
+            type: BOOL,
+            loc,
+          };
+        // A class evaluated once per call has no one class object to
+        // compare the value against.
+        if (info.localClass)
+          lowerer.unsupported(
+            "SC1090",
+            right,
+            "'instanceof' through a class value where a conditional heritage's arm is a function-local class",
+          );
+        return {
+          kind: "bin",
+          op: "===",
+          left: classValue!,
+          right: classValueRef(lowerer, info, info.decl ?? right),
+          type: BOOL,
+          loc,
+        };
+      });
+      term = and(term, names.reduce(or));
+    }
+    result = or(result, term);
+  }
+  return { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
@@ -880,15 +1074,21 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         );
       }
       const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
-      const inherited = conditionalHeritageTest(
-        lowerer,
-        left,
-        lhsInfo,
-        targetInfo,
-        expr.right,
-        loc,
-      );
-      if (inherited) return inherited;
+      // The recorded heritage selection answers for the class the right side
+      // names only when the right side IS that class: a slot typed with it
+      // can hold one of its subclasses at run time.
+      const namesClass = namesClassDeclaration(lowerer, expr.right);
+      if (namesClass) {
+        const inherited = conditionalHeritageTest(
+          lowerer,
+          left,
+          lhsInfo,
+          targetInfo,
+          expr.right,
+          loc,
+        );
+        if (inherited) return inherited;
+      }
       if (
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
@@ -896,16 +1096,25 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
-        const writableTest = writableClassValueTest(
+        const valueTest = (value: IrExpr, held: IrExpr): IrExpr =>
+          writableClassValueTest(lowerer, value, held, targetInfo, lhsInfo, loc) ?? {
+            kind: "instanceOfValue",
+            value,
+            classValue: held,
+            type: BOOL,
+            loc,
+          };
+        const selected = heritageSelectionInstanceOf(
           lowerer,
           left,
-          classValue,
-          targetInfo,
           lhsInfo,
+          namesClass ? { className: targetInfo.def.name } : { classValue, slotClass: targetInfo },
+          expr.right,
           loc,
+          (value, held) => valueTest(value, held ?? classValue),
         );
-        if (writableTest) return writableTest;
-        return { kind: "instanceOfValue", value: left, classValue, type: BOOL, loc };
+        if (selected) return selected;
+        return valueTest(left, classValue);
       }
       // A standalone side: the answer is static (the target slot can
       // only hold the named class; a standalone operand's runtime class
@@ -1289,7 +1498,29 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)) {
     const tests = runtimeTests(left.type.className);
     if (tests.length === 1) {
-      return { kind: "instanceOf", value: left, className: tests[0]!.def.name, type: BOOL, loc };
+      const className = tests[0]!.def.name;
+      const instance = (value: IrExpr): IrExpr => ({
+        kind: "instanceOf",
+        value,
+        className,
+        type: BOOL,
+        loc,
+      });
+      // A subclass of the operand's class may extend a conditional whose
+      // selected arm is the target.
+      const selected =
+        duplex === undefined
+          ? heritageSelectionInstanceOf(
+              lowerer,
+              left,
+              lhsInfo,
+              { className },
+              expr.right,
+              loc,
+              instance,
+            )
+          : null;
+      return selected ?? instance(left);
     }
     const local = lowerer.declareHiddenLocal("%writableTest", left.type);
     const ref = varRef(local.id, left.type, loc);

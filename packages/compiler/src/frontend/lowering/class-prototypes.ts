@@ -123,6 +123,7 @@ export function classPrototypeData(
           )
         : null;
     if (info.base && !info.base.builtinError && base === null) return null;
+    const selected = selectedArmPrototype(lowerer, info, loc, metadataOnly);
     const name = `%prototype.data.${info.def.name}`;
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
@@ -158,7 +159,7 @@ export function classPrototypeData(
               kind: "assign",
               localId: globalId,
               value: base
-                ? { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc }
+                ? { kind: "libCall", fn: "dyn.objCreate", args: [selected ?? base], type: DYN, loc }
                 : { kind: "dynObjLit", fields: [], type: DYN, loc },
               loc,
             },
@@ -987,6 +988,35 @@ export function lowerClassPrototypeDescriptors(
       lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
       prototypeProtectedKeys(lowerer, info, target, loc),
     ],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The prototype a class whose heritage was a conditional inherits from: the
+ * prototype of the arm the class statement selected (`%g.<C>.heritageArm`),
+ * so the prototype chain a dynamic `instanceof` walks runs through that arm,
+ * as Node's does. Null when the class extends one fixed class, or when an
+ * arm has no prototype object of its own (the typed base's then stands). */
+function selectedArmPrototype(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+  metadataOnly: boolean,
+): IrExpr | null {
+  const recorded = lowerer.computedHeritageArms.get(info.def.name);
+  if (recorded?.condGlobal === undefined) return null;
+  const prototypes = recorded.arms.map((arm) => {
+    const armInfo = lowerer.classes.get(arm);
+    return armInfo ? classPrototypeData(lowerer, armInfo, loc, undefined, metadataOnly) : null;
+  });
+  const [whenTrue, whenFalse] = prototypes;
+  if (!whenTrue || !whenFalse) return null;
+  return {
+    kind: "ternary",
+    cond: varRef(recorded.condGlobal, BOOL, loc),
+    then: whenTrue,
+    else_: whenFalse,
     type: DYN,
     loc,
   };

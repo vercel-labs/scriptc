@@ -19048,6 +19048,11 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return NULL;
     }
     if (current->kind == SCR_DYN_FUNC) {
+      /* A class with no static property table answers name and length and
+       * refuses every other key (scr_dyn_fn_get), as a keyed read does: an
+       * empty table would report its statics as undefined. */
+      if (current->v.fn.class_obj && !current->v.fn.class_obj->static_data)
+        return scr_dyn_fn_get(current, key, key_len);
       ScrDyn *table = scr_dyn_fn_properties(current);
       ScrDyn *result = scr_dyn_obj_read_receiver(table, key, key_len, receiver);
       scr_dyn_release(table);

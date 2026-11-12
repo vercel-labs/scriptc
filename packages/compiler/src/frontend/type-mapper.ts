@@ -3601,6 +3601,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return bound;
     }
   }
+  // An intersection of records with a bound type parameter (`{ ok: true }
+  // & T` in a generic body instantiated with T = `{ nwritten: number }`,
+  // the result idiom `({ ok: true, ...value })`): the instance's record has
+  // every member of every part.
+  if (resolveTypeParam && type.isIntersectionType()) {
+    const merged = mapBoundRecordIntersection(type, ctx);
+    if (merged !== null) {
+      contextResolutions++;
+      return merged;
+    }
+  }
   // Narrowed type parameters: `!== undefined` / `!== null` / truthiness on
   // a `T | undefined`-flavored value inside a generic body leaves the
   // SYMBOLIC forms `T & {}`, `T & ({} | null)`, `(T & {}) | (T & null)`
@@ -11038,7 +11049,12 @@ function mapRecordTypeInner(
   // (the command-registry pattern), Maps/Sets, and nested index-signature
   // records; everything else stays unmapped.
   let indexValue: IrType | undefined;
-  const indexInfos = checker.getIndexInfosOfType(widened);
+  // A `never`-valued signature (`Record<string, never>`, the empty result
+  // of `{ ok: true } & Record<string, never>`) admits no undeclared key, so
+  // the shape has no overflow: exactly its declared fields.
+  const indexInfos = checker
+    .getIndexInfosOfType(widened)
+    .filter((info) => (info.type.flags & ts.TypeFlags.Never) === 0);
   if (indexInfos.length > 0) {
     const stringKey = (k: ts.Type): boolean =>
       (k.flags & ts.TypeFlags.String) !== 0 ||
@@ -12008,4 +12024,65 @@ function isEmptyObjectLiteralType(type: ts.Type, ctx: TypeMapperCtx): boolean {
     checker.getCallSignatures(type).length === 0 &&
     checker.getConstructSignatures(type).length === 0
   );
+}
+
+/** An intersection whose parts are records, at least one of them a type
+ * parameter bound to a record in the current instantiation: the combined
+ * record (`{ ok: true } & T` with T bound to `{ nwritten: number }` is
+ * `{ nwritten: number; ok: true }`). A part bound to an object with no
+ * members and a `never` index signature (`Record<string, never>`, the empty
+ * result) contributes nothing. Null when a part is not a plain record (a
+ * tuple, an index signature, a class), or two parts give one member
+ * different types. */
+function mapBoundRecordIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const { checker, resolveTypeParam, resolveTypeParamTs } = ctx;
+  if (!resolveTypeParam || !type.isIntersectionType()) return null;
+  const parts = ts.constituentTypes(type);
+  if (!parts.some((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0)) return null;
+  const fields = new Map<string, IrRecordField>();
+  const order: string[] = [];
+  for (const part of parts) {
+    const isParam = (part.flags & ts.TypeFlags.TypeParameter) !== 0;
+    const tsPart = isParam ? (resolveTypeParamTs?.(part) ?? null) : part;
+    if (
+      tsPart !== null &&
+      checker.getPropertiesOfType(tsPart).length === 0 &&
+      checker
+        .getIndexInfosOfType(tsPart)
+        .every((info) => (info.type.flags & ts.TypeFlags.Never) !== 0)
+    )
+      continue;
+    const mapped = isParam ? resolveTypeParam(part) : mapType(part, ctx);
+    if (!mapped || mapped.kind !== "record") return null;
+    const shape = ctx.shapes.get(mapped.shapeId);
+    if (
+      !shape ||
+      shape.tuple ||
+      shape.indexValue !== undefined ||
+      shape.accessorOrder !== undefined
+    )
+      return null;
+    for (const field of shape.fields) {
+      const previous = fields.get(field.name);
+      if (previous !== undefined) {
+        if (JSON.stringify(previous) !== JSON.stringify(field)) return null;
+        continue;
+      }
+      fields.set(field.name, field);
+    }
+    for (const name of shape.declaredOrder ?? shape.fields.map((field) => field.name))
+      if (!order.includes(name)) order.push(name);
+  }
+  const sorted = [...fields.values()].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  return {
+    kind: "record",
+    shapeId: ctx.shapes.intern(
+      sorted,
+      false,
+      undefined,
+      order.filter((name) => fields.has(name)),
+    ),
+  };
 }

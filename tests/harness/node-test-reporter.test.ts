@@ -172,6 +172,22 @@ describe(`node:test reporter options${sanitize ? " (sanitized)" : ""}`, () => {
     );
   }
 
+  /* On POSIX process.title overwrites the argument area the flags were
+   * read from, so the flags must be reported from their own storage: a
+   * title set before the first execArgv read changes nothing. */
+  test("process.title does not lose the flags", async () => {
+    const { node, native } = await bothLanes("reporter-flags-title.mts", [
+      "--test-reporter=spec",
+      "--test-reporter-destination=stdout",
+    ]);
+    // The flag line itself: the same execArgv, before any normalization.
+    expect(native.stdout.split("\n")[0]).toBe(node.stdout.split("\n")[0]);
+    expect(native.stdout.split("\n")[0]).toContain("--test-reporter=spec");
+    expect(normalizeNodeTestOutput(native.stdout)).toBe(normalizeNodeTestOutput(node.stdout));
+    expect(native.exitCode).toBe(0);
+    expect(node.exitCode).toBe(0);
+  }, 120_000);
+
   /* A binary carries only the spec reporter, so any other name is refused
    * before the program runs rather than silently reporting as spec. The
    * destination is not created either. */

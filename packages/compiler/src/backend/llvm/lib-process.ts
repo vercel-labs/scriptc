@@ -459,6 +459,8 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "timers.unref" ||
     e.fn === "timers.ref" ||
     e.fn === "timers.refresh" ||
+    e.fn === "timers.close" ||
+    e.fn === "timers.immediateClose" ||
     e.fn === "timers.immediateUnref" ||
     e.fn === "timers.immediateRef"
   ) {
@@ -471,6 +473,8 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
         "timers.unref": "scr_timer_unref",
         "timers.ref": "scr_timer_ref",
         "timers.refresh": "scr_timer_refresh",
+        "timers.close": "scr_clear_interval",
+        "timers.immediateClose": "scr_clear_immediate",
         "timers.immediateUnref": "scr_immediate_unref",
         "timers.immediateRef": "scr_immediate_ref",
       }[e.fn];
@@ -981,6 +985,44 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
         `ptr ${args[2]!.name}, ptr @${event.fn}, ptr @${event.shim}, ` +
         `ptr ${errorBoxer}, ptr @${error.fn}, ptr @${error.shim}` +
         `${signal ? `, ptr ${args[5]!.name}` : ""})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "events.onTyped") {
+    // (emitter, recv, pauseFn, resumeFn, name, boxer, errorBoxer,
+    // listenForError[, options]): scr_events_on_typed registers the
+    // iterator's listeners in the emitter's registry behind the same
+    // adapters events.once builds, boxing the event's tuple (and
+    // 'error''s) into the iterator's argument array. The protocol values
+    // are the receiver's compiled pause()/resume() (undefined when it has
+    // none). The runtime retains the boxers and the protocol values; the
+    // frame's temporaries release as usual. May throw (the options ladder
+    // and the 'newListener' meta listeners run inside), and a registration
+    // past the emitter's maxListeners queues the leak warning for the next
+    // tick.
+    const boxerT = e.args[5]!.type;
+    const errorT = e.args[6]!.type;
+    if (boxerT.kind !== "func" || errorT.kind !== "func")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} boxer not a func`);
+    host.usesTimers = true;
+    const options = e.args.length > 8;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const event = host.emitterOnceAdapter(boxerT, "scr_events_on_fire");
+    const error = host.emitterOnceAdapter(errorT, "scr_events_on_error_fire");
+    host.declare(
+      `declare ptr @scr_events_on_typed(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)`,
+    );
+    const errorBoxer = B.tmp();
+    B.line(`${errorBoxer} = select i1 ${args[7]!.name}, ptr ${args[6]!.name}, ptr null`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_events_on_typed(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ` +
+        `ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${args[4]!.name}, ` +
+        `ptr ${args[5]!.name}, ptr ${errorBoxer}, ` +
+        `ptr @${event.fn}, ptr @${event.shim}, ptr @${error.fn}, ptr @${error.shim}, ` +
+        `ptr ${options ? args[8]!.name : "null"})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

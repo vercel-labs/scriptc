@@ -12,10 +12,24 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_global_binding_value looks the name up in the global object's own
+  // properties and retains what it finds.
+  "global.bindingValue",
+  // scr_global_binding_has looks the name up in the same table.
+  "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
+  // scr_dyn_function_prototype builds the one anonymous function answering
+  // undefined on first use and retains it; no user code runs.
+  "dyn.functionPrototype",
+  // Both instanceof predicates compare values: scr_dyn_perf_handle_is asks
+  // the handle tag, and scr_dyn_perf_entry_is asks an object's prototype
+  // chain (or, for a live record, the view its materializer builds, which
+  // runs no program code).
+  "perf.observerIs",
+  "perf.entryIs",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // scr_ni_intrinsic_register stores the value in a table.
@@ -100,4 +114,35 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
+  // timer the handle names: the loop's clear, or the mock's own entry
+  // removal when the program mocks timers. Neither throws nor runs a
+  // callback.
+  "timers.close",
+  "timers.immediateClose",
+  // The same clears in their disposal spelling, whose result is undefined
+  // rather than the handle.
+  "timers.dispose",
+  "timers.immediateDispose",
+  // The header-limit properties are plain storage: the getters retain the
+  // stored value (or answer null / 0) and the setters retain the new value
+  // and release the old one. No accessor, coercion or listener runs, and
+  // the HTTP layer reads the stored value when it parses a message.
+  "net.serverMaxHeadersCountGet",
+  "net.serverMaxHeadersCountSet",
+  "net.serverMaxRequestsPerSocketGet",
+  "net.serverMaxRequestsPerSocketSet",
+  "http.clientMaxHeadersCountGet",
+  "http.clientMaxHeadersCountSet",
+  // scr_zlib_codec_promise_info and its dyn twin answer a promise: a
+  // refused option or input is moved into it as a rejection, and running
+  // out of memory ends the process, so no error escapes the call.
+  "zlib.infoPromise",
+  "zlib.infoPromiseDyn",
+  // scr_text_encode_into_str writes the two counts of the typed encodeInto
+  // into the slots the compiler allocated: the walk runs no program code, a
+  // destination that is not a u8 byte view ends the process at the entry's
+  // own check, and running out of memory ends it too. The call reports no
+  // error the emitter could deliver.
+  "text.encodeIntoStr",
 ]);

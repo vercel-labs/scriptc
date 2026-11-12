@@ -66,13 +66,20 @@ export function unionRetagMappable(lowerer: Lowerer, fromId: string, toId: strin
  * narrowing never reaches them, a lying cast throws a catchable
  * TypeError instead of smuggling an unrepresentable arm. Null when the
  * site type isn't a genuine sub-union of the source (the SC2003 fence
- * stays). */
+ * stays).
+ *
+ * `alsoStored` names source arms a READ keeps beside the site's arms
+ * because the destination answers the same on them: a shared-field read
+ * narrows the receiver to make the field readable, not because the
+ * program proved the arm away, so an arm that declares the field with
+ * the read's common type keeps its plain route instead of stranding. */
 export function narrowedRetagHelper(
   lowerer: Lowerer,
   node: ts.Node,
   fromId: string,
   toId: string,
   loc: SrcLoc,
+  alsoStored?: ReadonlySet<number>,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
@@ -110,6 +117,10 @@ export function narrowedRetagHelper(
     }
     if (!stored) return null;
   }
+  // A source arm a read keeps beside the site's arms answers the read in
+  // the destination exactly as the site's arms do, so it needs no
+  // extraction: it keeps the plain route a site arm keeps.
+  for (const tag of alsoStored ?? []) if (tag >= 0 && tag < from.arms.length) allowed.add(tag);
   // A source arm the site still allows exactly keeps its plain route: the
   // value can be a plain instance of that class, which no subclass test
   // selects.
@@ -376,6 +387,7 @@ export function unionRetagHelper(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checked = false,
+  strandUnrouted = false,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
@@ -387,7 +399,7 @@ export function unionRetagHelper(
           .sort((a, b) => a[0] - b[0])
           .map(([tag, routes]) => `${tag}>${routes.map((route) => route.tag).join(".")}`)
           .join(";");
-  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}`;
+  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}${strandUnrouted ? ":stranded" : ""}`;
   const cached = lowerer.coercions.copyRetags.get(request);
   if (
     cached &&
@@ -407,8 +419,13 @@ export function unionRetagHelper(
     trappable,
     classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
+    undefined,
+    strandUnrouted,
   );
   if (plan === null) return null;
+  // A source NONE of whose arms the destination holds has no conversion:
+  // every run would throw, and the SC2003 fence is the honest answer.
+  if (strandUnrouted && plan.every((arm) => arm.kind === "trap")) return null;
   // The registry pair determines every route; only checker-proven
   // stranded arms vary by site. Publish the name before building widths
   // so recursive records and arrays can call this same helper.

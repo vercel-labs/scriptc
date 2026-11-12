@@ -23,7 +23,8 @@ import {
   noLoweringDiag,
   unsupportedPackageImportDiag,
 } from "../../../diagnostics/diagnostic.js";
-import { NODE_BUILTIN_MODULES_V24, builtinModulesArrayLit } from "../surfaces.js";
+import { NODE_BUILTIN_MODULES_V24 } from "../../builtin-modules.js";
+import { builtinModulesArrayLit } from "../surfaces.js";
 import { moduleFileName } from "../import-meta.js";
 import {
   BOOL,

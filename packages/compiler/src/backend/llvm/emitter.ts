@@ -2996,6 +2996,7 @@ export class LlEmitter {
       },
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
+      closureSources: () => this.closureSources(),
       threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
       pendingBailReleaseLines: (type, value) => this.pendingBailReleaseLines(type, value),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
@@ -3159,7 +3160,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
@@ -3455,6 +3457,29 @@ export class LlEmitter {
     return target.captures === undefined ? mangleWrapper(fnName) : this.callTarget(fnName);
   }
 
+  private closureSourceRows: readonly { entry: string; text: string }[] | undefined;
+  /** The source text Function.prototype.toString prints, by closure entry,
+   * of the functions the module boxes into checked values that keep their
+   * text (function-source-text.ts sets IrFunction.sourceText). The runtime
+   * asks the module for a closure's text through this table. */
+  closureSources(): readonly { entry: string; text: string }[] {
+    if (this.closureSourceRows !== undefined) return this.closureSourceRows;
+    const rows: { entry: string; text: string }[] = [];
+    const seen = new Set<string>();
+    for (const fn of this.mod.functions) {
+      if (fn.sourceText === undefined) continue;
+      const entry = this.closureEntry(fn.name, fn);
+      // A declared function's wrapper is defined where the table's entry
+      // resolves even when the emitter never reaches the closure (the
+      // closureNames scan's reason).
+      if (fn.captures === undefined) this.closureWrapperNames.add(fn.name);
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      rows.push({ entry, text: fn.sourceText });
+    }
+    return (this.closureSourceRows = rows);
+  }
+
   /** The name the closure-name table gives a closure made of `fnName`
    * (null when it has none), which lets a box of a closure made at the site
    * skip the table lookup; undefined for a function the module does not
@@ -3614,7 +3639,7 @@ export class LlEmitter {
     for (const fn of this.mod.functions) {
       if (fn.async !== true || fn.generator !== undefined) continue;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
-      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
+      if (parks.has(fn.name)) continue;
       if (!this.fnDefText.has(fn.name) || this.stacklessAsync.has(fn.name)) continue;
       eligible.add(fn.name);
     }
@@ -3668,8 +3693,10 @@ export class LlEmitter {
    * coroutine form is then emitted and must pass the same test with no
    * exceptions (its frame bookkeeping excepted); otherwise the fiber form
    * stays. Bodies that never suspend stay fiberless, and module evaluation
-   * bodies and async functions with `dyn` results keep fibers as they do
-   * there. The runtime traps if a stackless body ever parks. */
+   * bodies keep fibers as they do there. A `dyn` result settles the promise
+   * through the resolution procedure, which never parks the body: a promise
+   * it holds is adopted by a reaction on it (scr_promise_resolve_dyn). The
+   * runtime traps if a stackless body ever parks. */
   selectStacklessAsync(fnDefs: string[]): void {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
@@ -3686,9 +3713,6 @@ export class LlEmitter {
     this.mod.functions.forEach((fn, index) => {
       if (fn.async !== true) return;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
-      // A dyn result may adopt a thenable when it settles the promise; an
-      // async generator's completion value settles its request's record.
-      if (fn.generator === undefined && fn.returnType.kind === "dyn") return;
       if (!parks.has(fn.name)) return;
       // An async generator's body also suspends at its own yields.
       let fiberText = fnDefs[index]!.replace(AWAIT_SUSPENSIONS, "");
@@ -3908,12 +3932,13 @@ export class LlEmitter {
 
   /** Whether a stackless coroutine body's `await f(...)` may run f's body in
    * place (emitCoroInlineAwait): f never suspends, and its direct call is
-   * one an await-call entry could take. */
+   * one an await-call entry could take. A `dyn` result may hold a promise
+   * the await must adopt, so it keeps its promise. */
   inlineAwaitEligible(fnName: string): boolean {
     if (this.wasi || this.currentCoro?.kind !== "async") return false;
     const fn = this.fnByName.get(fnName);
     if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
-    return fn.captures === undefined;
+    return fn.captures === undefined && fn.returnType.kind !== "dyn";
   }
 
   /** Whether a stackless coroutine body's `await f(...)` may await f's
@@ -5134,11 +5159,16 @@ export class LlEmitter {
     // only from a loop's entry-range version (loop-entry-versions.ts).
     // Debug builds keep the call.
     if (this.debug === null && (this.loopCallees.has(callee) || loopEntryInlines(this, callee))) {
-      const comment = line.indexOf(" ; ");
-      line =
-        comment < 0
-          ? `${line} alwaysinline`
-          : `${line.slice(0, comment)} alwaysinline${line.slice(comment)}`;
+      line = withCallAttribute(line, "alwaysinline");
+    } else if (this.debug === null && this.entryChainCall(callee)) {
+      // The entry chain: `main` calls %main, %main calls each file
+      // initializer, and a file initializer calls a program function once.
+      // Without the attribute LLVM inlines each link into the next level and
+      // re-runs the function simplification passes on the merged body there,
+      // optimizing the top-level code and everything inlined into it once per
+      // level (up to four times). Every link here runs once per process, so
+      // keeping it out of line costs no run time.
+      line = withCallAttribute(line, "noinline");
     }
     if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
       B.line(line);
@@ -5162,6 +5192,17 @@ export class LlEmitter {
     this.inLandingPad = false;
     B.startBlock(ok);
     return true;
+  }
+
+  /** Whether a direct call of `callee` from the function being emitted is a
+   * link of the entry chain: %main calls each file initializer, and a file
+   * initializer calls a program function that executes once per process
+   * (outside any loop). The chain's first link, `main` to %main, is emitted
+   * by the module writer (emit-module.ts). */
+  private entryChainCall(callee: string): boolean {
+    if (!this.fnByName.has(callee)) return false;
+    if (this.currentFunctionName === this.mod.entry) return callee.startsWith("%init.");
+    return this.currentFunctionName.startsWith("%init.") && this.loopDepth === 0;
   }
 
   /** Whether emitUnwind runs for a landing pad, whose unwind goes on with
@@ -8120,13 +8161,20 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
-  /** Saved operands can feed later call arguments. Transfer ownership of a
-   * sequence's locals to this expression's frame so they survive those
-   * reads and still die on the path that created them, including inside
-   * lazy branches. */
-  private emitSequence<T>(body: () => T): T {
+  /** Opens an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). A function that compiles with the compiler opens the pair
+   * directly instead of passing a closure: emitReadReceiver lowered to 4,933
+   * stack slots with the closure #3563 passed it and to 409 with the pair,
+   * the difference between the bootstrap's second generation fitting its
+   * stack or not. */
+  beginSequenceScope(): void {
     this.scopes.push([]);
-    const result = body();
+  }
+
+  /** Closes the sequence beginSequenceScope opened. */
+  endSequenceScope(): void {
     for (const local of this.scopes.pop()!) {
       this.currentFrame().push({
         name: local.slot,
@@ -8136,6 +8184,16 @@ export class LlEmitter {
         ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
+  }
+
+  /** Saved operands can feed later call arguments. Transfer ownership of a
+   * sequence's locals to this expression's frame so they survive those
+   * reads and still die on the path that created them, including inside
+   * lazy branches. */
+  private emitSequence<T>(body: () => T): T {
+    this.beginSequenceScope();
+    const result = body();
+    this.endSequenceScope();
     return result;
   }
 
@@ -9662,6 +9720,12 @@ export class LlEmitter {
     return zlibBytesThunkFor(this, cbT);
   }
 
+  /** The `info: true` callback adapter: its result parameter is the
+   * checked { buffer, engine } object, passed through as a dyn value. */
+  zlibDynThunkFor(cbT: IrType & { kind: "func" }): string {
+    return zlibBytesThunkFor(this, cbT, false, "zlib", "dyn");
+  }
+
   streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {
     return streamCbThunkFor(this, kind, cbT);
   }
@@ -9987,6 +10051,14 @@ export function adoptingAwaitOf(value: IrExpr | null): ExprOf<"awaitExpr"> | nul
     stmt: () => true,
   });
   return found;
+}
+
+/** `line`, a call statement, with the call-site attribute `attribute` after
+ * its operands and before a trailing comment. */
+function withCallAttribute(line: string, attribute: string): string {
+  const comment = line.indexOf(" ; ");
+  const end = comment < 0 ? line.length : comment;
+  return `${line.slice(0, end)} ${attribute}${line.slice(end)}`;
 }
 
 /** Adds `key` to `into` when it lacks it. */

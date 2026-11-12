@@ -720,6 +720,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   }
   if (
     e.fn === "http.serverOnUpgrade" ||
+    e.fn === "http.serverOnDropRequest" ||
     e.fn === "http.clientOnUpgrade" ||
     e.fn === "http.clientOnConnect"
   ) {
@@ -728,27 +729,33 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
+    // dropRequest hands over (req, socket) only: no head parameter.
+    const arity =
+      e.fn === "http.serverOnDropRequest" ? Math.min(cbT.params.length, 2) : cbT.params.length;
     const adapter =
-      cbT.params.length === 3
+      arity === 3
         ? "scr_http_upgrade_thunk3"
-        : cbT.params.length === 2
+        : arity === 2
           ? "scr_http_upgrade_thunk2"
-          : cbT.params.length === 1
+          : arity === 1
             ? "scr_http_upgrade_thunk1"
             : "scr_http_upgrade_thunk0";
     const entry =
       e.fn === "http.serverOnUpgrade"
         ? "scr_http_server_on_upgrade"
-        : e.fn === "http.clientOnUpgrade"
-          ? "scr_http_client_on_upgrade"
-          : "scr_http_client_on_connect";
+        : e.fn === "http.serverOnDropRequest"
+          ? "scr_http_server_on_drop_request"
+          : e.fn === "http.clientOnUpgrade"
+            ? "scr_http_client_on_upgrade"
+            : "scr_http_client_on_connect";
     host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr)`);
     host.declare(`declare void @${entry}(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
     // A 'newListener' handler can throw out of the server's registration.
-    if (e.fn === "http.serverOnUpgrade") host.emitPendingCheck();
+    if (e.fn === "http.serverOnUpgrade" || e.fn === "http.serverOnDropRequest")
+      host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.serverOnClientError") {

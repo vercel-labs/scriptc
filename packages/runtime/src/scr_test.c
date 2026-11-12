@@ -24,10 +24,12 @@
  * Node's, SEMANTICS.md numbers the divergence). Durations are real
  * elapsed milliseconds and thus NONDETERMINISTIC — the differential
  * harness normalizes them on both lanes; the suite runner only reads
- * exit codes. One deliberate divergence: reporter lines write to stdout
- * synchronously as results land, where Node's reporter stream lags
- * console output racily — programs that interleave console.log with the
- * reporter cannot be byte-compared under Node itself.
+ * exit codes. One deliberate divergence: reporter lines write to the
+ * report stream synchronously as results land, where Node's reporter
+ * stream lags console output racily — programs that interleave console.log
+ * with the reporter cannot be byte-compared under Node itself. The stream
+ * is stdout unless `--test-reporter-destination` names stderr or a file,
+ * which is how a runner separates program output from the report.
  *
  * Exit code: main asks scr_test_exit_code() after the loop drains —
  * 1 when any non-todo test failed (todo failures print ⚠ and list in the
@@ -47,6 +49,12 @@
 #include <direct.h>
 #define getcwd _getcwd
 #endif
+
+/* The report stream: stdout unless `--test-reporter-destination` names
+ * stderr or a file. Program output always stays on stdout, so a file
+ * destination separates the report from it exactly as Node's does. */
+static SCR_TL FILE *scr_test_report_file = NULL;
+#define scr_test_out() (scr_test_report_file ? scr_test_report_file : stdout)
 
 static void scr_test_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -344,7 +352,7 @@ static int scr_test_depth(const ScrTestCtx *t) {
 }
 
 static void scr_test_indent(int depth) {
-  for (int i = 0; i < depth; i++) fputs("  ", stdout);
+  for (int i = 0; i < depth; i++) fputs("  ", scr_test_out());
 }
 
 /* "(1.234567ms)" — durations print microsecond-rounded (Node's hrtime
@@ -353,10 +361,10 @@ static void scr_test_indent(int depth) {
 static void scr_test_print_dur(double ms) {
   if (isnan(ms)) return;
   char num[32];
-  fputs(" (", stdout);
+  fputs(" (", scr_test_out());
   size_t n = scr_f64_to_str(round(ms * 1e6) / 1e6, num);
-  fwrite(num, 1, n, stdout);
-  fputs("ms)", stdout);
+  fwrite(num, 1, n, scr_test_out());
+  fputs("ms)", scr_test_out());
 }
 
 static const char *scr_test_symbol(int state) {
@@ -373,7 +381,7 @@ static const char *scr_test_symbol(int state) {
 }
 
 static void scr_test_print_str(const ScrStr *s) {
-  if (s) fwrite(s->data, 1, s->len, stdout);
+  if (s) fwrite(s->data, 1, s->len, scr_test_out());
 }
 
 /* Ancestors print their "▶ name" headers before the first descendant
@@ -384,9 +392,9 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
   scr_test_ensure_started(t->parent);
   t->started_line = true;
   scr_test_indent(scr_test_depth(t));
-  fputs("\xE2\x96\xB6 ", stdout); /* ▶ */
+  fputs("\xE2\x96\xB6 ", scr_test_out()); /* ▶ */
   scr_test_print_str(t->name);
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
 }
 
 /* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. Held
@@ -396,25 +404,25 @@ static void scr_test_report_result(ScrTestCtx *t) {
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
   scr_test_indent(depth);
-  fputs(scr_test_symbol(t->state), stdout);
-  fputc(' ', stdout);
+  fputs(scr_test_symbol(t->state), scr_test_out());
+  fputc(' ', scr_test_out());
   scr_test_print_str(t->name);
   scr_test_print_dur(t->dur_ms);
   if (t->state == SCR_TS_SKIPPED) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("SKIP", stdout);
+    else fputs("SKIP", scr_test_out());
   } else if (t->state == SCR_TS_TODO_PASS || t->state == SCR_TS_TODO_FAIL) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("TODO", stdout);
+    else fputs("TODO", scr_test_out());
   }
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
   for (size_t i = 0; i < t->ndiags; i++) {
     scr_test_indent(depth);
-    fputs("\xE2\x84\xB9 ", stdout); /* ℹ */
+    fputs("\xE2\x84\xB9 ", scr_test_out()); /* ℹ */
     scr_test_print_str(t->diags[i]);
-    fputc('\n', stdout);
+    fputc('\n', scr_test_out());
   }
 }
 
@@ -945,12 +953,12 @@ static void scr_test_count(const ScrTestCtx *t) {
 
 static void scr_test_info_line(const char *label, double value) {
   char num[32];
-  fputs("\xE2\x84\xB9 ", stdout);
-  fputs(label, stdout);
-  fputc(' ', stdout);
+  fputs("\xE2\x84\xB9 ", scr_test_out());
+  fputs(label, scr_test_out());
+  fputc(' ', scr_test_out());
   size_t n = scr_f64_to_str(value, num);
-  fwrite(num, 1, n, stdout);
-  fputc('\n', stdout);
+  fwrite(num, 1, n, scr_test_out());
+  fputc('\n', scr_test_out());
 }
 
 /* The failing-tests detail: "test at <file>:<line>:<col>" (the file
@@ -960,33 +968,33 @@ static void scr_test_info_line(const char *label, double value) {
  * block; this runtime stops at the message (SEMANTICS.md — the harness
  * strips both sides). */
 static void scr_test_print_at(const ScrStr *at) {
-  fputs("test at ", stdout);
+  fputs("test at ", scr_test_out());
   char cwd[4096];
   if (getcwd(cwd, sizeof cwd)) {
     size_t cl = strlen(cwd);
     if (at->len > cl + 1 && memcmp(at->data, cwd, cl) == 0 && at->data[cl] == '/') {
-      fwrite(at->data + cl + 1, 1, at->len - cl - 1, stdout);
-      fputc('\n', stdout);
+      fwrite(at->data + cl + 1, 1, at->len - cl - 1, scr_test_out());
+      fputc('\n', scr_test_out());
       return;
     }
   }
-  fwrite(at->data, 1, at->len, stdout);
-  fputc('\n', stdout);
+  fwrite(at->data, 1, at->len, scr_test_out());
+  fputc('\n', scr_test_out());
 }
 
 static void scr_test_print_failure(ScrTestCtx *t) {
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
   if (t->at) scr_test_print_at(t->at);
-  fputs(scr_test_symbol(t->state), stdout);
-  fputc(' ', stdout);
+  fputs(scr_test_symbol(t->state), scr_test_out());
+  fputc(' ', scr_test_out());
   scr_test_print_str(t->name);
   scr_test_print_dur(t->dur_ms);
   if (t->state == SCR_TS_TODO_FAIL) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("TODO", stdout);
+    else fputs("TODO", scr_test_out());
   }
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
   if (t->err) {
     /* Node prints the failure inspected: a thrown string is quoted, and
      * numbers, booleans and checked-dynamic values (thrown records, arrays,
@@ -1011,9 +1019,9 @@ static void scr_test_print_failure(ScrTestCtx *t) {
       while (p <= end) {
         const char *nl = memchr(p, '\n', (size_t)(end - p));
         size_t linelen = nl ? (size_t)(nl - p) : (size_t)(end - p);
-        fputs("  ", stdout);
-        fwrite(p, 1, linelen, stdout);
-        fputc('\n', stdout);
+        fputs("  ", scr_test_out());
+        fwrite(p, 1, linelen, scr_test_out());
+        fputc('\n', scr_test_out());
         if (!nl) break;
         p = nl + 1;
       }
@@ -1037,7 +1045,7 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
         c->err) {
       if (!*any) {
         *any = true;
-        fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
+        fputs("\n\xE2\x9C\x96 failing tests:\n", scr_test_out());
       }
       scr_test_print_failure(c);
     }
@@ -1071,12 +1079,57 @@ typedef struct ScrSnapFile {
 } ScrSnapFile;
 
 static SCR_TL ScrSnapFile *scr_snap_files = NULL;
-/* Node's --test-update-snapshots: a leading argument of the binary,
+/* Node's --test-update-snapshots: a runtime argument of the binary,
  * which scr_test_init takes out of process.argv. */
 static SCR_TL bool scr_test_update_snapshots = false;
 
 void scr_test_init(void) {
-  scr_test_update_snapshots = scr_lib_take_flag("--test-update-snapshots");
+  /* The runtime options scr_test_init takes out of process.argv, leading
+   * and in any order, as Node accepts its own flags before the entry:
+   * `--test-update-snapshots`, and the reporter options
+   * `--test-reporter=spec` (the reporter this runtime reproduces) and
+   * `--test-reporter-destination=stdout|stderr|<file>` (where its lines
+   * go). A reporter name Node would import is refused here instead: the
+   * binary carries only the spec reporter, and silently reporting
+   * somewhere else would hide a misconfigured command. */
+  const char *reporter = NULL;
+  const char *destination = NULL;
+  for (;;) {
+    const char *value = NULL;
+    if (scr_lib_take_flag("--test-update-snapshots")) {
+      scr_test_update_snapshots = true;
+      continue;
+    }
+    if (scr_lib_take_flag_value("--test-reporter", &value)) {
+      reporter = value;
+      continue;
+    }
+    if (scr_lib_take_flag_value("--test-reporter-destination", &value)) {
+      destination = value;
+      continue;
+    }
+    break;
+  }
+  if (reporter != NULL && strcmp(reporter, "spec") != 0) {
+    fprintf(stderr, "scriptc: unknown test reporter '%s': only the spec reporter is supported\n",
+            reporter);
+    fflush(stderr);
+    scr_process_exit(1);
+  }
+  if (destination == NULL || strcmp(destination, "stdout") == 0) return;
+  if (strcmp(destination, "stderr") == 0) {
+    scr_test_report_file = stderr;
+    return;
+  }
+  FILE *file = fopen(destination, "w");
+  if (file == NULL) {
+    fprintf(stderr, "scriptc: cannot open test reporter destination '%s': %s\n", destination,
+            strerror(errno));
+    fflush(stderr);
+    scr_process_exit(1);
+  }
+  setvbuf(file, NULL, _IOLBF, 0);
+  scr_test_report_file = file;
 }
 
 static void scr_snap_throw_state(const char *text, size_t len) {
@@ -1653,10 +1706,10 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
       scr_str_release(root->name);
       root->name = scr_str_new(root->at->data, end);
     }
-    fputs("\xE2\x9C\x96 ", stdout);
+    fputs("\xE2\x9C\x96 ", scr_test_out());
     scr_test_print_str(root->name);
     scr_test_print_dur(root->dur_ms);
-    fputc('\n', stdout);
+    fputc('\n', scr_test_out());
   }
   scr_test_run_done = true;
   scr_snap_write_all();
@@ -1672,7 +1725,7 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   bool any = false;
   scr_test_print_failures(root, &any);
   if (root->err) {
-    if (!any) fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
+    if (!any) fputs("\n\xE2\x9C\x96 failing tests:\n", scr_test_out());
     scr_test_print_failure(root);
   }
   /* The tree is done reporting: release it (test bodies may still hold
@@ -1685,6 +1738,12 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
 static void scr_test_ensure_runner(void) {
   if (scr_test_runner_spawned) return;
   scr_test_runner_spawned = true;
+#ifndef __wasi__
+  /* A subtest started inside a then / catch / finally handler on an untyped
+   * promise runs inline and is awaited on the current fiber (scr_test_call),
+   * so in a program with tests each such reaction's steps get a fiber. */
+  scr_dyn_reaction_spawn = scr_dyn_then_spawn;
+#endif
   scr_test_t0 = scr_now_ms();
   ScrPromise *p = scr_async_spawn(scr_test_runner_entry, NULL);
   scr_promise_release(p);
@@ -2350,14 +2409,33 @@ double scr_test_mt_set_interval(ScrClosure *cb /*moves*/, double ms) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
   return m ? scr_mt_create(m, true, cb, ms)->handle : scr_set_interval(cb, ms);
 }
+/* Node's #clearTimer removes whatever timer the handle names from the mock
+ * queue, whichever API created it: a mocked interval is cleared by
+ * clearTimeout's bound clear too (both APIs share the one #clearTimer). A
+ * handle no mock entry holds is left alone. */
+static void scr_test_mt_clear_mock(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL && e->pos != 0) scr_mt_clear(e->owner, handle);
+}
+/* clearTimeout and clearInterval are the mock's bound clear only while
+ * their own API is mocked (enable() replaces the clear with its set*).
+ * Otherwise they are the loop's clear, which acts on the loop's timers and
+ * leaves a mock Timeout alone — a real timer armed before enable() stays
+ * armed through a mocked clearTimeout. */
 void scr_test_mt_clear_timeout(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_TIMEOUT] != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 void scr_test_mt_clear_interval(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_INTERVAL] != NULL) scr_test_mt_clear_mock(handle);
+  else scr_clear_interval(handle);
+}
+/* Timeout.close() and [Symbol.dispose]() carry their own clear: a mock
+ * Timeout clears its queue entry at any time, and a loop Timeout the loop's
+ * timer, whether or not timers are mocked now. */
+void scr_test_mt_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 /* A mock Timeout's ref() and unref() return it unchanged, refresh() does
@@ -2401,6 +2479,14 @@ double scr_test_mt_set_immediate_als(ScrClosure *cb /*moves*/) {
 void scr_test_mt_clear_immediate(double handle) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
   if (m) scr_mt_clear(m, handle);
+  else scr_clear_immediate(handle);
+}
+/* Immediate.prototype[Symbol.dispose](): the immediate's own clear, not
+ * the global clearImmediate mock.timers may have replaced. A mock entry is
+ * removed from its queue; a loop immediate is the loop's to clear. */
+void scr_test_mt_immediate_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_immediate(handle);
 }
 void scr_test_mt_immediate_unref(double handle) {

@@ -85,6 +85,12 @@ interface Timeout extends Disposable {
   /* Re-arms the timer to fire at now + the original delay (Node's
    * Timeout.refresh). Chaining like ref/unref. */
   refresh(): Timeout;
+  /* Node's legacy cancel: clearTimeout(this), returning the handle for
+   * chaining (the primitive id is unchanged and clear again no-ops). */
+  close(): Timeout;
+  /* The handle coerces to its numeric timer id — Node's
+   * Symbol.toPrimitive, which is also what clearTimeout accepts. */
+  [Symbol.toPrimitive](): number;
   [Symbol.dispose](): void;
 }
 /* The callback is invoked with NO arguments; the second overload admits a

@@ -8007,7 +8007,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
    * typedef half sits inside the comment, and the code half is suppressed
    * exactly when its partner (same file, same name) was comment-side, so
    * a REAL duplicate declaration (both halves in code — Node's own
-   * SyntaxError) keeps tsc's voice. */
+   * SyntaxError) keeps tsc's voice. A generic written without its type
+   * arguments (`{Array}`, `{Set}`) draws 2314 from tsgo, where 5.9.3
+   * instantiates every omitted argument as `any` and reports nothing. The
+   * checker still types the reference with those `any` arguments, so
+   * admitting the diagnostic restores the 5.9.3 verdict without changing
+   * the type the lowering sees. A `@readonly` tag on a getter, setter, or
+   * method is documentation 5.9.3 ignores and tsgo turns into a synthesized
+   * modifier, which it then reports as 1024 for appearing outside a property
+   * declaration. The diagnostic sits inside the comment, so the member keeps
+   * the accessor or method its code declares. */
   const insideBlockComment = (text: string, pos: number): boolean => {
     const open = text.lastIndexOf("/*", pos);
     if (open < 0) return false;
@@ -8020,7 +8029,15 @@ function preflightGate7(load: LoadResult): PreflightGate {
     commentDup: Set<string>,
   ): boolean => {
     if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (
+      d.code !== 2304 &&
+      d.code !== 2552 &&
+      d.code !== 2300 &&
+      d.code !== 1003 &&
+      d.code !== 2314 &&
+      d.code !== 1024
+    )
+      return false;
     if (d.pos === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;

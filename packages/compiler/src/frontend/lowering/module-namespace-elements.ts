@@ -455,6 +455,18 @@ const BUILTIN_NAMESPACE_MEMBERS: Record<string, readonly string[]> = {
   util: ["types"],
 };
 
+/** Module-level objects the dyn lane answers as values
+ * (lowerBuiltinMemberDynValue) that are neither lowered functions nor baked
+ * constants: the constants objects. The box names them so a computed read
+ * (`zlib["constants"]`) answers the same object the property form does
+ * instead of undefined. Reading one of these through the box gets the live
+ * reference to the singleton, so identity holds across both forms. */
+const BUILTIN_VALUE_MEMBERS: Record<string, readonly string[]> = {
+  fs: ["constants"],
+  os: ["constants"],
+  zlib: ["constants"],
+};
+
 /** A `node:` builtin namespace boxed as a checked-dynamic value. A builtin
  * has no compiled source, so the key list comes from the compiler's own
  * member tables (surfaces.ts `builtinModuleMemberNames`) plus the
@@ -560,10 +572,11 @@ export function moduleNamespaceBuiltinDynValue(
 }
 
 /** Every member key the box tries, sorted: the lowering tables' value
- * members and the sub-module members. */
+ * members, the sub-module members and the module-level objects. */
 function builtinBoxMemberNames(lowerer: Lowerer, module: string): string[] {
   const names = new Set<string>(builtinModuleMemberNames(lowerer, module));
   for (const sub of BUILTIN_NAMESPACE_MEMBERS[module] ?? []) names.add(sub);
+  for (const value of BUILTIN_VALUE_MEMBERS[module] ?? []) names.add(value);
   return [...names].sort();
 }
 

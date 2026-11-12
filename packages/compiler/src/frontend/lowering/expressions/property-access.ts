@@ -97,7 +97,6 @@ import {
   UNDEFINED_T,
   arrayOf,
   canBoxFuncIntoDyn,
-  funcOf,
   isDynTypedRefType,
   isUnitType,
   typeEquals,
@@ -2930,33 +2929,12 @@ export function lowerIntrinsicProperty(
   if (isErrorPrototypeValue(lowerer, expr))
     return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Function.prototype as a VALUE (a prototype-chain link:
-  // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
-  // anonymous function answering undefined, length 0 — a zero-capture
-  // closure of a compiler helper, so every read is the same function
-  // (closure identity) and shares its property table. Reads through it
-  // find the function members the checked runtime models for every
-  // function (apply, constructor, name, length). Member forms keep their
-  // own lowerings.
-  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
-    const loc = locOf(expr);
-    const name = "%dyn.functionPrototype";
-    if (lowerer.liftedFnNamed(name) === undefined)
-      lowerer.liftedFns.push({
-        name,
-        params: [],
-        locals: [],
-        returnType: DYN,
-        body: [{ kind: "return", value: dynUndefinedExpr(loc), loc }],
-        loc,
-      });
-    return {
-      kind: "dynFrom",
-      value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
-      fnName: "",
-      type: DYN,
-      loc,
-    };
-  }
+  // `Object.setPrototypeOf(F.prototype, Function.prototype)`, chain walks):
+  // the runtime's one anonymous function answering undefined, with length 0
+  // and an empty name, so every read is that same function and every
+  // function's chain reaches it. Member forms keep their own lowerings.
+  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype")
+    return { kind: "libCall", fn: "dyn.functionPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Array.isArray, Object.keys, Date.now, Error.captureStackTrace (`if
   // (Error.captureStackTrace) ...`) and the other statics with function
   // values: the same values a read through the constructor's untyped value
@@ -4645,6 +4623,63 @@ function unreachableReceiver(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   }
 }
 
+/** The sub-union a shared-field read narrows a checker-narrowed receiver
+ * into: the site's arms plus every STORED arm that declares the same field
+ * with the site's common type. Lowering narrows the receiver so the field
+ * becomes readable (unit and fieldless arms veto `unionDisc`); it is the
+ * read that needs those arms gone, not the program. An arm the checker
+ * ruled out still answers the read identically, so keeping it strands
+ * nothing — and stranding it traps a value Node would read (the negation
+ * of a type predicate narrows by the predicate author's claim alone: a
+ * shared-field read in its false branch is valid for every arm that
+ * declares the field). Null when the site isn't a plain narrowing of the
+ * stored union or no stored arm answers the read beside it. */
+function widenedReadTarget(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  fromId: string,
+  site: IrType & { kind: "union" },
+): { type: IrType & { kind: "union" }; alsoStored: Set<number> } | null {
+  const from = lowerer.unions.get(fromId);
+  const siteDef = lowerer.unions.get(site.unionId);
+  if (!from || !siteDef) return null;
+  const field = expr.name.text;
+  const fieldOf = (arm: IrType): IrType | null => {
+    let ft: IrType | undefined;
+    if (arm.kind === "record") {
+      ft = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === field)?.type;
+    } else if (arm.kind === "object") {
+      ft = lowerer.classes.get(arm.className)?.fields.get(field);
+    }
+    return ft && ft.kind !== "void" && !isUnitType(ft) ? ft : null;
+  };
+  let common: IrType | null = null;
+  for (const arm of siteDef.arms) {
+    const ft = fieldOf(arm);
+    if (!ft || (common !== null && !typeEquals(common, ft))) return null;
+    common = ft;
+  }
+  if (common === null) return null;
+  // Every site arm must be a stored arm: a site naming a subclass the
+  // mapper folded into its base is class-route business, not a read.
+  const siteTags = new Set<number>();
+  for (const arm of siteDef.arms) {
+    const tag = lowerer.armTag(fromId, arm);
+    if (tag < 0) return null;
+    siteTags.add(tag);
+  }
+  const alsoStored = new Set<number>();
+  from.arms.forEach((arm, tag) => {
+    if (siteTags.has(tag)) return;
+    const ft = fieldOf(arm);
+    if (ft && typeEquals(ft, common)) alsoStored.add(tag);
+  });
+  if (alsoStored.size === 0) return null;
+  const arms = from.arms.filter((_, tag) => siteTags.has(tag) || alsoStored.has(tag));
+  const unionId = arms.length === from.arms.length ? fromId : lowerer.unions.transform(from, arms);
+  return { type: { kind: "union", unionId }, alsoStored };
+}
+
 /** Shared-field read `r.f` on a UNION receiver: supported exactly when
  * every arm is a record/class possessing the field with ONE shared IR
  * type — the discriminant pattern (`r.kind`, primitive) and the
@@ -4689,19 +4724,27 @@ export function lowerUnionProperty(
   // A guard can remove several variants without selecting one record.
   // Materialize that sub-union before looking for common fields; arms
   // ruled out by the guard must not veto a field shared by the survivors.
+  // The sub-union keeps every stored arm that answers the field with the
+  // survivors' common type (widenedReadTarget): the read needs only the
+  // arms that cannot answer removed, and a shared-field read must not
+  // strand a value whose field it reads — a type predicate's false branch
+  // narrows by its author's claim, not by a test of the value.
   if (
     receiverIr?.kind === "union" &&
     value.type.kind === "union" &&
     !typeEquals(value.type, receiverIr)
   ) {
+    const widened = widenedReadTarget(lowerer, expr, value.type.unionId, receiverIr);
+    const target = widened?.type ?? receiverIr;
     const helper = lowerer.narrowedRetagHelper(
       expr.expression,
       value.type.unionId,
-      receiverIr.unionId,
+      target.unionId,
       locOf(expr),
+      widened?.alsoStored,
     );
     if (helper)
-      value = { kind: "call", callee: helper, args: [value], type: receiverIr, loc: locOf(expr) };
+      value = { kind: "call", callee: helper, args: [value], type: target, loc: locOf(expr) };
     // Optional storage of a base class (a runtime-optional binding holding
     // `Base | undefined`) that `instanceof` narrowed to several subclasses:
     // extract the instance and test its class, as typed slots do.

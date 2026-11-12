@@ -196,12 +196,22 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
 /* .then/.catch/.finally over a dyn promise (scr_dyn_invoke's promise arm
- * and the compiled dyn-receiver path): one reaction fiber per
- * registration — awaits src, runs the checked-dynamic tree handler (non-callable handlers
- * pass the settlement through; a returned dyn promise is adopted), and
- * settles a fresh result promise, answered BOXED (+1). Microtask-exact
- * ordering rides the fiber machinery. */
+ * and the compiled dyn-receiver path): one native reaction per
+ * registration (scr_promise_react) — its job runs the checked-dynamic tree
+ * handler once src settles (non-callable handlers pass the settlement
+ * through; a returned dyn promise is adopted), and settles a fresh result
+ * promise, answered BOXED (+1). */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* When set, that reaction's job calls it in place of its steps. The test
+ * unit sets it to scr_dyn_then_spawn (scr_test.c), which runs the steps on
+ * a fiber of their own: a handler may then wait on the current fiber from
+ * synchronous code, as a node:test subtest started inside it does. Only
+ * that unit references scr_dyn_then_spawn, so a program without tests
+ * links neither it nor the fiber machinery. */
+extern SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src);
+#ifndef __wasi__
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src);
+#endif
 /* A native reaction to a promise's settlement, as PerformPromiseThen with
  * native steps: react(ctx, settled) runs as a reaction job once the promise
  * settles (from the next microtask checkpoint when it already has), in
@@ -216,6 +226,23 @@ typedef struct ScrPromiseReaction {
 /* Subscribes a native reaction to `p` (the descriptor outlives it) and
  * marks `p` handled, as a `then` does. */
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* The same without the mark: `p` counts as handled once the reaction's own
+ * steps observe it (scr_promise_settled_now), as it did when a fiber that
+ * awaited it resumed. A rejection already reported as unhandled therefore
+ * raises 'rejectionHandled' in the reaction's turn, never inside the call
+ * that registers it. */
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* Queues the reaction's job now, whatever the state of `p`: react(ctx, p)
+ * runs in the next microtask turn, and `p` stays alive until then. It is
+ * the turn of the job that resolves a promise with another one
+ * (NewPromiseResolveThenableJob): its steps subscribe to `p`
+ * (scr_promise_react_unmarked), which may still be pending. The loop needs
+ * nothing for it beyond the reaction job it already runs. */
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+#ifdef SCR_RC_AUDIT
+/* The dynamic promise unit's pending reactions (scr_async.c). */
+extern SCR_TL long scr_dyn_reactions_pending;
+#endif
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber

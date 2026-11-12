@@ -87,6 +87,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { refuseForwardsToOwnCall } from "./module-member-this.js";
 import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
@@ -154,6 +155,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
   lowerWebStreamNew,
@@ -309,6 +311,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { finalizeFunctionSourceText } from "./function-source-text.js";
 import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
@@ -539,6 +542,7 @@ import {
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -590,6 +594,7 @@ import {
   lowerDerivedCtorBody,
   superCallStmt,
   lowerSuperMethodCall,
+  lowerSuperComputedMethodCall,
   superThisRef,
   lowerSuperAccessorRead,
   lowerSuperAccessorWrite,
@@ -674,6 +679,7 @@ import {
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
+  captureRejectionSymbolValue,
   lowerEmitOverrideSpec,
   type ComputedEventPattern,
   type EmitSpecCtx,
@@ -751,6 +757,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerPromiseStaticCall } from "./builtins/promises.js";
@@ -3685,6 +3692,9 @@ export class Lowerer {
   readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
   /** Receiver proofs depend only on a module's source and stable bindings. */
   readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Per CommonJS file, what its source shows of its exports object
+   * (cjs-exports-receiver.ts); null when it does not show every write. */
+  readonly cjsExportsShapes = new Map<ts.SourceFile, CjsExportsShape | null>();
   /** Member write sites by property name across the program, built on the
    * first query, and the exports each query proved change after their
    * module initializes (cjs-inline-require.ts). */
@@ -4229,6 +4239,22 @@ export class Lowerer {
     return source.type.kind === "union" && this.armTag(source.type.unionId, UNDEFINED_T) >= 0
       ? source
       : null;
+  }
+
+  /** A class field the JS collector widened to an undefined-armed union
+   * under trust-but-verify (ClassInfo.runtimeOptionalFields): the declaring
+   * assignment wrote undefined, so a read the checker narrows to the
+   * inferred type must keep the STORED union — Node can hold the undefined
+   * the checker's later-write inference does not name. */
+  runtimeOptionalClassField(className: string, field: string): boolean {
+    for (
+      let info: ClassInfo | null | undefined = this.classes.get(className);
+      info;
+      info = info.base
+    ) {
+      if (info.runtimeOptionalFields?.has(field)) return true;
+    }
+    return false;
   }
 
   /** A strict property or method receiver over an array-derived optional
@@ -5037,6 +5063,11 @@ export class Lowerer {
    * (noteDeferredRefusal), one per statement. Warnings, so they leave with
    * the divergences and never fail the build. */
   readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** The sites whose receiver proof read `f.call(this, …)` or
+   * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
+   * `start:end:file`: refused when the lowered program gives a function its
+   * own `call` or `apply` (refuseForwardsToOwnCall). */
+  readonly receiverForwardSites = new Set<string>();
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5091,6 +5122,12 @@ export class Lowerer {
    * constructors held as typed values. Given only in a program that prints
    * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
+  /** The source span the text of each lifted function is printed from, by
+   * function name: the text a boxed function prints as
+   * (function-source-text.ts). A span rather than the node keeps the entry
+   * recordable, and a name rather than the function keeps it the same
+   * function when a record replays the unit. */
+  readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5630,6 +5667,7 @@ export class Lowerer {
       functionTable("implicitFns", this.implicitFns, (fn) =>
         this.implicitFns.some((other) => other.name === fn),
       ),
+      irDataTable("functionSourceLocs", this.functionSourceLocs),
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
@@ -5683,6 +5721,7 @@ export class Lowerer {
       setTable("recordFieldDeletes", this.recordFieldDeletes),
       setTable("freezableArrays", this.freezableArrays),
       setTable("weakKeys", this.weakKeys),
+      setTable("receiverForwardSites", this.receiverForwardSites),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
       // The shared-module plan runs inside the first unit that lowers a
@@ -6023,6 +6062,10 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // The census of the program's writes on the global object, a pure
+    // function of its modules, read again when a unit replays.
+    "globalObjectWrites",
+    "globalThisWrittenNames",
     // Asked only where no unit is recorded: a build that reuses units leaves
     // the conditions `--define` decides to the run (constant-conditions.ts).
     "computedEnvironmentWrite",
@@ -6087,6 +6130,7 @@ export class Lowerer {
     "cjsLiveMemberExports",
     "cjsNamespaceTargets",
     "cjsReceiverProofs",
+    "cjsExportsShapes",
     "cjsLateWrittenExports",
     "cjsMemberWritesByName",
     "cjsEsmBoundNames",
@@ -13286,6 +13330,7 @@ export class Lowerer {
     boxBuiltinValuesChecked(this, functions);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
+    finalizeFunctionSourceText(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -13502,8 +13547,12 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
+    // Receiver proofs that took `call` and `apply` for the builtins, in a
+    // program whose finished module gives a function its own.
+    const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];
+    for (const diag of ownCallRefusals) this.pushDiag(diag);
     return {
-      module,
+      module: ownCallRefusals.length > 0 ? null : module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,
@@ -14493,6 +14542,9 @@ export class Lowerer {
     // record keeps its keys; the `"k" in r` sites answer through the view).
     if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
+    // A declared spread merge that kept the copy's own order holds a source
+    // view too, so the captures that consult one must be active for it.
+    if (this.keyOrder.keptDeclaredMerges > 0) this.recordSourcesPossible = true;
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.
     if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
@@ -17845,8 +17897,14 @@ export class Lowerer {
     return unionRetagMappable(this, fromId, toId);
   }
 
-  narrowedRetagHelper(node: ts.Node, fromId: string, toId: string, loc: SrcLoc): string | null {
-    return narrowedRetagHelper(this, node, fromId, toId, loc);
+  narrowedRetagHelper(
+    node: ts.Node,
+    fromId: string,
+    toId: string,
+    loc: SrcLoc,
+    alsoStored?: ReadonlySet<number>,
+  ): string | null {
+    return narrowedRetagHelper(this, node, fromId, toId, loc, alsoStored);
   }
 
   strandedUnitTrap(expr: IrExpr, expected: IrType, loc: SrcLoc): IrExpr | null {
@@ -17887,8 +17945,18 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    strandUnrouted = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(
+      this,
+      fromId,
+      toId,
+      loc,
+      trappable,
+      classRoutes,
+      checked,
+      strandUnrouted,
+    );
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -18376,6 +18444,29 @@ export class Lowerer {
     if (!typeEquals(e.type, expected) && expected.kind === "union") {
       const routed = siteDiscriminantConversion(this, node, e, expected);
       if (routed) e = routed;
+    }
+    // A JavaScript value whose source union the destination cannot hold
+    // whole (`number | Vector3` into `Vector3 | undefined`): the checker
+    // records no narrowing for the guard the program wrote, but the run-time
+    // value is one of the arms. The arms the destination holds convert on
+    // their tag and the others throw the catchable TypeError at the
+    // conversion, the checked boundary every untyped JavaScript flow takes.
+    if (
+      !typeEquals(e.type, expected) &&
+      e.type.kind === "union" &&
+      expected.kind === "union" &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const helper = this.unionRetagHelper(
+        e.type.unionId,
+        expected.unionId,
+        e.loc,
+        undefined,
+        undefined,
+        false,
+        true,
+      );
+      if (helper) e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
     }
     this.requireExactShape(node, e.type, expected);
     return e;
@@ -22453,6 +22544,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
@@ -22493,6 +22585,13 @@ export class Lowerer {
 
   lowerSuperMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr {
     return lowerSuperMethodCall(this, call, access);
+  }
+
+  lowerSuperComputedMethodCall(
+    call: ts.CallExpression,
+    access: ts.ElementAccessExpression,
+  ): IrExpr {
+    return lowerSuperComputedMethodCall(this, call, access);
   }
 
   superThisRef(access: ts.PropertyAccessExpression): { thisRef: IrExpr; base: ClassInfo } {
@@ -22873,11 +22972,19 @@ export class Lowerer {
     if (module === "constants") return null;
     if (module !== null) return { module, member: access.name.text };
     // The events module object IS the EventEmitter class, so the class's
-    // defaultMaxListeners is the module property.
-    if (access.name.text === "defaultMaxListeners" && ts.isIdentifier(access.expression)) {
-      const imported = this.builtinImportOf(access.expression);
+    // defaultMaxListeners and captureRejectionSymbol are module properties.
+    if (
+      access.name.text === "defaultMaxListeners" ||
+      access.name.text === "captureRejectionSymbol"
+    ) {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
       if (imported?.module === "events" && imported.member === "EventEmitter") {
-        return { module: "events", member: "defaultMaxListeners" };
+        return { module: "events", member: access.name.text };
       }
     }
     // The RE-EXPORT FACADE's namespace spelling: `import * as assert from
@@ -23014,6 +23121,11 @@ export class Lowerer {
         loc,
       };
     }
+    // events.captureRejectionSymbol: Symbol.for('nodejs.rejection'), the
+    // one symbol the class static and every module spelling answer.
+    if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+      return captureRejectionSymbolValue(loc);
+    }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
@@ -23073,6 +23185,8 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `zlib.constants` as a value: the module's singleton record.
+    if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23179,6 +23293,7 @@ export class Lowerer {
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     return null;
   }
 

@@ -1,8 +1,10 @@
 import * as ts from "../ts7/adapter.js";
+import { isJsSourceFile } from "../program.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { undeclaredGlobalTypeof } from "./global-object-names.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
 import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
@@ -24,11 +26,27 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   // tested (cjs-exports-object.ts), not an undeclared name.
   if (isUnresolvedCjsExports(lowerer, e)) return null;
   // A name nothing declares is undeclared at run time unless Node's global
-  // object has or inherits it (`navigator`, `toString`).
-  if (lowerer.checker.getSymbolAtLocation(e) === undefined)
+  // object has or inherits it (`navigator`, `toString`). In a JavaScript
+  // source there is one more answer: the program itself can give the global
+  // object that property (`globalThis.feature = …`, here or in another
+  // module), so a `typeof feature` the program may see that write answers at
+  // run time and no constant folds; the comparison lowers through the
+  // global object's read instead (typeof.ts), which answers without reading
+  // the name. A name the program never writes on the global object is
+  // absent at every point, so its static answer stands.
+  if (lowerer.checker.getSymbolAtLocation(e) === undefined) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(e)) && programMayWriteGlobalName(lowerer, e.text, e))
+      return null;
     return undeclaredGlobalTypeof(e.text) ?? "undefined";
+  }
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
+  // A global binding the program declares and TypeScript erases answers
+  // "undefined" only while the global object has no such property: a
+  // censused write of the name gives typeof a value to read at run time
+  // (typeof.ts), so no answer folds.
+  if (erasedGlobalBindingOf(lowerer, e) && programMayWriteGlobalName(lowerer, e.text, e))
+    return null;
   // A name the program declares ambiently but nothing defines (`declare
   // const Bun`): undeclared at run time.
   if (ambientUndefinedVarSymbolOf(lowerer, e) || ambientUndefinedFnSymbolOf(lowerer, e))

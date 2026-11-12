@@ -1,12 +1,18 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototype.js";
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
-import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
+import {
+  NODE_GLOBALS_WITHOUT_NATIVE,
+  hostGlobalCallTarget,
+  hostGlobalNameOfIdentifier,
+} from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { zlibConstantsValue } from "../builtins/constants.js";
 import { legacyUrlClassValue } from "../builtins/url.js";
+import { captureRejectionSymbolValue } from "../lower-event-emitter.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
@@ -83,6 +89,7 @@ import {
   nsUndefRead,
 } from "../lower-namespaces.js";
 import { lowerFunduleMemberRead } from "../lower-fundule.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import {
   blockedBindingUseDiag,
   unsupportedDiag,
@@ -747,6 +754,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "read require('events').defaultMaxListeners or EventEmitter.defaultMaxListeners where the value is needed",
         );
       }
+      // events.captureRejectionSymbol is Symbol.for('nodejs.rejection'):
+      // one symbol at every read, so a destructured or named binding holds
+      // the same value the property read answers.
+      if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+        return captureRejectionSymbolValue(loc);
+      }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);
       // `import { posix, win32 } from "node:path"` as VALUES: the platform
@@ -787,6 +800,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       if (bi.module === "fs" && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
+      // `import { constants } from "node:zlib"`: the module's singleton
+      // record (zlibConstantsValue), the same object the property form
+      // answers.
+      if (bi.module === "zlib" && bi.member === "constants")
+        return zlibConstantsValue(lowerer, loc);
       // `import { O_RDONLY } from "constants"`: the member of the frozen
       // module object.
       if (bi.module === "constants") {
@@ -1154,6 +1172,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A GLOBAL binding the program declares and TypeScript erases (`declare
+  // var document: T` in a declaration file, `declare const`, or a `declare
+  // global` block) is not a variable Node has: Node resolves the reference
+  // through the global object, exactly as it resolves a name no declaration
+  // binds. The read takes the same checked-dynamic lowering an undeclared
+  // name takes in JavaScript, so a value the program stored on
+  // `globalThis.<name>` before the read is what the read answers (the
+  // checker's declared type is the claim the use site validates it against).
+  // The census gate keeps every declared global the program never writes
+  // there on its static lowering, so a program that does not assign globals
+  // pays nothing (global-object-writes.ts).
+  if (erasedGlobalBindingOf(lowerer, expr) && programMayWriteGlobalName(lowerer, expr.text, expr)) {
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
   // An ambient global nothing defines compiles to exactly what Node does
   // at the access: the catchable ReferenceError "<name> is not defined".
   // Stdlib/@types/node ambients never reach here (their chokepoint
@@ -1366,10 +1404,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
-  if (
-    undeclared &&
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || lowerer.projectLibraryNameAt(expr))
-  ) {
+  // In a `.js` source the read is the global object's own property of that
+  // name when the program created one (`globalThis.X = class X {}`, in this
+  // module or another), as in Node, and the ReferenceError otherwise.
+  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
+  if (undeclared && lowerer.projectLibraryNameAt(expr)) {
     return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here

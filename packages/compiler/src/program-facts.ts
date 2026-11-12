@@ -541,6 +541,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "global-object-writes",
+    file: `${SRC}/frontend/lowering/global-object-writes.ts`,
+    symbol: "globalObjectWrites",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a write of a property of the global object, by any spelling, in any source of the program",
+    gates:
+      "a call or read of a built-in through the global object answers the built-in for a member the program wrote (SC1090); in a JavaScript source, `typeof` of an undeclared name keeps its static answer only when the program never writes that name on the global object; and a declared global binding TypeScript erases (`declare var/const`, `declare global`) is read through the global object only when the program may write that name there (programMayWriteGlobalName, erasedGlobalBindingOf)",
+    narrower:
+      "the order of the write and the read at run time, which a census cannot know: a name the program writes anywhere is read at run time everywhere; a write through a spelling the census cannot type as the global object (an untyped binding); and a write in a source whose text contains neither `global` nor `this`, which the scan does not read",
+    tracked: null,
+    lowererFields: ["globalObjectWrites"],
+  },
+  {
     name: "computed-environment-write",
     file: `${SRC}/frontend/lowering/constant-conditions.ts`,
     symbol: "changesEnvironmentByComputedName",
@@ -599,12 +614,6 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
   scan(site, count, "fact", "", fact);
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
-  scan(
-    "frontend/contract-types.ts#collectContractAnnotations",
-    2,
-    "prefilter",
-    "a file that never names the contract-type modules imports none of them",
-  ),
   scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,
@@ -741,11 +750,10 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "closed-world",
     "the names the program assigns on the global object; only reads of those names change",
   ),
-  scan(
+  decides(
     "frontend/lowering/global-object-writes.ts#globalObjectWrites",
     2,
-    "closed-world",
-    "every write of the global object by any spelling; only calls and reads of a built-in through the global object change",
+    "global-object-writes",
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),

@@ -245,7 +245,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetListenerCountDyn",
   "event.targetGetMax",
   "event.targetSetMax",
+  // events.on validates its options, reads the receiver's protocol and
+  // registers listeners (a throwing 'newListener' listener runs inside).
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   "event.call",
+  // events.once over an EventTarget or a NodeEventTarget: the receiver's own
+  // once()/addEventListener() runs, and a bad receiver or signal throws
+  // Node's ERR_INVALID_ARG_TYPE (the promise's rejection is a value).
+  "event.onceTarget",
+  "event.onceTargetSignal",
   "blob.new",
   "blob.fileNew",
   "blob.slice",
@@ -616,6 +626,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // new PerformanceMark and the observer family: Node's argument,
+  // receiver and observation-mode validation all throw catchably.
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
@@ -629,6 +647,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // A read of a declare-d const nothing defines: always throws Node's
   // catchable ReferenceError.
   "global.undefRead",
+  // A read of an undeclared name the global object does not have: Node's
+  // catchable ReferenceError.
+  "global.bindingRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
   // An accessor over an error's own name or message runs user code.
@@ -743,6 +764,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.promptWith",
   "rl.setPromptDyn",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.cursorPos",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
@@ -839,6 +861,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
+  // Object.prototype.isPrototypeOf: ToObject throws on a nullish receiver,
+  // and reading the argument's prototype chain can throw.
+  "dyn.isPrototypeOf",
   "dyn.assign",
   "dyn.copyDataProperties",
   "dyn.objectRest",
@@ -1168,6 +1193,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "zlib.cbOpts",
   "zlib.syncOptsDyn",
   "zlib.cbOptsDyn",
+  "zlib.infoSync",
+  "zlib.infoCb",
+  "zlib.infoSyncDyn",
+  "zlib.infoCbDyn",
   "zlib.streamFlush",
   "zlib.streamFlushCb",
   "zlib.streamParams",
@@ -1224,6 +1253,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverOnConnect",
   "http.serverOnUpgrade",
   "http.serverOnClientError",
+  "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
   "http2.serverOnSessionError",

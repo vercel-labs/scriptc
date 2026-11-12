@@ -5,9 +5,6 @@
 import { types } from "node:util";
 import * as pathNamespace from "node:path";
 
-// console: the stack-printing member.
-console.trace("where");
-
 // util.types: the namespace-object predicate.
 console.log(types.isModuleNamespaceObject(pathNamespace));
 

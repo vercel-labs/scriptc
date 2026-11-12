@@ -318,6 +318,7 @@ import {
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpClientFnBindingDecl,
+  lowerHttpClientMaxHeadersCountAssignment,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -367,6 +368,7 @@ import {
   dereferencedElementWrite,
   dynMemberReference,
   jsHoldsDynObject,
+  lowerDynMemberAssignment,
   lowerEnvironmentKey,
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
@@ -628,15 +630,18 @@ function cleanupCall(
     };
   }
   if (value.type.kind === "f64") {
+    // `using` calls the handle's own [Symbol.dispose], which clears the
+    // timer the handle names whether a mock owns it or the loop does; the
+    // global clear functions may be mocked for a different timer API.
     if (stdlibTypeNamed(lowerer, node, "Timeout")) {
       return {
-        call: { kind: "libCall", fn: "timers.clearTimeout", args: [value], type: VOID, loc },
+        call: { kind: "libCall", fn: "timers.dispose", args: [value], type: VOID, loc },
         async: false,
       };
     }
     if (stdlibTypeNamed(lowerer, node, "Immediate")) {
       return {
-        call: { kind: "libCall", fn: "timers.clearImmediate", args: [value], type: VOID, loc },
+        call: { kind: "libCall", fn: "timers.immediateDispose", args: [value], type: VOID, loc },
         async: false,
       };
     }
@@ -1316,9 +1321,14 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     !ts.isIdentifier(decl.name)
   )
     return false;
-  if (!decl.initializer) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
+  // `let x;` declares a binding JavaScript initializes to undefined at the
+  // declaration; it has no initializer to lower, but the box below models
+  // the same temporal dead zone, and the declaration itself clears it. A
+  // `const` without an initializer is not JavaScript (and a destructuring
+  // declaration writes several bindings), so both stay out.
+  if (!decl.initializer && (flags & ts.NodeFlags.Const) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
   // compile time (builtinClassAliasOf).
   if (builtinClassAliasOwnsNoSlot(lowerer, symbol)) return false;
@@ -1361,6 +1371,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
+    // `let x;` is undefined once its declaration runs, so the box holds the
+    // declared type's undefined-armed form: the declaration initializes it
+    // to that arm, and a write after the declaration keeps the slot.
+    if (!decl.initializer) type = lowerer.runtimeOptionalType(type);
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
     entry.ctx.localCounters.set(name, count + 1);
@@ -1724,6 +1738,14 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (ts.isVariableDeclaration(nameNode.parent) && nameNode.parent.name === nameNode) {
     type = staticImportNamespaceType(lowerer, nameNode.parent.initializer) ?? type;
   }
+  // `var c = void 0` / `var v: undefined`: the unit-only union, as for a
+  // `let` binding of the same type (lowerVarDecl). Its undefined arm is the
+  // hoisted value and the initializer's value.
+  if (
+    type?.kind === "void" &&
+    isUnitOnlyTsType(lowerer.typeOf(nameNode), lowerer.typeParamResolver)
+  )
+    type = unitOnlyUnion(lowerer.unions);
   if (!type || type.kind === "void") return null;
   // A JavaScript `var` holds whatever its writes store, as a `let` does:
   // the checker types it by its initializer and checks no later write
@@ -7842,6 +7864,19 @@ export function lowerVarDecl(
   }
 
   if (!decl.initializer) {
+    // A forward-captured `let x;` pre-declared as a TDZ box
+    // (predeclareForwardCapture): the binding and its scope-entry varDecl
+    // already exist, and running this declaration initializes them to
+    // undefined, exactly as JavaScript leaves the temporal dead zone here.
+    const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(declSymbol!);
+      const init =
+        pre.type.kind === "dyn"
+          ? dynUndefinedExpr(locOf(decl))
+          : lowerer.unassignedSlotInit(pre.type, locOf(decl))!;
+      return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
+    }
     // `let x: number;` — declared, uninitialized. tsc rejects a read before
     // assignment in the declaring function's own code (TS2454) and an
     // uninitialized const (TS1155). It checks no read inside a nested
@@ -11015,6 +11050,19 @@ export function lowerExprStatement(
           const arrayType = lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression));
           if (arrayType?.kind === "array") {
             const arr = lowerer.lowerExpr(expr.left.expression);
+            // A JavaScript value keeps its array as a checked-dynamic value
+            // when its declared `Array` type reaches it that way (a parameter
+            // of an untyped source): the write is the dynamic property write
+            // Node's `length` set makes, with the array-length rules the
+            // runtime applies, not a native array operation on storage this
+            // value does not have.
+            if (arr.type.kind === "dyn") {
+              return {
+                kind: "exprStmt",
+                expr: lowerDynMemberAssignment(lowerer, expr, arr),
+                loc: locOf(expr),
+              };
+            }
             if (arr.type.kind !== "array") {
               lowerer.unsupported(
                 "SC1090",
@@ -11101,7 +11149,8 @@ export function lowerExprStatement(
           );
           if (timeoutProp) return timeoutProp;
         }
-        // server.maxConnections — net.Server's connection cap.
+        // server.maxConnections / server.maxHeadersCount /
+        // server.maxRequestsPerSocket — writable server limits.
         {
           const capProp = lowerNetServerMaxConnectionsAssignment(
             lowerer,
@@ -11110,6 +11159,16 @@ export function lowerExprStatement(
             locOf(expr),
           );
           if (capProp) return capProp;
+        }
+        // request.maxHeadersCount — the client's header-line budget.
+        {
+          const clientLimit = lowerHttpClientMaxHeadersCountAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (clientLimit) return clientLimit;
         }
         // `N.x = v` — a namespace-qualified write: exported `let`
         // members are module globals, so the qualified spelling assigns

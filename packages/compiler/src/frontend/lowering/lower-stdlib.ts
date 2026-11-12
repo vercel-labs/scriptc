@@ -62,6 +62,7 @@ import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { builtinCalleeName, refuseWrittenBuiltin } from "./lower-calls.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
+import { fetchMemberMayBeOwn } from "./handle-properties.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
 import { boundSpecifier } from "../specifier-bounds.js";
@@ -725,6 +726,15 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
   }
 }
 
+/** The Response body reads the compiler lowers to a native body read of
+ * the handle (lowerStaticResponseCall). */
+const RESPONSE_BODY_MEMBERS: ReadonlySet<string> = new Set([
+  "json",
+  "text",
+  "bytes",
+  "arrayBuffer",
+]);
+
 /** Static Response.json(): consume the native Response's readable body
  * stream and parse its UTF-8 payload into the ordinary checked-dynamic
  * JSON tree. Syntax and stream failures reject at await like the web API. */
@@ -740,11 +750,17 @@ export function lowerStaticResponseCall(lowerer: Lowerer, call: ts.CallExpressio
   const member = staticResponseMemberName(lowerer, access);
   if (
     access.questionDotToken ||
-    (member !== "json" && member !== "text" && member !== "bytes" && member !== "arrayBuffer") ||
+    member === null ||
+    !RESPONSE_BODY_MEMBERS.has(member) ||
     call.arguments.nodes.length !== 0
   ) {
     return null;
   }
+  // A program that can add the member to a fetch handle answers the own
+  // property at the call, as Node does: the native body read would answer
+  // the prototype method instead, so the call keeps the checked-dynamic
+  // dispatch whose table lookup comes first.
+  if (fetchMemberMayBeOwn(lowerer, member)) return null;
   const recvType = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
   if (!sym || ts.symbolName(sym) !== "Response" || !lowerer.isStdlibSymbol(sym)) return null;
@@ -1036,7 +1052,12 @@ export function fenceStaticResponseMember(
 
   const projected = staticFetchMembers();
   const supported = (member: string) =>
-    use === "call" ? projected.responseCalls.has(member) : projected.responseReads.has(member);
+    use === "call"
+      ? projected.responseCalls.has(member) ||
+        // A body read the program can shadow is dispatched through the
+        // handle's own-property table instead (lowerStaticResponseCall).
+        (RESPONSE_BODY_MEMBERS.has(member) && fetchMemberMayBeOwn(lowerer, member))
+      : projected.responseReads.has(member);
   if (members.every((candidate) => !declared(candidate) || supported(candidate))) return null;
   const member = members.find((candidate) => declared(candidate) && !supported(candidate))!;
   if (status(member) === "unsupported") {
@@ -1393,7 +1414,8 @@ export function lowerFetchElementMethodCall(
   const staticResponsePromise: IrType | null =
     resolved.owner === "Response" &&
     call.arguments.nodes.length === 0 &&
-    members.every((member) => member === "text" || member === "bytes")
+    members.every((member) => member === "text" || member === "bytes") &&
+    members.every((member) => !fetchMemberMayBeOwn(lowerer, member))
       ? (() => {
           // The checker spells this call as
           // `Promise<string> | Promise<Uint8Array>`, a promise union that

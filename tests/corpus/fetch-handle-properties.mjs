@@ -33,6 +33,10 @@ try {
   console.log("strict status", describe(e));
 }
 console.log("status after strict", res.status);
+// The body method is an own property once written, so the call answers it
+// and the native body stays unread.
+res.json = async () => ({ own: true });
+console.log("body method shadowed", JSON.stringify(await res.json()), res.bodyUsed);
 
 const headers = new Headers({ "x-a": "1" });
 headers.zzz = "own";

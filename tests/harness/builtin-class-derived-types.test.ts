@@ -3,7 +3,8 @@
  * matches Node). These programs pin where the declared type says more than
  * the built-in object holds: the read is checked, so the program stops with
  * a TypeError where Node would go on with a value the type does not admit,
- * and a member the derivation adds cannot be stored on the built-in object. */
+ * and a member the derivation adds stores on the built-in object as an own
+ * property, as Node stores it. */
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,18 +19,21 @@ const dir = mkdtempSync(join(tmpdir(), "scriptc-builtin-class-derived-"));
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-async function run(name: string, source: string): Promise<{ code: number; stderr: string }> {
+async function run(
+  name: string,
+  source: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const entry = join(dir, `${name}.ts`);
   writeFileSync(entry, source);
   const result = await compile(entry, { outPath: join(dir, name), outDir: dir, sanitize });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
-  if (!result.ok) return { code: -1, stderr: "" };
+  if (!result.ok) return { code: -1, stdout: "", stderr: "" };
   try {
-    await execFileAsync(result.binaryPath);
-    return { code: 0, stderr: "" };
+    const { stdout } = await execFileAsync(result.binaryPath);
+    return { code: 0, stdout, stderr: "" };
   } catch (e) {
-    const failure = e as { code?: number; stderr?: string };
-    return { code: failure.code ?? -1, stderr: failure.stderr ?? "" };
+    const failure = e as { code?: number; stdout?: string; stderr?: string };
+    return { code: failure.code ?? -1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
   }
 }
 
@@ -53,17 +57,18 @@ console.log(page.phase.length);
   expect(stderr).toContain("TypeError: expected string at $, got undefined");
 });
 
-test("a member the derivation adds cannot be assigned onto the built-in object", async () => {
-  const { code, stderr } = await run(
+test("a member the derivation adds stores on the built-in object", async () => {
+  const { code, stdout, stderr } = await run(
     "added-write",
     `${almanac}type Dated = Response & { phase?: string };
 const page: Dated = almanac();
 page.phase = "waxing";
-console.log(page.phase);
+console.log(page.phase, Object.hasOwn(page, "phase"), page.status);
 `,
   );
-  expect(code).toBe(1);
-  expect(stderr).toContain("setting 'phase' on a dynamic Response is not supported yet [SC2020]");
+  expect(code).toBe(0);
+  expect(stderr).toBe("");
+  expect(stdout).toBe("waxing true 201\n");
 });
 
 test("a member declared again at a type the built-in object does not hold is refused when it is read", async () => {

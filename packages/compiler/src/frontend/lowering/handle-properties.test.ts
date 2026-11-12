@@ -395,3 +395,96 @@ child.on("close", () => console.log("close"));
   );
   expect(dynInvokes(mod, "kill")).toBe(0);
 });
+
+/** The IR libCalls of the given name a module's functions hold. */
+function libCalls(value: unknown, name: string): number {
+  let count = 0;
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return;
+    seen.add(node);
+    const record = node as Record<string, unknown>;
+    if (record.kind === "libCall" && record.fn === name) count += 1;
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(value);
+  return count;
+}
+
+test("a typed Response body read keeps the native body read", async () => {
+  const mod = await compileIr(
+    `async function main(): Promise<void> {
+  const res = new Response('{"a":1}');
+  console.log(JSON.stringify(await res.json()), res.bodyUsed);
+}
+main();
+`,
+    "ts",
+  );
+  expect(libCalls(mod, "fetch.responseJson")).toBe(1);
+});
+
+test("a Response body read the program shadows dispatches through the handle table", async () => {
+  // `res.json = fn` adds an own property at run time, which Node answers at
+  // the call: the native body read would answer the prototype method and
+  // consume the body instead.
+  const mod = await compileIr(
+    `async function main(): Promise<void> {
+  const res = new Response('{"a":1}');
+  (res as any).json = async () => ({ own: true });
+  console.log(JSON.stringify(await res.json()), res.bodyUsed);
+}
+main();
+`,
+    "ts",
+  );
+  expect(libCalls(mod, "fetch.responseJson")).toBe(0);
+  expect(dynInvokes(mod, "json")).toBe(1);
+});
+
+test("a Response body read of a member no write names stays native", async () => {
+  // The program adds `context`; `json` is untouched, so its call keeps the
+  // native body read.
+  const mod = await compileIr(
+    `async function main(): Promise<void> {
+  const res = new Response('{"a":1}');
+  (res as any).context = { lane: "app" };
+  console.log(JSON.stringify(await res.json()), res.bodyUsed);
+}
+main();
+`,
+    "ts",
+  );
+  expect(libCalls(mod, "fetch.responseJson")).toBe(1);
+});
+
+test("a definition that names the body member dispatches the call dynamically", async () => {
+  const mod = await compileIr(
+    `async function main(): Promise<void> {
+  const res = new Response("body");
+  Object.defineProperty(res, "text", { value: () => "own", configurable: true });
+  console.log(await res.text(), res.bodyUsed);
+}
+main();
+`,
+    "ts",
+  );
+  expect(libCalls(mod, "fetch.responseText")).toBe(0);
+  expect(dynInvokes(mod, "text")).toBe(1);
+});
+
+test("a computed write answers every body read dynamically", async () => {
+  // A key the walk cannot read can name any member.
+  const mod = await compileIr(
+    `async function main(): Promise<void> {
+  const res = new Response("body");
+  const key = "text";
+  (res as any)[key] = () => "own";
+  console.log(await res.clone().text(), res.bodyUsed);
+}
+main();
+`,
+    "ts",
+  );
+  expect(libCalls(mod, "fetch.responseText")).toBe(0);
+});

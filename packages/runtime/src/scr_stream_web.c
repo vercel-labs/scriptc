@@ -924,6 +924,11 @@ static void swf_atexit(void) {
   while (swf_live) swf_teardown(swf_live);
 }
 
+/* The node side reached its terminal close tick: both sides are done, so
+ * the context drops here instead of staying rooted in swf_live until
+ * process exit. The stream state calls this once, from the close tick. */
+static void swf_closed_hook(void *arg) { swf_teardown((SwfCtx *)arg); }
+
 static void swf_push_live(SwfCtx *c) {
   static SCR_TL bool registered = false;
   if (!registered) {
@@ -1522,6 +1527,7 @@ ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const Scr
   }
   c->node = scr_stream_retain(s);
   swf_push_live(c);
+  scr_stream_set_closed_hook(s, &swf_closed_hook, c);
   if (o.signal && o.signal->kind != SCR_DYN_UNDEF && o.signal->kind != SCR_DYN_NULL)
     scr_stream_release(scr_stream_add_abort_signal(s, o.signal, true,
                                                    scr_events_add_abort_listener));
@@ -1592,6 +1598,7 @@ static ScrStream *swf_duplex_from_web(const ScrDyn *pair, const ScrDyn *options)
   }
   c->node = scr_stream_retain(s);
   swf_push_live(c);
+  scr_stream_set_closed_hook(s, &swf_closed_hook, c);
   if (o.signal && o.signal->kind != SCR_DYN_UNDEF && o.signal->kind != SCR_DYN_NULL)
     scr_stream_release(scr_stream_add_abort_signal(s, o.signal, true,
                                                    scr_events_add_abort_listener));

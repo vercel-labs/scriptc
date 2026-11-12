@@ -77,15 +77,6 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'close' does not exist on type 'Timeout'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 685,
-    "end": 690
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Property 'timeOrigin' does not exist on type 'Performance'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
@@ -93,7 +84,7 @@
     "end": 778
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   },
   {
    "code": "SC0001",
@@ -113,7 +104,7 @@
     "end": 1047
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'hasUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'hasUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   },
   {
    "code": "SC0001",
@@ -124,7 +115,7 @@
     "end": 1095
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'setUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   },
   {
    "code": "SC0001",
@@ -135,7 +126,7 @@
     "end": 1127
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   },
   {
    "code": "SC0001",
@@ -146,7 +137,7 @@
     "end": 1169
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'ref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'ref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   },
   {
    "code": "SC0001",
@@ -157,7 +148,7 @@
     "end": 1191
    },
    "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'unref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively \u2014 'unref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   }
  ]
 }

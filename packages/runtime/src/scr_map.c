@@ -654,6 +654,10 @@ void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length) {
   return e == SCR_MAP_EMPTY ? NULL : scr_map_val_retain(m, scr_map_val_at(m, e));
 }
 
+bool scr_map_has_span(const ScrMap *m, const char *bytes, size_t length) {
+  return scr_map_find_span(m, bytes, length) != SCR_MAP_EMPTY;
+}
+
 /* Rebuild the bucket table (size must be a power of two >= 2 * nentries):
  * only live entries are inserted, in dense order — dead markers vanish. */
 static void scr_map_rebuild_buckets(ScrMap *m, size_t nbuckets) {

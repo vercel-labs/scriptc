@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   mkdtempSync,
@@ -281,3 +281,19 @@ test("npm links the installed native executable without an interpreter", () => {
     }
   }
 }, 60_000);
+
+test.skipIf(process.platform === "win32")(
+  "the staged command tells you to enable install scripts",
+  () => {
+    const f = fixture();
+    prepareNativeCommand(f.directory);
+    // npm links bin/scriptc.exe before it runs postinstall. When install
+    // scripts are blocked, this placeholder is what the user runs, so it
+    // names the fix instead of failing with a missing file.
+    const result = spawnSync(join(f.directory, "bin", "scriptc.exe"), [], {
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("enable install scripts and reinstall scriptc");
+  },
+);

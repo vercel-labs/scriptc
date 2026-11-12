@@ -377,6 +377,11 @@ struct ScrStreamState {
   bool writev_concat;
   /* the native state's extra operations (the fs streams), or NULL */
   const ScrStreamNativeOps *native_ops;
+  /* An internal one-shot notification, run at the terminal close tick
+   * (after 'close' emitted and the option callbacks were dropped): the
+   * web adapters drop the context that keeps both sides alive. */
+  void (*closed_hook)(void *);
+  void *closed_hook_arg;
 };
 
 /* ── vtables and RC ───────────────────────────────────────────────────── */
@@ -3222,6 +3227,11 @@ void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(
   st->native_release = release;
 }
 
+void scr_stream_set_closed_hook(ScrStream *s, void (*fn)(void *), void *arg) {
+  s->st->closed_hook = fn;
+  s->st->closed_hook_arg = arg;
+}
+
 void *scr_stream_native(ScrStream *s, void (*release)(void *)) {
   ScrStreamState *st = s->st;
   return st != NULL && st->native != NULL && st->native_release == release ? st->native : NULL;
@@ -3251,6 +3261,45 @@ static ScrDyn *scr_stream_dynopt_target(ScrClosure *cb) {
   return scr_box_get_ref(cb->caps[0]);
 }
 
+/* Node calls every option callback as a method of the stream: the base
+ * constructors install it under `_read`, `_write`, and the rest, and the
+ * machinery calls it on the stream, so method-shorthand bodies
+ * (`read() { this.push(...) }`, `write(c, e, cb) { this.destroy() }`)
+ * reach the stream's members. The dyn call binds the stream as its
+ * receiver, boxed the way the program boxes one — a live typed reference
+ * over the stream whose view is the runtime's — so `this === stream`
+ * holds and the member reads answer through the stream's tables. +1. */
+static ScrDyn *scr_stream_dynopt_receiver(ScrStream *s) {
+  const char *key;
+  size_t key_len;
+  const ScrVt *vt = s->vt;
+  if (vt == &scr_transform_vt) {
+    key = "object:%Transform", key_len = sizeof "object:%Transform" - 1;
+  } else if (vt == &scr_passthrough_vt) {
+    key = "object:%PassThrough", key_len = sizeof "object:%PassThrough" - 1;
+  } else if (scr_vt_within(vt, &scr_duplex_vt)) {
+    key = "object:%Duplex", key_len = sizeof "object:%Duplex" - 1;
+  } else if (scr_vt_within(vt, &scr_writable_vt)) {
+    key = "object:%Writable", key_len = sizeof "object:%Writable" - 1;
+  } else {
+    key = "object:%Readable", key_len = sizeof "object:%Readable" - 1;
+  }
+  return scr_dyn_new_typed_ref(s, scr_stream_retain_v, scr_stream_release_v, key, key_len,
+                               scr_stream_ref_view, NULL);
+}
+
+/* The option callback's dyn call, with the stream as its receiver. +1 or
+ * NULL with the exception pending. */
+static ScrDyn *scr_stream_dynopt_call(ScrStream *s, ScrDyn *fn, ScrDyn *const *args, size_t argc,
+                                      const char *what) {
+  ScrDyn *self = scr_stream_dynopt_receiver(s);
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *r = scr_dyn_call(fn, args, argc, what);
+  scr_dyn_this_pop();
+  scr_dyn_release(self);
+  return r;
+}
+
 static ScrDyn *scr_stream_dynopt_done(ScrStream *s, ScrDynThunk glue, uint32_t arity, const char *sig) {
   ScrClosure *c = scr_closure_new((void *)glue, 1);
   c->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
@@ -3259,10 +3308,9 @@ static ScrDyn *scr_stream_dynopt_done(ScrStream *s, ScrDynThunk glue, uint32_t a
 }
 
 static void scr_stream_dynopt_read_inv(ScrClosure *cb, ScrStream *s, double size) {
-  (void)s;
   ScrDyn *fn = scr_stream_dynopt_target(cb);
   ScrDyn *a = scr_dyn_new_num(size);
-  ScrDyn *r = scr_dyn_call(fn, &a, 1, "read");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, &a, 1, "read");
   scr_dyn_release(a);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3277,7 +3325,7 @@ static void scr_stream_dynopt_chunk3(ScrClosure *cb, ScrStream *s, ScrBytes *chu
   args[1] = scr_stream_chunk_encoding_value(s);
   args[2] = scr_stream_dynopt_done(s, glue, 1, "(error)");
   ScrDyn *fn = scr_stream_dynopt_target(cb);
-  ScrDyn *r = scr_dyn_call(fn, args, 3, what);
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, args, 3, what);
   for (int i = 0; i < 3; i++) scr_dyn_release(args[i]);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3293,7 +3341,7 @@ static void scr_stream_dynopt_transform_inv(ScrClosure *cb, ScrStream *s, ScrByt
   args[1] = scr_stream_chunk_encoding_value(s);
   args[2] = scr_stream_dynopt_done(s, &scr_stream_done_dyn_t, 2, "(error,data)");
   ScrDyn *fn = scr_stream_dynopt_target(cb);
-  ScrDyn *r = scr_dyn_call(fn, args, 3, "transform");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, args, 3, "transform");
   for (int i = 0; i < 3; i++) scr_dyn_release(args[i]);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3302,7 +3350,7 @@ static void scr_stream_dynopt_transform_inv(ScrClosure *cb, ScrStream *s, ScrByt
 static void scr_stream_dynopt_construct_inv(ScrClosure *cb, ScrStream *s) {
   ScrDyn *fn = scr_stream_dynopt_target(cb);
   ScrDyn *a = scr_stream_dynopt_done(s, &scr_stream_done_dyn_c, 1, "(error)");
-  ScrDyn *r = scr_dyn_call(fn, &a, 1, "construct");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, &a, 1, "construct");
   scr_dyn_release(a);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3313,7 +3361,7 @@ static void scr_stream_dynopt_writev_inv(ScrClosure *cb, ScrStream *s, ScrDyn *c
   ScrDyn *args[2];
   args[0] = scr_dyn_retain(chunks);
   args[1] = scr_stream_dynopt_done(s, &scr_stream_done_dyn_w, 1, "(error)");
-  ScrDyn *r = scr_dyn_call(fn, args, 2, "writev");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, args, 2, "writev");
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_dyn_release(fn);
@@ -3323,7 +3371,7 @@ static void scr_stream_dynopt_writev_inv(ScrClosure *cb, ScrStream *s, ScrDyn *c
 static void scr_stream_dynopt_final_inv(ScrClosure *cb, ScrStream *s) {
   ScrDyn *fn = scr_stream_dynopt_target(cb);
   ScrDyn *a = scr_stream_dynopt_done(s, &scr_stream_done_dyn_f, 1, "(error)");
-  ScrDyn *r = scr_dyn_call(fn, &a, 1, "final");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, &a, 1, "final");
   scr_dyn_release(a);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3332,7 +3380,7 @@ static void scr_stream_dynopt_final_inv(ScrClosure *cb, ScrStream *s) {
 static void scr_stream_dynopt_flush_inv(ScrClosure *cb, ScrStream *s) {
   ScrDyn *fn = scr_stream_dynopt_target(cb);
   ScrDyn *a = scr_stream_dynopt_done(s, &scr_stream_done_dyn_l, 2, "(error,data)");
-  ScrDyn *r = scr_dyn_call(fn, &a, 1, "flush");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, &a, 1, "flush");
   scr_dyn_release(a);
   scr_dyn_release(fn);
   if (r != NULL) scr_dyn_release(r);
@@ -3343,7 +3391,7 @@ static void scr_stream_dynopt_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError
   args[0] = err != NULL ? scr_dyn_from_error(err) : scr_dyn_new_null();
   args[1] = scr_stream_dynopt_done(s, &scr_stream_done_dyn_d, 1, "(error)");
   ScrDyn *fn = scr_stream_dynopt_target(cb);
-  ScrDyn *r = scr_dyn_call(fn, args, 2, "destroy");
+  ScrDyn *r = scr_stream_dynopt_call(s, fn, args, 2, "destroy");
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_dyn_release(fn);
@@ -5976,7 +6024,9 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   bool r_object = r && r->st->has_r && r->st->r.object_entries;
   bool w_object = w && w->st->has_w && w->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      r_object ? 16 : -1, w_object ? 16 : -1, true, true, true, x->readable, x->writable,
+      r_object ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1,
+      w_object ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1, true, true, true, x->readable,
+      x->writable,
       x->readable ? scr_dupx_closure((void *)&scr_dupx_read_inv, x) : NULL,
       x->readable ? &scr_dupx_read_inv : NULL,
       x->writable ? scr_dupx_closure((void *)&scr_dupx_write_inv, x) : NULL,
@@ -6047,8 +6097,10 @@ static void scr_dupx_promise_entry(ScrFiber *fiber, void *arg) {
 /* The readable Duplexify over a boxed promise (moves boxed). +1. */
 static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed) {
   ScrClosure *read = scr_closure_new((void *)&scr_dupx_noop_read, 0);
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, true, false, read,
-                                       &scr_dupx_noop_read, NULL, NULL, NULL, NULL, NULL, NULL);
+  ScrStream *d =
+      scr_stream_new_duplex(SCR_STREAM_HWM_OBJECT_DEFAULT, SCR_STREAM_HWM_OBJECT_DEFAULT,
+                            true, true, true, true, false, read, &scr_dupx_noop_read, NULL,
+                            NULL, NULL, NULL, NULL, NULL);
   scr_stream_set_object_mode(d, true, true);
   d->cls = "Duplexify";
   ScrDupxPromise *ctx = malloc(sizeof *ctx);
@@ -6608,6 +6660,69 @@ static void scr_stream_rl_off(ScrStream *s, const char *name, ScrClosure *cb) {
   scr_str_release(n);
 }
 
+/* A terminal interface's 'resize' listener on a stream output. Node adds
+ * it at construction and removes it at close; the entry here holds the
+ * closure the stream's emitter owns, so close can remove that exact
+ * registration. */
+typedef struct ScrRlResizeHook {
+  ScrStream *s;
+  double id;
+  ScrDyn *cb; /* +1: the interface's refresh listener */
+  struct ScrRlResizeHook *next;
+} ScrRlResizeHook;
+
+static SCR_TL ScrRlResizeHook *scr_rl_resize_hooks = NULL;
+
+static void scr_stream_rl_hooks_free(void);
+
+static void scr_stream_rl_atexit_once(void) {
+  static SCR_TL bool registered = false;
+  if (registered) return;
+  registered = true;
+  scr_atexit(scr_stream_rl_hooks_free);
+}
+
+/* A terminal interface's 'resize' listener: a function value, as Node's
+ * onresize is, so an untyped emit('resize') calls it the way it calls the
+ * program's own listeners. Its body is the caller's — the readline unit's
+ * redraw, handed in through ScrRlIo.watch_resize — so this unit registers
+ * the listener without calling into the readline units, which a program
+ * using streams alone does not link. */
+static void scr_stream_rl_watch_resize(void *sv, double id, bool on,
+                                       ScrDyn *(*refresh)(ScrClosure *cb, ScrDyn *const *args,
+                                                          size_t argc)) {
+  ScrStream *s = (ScrStream *)sv;
+  ScrStr *name = scr_str_new("resize", 6);
+  for (ScrRlResizeHook *h = scr_rl_resize_hooks; h; h = h->next) {
+    if (h->s != s || h->id != id) continue;
+    if (!on) {
+      scr_emitter_release(scr_emitter_off_dyn((ScrEmitter *)s, name, h->cb));
+      for (ScrRlResizeHook **at = &scr_rl_resize_hooks; *at; at = &(*at)->next) {
+        if (*at != h) continue;
+        *at = h->next;
+        break;
+      }
+      scr_dyn_release(h->cb);
+      free(h);
+    }
+    scr_str_release(name);
+    return;
+  }
+  if (on) {
+    scr_stream_rl_atexit_once();
+    ScrRlResizeHook *h = calloc(1, sizeof *h);
+    if (!h) scr_stream_oom();
+    ScrClosure *clo = scr_stream_rl_listener((void *)refresh, id);
+    h->s = s;
+    h->id = id;
+    h->cb = scr_dyn_new_func(clo, refresh, 0, "", "refreshLine");
+    h->next = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h;
+    scr_emitter_release(scr_emitter_on_flex((ScrEmitter *)s, name, h->cb, false, false));
+  }
+  scr_str_release(name);
+}
+
 static void scr_stream_rl_pause(void *s) { scr_stream_release(scr_stream_pause(s)); }
 static void scr_stream_rl_resume(void *s) { scr_stream_release(scr_stream_resume(s)); }
 static void scr_stream_rl_write(void *s, ScrStr *text) { scr_stream_write_str(s, text, NULL); }
@@ -6670,7 +6785,7 @@ static const ScrRlIo scr_stream_rl_io = {
     &scr_stream_rl_write,          &scr_stream_rl_write_cb, &scr_stream_rl_on_event,
     &scr_stream_rl_off_event,      &scr_stream_rl_listener_count,
     &scr_stream_rl_emit2,          &scr_stream_rl_retain,   &scr_stream_rl_drop_data,
-    &scr_stream_rl_release,
+    &scr_stream_rl_release,        &scr_stream_rl_watch_resize,
 };
 
 /* readline.emitKeypressEvents(stream, interface) */
@@ -6682,6 +6797,16 @@ static void scr_stream_rl_hooks_free(void) {
   while (scr_rl_hooks) {
     ScrRlHook *h = scr_rl_hooks;
     scr_rl_hooks = h->next;
+    free(h);
+  }
+  /* An interface left open at exit still owns its 'resize' listener
+   * (+1 here): releasing it lets the last reference go, so the RC audit
+   * sees nothing live. The input hooks above borrow the emitter's
+   * closures, so freeing their nodes is all they need. */
+  while (scr_rl_resize_hooks) {
+    ScrRlResizeHook *h = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h->next;
+    scr_dyn_release(h->cb);
     free(h);
   }
 }
@@ -6719,11 +6844,7 @@ double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double
                           out ? scr_stream_retain(out) : NULL, out_stdout, crlf_delay, prompt,
                           signal, add);
   if (in == NULL) return id;
-  static SCR_TL bool registered = false;
-  if (!registered) {
-    registered = true;
-    scr_atexit(scr_stream_rl_hooks_free);
-  }
+  scr_stream_rl_atexit_once();
   ScrRlHook *h = calloc(1, sizeof *h);
   if (!h) scr_stream_oom();
   h->s = in;
@@ -7279,7 +7400,8 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
  * writableObjectMode, applied right after construction: the readable
  * side's entries are whole values (each counts 1, and the first push picks
  * the representation), and the writable side queues values. The caller
- * passes the object-mode high-water marks (16 by default). */
+ * passes SCR_STREAM_HWM_OBJECT_DEFAULT for them, so a preceding
+ * setDefaultHighWaterMark(true) applies. */
 void scr_stream_set_object_mode(ScrStream *s, bool readable, bool writable) {
   ScrStreamState *st = s->st;
   if (readable && st->has_r) {
@@ -8685,6 +8807,14 @@ static void scr_stream_do_destroy(ScrStream *s, ScrError *err /*borrowed*/) {
   scr_stream_run_destroy(s, err);
 }
 
+void scr_stream_mark_ended(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  st->r.ended = true;
+  st->r.end_emitted = true;
+  st->w.ending = true;
+  st->w.finished = true;
+}
+
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err) {
   scr_stream_do_destroy(s, err);
   return scr_stream_retain(s);
@@ -9159,6 +9289,17 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         scr_stream_drop_cb(&st->destroy_cb);
         scr_stream_drop_cb(&st->write_done);
         scr_stream_drop_cb(&st->done_cache);
+        /* An internal one-shot notification: the web adapters drop their
+         * context here (it holds the stream and the web reader/writer).
+         * The tick holds its own reference to the stream, so the hook may
+         * release it. */
+        if (st->closed_hook) {
+          void (*fn)(void *) = st->closed_hook;
+          void *arg = st->closed_hook_arg;
+          st->closed_hook = NULL;
+          st->closed_hook_arg = NULL;
+          fn(arg);
+        }
       }
       break;
     }

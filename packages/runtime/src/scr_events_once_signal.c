@@ -227,12 +227,19 @@ static ScrPromise *scr_eos_adopt(ScrPromise *inner) {
 }
 
 /* boxer and err_boxer are borrowed (err_boxer is NULL when the awaited
- * event is 'error'); signal is borrowed. The result is +1 and never throws:
- * every failure rejects it, as Node's async function does. */
+ * event is 'error'); options is borrowed. The result is +1 and never
+ * throws: every failure rejects it, as Node's async function does. */
 ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
                                    ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
-                                   ScrEeInvoke err_inv, ScrDyn *signal) {
+                                   ScrEeInvoke err_inv, ScrDyn *options) {
   ScrPromise *result = scr_promise_new();
+  /* Node's async body: validateObject(options, 'options'), then
+   * options.signal, then validateAbortSignal, all before the executor. */
+  ScrDyn *signal = scr_events_once_options(options);
+  if (signal == NULL) {
+    scr_promise_reject_pending(result);
+    return result;
+  }
   bool with_signal = signal->kind != SCR_DYN_UNDEF;
   if (with_signal) {
     bool aborted = false;
@@ -241,11 +248,13 @@ ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *box
     if (!core) {
       scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
       scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
       return result;
     }
     if (aborted) {
       scr_eos_throw_abort(signal);
       scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
       return result;
     }
   }
@@ -299,5 +308,6 @@ ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *box
   }
   ScrPromise *inner = scr_promise_retain(st->promise);
   scr_eos_state_release(st);
+  scr_dyn_release(signal);
   return scr_eos_adopt(inner);
 }

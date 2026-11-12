@@ -2465,8 +2465,26 @@ function lowerFromSource(
   // SCR_FROM_DUPLEX
   const duplexFlag = duplex ? 32 : 0;
   const js = isJsSourceFile(ts.getSourceFileOfNode(call));
-  const finish = (expr: IrExpr, o: FromOptions): IrExpr =>
-    applyFromOptions(lowerer, expr, o, type, loc);
+  // JavaScript evaluates the source argument before the options, and
+  // from.js takes the source's iterator inside the call, then spreads the
+  // options into the Readable constructor, whose `encoding` and `signal`
+  // reads follow. A source-side update of a runtime value is therefore seen.
+  // The typed builders read those options after building the stream, so the
+  // source ARGUMENT is held in a hidden local first: the option reads then
+  // follow the argument and precede the iterator call, as Node's order is.
+  const preStmts: IrStmt[] = [];
+  const beforeOptions = (o: FromOptions, value: IrExpr): IrExpr => {
+    if (!o.encodingValue && !o.signal) return value;
+    const local = lowerer.declareHiddenLocal("%fromSource", value.type);
+    preStmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  const finish = (expr: IrExpr, o: FromOptions): IrExpr => {
+    const applied = applyFromOptions(lowerer, expr, o, type, loc);
+    return preStmts.length === 0
+      ? applied
+      : { kind: "seqExpr", stmts: preStmts, result: applied, type, loc };
+  };
   // A web ReadableStream is async iterable: from.js reads its iterator.
   // Duplex.from takes _duplexify({ readable: Readable.fromWeb(body) }).
   const webElem = srcNode ? staticReadableStreamElementType(lowerer, srcNode) : null;
@@ -2547,13 +2565,13 @@ function lowerFromSource(
         : lowerer.lowerExpr(srcNode)
       : null;
   if (genRecv && genT && opts) {
-    const recv = genRecv;
-    const gen =
-      genMethod && srcT?.kind === "object"
-        ? accessorCall(lowerer, srcT.className, genMethod.method, recv, [], genT, loc)
-        : recv;
     const helpers = fromGenHelpers(lowerer, genT, loc);
     if (helpers) {
+      const arg = beforeOptions(opts, genRecv);
+      const gen =
+        genMethod && srcT?.kind === "object"
+          ? accessorCall(lowerer, srcT.className, genMethod.method, arg, [], genT, loc)
+          : arg;
       const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
       return finish(
         {
@@ -2583,14 +2601,14 @@ function lowerFromSource(
     // built (the typed [Symbol.iterator]() call here), and the runtime
     // pulls it through a checked-dynamic { next } object. Class iterators
     // declare no return() or throw(), so destroy calls neither.
-    const recv = citRecv;
+    const arg = beforeOptions(opts, citRecv);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return finish(
       {
         kind: "libCall",
         fn: "readable.fromIter",
         args: [
-          classIteratorObject(lowerer, cit, classIteratorOpenCall(lowerer, cit, recv, loc), loc),
+          classIteratorObject(lowerer, cit, classIteratorOpenCall(lowerer, cit, arg, loc), loc),
           numLit(opts.flags, loc),
           hwm,
         ],
@@ -2606,13 +2624,13 @@ function lowerFromSource(
       ? sourceInstance(srcNode, srcT)
       : null;
   if (acitRecv && acit && opts) {
-    const recv = acitRecv;
+    const arg = beforeOptions(opts, acitRecv);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return finish(
       {
         kind: "libCall",
         fn: "readable.fromAsyncIter",
-        args: [classAsyncIteratorObject(lowerer, acit, recv, loc), numLit(opts.flags, loc), hwm],
+        args: [classAsyncIteratorObject(lowerer, acit, arg, loc), numLit(opts.flags, loc), hwm],
         type,
         loc,
       },
@@ -2622,7 +2640,10 @@ function lowerFromSource(
   if (srcNode && (single || elem) && opts) {
     const v = lowerer.lowerExpr(srcNode);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
-    const arr: IrExpr = single ? { kind: "arrayLit", elems: [v], type: arrayOf(v.type), loc } : v;
+    const held = beforeOptions(opts, v);
+    const arr: IrExpr = single
+      ? { kind: "arrayLit", elems: [held], type: arrayOf(held.type), loc }
+      : held;
     // SCR_FROM_STRINGS 1, SCR_FROM_SINGLE 2 (scr_runtime.h); the options
     // add SCR_FROM_BYTE_MODE 4 and SCR_FROM_HAS_HWM 8.
     const flags = ((single ?? elem) === "string" ? 1 : 0) | (single ? 2 : 0) | opts.flags;
@@ -3129,6 +3150,8 @@ function fromOptions(lowerer: Lowerer, node: ts.Expression): FromOptions | null 
       }
       const t = lowerer.typeOf(value);
       if (t.isStringLiteralType()) {
+        // The empty string is falsy, so `if (options.encoding)` passes it by.
+        if (t.value === "") continue;
         const canonical = knownBufEncoding(t.value);
         if (canonical === undefined) out.badEncoding = t.value;
         else out.encoding = canonical;
@@ -3983,7 +4006,7 @@ export function lowerStreamModuleCall(
         return lowerer.noLowering(
           "stream/promises pipeline over a stream list built at run time",
           list.node,
-          "the stage list must be an array literal or a const array of stages, so each stage has a lowering",
+          "the stage list must be an array literal or a const array naming the stages, so each stage has a lowering",
         );
       }
       const opts = optsNode ? pipelineOptions(lowerer, optsNode) : null;
@@ -4369,7 +4392,7 @@ function lowerStreamModuleCallbackCall(
       return lowerer.noLowering(
         "pipeline over a stream list built at run time",
         list.node,
-        "the stage list must be an array literal or a const array of stages, so each stage has a lowering",
+        "the stage list must be an array literal or a const array naming the stages, so each stage has a lowering",
       );
     }
     const stageArgs = list.kind === "list" ? list.stages : args.slice(0, -1);
@@ -4498,11 +4521,16 @@ type PipelineStageList =
 function pipelineStageList(lowerer: Lowerer, stages: readonly ts.Expression[]): PipelineStageList {
   if (stages.length !== 1) return { kind: "none" };
   const node = stages[0]!;
-  const literal = constArrayLiteral(lowerer, node);
-  if (literal !== null) {
+  const found = constArrayLiteral(lowerer, node);
+  if (found !== null) {
     // A spread element's stages are only known at run time.
-    const elements = literal.elements.nodes;
+    const elements = found.literal.elements.nodes;
     if (elements.some((e) => ts.isSpreadElement(e) || ts.isOmittedExpression(e)))
+      return { kind: "dynamic", node };
+    // The const binding's values are what Node pipes: its initializer's
+    // stages only lower as the array's elements when re-reading an element
+    // expression reads that same value.
+    if (found.ident !== undefined && elements.some((e) => !stageReference(e)))
       return { kind: "dynamic", node };
     return { kind: "list", stages: elements };
   }
@@ -4513,13 +4541,15 @@ function pipelineStageList(lowerer: Lowerer, stages: readonly ts.Expression[]): 
 }
 
 /** The array literal a value IS (parentheses and assertions peeled), or
- * the one a `const` binding was initialized with and nothing reassigns. */
+ * the one a `const` binding was initialized with and nothing reassigns —
+ * with the identifier that names such a binding, whose elements the
+ * pipeline reads from the array itself. */
 function constArrayLiteral(
   lowerer: Lowerer,
   node: ts.Expression,
-): ts.ArrayLiteralExpression | null {
+): { literal: ts.ArrayLiteralExpression; ident?: ts.Identifier } | null {
   const direct = withoutParenthesesTypeWrappers(node);
-  if (ts.isArrayLiteralExpression(direct)) return direct;
+  if (ts.isArrayLiteralExpression(direct)) return { literal: direct };
   if (!ts.isIdentifier(direct)) return null;
   const resolve = (ident: ts.Identifier): ts.Symbol | undefined => {
     const found = lowerer.checker.getSymbolAtLocation(ident);
@@ -4537,7 +4567,26 @@ function constArrayLiteral(
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return null;
   if (!bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, resolve)) return null;
   const init = withoutParenthesesTypeWrappers(decl.initializer);
-  return ts.isArrayLiteralExpression(init) ? init : null;
+  return ts.isArrayLiteralExpression(init) ? { literal: init, ident: direct } : null;
+}
+
+/** Whether re-lowering an element expression reads the value the array
+ * already holds: a binding or a property of one. Node pipes the streams
+ * stored in the array, so a list whose initializer CREATES a stage (a call,
+ * `new`, a literal) has no lowering — the re-evaluated expression would
+ * pipe a replacement stream — and fences as a run-time list does. */
+function stageReference(node: ts.Expression): boolean {
+  const n = withoutParenthesesTypeWrappers(node);
+  if (ts.isIdentifier(n) || n.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (ts.isPropertyAccessExpression(n)) return stageReference(n.expression);
+  if (ts.isElementAccessExpression(n)) {
+    const at = withoutParenthesesTypeWrappers(n.argumentExpression);
+    return (
+      stageReference(n.expression) &&
+      (ts.isIdentifier(at) || ts.isNumericLiteral(at) || ts.isStringLiteral(at))
+    );
+  }
+  return false;
 }
 
 /** Whether a value's type is an array or tuple (a run-time stream list). */
@@ -7537,22 +7586,29 @@ export function lowerStreamMethodCall(
     }
     // push(chunk, enc) with a LITERAL encoding: the per-call decode
     // (Buffer.from(chunk, enc)) — an explicit encoding (utf8 included)
-    // overrides the stream's defaultEncoding; unknown literals throw
-    // Node's ERR_UNKNOWN_ENCODING when the push evaluates.
+    // overrides the stream's defaultEncoding. A spelling Node's decoder
+    // does not know (the empty string included) takes the runtime's
+    // readableAddChunk ladder: an object-mode stream ignores the encoding,
+    // the empty string is falsy (the defaultEncoding applies), and a
+    // byte-mode stream's Buffer.from rejects an unknown name.
     if (member === "push" && args[1] !== undefined && chunkKind(args[0]!) === "string") {
       const t = lowerer.typeOf(args[1]!);
       if (t.isStringLiteralType()) {
         const canonical = knownBufEncoding(t.value);
-        if (canonical === undefined) {
-          return nodeThrowExpr(
-            1,
-            "ERR_UNKNOWN_ENCODING",
-            `Unknown encoding: ${t.value}`,
-            BOOL,
-            loc,
-          );
-        }
         const receiver = streamReceiverExpr(lowerer, access.expression);
+        if (canonical === undefined) {
+          return {
+            kind: "libCall",
+            fn: "readable.pushDynEnc",
+            args: [
+              receiver,
+              lowerer.lowerExprExpecting(args[0]!, DYN),
+              { kind: "dynFrom", value: strLit(t.value, loc), type: DYN, loc },
+            ],
+            type: BOOL,
+            loc,
+          };
+        }
         const chunk = lowerer.lowerExprExpecting(args[0]!, STRING);
         return {
           kind: "libCall",
@@ -7572,24 +7628,20 @@ export function lowerStreamMethodCall(
       const encT = lowerer.typeOf(args[1]!);
       if (encT.isStringLiteralType() && chunkKind(args[0]!) === "string") {
         const canonical = knownBufEncoding(encT.value);
-        if (canonical === undefined) {
-          return nodeThrowExpr(
-            1,
-            "ERR_UNKNOWN_ENCODING",
-            `Unknown encoding: ${encT.value}`,
-            BOOL,
+        if (canonical !== undefined) {
+          const receiver = streamReceiverExpr(lowerer, access.expression);
+          const chunk = lowerer.lowerExprExpecting(args[0]!, STRING);
+          return {
+            kind: "libCall",
+            fn: "readable.unshiftStrEnc",
+            args: [receiver, chunk, strLit(canonical, loc)],
+            type: BOOL,
             loc,
-          );
+          };
         }
-        const receiver = streamReceiverExpr(lowerer, access.expression);
-        const chunk = lowerer.lowerExprExpecting(args[0]!, STRING);
-        return {
-          kind: "libCall",
-          fn: "readable.unshiftStrEnc",
-          args: [receiver, chunk, strLit(canonical, loc)],
-          type: BOOL,
-          loc,
-        };
+        // A spelling Node's decoder does not know (the empty string
+        // included) falls through to the runtime's readableAddChunk
+        // ladder below, as every encoding known only at run time does.
       }
       const receiver = streamReceiverExpr(lowerer, access.expression);
       const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);

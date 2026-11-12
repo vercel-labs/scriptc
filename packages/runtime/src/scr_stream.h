@@ -495,6 +495,11 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure 
 
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
+/* Marks both halves ended and finished without running them, the state a
+ * stream that already wrote and flushed its whole input reports
+ * (writableEnded, writableFinished and readableEnded true). zlib's `info`
+ * results hand their finished engine over this way. s is borrowed. */
+void scr_stream_mark_ended(ScrStream *s);
 /* Readable async-iterator return(): destroy with Node's AbortError payload;
  * the iterator's internal error consumer suppresses an unhandled crash when
  * no user error listener exists. Receiver +1. */
@@ -630,6 +635,12 @@ void scr_stream_set_flush_on_prefinish(ScrStream *s);
 void scr_stream_set_destroyed(ScrStream *s, bool destroyed);
 void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
 void *scr_stream_native(ScrStream *s, void (*release)(void *));
+/* An internal one-shot notification: fn(arg) runs at the stream's
+ * terminal close tick, once 'close' emitted and the option callbacks were
+ * dropped. The web-to-node adapters (scr_stream_web.c) use it to drop the
+ * context that otherwise keeps the node stream and the web reader or
+ * writer alive until process exit. */
+void scr_stream_set_closed_hook(ScrStream *s, void (*fn)(void *), void *arg);
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */

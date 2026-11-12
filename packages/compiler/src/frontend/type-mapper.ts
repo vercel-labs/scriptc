@@ -1296,7 +1296,7 @@ export function perfEntryJsonShape(shapes: ShapeRegistry): string {
   );
 }
 
-function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
+export function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
   let node: ts.Node | undefined = d.parent;
   while (node) {
     if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -2908,6 +2908,36 @@ function isReceiveMessageResult(
   return found;
 }
 
+/** events.on's iterator result (`{ value, done }`): the fallback
+ * declaration spells next/return/throw's answer as a type literal inside
+ * `Promise<...>` on EventEmitterAsyncIterator, and the runtime builds that
+ * object, so the result is a checked-dynamic value like the iterator
+ * itself (its `value` holds the event's argument array). */
+function isEventsIteratorResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const sym = type.getSymbol();
+  if (sym === undefined) return false;
+  return sym.declarations.some((decl) => {
+    if (!ts.isTypeLiteralNode(decl)) return false;
+    const promise = decl.parent;
+    if (!ts.isTypeReferenceNode(promise)) return false;
+    const method = promise.parent;
+    const cls = method?.parent;
+    return (
+      method !== undefined &&
+      (method.kind === ts.SyntaxKind.MethodDeclaration ||
+        method.kind === ts.SyntaxKind.MethodSignature) &&
+      cls !== undefined &&
+      ts.isClassDeclaration(cls) &&
+      cls.name?.text === "EventEmitterAsyncIterator" &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+      isDeclaredInAmbientModule(cls, "events")
+    );
+  });
+}
+
 /** True for a type built only from worker handles, null/undefined, and
  * arrays of those: values that keep the live DYN representation. */
 export function isWorkerHandleType(
@@ -3466,6 +3496,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  // events.on's iterator result: the runtime's { value, done } object.
+  if (isEventsIteratorResult(type, ctx)) return DYN;
   if (isFetchBodyUnion(type, ctx) || isFetchHeadersUnion(type, ctx)) return DYN;
   // Omit/Pick/Partial of a stdlib interface that rides checked-dynamic
   // storage (`Omit<RequestInit, "body" | "headers">`): every member comes
@@ -4339,6 +4371,42 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "object", className: RUNTIME_EMITTER_CLASS };
+  }
+  // events.on's iterator: a checked-dynamic object the runtime builds
+  // with native next/return/throw methods and its own
+  // [Symbol.asyncIterator], so `for await` over it takes the generic
+  // dynamic path and property reads see the real object (its
+  // `Symbol(nodejs.watermarkData)` included). Both type layers are
+  // covered: @types/node returns `NodeJS.AsyncIterator<any[], undefined,
+  // any>`, whose one class of values this is, and the shipped fallback
+  // declares its own class. Only the `any[]` instantiation maps: the
+  // lib's AsyncIterator protocol and the other NodeJS.AsyncIterator
+  // instantiations (readline's string, fs's Dirent, a stream's any) keep
+  // their own lowerings and fences.
+  if (
+    psym !== undefined &&
+    ((psymName === "EventEmitterAsyncIterator" &&
+      psym.declarations.some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+          isDeclaredInAmbientModule(d, "events"),
+      )) ||
+      (psymName === "AsyncIterator" &&
+        psym.declarations.some(
+          (d) =>
+            ts.isInterfaceDeclaration(d) &&
+            ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+            isDeclaredInAmbientNamespace(d, "NodeJS"),
+        ) &&
+        (() => {
+          const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+          if (arg === undefined) return false;
+          const mapped = mapType(arg, ctx);
+          return mapped?.kind === "array" && mapped.elem.kind === "dyn";
+        })()))
+  ) {
+    return DYN;
   }
   // readline.Interface and readline/promises.Interface: the interface
   // value is an f64 handle into the runtime's registry (the Timeout-id

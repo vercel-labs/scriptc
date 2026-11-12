@@ -30,7 +30,11 @@ async function main(): Promise<void> {
   out(`array returns destination ${String(returned === dst)}`);
 
   const declared: string[] = [];
-  const stages = [Readable.from(["c", "d"]), sink(declared)];
+  // The elements name the streams the array holds: the pipeline pipes the
+  // stored stages, so an initializer that creates a stream has no lowering.
+  const readStage = Readable.from(["c", "d"]);
+  const writeStage = sink(declared);
+  const stages = [readStage, writeStage];
   await new Promise<void>((resolve) => {
     pipeline(stages, (err?: Error | null): void => {
       out(`const list ${err === undefined || err === null ? "clean" : err.message} chunks ${declared.join(",")}`);

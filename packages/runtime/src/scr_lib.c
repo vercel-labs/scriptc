@@ -4345,12 +4345,54 @@ static ScrStr *scr_fs_walk_resolve(const char *a, const char *b, size_t b_len) {
   return out;
 }
 
+/* The kernel's symlink budget (Linux's MAXSYMLINKS): the walk substitutes at
+ * most this many links and answers the ELOOP a link cycle gets beyond it.
+ * Node's JS walk has no such limit, so only a path that needs more
+ * substitutions than the kernel allows can differ. */
+#define SCR_FS_WALK_MAX_SUBSTITUTIONS 40
+
+/* The target of the link at `base_path`, read together with the identity it
+ * is cached under. The caller's lstat named the object; the target must come
+ * from that same object. A directory-entry owner who renames a different
+ * link over the name between the lstat and the readlink would otherwise
+ * poison the cache with a target the identity never had, and every later
+ * restart that reaches the identity replays the substitution. Read the
+ * target, then confirm the name still holds the identity the caller
+ * snapped, adopting the identity the retry read it under when it changed.
+ * Answers +1, or NULL with the exception pending when the link cannot be
+ * read consistently (a constantly renaming entry answers ELOOP). */
+static ScrBytes *scr_fs_walk_link_target(ScrStr *base_path, double *dev, double *ino) {
+  for (int attempt = 0; attempt < 8; attempt++) {
+    ScrBytes *link = scr_fs_readlink_bytes(base_path);
+    if (link == NULL) return NULL;
+    ScrStats *after = scr_fs_lstat(base_path);
+    if (after == NULL) {
+      scr_bytes_release(link);
+      return NULL; /* the lstat's error is the exception */
+    }
+    bool symlink = scr_stats_is_symlink(after);
+    double after_dev = scr_stats_dev(after), after_ino = scr_stats_ino(after);
+    scr_stats_release(after);
+    if (symlink && after_dev == *dev && after_ino == *ino) return link;
+    scr_bytes_release(link);
+    if (!symlink) break; /* the name no longer holds a link */
+    *dev = after_dev;
+    *ino = after_ino;
+  }
+  scr_fs_throw(ELOOP, "stat", base_path);
+  return NULL;
+}
+
 ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
   size_t length = absolute->len;
   char *p = scr_fs_walk_dup_n(absolute->data, length);
   ScrFsWalkTable known = {0}, seen = {0}, restarted = {0};
   ScrStr *answer = NULL;
   bool reached_pipe_or_socket = false;
+  /* Substitutions so far, the kernel's budget: a cached target a racer
+   * poisoned can make every restart's path longer, and longer paths never
+   * repeat, so the repetition guard alone does not bound the walk. */
+  size_t substitutions = 0;
   size_t root = 0;
   while (p[root] == '/') root++;
   char *current = scr_fs_walk_dup_n(p, root);
@@ -4408,7 +4450,8 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
       continue;
     }
     char id[64];
-    snprintf(id, sizeof id, "%.0f:%.0f", scr_stats_dev(snapshot), scr_stats_ino(snapshot));
+    double link_dev = scr_stats_dev(snapshot), link_ino = scr_stats_ino(snapshot);
+    snprintf(id, sizeof id, "%.0f:%.0f", link_dev, link_ino);
     scr_stats_release(snapshot);
     const char *target = scr_fs_walk_table_get(&seen, id);
     if (target == NULL) {
@@ -4421,7 +4464,7 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
       }
       reached_pipe_or_socket = scr_stats_is_fifo(followed) || scr_stats_is_socket(followed);
       scr_stats_release(followed);
-      ScrBytes *link = scr_fs_readlink_bytes(base_path);
+      ScrBytes *link = scr_fs_walk_link_target(base_path, &link_dev, &link_ino);
       if (link == NULL) {
         scr_str_release(base_path);
         break;
@@ -4434,6 +4477,10 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
        * around a cycle it was never given. */
       ScrStr *text = scr_str_new((const char *)link->data, link->len);
       scr_bytes_release(link);
+      /* The target was confirmed against (or re-read under) `link_dev` and
+       * `link_ino`: cache it under that identity, not the one the lstat
+       * above happened to see. */
+      snprintf(id, sizeof id, "%.0f:%.0f", link_dev, link_ino);
       scr_fs_walk_table_add(&seen, id, text->data);
       scr_str_release(text);
       target = scr_fs_walk_table_get(&seen, id);
@@ -4452,13 +4499,18 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
      * so restarting twice from one path replays the same substitution
      * forever. Raw targets make that reachable only through a cycle the
      * stat above did not follow, and the paths seen so far bound it: a
-     * repeated restart answers the ELOOP a link cycle gets. */
-    if (scr_fs_walk_table_get(&restarted, joined->data) != NULL) {
+     * repeated restart answers the ELOOP a link cycle gets. A target that
+     * a racer poisoned into the cache can instead grow the path on every
+     * restart, and an ever-longer path never repeats, so substitutions get
+     * the kernel's own budget: more than MAXSYMLINKS of them is ELOOP. */
+    if (scr_fs_walk_table_get(&restarted, joined->data) != NULL ||
+        substitutions >= SCR_FS_WALK_MAX_SUBSTITUTIONS) {
       scr_fs_throw(ELOOP, "stat", base_path);
       scr_str_release(base_path);
       scr_str_release(joined);
       break;
     }
+    substitutions++;
     scr_fs_walk_table_add(&restarted, joined->data, NULL);
     scr_str_release(base_path);
     free(p);
@@ -7968,6 +8020,12 @@ static void scr_fs_listing_push(ScrFsListing *l, ScrStr *name, ScrStr *parent, d
   l->len++;
 }
 
+/* Whether the decoded name the walk joins is the entry's own name. Decoding
+ * is lossy (utf8 replaces malformed bytes with U+FFFD, ascii masks them with
+ * 0x7f), so the joined path can name a sibling instead of the entry whose
+ * kind authorized the descent. Defined with the scandir snapshot below. */
+static bool scr_fs_listing_name_is_entry(const ScrScandir *scan, size_t i, const ScrStr *name);
+
 /* The row's stored name: the decoded name for the listing's encoding. For
  * encoding: 'buffer' the stored name is never observed (the emitter reads
  * the raw bytes); the utf8 decode keeps the recursive walk's join path
@@ -8076,14 +8134,36 @@ ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recu
           full = NULL;
         }
       } else if (descend) {
+        ScrStr *entry_name = scr_fs_scandir_name_enc(scan, i, encoding);
+        bool own_name = scr_fs_listing_name_is_entry(scan, i, entry_name);
         ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
         scr_arr_push_ref(parts, scr_str_retain(node.path));
-        scr_arr_push_ref(parts, scr_fs_scandir_name_enc(scan, i, encoding));
+        scr_arr_push_ref(parts, entry_name);
         full = scr_path_join(parts);
         scr_arr_release(parts);
         if (!full) {
           failed = true;
           break;
+        }
+        /* The kind belongs to the raw entry; the walk reads the decoded
+         * path. When decoding changed the name, that path is not the entry
+         * whose directory kind authorized the descent, and the object it
+         * does name must not be followed through a symlink: the listing is
+         * the no-follow form, and a raw name that decodes onto a sibling
+         * link would otherwise list the link's out-of-tree target. Names
+         * that decode to their own bytes, which is every ordinary name,
+         * keep Node's behavior. */
+        if (!own_name) {
+          ScrStats *target = scr_fs_stat_probe(full, true, false);
+          if (target != NULL) {
+            if (scr_stats_is_symlink(target)) {
+              scr_stats_release(target);
+              scr_str_release(full);
+              full = NULL;
+            } else {
+              scr_stats_release(target);
+            }
+          }
         }
       }
       if (full && !scr_fs_queued_paths_add(&queued, full)) {
@@ -8352,6 +8432,11 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
   closedir(d);
   return scr_fs_scandir_from_rows(rows, len);
 #endif
+}
+
+static bool scr_fs_listing_name_is_entry(const ScrScandir *scan, size_t i, const ScrStr *name) {
+  return name->len == scan->raw_lens[i] &&
+         (name->len == 0 || memcmp(name->data, scan->raws[i], name->len) == 0);
 }
 
 size_t scr_fs_scandir_count(const ScrScandir *s) { return s ? s->len : 0; }

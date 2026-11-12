@@ -528,14 +528,27 @@ static void scr_blob_not_readable(void) {
  * nanoseconds and, on POSIX, the device and inode the Blob was made from),
  * then read its bytes. False with the NotReadableError pending. */
 static bool scr_blob_read_file_part(const ScrBlobPart *part, uint8_t *out) {
+#ifndef _WIN32
+  /* Whoever can write the Blob's directory can rename a FIFO over its path.
+   * A blocking open waits for a writer before the identity check below can
+   * reject the substitute, parking the native thread (and the event loop it
+   * runs) for as long as the substitute stays a writerless FIFO. O_NONBLOCK
+   * opens a FIFO or a device without waiting; the re-stat then requires the
+   * descriptor to be a regular file, so nothing else is read. */
+  int fd = scr_fs_raw_open(part->file->path->data, O_RDONLY | O_NONBLOCK, 0);
+#else
   int fd = scr_fs_raw_open(part->file->path->data, O_RDONLY, 0);
+#endif
   if (fd < 0) {
     scr_blob_not_readable();
     return false;
   }
   int error = 0;
   ScrStats *st = scr_stats_of_fd(fd, &error);
-  bool same = st != NULL && scr_stats_size(st) == part->file->size &&
+  /* Only a regular file can back a Blob's part: a FIFO, socket or device
+   * substituted at the path is a NotReadableError even if its metadata
+   * happened to match, and reading a directory's descriptor is not a read. */
+  bool same = st != NULL && scr_stats_is_file(st) && scr_stats_size(st) == part->file->size &&
               scr_stats_mtime_nsec(st) == part->file->mtime_nsec;
 #ifndef _WIN32
   /* size + mtime_nsec alone admit a substituted file: they are visible to

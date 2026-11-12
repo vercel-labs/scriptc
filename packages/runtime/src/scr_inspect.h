@@ -6,6 +6,7 @@
 #include "scr_bytes.h"
 #include "scr_bigint.h"
 #include "scr_os.h"
+#include "scr_union.h"
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
  * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────

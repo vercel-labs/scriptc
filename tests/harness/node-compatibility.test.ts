@@ -30,8 +30,17 @@ describe("Node compatibility generator", () => {
     );
 
     expect(promiseRows.length).toBeGreaterThan(0);
+    // The surface manifest attributes the fs/promises rows it documents; a
+    // dedicated compiler feature (fs.fsPromises.<name>) attributes the rows
+    // it does not cover. Either names the fs/promises lowering.
     expect(
-      promiseRows.some((row) => row.static?.evidence?.includes("node-builtin.fs.promises")),
+      promiseRows.some((row) => {
+        const evidence = row.static?.evidence ?? "";
+        return (
+          evidence.includes("node-builtin.fs.promises") ||
+          evidence.includes("compiler-feature:fs.fsPromises.")
+        );
+      }),
     ).toBe(true);
   });
 

@@ -2230,6 +2230,12 @@ ScrDyn *scr_dyn_function_prototype(void) {
 static ScrDyn *dyn_prototype_link(ScrDyn *value, bool *builtin_tail) {
   switch (value->kind) {
   case SCR_DYN_FUNC: {
+    /* Object.setPrototypeOf may have replaced the function's [[Prototype]];
+     * its property table carries the replacement, a null one included, and
+     * the chain continues there. */
+    ScrDyn *replaced = scr_dyn_function_prototype_override(value);
+    if (scr_exc_pending()) return NULL;
+    if (replaced) return replaced;
     ScrDyn *prototype = scr_dyn_function_prototype();
     bool self = value == prototype ||
                 scr_closure_identity_equal(value->v.fn.clo, prototype->v.fn.clo);

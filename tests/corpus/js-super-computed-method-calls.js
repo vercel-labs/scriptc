@@ -1,3 +1,4 @@
+// @deferred-fences: 1
 // super[key](...) with run-time keys in untyped JavaScript: the base
 // prototype's member the key names, called over the derived method's own
 // `this` — key conversion, argument forwarding, members installed after the
@@ -67,6 +68,11 @@ class SymDerived extends SymBase {
   }
 }
 console.log(new SymDerived().duo());
+// The class value of a function-local class is built at run time, and its
+// prototype members are installed as closures of the method's plain-function
+// form — a form with no class context, where `super[key]()` is deferred to a
+// runtime fence (the program's one: it never runs, because the call below is
+// compiled against the method itself, as a call of `new Shadow().both()` is).
 attempt("own field shadows nothing", () => {
   class Shadow extends Base {
     constructor() {

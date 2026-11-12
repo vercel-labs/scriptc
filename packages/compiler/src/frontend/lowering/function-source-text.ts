@@ -22,7 +22,7 @@
 import * as ts from "../ts7/adapter.js";
 import { sourceTextRange, tokenStartOfNode } from "../ts7/node-functions.js";
 import { isThisParameter } from "./call-signatures.js";
-import type { IrFunction } from "../../ir/ir.js";
+import type { IrFunction, IrLibFn, SrcLoc } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -30,7 +30,11 @@ import type { Lowerer } from "./lowerer.js";
  * in a module that makes one of them may be printed, so it is the module
  * that needs its text (and the inline String(unknown) spelling, an IR
  * `toString` over a dyn operand, is the fourth). */
-const TEXT_CONVERSIONS = new Set(["dyn.stringConstructor", "dyn.toString", "dyn.toStringCoerce"]);
+const TEXT_CONVERSIONS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.stringConstructor",
+  "dyn.toString",
+  "dyn.toStringCoerce",
+]);
 
 /** The modifiers the printed text drops: the keyword is blanked and the
  * text around it stays. `async` is not in the set — Node prints it. */
@@ -72,11 +76,17 @@ interface AnnotationFields {
   readonly exclamationToken?: ts.Node | undefined;
 }
 
-/** Records the node the lifted function `fn` came from, so that the trees
- * a module boxes can be given their source text once the module's boxing
- * and its text conversions are known (finalizeFunctionSourceText). */
+/** Records the source span of the node the lifted function `fn` came from,
+ * so that the trees a module boxes can be given their source text once the
+ * module's boxing and its text conversions are known
+ * (finalizeFunctionSourceText). */
 export function noteFunctionSourceNode(lowerer: Lowerer, fn: IrFunction, node: ts.Node): void {
-  lowerer.functionSourceNodes.set(fn, node);
+  const sf = ts.getSourceFileOfNode(node);
+  lowerer.functionSourceLocs.set(fn.name, {
+    file: sf.fileName,
+    start: tokenStartOfNode(node),
+    end: node.end,
+  });
 }
 
 /** Gives every function this module boxes into a checked value its source
@@ -85,26 +95,25 @@ export function finalizeFunctionSourceText(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
 ): void {
-  if (lowerer.functionSourceNodes.size === 0) return;
+  if (lowerer.functionSourceLocs.size === 0) return;
   const boxed = boxedFunctionNames(functions);
   if (boxed === null) return;
   // A generic function or arrow is lowered again for each instantiation, as
   // a function of its own over the same source node; the span finds it.
-  const bySpan = new Map<string, ts.Node>();
-  for (const node of lowerer.functionSourceNodes.values()) bySpan.set(spanKey(node), node);
+  const bySpan = new Map<string, SrcLoc>();
+  for (const loc of lowerer.functionSourceLocs.values()) bySpan.set(spanKey(loc), loc);
   for (const fn of functions) {
     if (!boxed.has(fn.name)) continue;
-    const node =
-      lowerer.functionSourceNodes.get(fn) ??
-      bySpan.get(`${fn.loc.file}:${fn.loc.start}:${fn.loc.end}`);
-    if (node !== undefined) fn.sourceText = erasedFunctionText(node);
+    const loc = lowerer.functionSourceLocs.get(fn.name) ?? bySpan.get(spanKey(fn.loc));
+    if (loc === undefined) continue;
+    const node = lowerer.nodeAtLoc(loc);
+    if (node !== null) fn.sourceText = erasedFunctionText(node);
   }
 }
 
-/** The key a function's location and its source node share. */
-function spanKey(node: ts.Node): string {
-  const sf = ts.getSourceFileOfNode(node);
-  return `${sf.fileName}:${tokenStartOfNode(node)}:${node.end}`;
+/** The key a span is looked up by. */
+function spanKey(loc: SrcLoc): string {
+  return `${loc.file}:${loc.start}:${loc.end}`;
 }
 
 /** The names of the functions the IR makes values of, or null when the
@@ -121,6 +130,9 @@ function boxedFunctionNames(functions: readonly IrFunction[]): Set<string> | nul
         if (e.kind === "closure") names.add(e.fnName);
         else if (e.kind === "toString" && e.operand.type.kind === "dyn") toText = true;
         else if (e.kind === "libCall" && TEXT_CONVERSIONS.has(e.fn)) toText = true;
+        // `values.join(sep)` over checked-dynamic elements converts each
+        // element to text through the same runtime display a coercion uses.
+        else if (e.kind === "dynInvoke" && e.method === "join") toText = true;
         return true;
       },
     });
@@ -186,7 +198,9 @@ function eraseNode(node: ts.Node, at: (offset: number) => number, blanks: Blank[
     while (colon > 0 && isSpace(at(colon))) colon--;
     if (at(colon) === 58 /* : */) blank(colon, typed.type.end);
   }
-  if (typed.questionToken !== undefined)
+  // A conditional expression's `?` is its operator, not an optional marker,
+  // so a ternary keeps its text.
+  if (typed.questionToken !== undefined && !ts.isConditionalExpression(node))
     blank(tokenStartOfNode(typed.questionToken), typed.questionToken.end);
   if (typed.postfixToken !== undefined)
     blank(tokenStartOfNode(typed.postfixToken), typed.postfixToken.end);

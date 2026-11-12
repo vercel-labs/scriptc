@@ -41,3 +41,27 @@ attempt("shadowing own member", () => shady.isPrototypeOf(base));
 // constructor's chain.
 const proto = {};
 attempt("object prototype of Object", () => proto.isPrototypeOf(Object));
+
+// Object.setPrototypeOf replaces a function's [[Prototype]]: the walk
+// follows the replacement, so Function.prototype leaves the chain while
+// Object.prototype stays on it through the replacement's own record.
+function replaced() {}
+const replacement = { tag: "replacement" };
+Object.setPrototypeOf(replaced, replacement);
+attempt("replacement of a function", () => replacement.isPrototypeOf(replaced));
+attempt("Function.prototype of a replaced function", () =>
+  Function.prototype.isPrototypeOf(replaced),
+);
+attempt("Object.prototype of a replaced function", () =>
+  Object.prototype.isPrototypeOf(replaced),
+);
+attempt("replaced function of its replacement", () => replaced.isPrototypeOf(replacement));
+
+function bare() {}
+Object.setPrototypeOf(bare, null);
+attempt("Function.prototype of a null-prototype function", () =>
+  Function.prototype.isPrototypeOf(bare),
+);
+attempt("Object.prototype of a null-prototype function", () =>
+  Object.prototype.isPrototypeOf(bare),
+);

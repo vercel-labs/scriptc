@@ -152,5 +152,17 @@ function outer(a: number): number {
 }
 outer(1);
 
+function ternary(flag: boolean, a: number, b: number): number {
+  return flag ? a : b;
+}
+const ternaryValue: any = ternary;
+console.log(String(ternaryValue));
+
+function nestedTernary(a: number, b: number): number {
+  return a > b ? a : a === b ? 0 : b;
+}
+const nestedTernaryValue: any = nestedTernary;
+console.log(String(nestedTernaryValue));
+
 const list: any[] = [arrowValue, genericValue, defaultsValue];
 console.log(list.join(" | "));

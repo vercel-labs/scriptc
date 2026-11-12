@@ -5121,10 +5121,12 @@ export class Lowerer {
    * constructors held as typed values. Given only in a program that prints
    * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
-  /** The source node each lifted function came from, by function: the text
-   * a boxed function prints as (function-source-text.ts). Keyed by the
-   * function itself, whose name later passes may change. */
-  readonly functionSourceNodes = new Map<IrFunction, ts.Node>();
+  /** The source span the text of each lifted function is printed from, by
+   * function name: the text a boxed function prints as
+   * (function-source-text.ts). A span rather than the node keeps the entry
+   * recordable, and a name rather than the function keeps it the same
+   * function when a record replays the unit. */
+  readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5664,6 +5666,7 @@ export class Lowerer {
       functionTable("implicitFns", this.implicitFns, (fn) =>
         this.implicitFns.some((other) => other.name === fn),
       ),
+      irDataTable("functionSourceLocs", this.functionSourceLocs),
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
@@ -5905,7 +5908,6 @@ export class Lowerer {
       checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
       checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
-      checkedTable("functionSourceNodes", () => this.functionSourceNodes.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("funduleMembers", () => this.funduleMembers.size),

@@ -51,3 +51,37 @@ attempt("Function.prototype of an arrow", () => Function.prototype.isPrototypeOf
 // Object.prototype, which is.
 attempt("Object.prototype of Object", () => Object.prototype.isPrototypeOf(Object));
 attempt("Function.prototype of Object", () => Function.prototype.isPrototypeOf(Object));
+
+// Object.setPrototypeOf replaces the [[Prototype]] a function starts with,
+// so the walk follows the replacement and Function.prototype is off the
+// chain; a replacement's own chain still leads to Object.prototype.
+const isPrototypeOf = Object.prototype.isPrototypeOf;
+function replaced(): void {}
+const custom = { tag: "custom" };
+Object.setPrototypeOf(replaced, custom);
+attempt("replacement of a function", () => isPrototypeOf.call(custom, replaced));
+attempt("Function.prototype of a replaced function", () =>
+  isPrototypeOf.call(Function.prototype, replaced),
+);
+attempt("Object.prototype of a replaced function", () =>
+  isPrototypeOf.call(Object.prototype, replaced),
+);
+attempt("replaced function of its replacement", () => isPrototypeOf.call(replaced, custom));
+
+function bare(): void {}
+Object.setPrototypeOf(bare, null);
+attempt("Function.prototype of a null-prototype function", () =>
+  isPrototypeOf.call(Function.prototype, bare),
+);
+attempt("Object.prototype of a null-prototype function", () =>
+  isPrototypeOf.call(Object.prototype, bare),
+);
+
+// A function whose prototype is another function: the chain visits both.
+function leaf(): void {}
+function middle(): void {}
+Object.setPrototypeOf(leaf, middle);
+Object.setPrototypeOf(middle, custom);
+attempt("replacement of a function chain", () => isPrototypeOf.call(custom, leaf));
+attempt("middle of a function chain", () => isPrototypeOf.call(middle, leaf));
+attempt("leaf of a function chain", () => isPrototypeOf.call(leaf, middle));

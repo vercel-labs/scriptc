@@ -2294,6 +2294,10 @@ ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len);
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function);
 /* The table a function value already has. +1, or NULL. */
 ScrDyn *scr_dyn_function_properties_existing(const ScrDyn *function);
+/* The [[Prototype]] a function's own property table carries once
+ * Object.setPrototypeOf replaced it (+1, null included as the null value), or
+ * NULL while the function still links to Function.prototype. */
+ScrDyn *scr_dyn_function_prototype_override(const ScrDyn *function);
 /* Object.defineProperties over dyn values: every descriptor of the map is
  * read and converted (scr_dyn_define_props_pending), then each is defined
  * through scr_dyn_define_property, which decides what a target accepts.

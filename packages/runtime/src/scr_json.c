@@ -9397,6 +9397,15 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
 
 ScrDyn *scr_dyn_function_properties(const ScrDyn *function) { return scr_dyn_fn_properties(function); }
 
+ScrDyn *scr_dyn_function_prototype_override(const ScrDyn *function) {
+  if (function->kind != SCR_DYN_FUNC || !scr_closure_identity(function->v.fn.clo)->props) return NULL;
+  ScrDyn *table = scr_dyn_fn_properties(function);
+  ScrDyn *result = table->prototype ? scr_dyn_retain(table->prototype)
+    : table->null_proto ? scr_dyn_new_null() : NULL;
+  scr_dyn_release(table);
+  return result;
+}
+
 ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj || (base->kind != SCR_DYN_FUNC && base->kind != SCR_DYN_UNDEF)) {
     static const char message[] = "Class inheritance requires native constructors";

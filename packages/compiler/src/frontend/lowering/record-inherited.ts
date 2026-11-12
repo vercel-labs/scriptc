@@ -528,6 +528,11 @@ function builtinAnswer(
         kind === "bigint"
       )
         return { kind: "boolLit", value: false, type: BOOL, loc };
+      // The walk answers a boolean. A declared type that cannot hold one
+      // fails the conversion after evaluating the answer, so the walk would
+      // add a runtime call that only throws away its result — and a helper
+      // holding it stops being inert for every indirect call in the module.
+      if (!boolConvertsTo(lowerer, want)) return { kind: "boolLit", value: false, type: BOOL, loc };
       // A record is an ordinary object, and `Object.create(r)` or
       // `{ __proto__: r }` makes that very record a live prototype: the
       // answer is one identity walk of the argument's prototype chain, not a
@@ -677,6 +682,15 @@ function returnAs(lowerer: Lowerer, value: IrExpr, ret: IrType, loc: SrcLoc): Ir
     { kind: "exprStmt", expr: value, loc },
     { kind: "return", value: nodeThrowExpr(1, "", OTHER_ARM_FAILURE_MESSAGE, ret, loc), loc },
   ];
+}
+
+/** A boolean answer converts to `want` exactly as convertTo does. */
+function boolConvertsTo(lowerer: Lowerer, want: IrType): boolean {
+  return (
+    typeEquals(BOOL, want) ||
+    (want.kind === "dyn" && lowerer.dynConvertible(BOOL)) ||
+    (want.kind === "union" && lowerer.armTag(want.unionId, BOOL) >= 0)
+  );
 }
 
 function convertTo(lowerer: Lowerer, value: IrExpr, want: IrType): IrExpr | null {

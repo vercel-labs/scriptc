@@ -23,7 +23,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+/* A library archive may reference only the target's C/math runtime and
+ * system APIs, and the thread pool's pthread calls are not on that list:
+ * `-DSCR_LIB` builds run every chunk on the calling thread, which is the
+ * same Node.js loop with the same chunks and the same result. */
+#if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 #include <pthread.h>
 #include <unistd.h>
 #define SCR_PAR_THREADS 1
@@ -39,7 +43,9 @@ typedef struct ScrParPool ScrParPool;
 
 typedef struct ScrParJob {
   ScrParKind kind;
+#ifdef SCR_PAR_THREADS
   ScrParPool *pool;
+#endif
   ScrClosure *body; /* INTO, FOR */
   ScrClosure *part; /* REDUCE */
   ScrBytes *target; /* INTO */
@@ -54,6 +60,7 @@ typedef struct ScrParJob {
   uint64_t remaining;
 } ScrParJob;
 
+#ifdef SCR_PAR_THREADS
 struct ScrParPool {
   pthread_mutex_t lock;
   pthread_cond_t wake; /* helpers park here between jobs */
@@ -64,6 +71,7 @@ struct ScrParPool {
   unsigned active; /* helpers inside the current job */
   bool shutdown;
 };
+#endif
 
 /* One job at a time for the whole process: a call made while another one
  * runs (a nested call, a parallel loop in a worker thread) takes the

@@ -41,6 +41,7 @@ import { type IrFieldWalker, walkStmtFields } from "../../ir/fields.generated.js
 import { F64, VOID, funcOf } from "../../ir/ir.js";
 import type { IrExpr, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { type ExperimentalMember, experimentalImportOf } from "../experimental-import.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
@@ -110,21 +111,9 @@ function inside(node: ts.Node | undefined, outer: ts.Node): boolean {
   return false;
 }
 
-/** `node` without parentheses, non-null assertions, `as` and type
- * assertions: the expression whose value the call reads. */
-function unadorned(node: ts.Expression): ts.Expression {
-  let cur = node;
-  for (;;) {
-    if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
-    else if (ts.isNonNullExpression(cur)) cur = cur.expression;
-    else if (ts.isAsExpression(cur)) cur = cur.expression;
-    else return cur;
-  }
-}
-
 /** The function expression `node` is, if it is one. */
 function callbackLiteral(node: ts.Expression): ts.ArrowFunction | ts.FunctionExpression | null {
-  const inner = unadorned(node);
+  const inner = withoutParenthesesAssertionsNonNull(node);
   return ts.isArrowFunction(inner) || ts.isFunctionExpression(inner) ? inner : null;
 }
 
@@ -146,7 +135,7 @@ function optionEntry(
 
 /** Whether `node` is the `undefined` value itself (`undefined`, `void 0`). */
 function isUndefinedValue(node: ts.Expression): boolean {
-  const inner = unadorned(node);
+  const inner = withoutParenthesesAssertionsNonNull(node);
   return (ts.isIdentifier(inner) && inner.text === "undefined") || ts.isVoidExpression(inner);
 }
 
@@ -238,8 +227,7 @@ function scanBody(
   /** A write target: a local number variable, or (in `part` mode) an
    * element of `part`. */
   const writeTarget = (target: ts.Expression): void => {
-    let cur = unadorned(target);
-    while (ts.isNonNullExpression(cur)) cur = cur.expression;
+    const cur = withoutParenthesesAssertionsNonNull(target);
     if (ts.isIdentifier(cur)) {
       if (own(cur) && mapped(cur)?.kind === "f64") return;
       const decl = symbolOf(cur)?.declarations?.[0];
@@ -668,7 +656,7 @@ export function lowerParallelCall(lowerer: Lowerer, expr: ts.CallExpression): Ir
     let grain = absent(loc, 0);
     let stride = option === "into" ? absent(loc, 1) : null;
     if (node === undefined || isUndefinedValue(node)) return { grain, stride };
-    const literal = unadorned(node);
+    const literal = withoutParenthesesAssertionsNonNull(node);
     if (!ts.isObjectLiteralExpression(literal))
       lowerer.noLowering(
         `${member} with options that are not an object literal`,

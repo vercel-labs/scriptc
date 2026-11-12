@@ -193,3 +193,28 @@ In scriptc builds the chunks of a `parallelInto` or a `parallelReduce` may run o
 A captured typed array it reads is compared with the target: when the two overlap, the chunks run one after another, since one chunk's write could race another's read. A call that breaks a rule compiles to the sequential loop, which is exactly the Node.js call, and scriptc reports which rule it broke as a performance warning (SC6106), never as a build failure. `parallelFor` always runs its chunks one after another until scriptc can show that its callbacks write disjoint elements.
 
 The number of threads is the process's, taken from `SCRIPTC_THREADS` (default: the hardware thread count, capped at 64). Results do not depend on it: chunks are handed out whole and the reduce fold is in chunk order, so a sum of floating-point values is the same on every run and every machine.
+## Load hook
+
+`@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.
+
+```console
+node --require @scriptc/experimental/register app.ts
+```
+
+`--import` works the same way. Node.js 24 or newer is required.
+
+The hook applies the refusals in `refusals.json`, the same data the compiler uses:
+
+- Importing a builtin module that scriptc does not support fails with the compiler's code and message (`SC1010`).
+- Loading a native addon (`.node`) fails with the compiler's code and message (`SC2020`).
+- `process.getBuiltinModule` of an unsupported builtin throws the error a compiled program throws for that call.
+
+A program can therefore run under Node.js with the hook, fail where the build fails, and give the same code and message. Running both in CI catches a refusal before a binary is built or deployed.
+
+scriptc refuses code generation from strings, which Node.js does only with `--disallow-code-generation-from-strings`. The hook cannot set the flag for the process it joins, so add it to `NODE_OPTIONS`:
+
+```console
+NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/experimental/register app.ts
+```
+
+The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.

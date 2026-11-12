@@ -2071,10 +2071,26 @@ export class ClassDynamicDispatch {
         ) || changed;
     // Object.assign and Object.defineProperties act on the source's (the
     // descriptor map's) own enumerable keys.
+    // A null or undefined source has no keys: Object.assign skips it, and
+    // Object.defineProperties throws its own TypeError for it afterwards.
     const sourceHas = (field: string, loc: SrcLoc): IrExpr => ({
-      kind: "libCall",
-      fn: "dyn.propertyIsEnumerable",
-      args: [varRef("source", DYN, loc), { kind: "strLit", value: field, type: STRING, loc }],
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "dynTest",
+        test: "nullish",
+        negated: true,
+        value: varRef("source", DYN, loc),
+        type: BOOL,
+        loc,
+      },
+      right: {
+        kind: "libCall",
+        fn: "dyn.propertyIsEnumerable",
+        args: [varRef("source", DYN, loc), { kind: "strLit", value: field, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      },
       type: BOOL,
       loc,
     });
@@ -2215,8 +2231,9 @@ export class ClassDynamicDispatch {
               cond: {
                 kind: "logical",
                 op: "&&",
-                left: match(field.name, loc),
-                right: {
+                // The target test runs first: the key test may read the
+                // source, which only a write onto this class may observe.
+                left: {
                   kind: "logical",
                   op: "&&",
                   // The installer defines the table's own entries through
@@ -2226,6 +2243,7 @@ export class ClassDynamicDispatch {
                   type: BOOL,
                   loc,
                 },
+                right: match(field.name, loc),
                 type: BOOL,
                 loc,
               },

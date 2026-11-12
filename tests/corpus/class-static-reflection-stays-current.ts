@@ -45,3 +45,12 @@ console.log(readCount(held), readCount(Counter), readCount(Shadow));
 write(held, "count", 70);
 console.log(Counter.count, Shadow.count, readCount(held), read(Shadow, "count"));
 console.log(Object.getOwnPropertyDescriptor(Shadow, "count")?.value);
+
+// With a table installed, Object.assign still skips null and undefined
+// sources, onto an ordinary object and onto a class value alike.
+const none: any = null;
+const absent: any = undefined;
+const copy: any = Object.assign({}, none, { a: 1 }, absent);
+const counterValue: any = Counter;
+Object.assign(counterValue, none, { extra: 2 }, absent);
+console.log(JSON.stringify(copy), counterValue.extra, Counter.count);

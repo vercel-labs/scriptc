@@ -319,6 +319,24 @@ describe(title, () => {
       const second = await execFileAsync(secondStage, [input, again, config], {
         ...runOptions,
         timeout: emitTimeout,
+      }).catch((cause: unknown) => {
+        // The fixture reports what it catches on stdout and exits non-zero, so
+        // a bare "Command failed" hides whether the second generation crashed,
+        // overran its stack or timed out. Say what the child said.
+        const failed = cause as {
+          status?: number;
+          signal?: string;
+          stdout?: string;
+          stderr?: string;
+        };
+        const said = (text: string | undefined): string => (text ?? "").slice(0, 2_000);
+        throw new Error(
+          `the second generation did not reproduce the module: status=${String(failed.status)}` +
+            ` signal=${String(failed.signal)}` +
+            `\nstdout: ${said(failed.stdout)}` +
+            `\nstderr: ${said(failed.stderr)}`,
+          { cause },
+        );
       });
       expect(second.stdout).toBe("");
       expect(second.stderr).toBe("");

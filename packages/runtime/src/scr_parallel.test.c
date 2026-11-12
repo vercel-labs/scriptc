@@ -2,6 +2,7 @@
 #include "scr_runtime.h"
 #include <assert.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -258,6 +259,12 @@ enum { OVERLAP_COUNT = 4000, OVERLAP_GRAIN = 20 };
 
 static pthread_t caller;
 static atomic_int off_thread_chunks;
+/* Set for the job that must use the helpers, so the calling thread waits
+ * for one to claim a chunk instead of racing it to the end of the job.
+ * The wait is tried a few times at most, so a pool that never wakes costs
+ * the test a bounded delay rather than one per chunk. */
+static bool overlap_wait_for_helper;
+static int overlap_stalls;
 
 /* Spins for about a microsecond, so the pool's "is the wake-up worth it"
  * estimate sees a job big enough to hand out. */
@@ -268,7 +275,20 @@ static void spin(void) {
 
 static void overlap_body(ScrClosure *env, ScrBytes *part, double start, double end) {
   (void)env;
-  if (!pthread_equal(pthread_self(), caller)) atomic_fetch_add(&off_thread_chunks, 1);
+  if (!pthread_equal(pthread_self(), caller)) {
+    atomic_fetch_add(&off_thread_chunks, 1);
+  } else if (overlap_wait_for_helper && has_helpers() && start > 0 && overlap_stalls < 5 &&
+             atomic_load(&off_thread_chunks) == 0) {
+    overlap_stalls++;
+    /* Whether a woken helper or the calling thread claims a chunk is a
+     * race: the pool broadcasts, and a job of a few hundred chunks can
+     * finish here before a helper is scheduled, especially on a loaded
+     * machine. Which thread runs a chunk is not observable, so a helper
+     * that claims none is not a fault. Yield this chunk for a bounded
+     * time so a helper can claim one, since the assertion below is about
+     * the pool being used at all. */
+    for (int i = 0; i < 1000000 && atomic_load(&off_thread_chunks) == 0; i++) sched_yield();
+  }
   double *elements = (double *)part->data;
   for (size_t k = 0; k < part->len; k++) elements[k] = start + (double)k;
   for (size_t i = (size_t)start; i < (size_t)end; i++) assert(elements[i - (size_t)start] >= start);
@@ -282,7 +302,10 @@ static void overlapping_read_runs_alone(void) {
   caller = pthread_self();
   /* Without the read, the job is big enough to use the helpers. */
   atomic_store(&off_thread_chunks, 0);
+  overlap_stalls = 0;
+  overlap_wait_for_helper = true;
   scr_par_into(target, 1.0, 1.0, OVERLAP_GRAIN, 1.0, &body, NULL, 0);
+  overlap_wait_for_helper = false;
   assert(!scr_exc_pending());
   if (has_helpers()) assert(atomic_load(&off_thread_chunks) > 0);
   const double *elements = (const double *)target->data;

@@ -19,10 +19,27 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_weak_ref_is compares the value's kind and handle tag.
+  "weakRef.is",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
+  // scr_dyn_function_prototype builds the one anonymous function answering
+  // undefined on first use and retains it; no user code runs.
+  "dyn.functionPrototype",
+  // Both instanceof predicates compare values: scr_dyn_perf_handle_is asks
+  // the handle tag, and scr_dyn_perf_entry_is asks an object's prototype
+  // chain (or, for a live record, the view its materializer builds, which
+  // runs no program code).
+  "perf.observerIs",
+  "perf.entryIs",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
+  // scr_events_once_any turns every failure into the result promise's
+  // rejection: an invalid options object or signal, an aborted signal, a
+  // name that cannot key the registry, a throwing 'newListener' listener
+  // (which it takes off the cell) and the awaited event's own 'error'. It
+  // throws nothing to its caller.
+  "events.onceAny",
   // scr_ni_intrinsic_register stores the value in a table.
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.

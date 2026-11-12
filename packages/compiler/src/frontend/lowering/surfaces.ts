@@ -2059,6 +2059,13 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      // Both answer at the call site where the compiler knows the value
+      // (lowerUtilTypeCall): the arguments object and ESM namespace
+      // bindings. At run time the brand check recognizes boxed program
+      // namespaces; the compiled arguments list and builtin module values
+      // carry neither brand (see docs/content/limitations).
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
       // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then
@@ -2994,6 +3001,27 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       kind: "node-builtin",
       name: "perf_hooks.performance.clearMeasures",
       fns: ["perf.clearMeasures"],
+    },
+    {
+      id: "node-builtin.perf_hooks.PerformanceMark",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceMark",
+      fns: ["perf.markNew", "perf.entryIs"],
+      note: "new PerformanceMark(name, options?) and the PerformanceMark global; the mark updates the mark timings but is not added to the marks buffer",
+    },
+    {
+      id: "node-builtin.perf_hooks.PerformanceObserver",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceObserver",
+      fns: [
+        "perf.observerNew",
+        "perf.observerObserve",
+        "perf.observerDisconnect",
+        "perf.observerTake",
+        "perf.listEntries",
+        "perf.observerIs",
+      ],
+      note: "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes",
     },
     {
       id: "node-builtin.perf_hooks.performance.eventLoopUtilization",

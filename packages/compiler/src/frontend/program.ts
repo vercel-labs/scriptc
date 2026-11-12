@@ -5537,6 +5537,7 @@ function computeCycleEarlyBindings7(
             end: stmt.end,
             reference: null,
             deferredReference: null,
+            deferredFolded: null,
             folded: null,
             localNames: new Map(),
           });
@@ -5595,8 +5596,6 @@ function computeCycleEarlyBindings7(
         }
         const c = symbol === undefined ? undefined : candidates.get(symbol);
         if (c === undefined || ref === c.name) continue;
-        if (c.folded === null && foldablePosition7(ref)) c.folded = ref;
-        if (c.reference !== null) continue;
         // A class body names its own inner binding, initialized throughout.
         if (
           c.kind === "class" &&
@@ -5605,27 +5604,40 @@ function computeCycleEarlyBindings7(
           ref.end <= c.end
         )
           continue;
+        const foldable = foldablePosition7(ref);
         if (inDeferredPosition7(ref)) {
           if (c.exposed && c.deferredReference === null) c.deferredReference = ref;
+          if (c.exposed && foldable && c.deferredFolded === null) c.deferredFolded = ref;
           continue;
         }
         let early: boolean;
         if (sf === c.module) early = ts.tokenStartOfNode(ref) < c.start;
         else if (!memberSet.has(sf) || !rankOf.has(sf)) early = false;
         else early = !known || rankOf.get(sf)! < c.rank;
-        if (early) c.reference = ref;
+        if (!early) continue;
+        if (c.reference === null) c.reference = ref;
+        // Only a reference that can run before the declaration is a folding
+        // hazard: one that runs after it observes the initialized binding.
+        if (foldable && c.folded === null) c.folded = ref;
       }
     }
     // With a static evaluation order, a deferred reference only runs early
     // when the code that runs before the declaration completes can reach
     // the function holding it.
     const reached =
-      known && [...candidates.values()].some((c) => c.reference === null && c.deferredReference)
+      known && [...candidates.values()].some((c) => c.deferredReference)
         ? cycleReachedDeferredReferences7(program, evaluation, candidates)
         : null;
     for (const c of candidates.values()) {
-      if (c.reference === null && c.deferredReference !== null)
-        c.reference = reached === null ? c.deferredReference : (reached.get(c.symbol) ?? null);
+      if (reached === null) {
+        if (c.reference === null && c.deferredReference !== null) c.reference = c.deferredReference;
+        if (c.folded === null) c.folded = c.deferredFolded;
+      } else {
+        const hit = reached.get(c.symbol);
+        if (c.reference === null && c.deferredReference !== null)
+          c.reference = hit?.reference ?? null;
+        if (c.folded === null && hit?.folded !== undefined) c.folded = hit.folded;
+      }
       if (c.reference === null) continue;
       const settled = new Set<ts.SourceFile>(order.filter((sf) => !rankOf.has(sf)));
       if (known) for (const m of evaluation.slice(c.rank + 1)) settled.add(m);
@@ -5717,6 +5729,12 @@ interface CycleCandidate7 {
   /** A deferred reference (function body, parameter default, instance
    * field) when user code may run before the declaration completes. */
   deferredReference: ts.Identifier | null;
+  /** An exposed deferred reference in a position the lowering may resolve
+   * from the binding's type when the static order says every deferred
+   * reference can run early. */
+  deferredFolded: ts.Identifier | null;
+  /** An early reference in a position the lowering may resolve at compile
+   * time from the binding's type (a property key, a `typeof` operand). */
   folded: ts.Identifier | null;
   localNames: Map<string, string>;
 }
@@ -5738,7 +5756,7 @@ function cycleReachedDeferredReferences7(
   program: ts.Program,
   evaluation: readonly ts.SourceFile[],
   candidates: ReadonlyMap<ts.Symbol, CycleCandidate7>,
-): Map<ts.Symbol, ts.Identifier> | null {
+): Map<ts.Symbol, { reference: ts.Identifier; folded: ts.Identifier | null }> | null {
   const checker = program.getTypeChecker();
   const members = new Set(evaluation);
   for (const sf of evaluation) {
@@ -5849,7 +5867,7 @@ function cycleReachedDeferredReferences7(
     symbol.declarations.some((d) => ts.isSourceFile(d) && members.has(d));
   const declared = new Set<ts.Symbol>();
   const reachedUnits = new Set<ts.Node>();
-  const out = new Map<ts.Symbol, ts.Identifier>();
+  const out = new Map<ts.Symbol, { reference: ts.Identifier; folded: ts.Identifier | null }>();
   const work: ts.Node[] = [];
   const reach = (unit: ts.Node): void => {
     if (reachedUnits.has(unit)) return;
@@ -5895,7 +5913,6 @@ function cycleReachedDeferredReferences7(
         c !== undefined &&
         node !== c.name &&
         !declared.has(symbol) &&
-        !out.has(symbol) &&
         inDeferredPosition7(node) &&
         !(
           c.kind === "class" &&
@@ -5903,8 +5920,14 @@ function cycleReachedDeferredReferences7(
           ts.tokenStartOfNode(node) >= c.start &&
           node.end <= c.end
         )
-      )
-        out.set(symbol, node);
+      ) {
+        const hit = out.get(symbol);
+        if (hit === undefined) {
+          out.set(symbol, { reference: node, folded: foldablePosition7(node) ? node : null });
+        } else if (hit.folded === null && foldablePosition7(node)) {
+          hit.folded = node;
+        }
+      }
       for (const unit of unitsBySymbol.get(symbol) ?? []) reach(unit);
       return undefined;
     });
@@ -8023,7 +8046,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
    * typedef half sits inside the comment, and the code half is suppressed
    * exactly when its partner (same file, same name) was comment-side, so
    * a REAL duplicate declaration (both halves in code — Node's own
-   * SyntaxError) keeps tsc's voice. */
+   * SyntaxError) keeps tsc's voice. A generic written without its type
+   * arguments (`{Array}`, `{Set}`) draws 2314 from tsgo, where 5.9.3
+   * instantiates every omitted argument as `any` and reports nothing. The
+   * checker still types the reference with those `any` arguments, so
+   * admitting the diagnostic restores the 5.9.3 verdict without changing
+   * the type the lowering sees. A `@readonly` tag on a getter, setter, or
+   * method is documentation 5.9.3 ignores and tsgo turns into a synthesized
+   * modifier, which it then reports as 1024 for appearing outside a property
+   * declaration. The diagnostic sits inside the comment, so the member keeps
+   * the accessor or method its code declares. */
   const insideBlockComment = (text: string, pos: number): boolean => {
     const open = text.lastIndexOf("/*", pos);
     if (open < 0) return false;
@@ -8036,7 +8068,15 @@ function preflightGate7(load: LoadResult): PreflightGate {
     commentDup: Set<string>,
   ): boolean => {
     if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (
+      d.code !== 2304 &&
+      d.code !== 2552 &&
+      d.code !== 2300 &&
+      d.code !== 1003 &&
+      d.code !== 2314 &&
+      d.code !== 1024
+    )
+      return false;
     if (d.pos === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;

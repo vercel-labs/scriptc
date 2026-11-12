@@ -626,6 +626,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       return { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc };
     }
   }
+  // A JS class field the collector widened to an undefined-armed union
+  // under trust-but-verify (the declaring assignment wrote undefined while
+  // the checker infers the field from a LATER write): the read the checker
+  // narrows back to the inferred arm keeps the stored union, exactly like
+  // the runtime-optional binding reads. Node can hold the undefined the
+  // inference does not name.
+  if (
+    expr.kind === "fieldGet" &&
+    expr.type.kind === "union" &&
+    (lowerer.unions.get(expr.type.unionId)?.arms.length ?? 0) === 2 &&
+    lowerer.armTag(expr.type.unionId, UNDEFINED_T) >= 0 &&
+    lowerer.runtimeOptionalClassField(expr.className, expr.field)
+  ) {
+    const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+    if (narrowed !== null && typeEquals(narrowed, lowerer.stripUndefinedArm(expr.type)))
+      return expr;
+  }
   // A dyn read tsc narrowed to a SCALAR (a typeof test proved the kind):
   // bridge with a VALIDATED extraction — dynCheck, the checked-cast
   // machinery — rather than a trusted one. After the guard the check

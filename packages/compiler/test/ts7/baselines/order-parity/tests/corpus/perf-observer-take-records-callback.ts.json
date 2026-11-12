@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/perf-observer-take-records-callback.ts"
+ ],
+ "diags": []
+}

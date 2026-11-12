@@ -4,15 +4,15 @@
  * or a binary that runs with the wrong behavior. */
 console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
 /* setInterval lowers, and under @types/node its Timeout RETURN now maps
- * to the numeric handle — holding one and unref()/ref()/hasRef()/refresh()
- * all compile. The Timeout surface BEYOND that (close, [Symbol.toPrimitive],
- * ...) keeps the fence. */
+ * to the numeric handle — holding one, unref(), ref(), hasRef(), refresh()
+ * and close() all compile. No Timeout member is left to fence here: the
+ * one this file used to fence, close(), lowers now. */
 const timer = setInterval(() => {
   console.log("tick");
 }, 1000);
 timer.unref();
 timer.refresh();
-timer.close();
+/* timer.close() compiles now; the corpus covers it. */
 /* The web-platform globals ride in with @types/node (undici). Fetch,
  * AbortController, and a typed RequestInit lower; wider Response members
  * below retain their profile fences. */
@@ -29,13 +29,13 @@ async function inspectResponse(url: string): Promise<void> {
 }
 void inspectResponse;
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
- * typecheck under @types/node and fence with the module-qualified name —
- * calls and value reads alike. */
+ * typecheck under @types/node and fence by their name — calls, module
+ * member reads and the supported classes' statics alike. */
 import { openAsBlob } from "fs";
-import { EventEmitter, on } from "node:events";
+import { EventEmitter } from "node:events";
 import { win32 } from "path";
 openAsBlob("x");
-on(new EventEmitter(), "tick");
+console.log(EventEmitter.captureRejections);
 console.log(win32.sep);
 /* URL getters, serialization, the object-URL registry and searchParams'
  * method surface all lower under @types/node's declarations

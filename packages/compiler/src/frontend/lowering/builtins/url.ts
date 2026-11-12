@@ -217,8 +217,10 @@ export function lowerSearchParamsNew(
 
 /** One record initializer's value: the expression as the literal evaluates
  * it in source order (`value`), and the conversion Node runs when the
- * constructor appends the entry (`coerce`, in Reflect.ownKeys order). */
-type ValueOf = { value: IrExpr; coerce: (raw: IrExpr) => IrExpr };
+ * constructor appends the entry (`coerce`, in Reflect.ownKeys order, which
+ * `coerces` is false for when it is the identity: a typed string value is
+ * already the entry). */
+type ValueOf = { value: IrExpr; coerce: (raw: IrExpr) => IrExpr; coerces: boolean };
 
 function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr {
   let inner = arg;
@@ -253,12 +255,12 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     const valueOf = (node: ts.Node, lower: () => IrExpr): ValueOf => {
       if (!isJsSourceFile(ts.getSourceFileOfNode(arg))) {
         const value = lowerer.lowerExprExpecting(node as ts.Expression, STRING);
-        return { value, coerce: (raw) => raw };
+        return { value, coerce: (raw) => raw, coerces: false };
       }
       const value = lower();
-      if (value.type.kind === "string") return { value, coerce: (raw) => raw };
+      if (value.type.kind === "string") return { value, coerce: (raw) => raw, coerces: false };
       if (!lowerer.dynConvertible(value.type)) {
-        return { value, coerce: (raw) => lowerer.coerceInto(node, raw, STRING) };
+        return { value, coerce: (raw) => lowerer.coerceInto(node, raw, STRING), coerces: true };
       }
       return {
         value,
@@ -269,6 +271,7 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
           type: STRING,
           loc: raw.loc,
         }),
+        coerces: true,
       };
     };
     const pairs: { key: string; keyLoc: SrcLoc; value: ValueOf }[] = [];
@@ -325,12 +328,20 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     ];
     // Node evaluates the literal's property initializers in SOURCE order
     // and only then iterates the record in Reflect.ownKeys order (the
-    // constructor's conversion runs at append time). When the two orders
-    // differ (`{ b: f(), 0: g() }`), the initializers are read into hidden
-    // locals first, so both their effects and the values they answer come
-    // from the source order; the chain below then appends in Reflect order.
+    // constructor's conversion runs at append time). The initializers are
+    // read into hidden locals first whenever that timing is observable:
+    // when the two orders differ (`{ b: f(), 0: g() }`), so both their
+    // effects and the values they answer come from the source order; and
+    // when a value converts and a later initializer exists
+    // (`{ a: converting(), b: tag() }` with the keys already in
+    // enumeration order), so the conversion runs after every initializer
+    // rather than between two of them. The chain below then appends in
+    // Reflect order.
     let reads: IrExpr[] | null = null;
-    if (ordered.some((entry, i) => entry.source !== i)) {
+    if (
+      ordered.some((entry, i) => entry.source !== i) ||
+      pairs.some((pair, i) => pair.value.coerces && i + 1 < pairs.length)
+    ) {
       const stmts: IrStmt[] = [];
       reads = pairs.map((pair) => {
         const local = lowerer.declareHiddenLocal("%spValue", pair.value.value.type);

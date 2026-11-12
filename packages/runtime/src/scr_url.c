@@ -409,10 +409,16 @@ static bool url_ipv4_parse(const char *s, size_t n, UrlBuf *out) {
   if (parts[count - 1] >= limit) return false;
   uint64_t v = parts[count - 1];
   for (size_t i = 0; i + 1 < count; i++) v += parts[i] << (8 * (3 - i));
-  char text[16];
-  int len = snprintf(text, sizeof text, "%u.%u.%u.%u", (unsigned)(v >> 24) & 255, (unsigned)(v >> 16) & 255,
-                     (unsigned)(v >> 8) & 255, (unsigned)v & 255);
-  ub_append(out, text, (size_t)len);
+  /* Dotted decimal, written digit by digit rather than through snprintf. */
+  char text[16], *digits = text;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    unsigned octet = (unsigned)(v >> shift) & 255;
+    if (octet >= 100) *digits++ = (char)('0' + octet / 100);
+    if (octet >= 10) *digits++ = (char)('0' + (octet / 10) % 10);
+    *digits++ = (char)('0' + octet % 10);
+    if (shift > 0) *digits++ = '.';
+  }
+  ub_append(out, text, (size_t)(digits - text));
   return true;
 }
 
@@ -638,11 +644,15 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
       }
     }
     if (any && value != 0) {
+      /* Digits right-aligned in a small buffer; the default-port test needs
+       * no formatting call. */
       char digits[8];
-      int dlen = snprintf(digits, sizeof digits, "%ld", value);
+      char *first = digits + sizeof digits;
+      for (long rest = value; rest != 0; rest /= 10) *--first = (char)('0' + rest % 10);
+      size_t dlen = (size_t)(digits + sizeof digits - first);
       const char *dflt = default_port(scheme, scheme_len);
-      if (!(dflt && strlen(dflt) == (size_t)dlen && memcmp(dflt, digits, (size_t)dlen) == 0)) {
-        ub_append(&pb, digits, (size_t)dlen);
+      if (!(dflt && strlen(dflt) == dlen && memcmp(dflt, first, dlen) == 0)) {
+        ub_append(&pb, first, dlen);
       }
     } else if (any) {
       /* Port 0 is a real (non-default) port. */
@@ -777,11 +787,75 @@ static ScrUrl *url_alloc(ScrStr *scheme, ScrStr *userinfo, ScrStr *host, ScrStr 
   return u;
 }
 
+/* ── the last parsed input ────────────────────────────────────────────
+ * One request's URL is parsed more than once: a server constructs a
+ * Request from a URL, Request.url hands back the same serialization, and
+ * the handler parses that again with new URL(...). Answers for an input
+ * string that repeats the last parse are the parse's own component
+ * strings, shared: strings are immutable, so a caller sees exactly what a
+ * fresh parse would have built. The entry lives until the next different
+ * input or the thread's teardown. The host parser reads the IDNA hook, so
+ * an entry recorded under another hook is never answered. */
+#define URL_CACHE_KEY_MAX 4096
+
+typedef struct {
+  ScrStr *input; /* the key, +1; NULL while there is no entry */
+  ScrStr *scheme, *userinfo, *host, *port, *path, *query, *fragment; /* +1 each */
+  ScrStr *(*hook)(const char *, size_t);
+  bool has_authority;
+} UrlParseCache;
+
+static SCR_TL UrlParseCache url_parse_cache;
+static SCR_TL bool url_parse_cache_registered;
+
+static void url_parse_cache_clear(void) {
+  ScrStr **held[] = {&url_parse_cache.input,    &url_parse_cache.scheme,
+                     &url_parse_cache.userinfo, &url_parse_cache.host,
+                     &url_parse_cache.port,     &url_parse_cache.path,
+                     &url_parse_cache.query,    &url_parse_cache.fragment};
+  for (size_t i = 0; i < sizeof held / sizeof held[0]; i++) {
+    scr_str_release(*held[i]);
+    *held[i] = NULL;
+  }
+}
+
+/* A fresh URL for `input` when it repeats the recorded one, else NULL. */
+static ScrUrl *url_parse_cache_hit(ScrStr *input) {
+  if (!url_parse_cache.input || url_parse_cache.hook != scr_url_host_to_ascii) return NULL;
+  if (url_parse_cache.input->len != input->len) return NULL;
+  if (url_parse_cache.input != input &&
+      memcmp(url_parse_cache.input->data, input->data, input->len) != 0)
+    return NULL;
+  return url_alloc(scr_str_retain(url_parse_cache.scheme), scr_str_retain(url_parse_cache.userinfo),
+                   scr_str_retain(url_parse_cache.host), scr_str_retain(url_parse_cache.port),
+                   scr_str_retain(url_parse_cache.path), scr_str_retain(url_parse_cache.query),
+                   scr_str_retain(url_parse_cache.fragment), url_parse_cache.has_authority);
+}
+
+static void url_parse_cache_store(ScrStr *input, ScrUrl *u) {
+  if (input->len > URL_CACHE_KEY_MAX || scr_str_is_scratch(input)) return;
+  if (!url_parse_cache_registered) {
+    url_parse_cache_registered = true;
+    scr_atexit(url_parse_cache_clear);
+  }
+  url_parse_cache_clear();
+  url_parse_cache.input = scr_str_retain(input);
+  url_parse_cache.scheme = scr_str_retain(u->scheme);
+  url_parse_cache.userinfo = scr_str_retain(u->userinfo);
+  url_parse_cache.host = scr_str_retain(u->host);
+  url_parse_cache.port = scr_str_retain(u->port);
+  url_parse_cache.path = scr_str_retain(u->path);
+  url_parse_cache.query = scr_str_retain(u->query);
+  url_parse_cache.fragment = scr_str_retain(u->fragment);
+  url_parse_cache.hook = scr_url_host_to_ascii;
+  url_parse_cache.has_authority = u->has_authority;
+}
+
 /* The full constructor-path parser. Returns NULL after throwing. */
-ScrUrl *scr_url_new(ScrStr *input) {
+static ScrUrl *url_parse_fresh(ScrStr *input) {
   ScrStr *usv = url_usv(input);
   if (usv) {
-    ScrUrl *u = scr_url_new(usv);
+    ScrUrl *u = url_parse_fresh(usv);
     scr_str_release(usv);
     return u;
   }
@@ -1033,6 +1107,17 @@ ScrUrl *scr_url_new(ScrStr *input) {
   free(owned);
 
   return url_alloc(scheme_str, userinfo, host, port, path, query, fragment, has_authority);
+}
+
+/* The constructor-path parser: an input that repeats the last parse is
+ * answered from it, and every other input parses fresh. Returns NULL after
+ * throwing. */
+ScrUrl *scr_url_new(ScrStr *input) {
+  ScrUrl *cached = url_parse_cache_hit(input);
+  if (cached) return cached;
+  ScrUrl *u = url_parse_fresh(input);
+  if (u) url_parse_cache_store(input, u);
+  return u;
 }
 
 /* Resolve a relative reference using the parsed base's component boundaries.

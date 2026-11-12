@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/experimental",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "description": "Experimental scriptc APIs, with Node.js implementations: lifetime regions for ProgramLifetime objects, intern tables shared between threads, per-thread slots on shared objects, and array fields kept in their instances",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
@@ -16,11 +16,19 @@
     ".": {
       "types": "./index.d.ts",
       "default": "./index.js"
-    }
+    },
+    "./register": {
+      "types": "./register.d.ts",
+      "default": "./register.js"
+    },
+    "./refusals.json": "./refusals.json"
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "register.js",
+    "register.d.ts",
+    "refusals.json",
     "README.md"
   ],
   "dependencies": {

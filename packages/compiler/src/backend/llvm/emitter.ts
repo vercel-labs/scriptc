@@ -3159,7 +3159,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
@@ -8136,13 +8137,20 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
-  /** Saved operands can feed later call arguments. Transfer ownership of a
-   * sequence's locals to this expression's frame so they survive those
-   * reads and still die on the path that created them, including inside
-   * lazy branches. */
-  private emitSequence<T>(body: () => T): T {
+  /** Opens an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). A function that compiles with the compiler opens the pair
+   * directly instead of passing a closure: emitReadReceiver lowered to 4,933
+   * stack slots with the closure #3563 passed it and to 409 with the pair,
+   * the difference between the bootstrap's second generation fitting its
+   * stack or not. */
+  beginSequenceScope(): void {
     this.scopes.push([]);
-    const result = body();
+  }
+
+  /** Closes the sequence beginSequenceScope opened. */
+  endSequenceScope(): void {
     for (const local of this.scopes.pop()!) {
       this.currentFrame().push({
         name: local.slot,
@@ -8152,6 +8160,16 @@ export class LlEmitter {
         ...(local.arena === true ? { arena: "drop" as const } : {}),
       });
     }
+  }
+
+  /** Saved operands can feed later call arguments. Transfer ownership of a
+   * sequence's locals to this expression's frame so they survive those
+   * reads and still die on the path that created them, including inside
+   * lazy branches. */
+  private emitSequence<T>(body: () => T): T {
+    this.beginSequenceScope();
+    const result = body();
+    this.endSequenceScope();
     return result;
   }
 
@@ -9676,6 +9694,12 @@ export class LlEmitter {
 
   zlibBytesThunkFor(cbT: IrType & { kind: "func" }): string {
     return zlibBytesThunkFor(this, cbT);
+  }
+
+  /** The `info: true` callback adapter: its result parameter is the
+   * checked { buffer, engine } object, passed through as a dyn value. */
+  zlibDynThunkFor(cbT: IrType & { kind: "func" }): string {
+    return zlibBytesThunkFor(this, cbT, false, "zlib", "dyn");
   }
 
   streamCbThunkFor(kind: "r" | "w" | "f" | "d" | "t" | "l" | "e" | "c" | "v", cbT: IrType): string {

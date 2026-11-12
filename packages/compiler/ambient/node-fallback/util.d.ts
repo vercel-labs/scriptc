@@ -223,13 +223,22 @@ declare module "util" {
     },
   ) => Promise<{ stdout: string; stderr: string }>;
   /* The zlib callback one-shots (deflate, inflate, deflateRaw, inflateRaw,
-   * gzip, gunzip, unzip) share one type. */
-  export function promisify(
-    fn: typeof import("node:zlib").gzip,
-  ): (
-    data: string | ScriptcBufferView | ArrayBufferLike,
-    options?: import("node:zlib").ZlibOptions,
-  ) => Promise<Buffer>;
+   * gzip, gunzip, unzip) share one type; `info: true` settles with Node's
+   * { buffer, engine } object. */
+  export function promisify(fn: typeof import("node:zlib").gzip): {
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options: import("node:zlib").ZlibOptions & { info?: false },
+    ): Promise<Buffer>;
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options: import("node:zlib").ZlibOptions & { info: true },
+    ): Promise<unknown>;
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options?: import("node:zlib").ZlibOptions,
+    ): Promise<Buffer>;
+  };
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;

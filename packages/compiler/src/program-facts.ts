@@ -549,7 +549,7 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     setBy:
       "a write of a property of the global object, by any spelling, in any source of the program",
     gates:
-      "a call or read of a built-in through the global object answers the built-in for a member the program wrote (SC1090); and, in a JavaScript source, `typeof` of an undeclared name keeps its static answer only when the program never writes that name on the global object (programMayWriteGlobalName)",
+      "a call or read of a built-in through the global object answers the built-in for a member the program wrote (SC1090); in a JavaScript source, `typeof` of an undeclared name keeps its static answer only when the program never writes that name on the global object; and a declared global binding TypeScript erases (`declare var/const`, `declare global`) is read through the global object only when the program may write that name there (programMayWriteGlobalName, erasedGlobalBindingOf)",
     narrower:
       "the order of the write and the read at run time, which a census cannot know: a name the program writes anywhere is read at run time everywhere; a write through a spelling the census cannot type as the global object (an untyped binding); and a write in a source whose text contains neither `global` nor `this`, which the scan does not read",
     tracked: null,
@@ -629,12 +629,6 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
   scan(site, count, "fact", "", fact);
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
-  scan(
-    "frontend/contract-types.ts#collectContractAnnotations",
-    2,
-    "prefilter",
-    "a file that never names the contract-type modules imports none of them",
-  ),
   scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,

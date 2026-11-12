@@ -533,11 +533,16 @@ static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
     }
   }
   ScrDeepFrame frame = { a, b, parent };
-  bool same = scr_str_eq(ea->name, eb->name) &&
-              scr_str_eq(ea->message, eb->message) &&
-              (ea->error_cause == NULL) == (eb->error_cause == NULL);
-  if (same && ea->error_cause && eb->error_cause)
-    same = util_deep_equal(ea->error_cause, eb->error_cause, skip, &frame);
+  bool same = scr_str_eq(ea->name, eb->name) && scr_str_eq(ea->message, eb->message);
+  /* A getter the cause comparison runs can delete the opposite error's
+   * `cause`, which releases the object the walk is reading: retain both
+   * causes for as long as the recursive comparison holds them. */
+  ScrDyn *ca = NULL, *cb = NULL;
+  if (same && ea->error_cause && eb->error_cause) {
+    ca = scr_dyn_retain(ea->error_cause);
+    cb = scr_dyn_retain(eb->error_cause);
+    same = util_deep_equal(ca, cb, skip, &frame);
+  }
   if (same && !scr_exc_pending()) {
     bool ga = ea->vt == &scr_error_vts[SCR_ERR_AGGREGATE];
     bool gb = eb->vt == &scr_error_vts[SCR_ERR_AGGREGATE];
@@ -550,10 +555,17 @@ static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
       if (xb) scr_dyn_release(xb);
     }
   }
+  /* Node compares the two `cause` values first and only then checks that
+   * both errors still own the property: a getter the comparison called can
+   * delete one side's `cause`, and the errors differ then even though the
+   * values read matched. */
+  if (same && ((ea->error_cause != NULL) != (eb->error_cause != NULL))) same = false;
   if (same && !scr_exc_pending())
     same = util_deep_same_keys(a, b) && util_deep_same_keys(a->symbol_properties, b->symbol_properties) &&
            util_deep_properties(a, b, a, b, skip, &frame) &&
            util_deep_properties(a->symbol_properties, b->symbol_properties, a, b, skip, &frame);
+  if (ca) scr_dyn_release(ca);
+  if (cb) scr_dyn_release(cb);
   scr_error_release(ea);
   scr_error_release(eb);
   return same && !scr_exc_pending();
@@ -694,7 +706,15 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
     for (size_t i = 0; i < a->v.arr.len; i++) {
       bool present = scr_dyn_arr_has_index(a, i);
       if (present != scr_dyn_arr_has_index(b, i)) return false;
-      if (present && !util_deep_equal(a->v.arr.items[i], b->v.arr.items[i], skip, &frame)) return false;
+      if (!present) continue;
+      /* The comparison of an earlier element runs program code, which can
+       * delete this one from either side: hold both elements across it. */
+      ScrDyn *xa = scr_dyn_retain(a->v.arr.items[i]);
+      ScrDyn *xb = scr_dyn_retain(b->v.arr.items[i]);
+      bool same_element = util_deep_equal(xa, xb, skip, &frame);
+      scr_dyn_release(xa);
+      scr_dyn_release(xb);
+      if (!same_element) return false;
     }
     if (!util_deep_properties(a->v.arr.properties, b->v.arr.properties, a, b, skip, &frame)) return false;
   } else if (a->kind == SCR_DYN_OBJ) {

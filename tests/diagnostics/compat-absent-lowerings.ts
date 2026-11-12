@@ -3,9 +3,6 @@
 // compatibility ledger cites this program for marking the rows a verified
 // absence instead of an unverified registry gap.
 
-// console: the stack-printing member.
-console.trace("where");
-
 // The global MessageChannel and its ports.
 const channel = new MessageChannel();
 channel.port1.postMessage("x");

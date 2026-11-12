@@ -972,6 +972,11 @@ static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurs
     ref_base = ib_take(&rb);
     base = ref_base;
   }
+  /* Styling the prefix runs `inspect.styles.special`'s getter, and a getter
+   * that inspects another value pushes frame storage that can reallocate
+   * it: read the frame again rather than through the pointer cached before
+   * the style call. */
+  f = insp_top();
   size_t entries = f->len;
   bool compact = g_compact >= 1;
   if (compact && array_extras && entries > 6) insp_group(f, trailing_more);
@@ -1338,18 +1343,25 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
                                   double recurse, double depth, bool bracket_hidden) {
   ScrDynProp found;
   const ScrDynProp *ent = NULL;
-  ScrStr *key = NULL;
+  ScrDyn *symbol = NULL;
   if (k < scr_dyn_obj_count(props)) {
     found = scr_dyn_obj_prop_at(props, k);
     ent = &found;
   } else {
-    ScrDyn *symbol = props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)];
+    symbol = scr_dyn_retain(props->symbol_keys->v.arr.items[k - scr_dyn_obj_count(props)]);
     if (scr_dyn_own_symbol_prop(props, symbol, &found)) ent = &found;
-    if (ent && (ent->enumerable || g_show_hidden)) key = scr_insp_dyn(symbol, recurse, depth);
   }
-  if (!ent || !(ent->enumerable || g_show_hidden)) return NULL;
+  if (!ent || !(ent->enumerable || g_show_hidden)) {
+    if (symbol) scr_dyn_release(symbol);
+    return NULL;
+  }
+  /* The entry is held (its value, or both accessor functions, and its key
+   * bytes) before the symbol key renders: the palette getter that styling
+   * the key runs can delete the property, which frees what the table lent
+   * the entry and the symbol key itself. */
   ScrStr *own_key = NULL;
   ScrDynProp held = insp_prop_hold(ent, &own_key);
+  ScrStr *key = symbol ? scr_insp_dyn(symbol, recurse, depth) : NULL;
   ScrStr *val;
   if (!held.accessor) {
     val = scr_insp_dyn(held.value, recurse, depth);
@@ -1362,6 +1374,7 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
   if (!val) {
     scr_str_release(key);
     insp_prop_drop(&held, own_key);
+    if (symbol) scr_dyn_release(symbol);
     return NULL;
   }
   InspBuf eb = {0};
@@ -1375,6 +1388,7 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
   scr_str_release(key);
   scr_str_release(val);
   insp_prop_drop(&held, own_key);
+  if (symbol) scr_dyn_release(symbol);
   return ib_take(&eb);
 }
 
@@ -2677,14 +2691,16 @@ static void insp_table_symbols(ScrDyn *table, ScrDyn *owner, double recurse, dou
        i++) {
     ScrDynProp found;
     if (!scr_insp_symbol_entry(table, i, &found)) continue;
+    ScrDyn *symbol = scr_dyn_retain(table->symbol_keys->v.arr.items[i]);
     ScrStr *own_key = NULL;
     ScrDynProp held = insp_prop_hold(&found, &own_key);
-    ScrStr *key = scr_insp_dyn(table->symbol_keys->v.arr.items[i], recurse, depth);
+    ScrStr *key = scr_insp_dyn(symbol, recurse, depth);
     ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse, depth)
                                 : scr_insp_dyn(held.value, recurse, depth);
     if (!val) {
       scr_str_release(key);
       insp_prop_drop(&held, own_key);
+      scr_dyn_release(symbol);
       break;
     }
     InspBuf eb = {0};
@@ -2696,6 +2712,7 @@ static void insp_table_symbols(ScrDyn *table, ScrDyn *owner, double recurse, dou
     scr_str_release(key);
     scr_str_release(val);
     insp_prop_drop(&held, own_key);
+    scr_dyn_release(symbol);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
@@ -3477,7 +3494,19 @@ static bool insp_style_pair(const char *type, size_t len, ScrStr **open, ScrStr 
  * built-in defaults otherwise. The built-ins also cover regexp (red) and
  * module (underline), which only a custom styles table names. */
 static bool insp_style_pair_any(const char *type, size_t len, ScrStr **open, ScrStr **close) {
-  if (scr_insp_style_pair_hook) return scr_insp_style_pair_hook(type, len, open, close);
+  if (scr_insp_style_pair_hook) {
+    /* The hook reads inspect.styles and inspect.colors per styled leaf, so
+     * the getters that answer can run user code in the middle of the outer
+     * walk. That code can inspect another value, which starts its own
+     * render and resets the circular bookkeeping the outer walk is using,
+     * and can push frame storage that moves the outer frames. Run the hook
+     * in a context of its own, like Node's stylize callbacks, and restore
+     * the outer one afterwards. */
+    scr_insp_nested_begin();
+    bool ok = scr_insp_style_pair_hook(type, len, open, close);
+    scr_insp_nested_restore();
+    return ok;
+  }
   static const struct {
     const char *name;
     unsigned open, close;

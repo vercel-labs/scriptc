@@ -38,6 +38,22 @@ const q = new URLSearchParams({ b: converting('b'), 0: converting('0') });
 console.log(q.toString());
 console.log(conversions.join(','));
 
+// Conversion follows every initializer, keys in enumeration order or not:
+// `a`'s conversion runs after `b`'s initializer, not between the two reads.
+const inOrder = [];
+const convertNow = (label) => ({
+  toString() {
+    inOrder.push(`convert ${label}`);
+    return label;
+  },
+});
+const timed = new URLSearchParams({
+  a: convertNow('a'),
+  b: (inOrder.push('init b'), 'B'),
+});
+console.log(timed.toString());
+console.log(inOrder.join(','));
+
 // The value a property answers is the one read at its source position,
 // even when a later initializer changes the variable it came from.
 let v = 'before';

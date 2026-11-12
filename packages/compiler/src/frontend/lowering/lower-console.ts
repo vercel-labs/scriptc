@@ -354,13 +354,25 @@ export function lowerConsoleOutput(
   stdout: boolean,
   surface: string,
   loc: SrcLoc,
+  intrinsic: "console.log" | "console.error" | "console.trace" = stdout
+    ? "console.log"
+    : "console.error",
 ): IrExpr {
+  /** One write of the formatted line: the console.log/error intrinsic, or
+   * console.trace for trace's stderr line. */
+  const emitLine = (args: IrExpr[]): IrExpr => ({
+    kind: "intrinsic",
+    name: intrinsic,
+    args,
+    type: VOID,
+    loc,
+  });
   // A program that reads util.inspect's value can change the tables every
   // console line's inspection reads (defaultOptions, colors, styles), so
   // the whole line renders through the runtime formatter, which reads them
   // per call.
   if (programTouchesInspectTables(lowerer))
-    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, expr.arguments.nodes, loc)], loc);
+    return emitLine([lowerRuntimeFormat(lowerer, expr.arguments.nodes, loc)]);
   // A LITERAL format string with %-specifiers and further arguments
   // (`console.log('Mismatched %s function calls. Expected %s, actual
   // %d.', name, seg, n)` — test/common's exit report): Node's console
@@ -373,35 +385,34 @@ export function lowerConsoleOutput(
     isStringLiteralLike(first) &&
     hasFormatSpecifier(first.text)
   ) {
-    return consoleWrite(stdout, [lowerFormatCall(lowerer, expr, loc, false)], loc);
+    return emitLine([lowerFormatCall(lowerer, expr, loc, false)]);
   }
   const nodes = expr.arguments.nodes;
   // Spread arguments and format strings that may hold a substitution at
   // run time go through the runtime formatter. A string first argument
   // without a '%' keeps the space-joined write below.
-  if (nodes.some(ts.isSpreadElement))
-    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+  if (nodes.some(ts.isSpreadElement)) return emitLine([lowerRuntimeFormat(lowerer, nodes, loc)]);
   const runtime =
     nodes.length > 1 && !isStringLiteralLike(first) ? runtimeFormatString(lowerer, first!) : null;
   if (runtime === "other" && !formatStringConverts(lowerer, first!))
-    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+    return emitLine([lowerRuntimeFormat(lowerer, nodes, loc)]);
   if (runtime !== null) {
     const held = heldFormatArgs(lowerer, nodes, loc);
-    if (!held.joinable) return seq(held.stmts, consoleWrite(stdout, [held.format()], loc), loc);
+    if (!held.joinable) return seq(held.stmts, emitLine([held.format()]), loc);
     const joined = held.args.map((arg) =>
       lowerConsoleArg(lowerer, arg.node, arg.ref(), surface, loc),
     );
     const write: IrStmt = {
       kind: "if",
       cond: held.specifies,
-      then: [{ kind: "exprStmt", expr: consoleWrite(stdout, [held.format()], loc), loc }],
-      else_: [{ kind: "exprStmt", expr: consoleWrite(stdout, joined, loc), loc }],
+      then: [{ kind: "exprStmt", expr: emitLine([held.format()]), loc }],
+      else_: [{ kind: "exprStmt", expr: emitLine(joined), loc }],
       loc,
     };
     return seq([...held.stmts, write], noop(loc), loc);
   }
   const args = nodes.map((a) => lowerConsoleArg(lowerer, a, lowerer.lowerExpr(a), surface, loc));
-  return consoleWrite(stdout, args, loc);
+  return emitLine(args);
 }
 
 /* ── the rest of the global console ──────────────────────────────────── */
@@ -754,6 +765,10 @@ export function lowerConsoleMethodCall(
 ): IrExpr {
   const args = expr.arguments.nodes;
   switch (member) {
+    case "trace":
+      // Node's console.trace: the stderr line "Trace[: args]", then the
+      // captured frames (scriptc's own frames; SEMANTICS divergence 11).
+      return lowerConsoleOutput(lowerer, expr, false, "console.trace", loc, "console.trace");
     case "dirxml":
       return lowerConsoleOutput(lowerer, expr, true, "console.dirxml", loc);
     case "group":

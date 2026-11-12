@@ -939,9 +939,13 @@ static double scr_perf_list_select(const ScrPerfEntries *l, ScrDyn *args, double
   return (double)scr_perf_view_len;
 }
 
-/* The JavaScript-typed path (`list.getEntries()` on a dyn value): a fresh
- * array of entry objects. */
+/* The JavaScript-typed path (`list.getEntries()` on a dyn value): the
+ * entries Node's list answers. An entry the producing call kept is the
+ * program's own object, and Node's selectors answer those same objects on
+ * every call; only a copy without one (an entry that reached the list
+ * without a program object) is built fresh. */
 static ScrDyn *scr_perf_entry_object(const ScrPerfEntry *e) {
+  if (e->ref) return scr_dyn_retain(e->ref);
   ScrDyn *object = scr_dyn_new_obj();
   scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(e->name));
   ScrStr *type = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
@@ -1220,15 +1224,11 @@ double scr_perf_observer_take(ScrDyn *observer) {
     return 0;
   }
   /* The entries move out of the observer's queue: the view borrows them
-   * until the next timeline call, and the pending dispatch is cancelled —
-   * Node's takeRecords empties the queue, so the callback never runs for
-   * entries the program took. */
+   * until the next timeline call. The pending dispatch stays queued: Node's
+   * takeRecords empties the queue but does not cancel the tick, so the
+   * callback still runs, with the (now empty) list. */
   scr_perf_taken = o->buffer;
   o->buffer = (ScrPerfEntries){0};
-  if (o->pending) {
-    o->pending = false;
-    scr_perf_registry_remove(&scr_perf_pending, &scr_perf_npending, o);
-  }
   scr_perf_view_reserve(n);
   for (size_t i = 0; i < n; i++) scr_perf_view[i] = scr_perf_taken.items[i];
   scr_perf_view_len = n;

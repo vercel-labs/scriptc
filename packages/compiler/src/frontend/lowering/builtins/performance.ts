@@ -573,8 +573,8 @@ export function lowerPerfNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr |
   if (cls === "PerformanceObserver") {
     return { kind: "libCall", fn: "perf.observerNew", args: [args], type: DYN, loc };
   }
-  const result = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN;
   if (cls === "PerformanceMark") {
+    const result = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? DYN;
     if (result.kind !== "record" || !isPerfEntryType(lowerer, result)) {
       lowerer.noLowering("new PerformanceMark where the result is not a PerformanceMark", expr);
     }
@@ -582,6 +582,13 @@ export function lowerPerfNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr |
     // record is not handed back to the runtime (no entryKeep).
     return perfEntryProduceCall(lowerer, "perf.markNew", "%perf.markNew", args, result, false, loc);
   }
+  // The unconstructible classes throw before the constructor returns, so the
+  // expression never produces a value: it answers the checked-dynamic type
+  // rather than the class type the checker reports. The class type is not
+  // the same under both TypeScript 7 frontends for a JavaScript source, and
+  // the unreachable continuation would otherwise materialize it (a typed
+  // reference the program can never reach, and IR that the two checkers do
+  // not agree on).
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: args, loc }],
@@ -593,10 +600,10 @@ export function lowerPerfNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr |
         { kind: "strLit", value: "ERR_ILLEGAL_CONSTRUCTOR", type: STRING, loc },
         { kind: "strLit", value: "Illegal constructor", type: STRING, loc },
       ],
-      type: result,
+      type: DYN,
       loc,
     },
-    type: result,
+    type: DYN,
     loc,
   };
 }
@@ -739,7 +746,17 @@ export function lowerPerfInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
   // entry brand, which a dyn conversion of the record carries).
   const operand = lowerer.lowerExpr(expr.left);
   if (operand.type.kind === "record" && isPerfEntryType(lowerer, operand.type)) {
-    if (cls === "PerformanceEntry") return boolLit(true, loc);
+    // An entry record is always a PerformanceEntry, but the operand still
+    // evaluates: its side effects and exceptions happen before the answer,
+    // as any instanceof operand's do.
+    if (cls === "PerformanceEntry")
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: operand, loc }],
+        result: boolLit(true, loc),
+        type: BOOL,
+        loc,
+      };
     return {
       kind: "strEq",
       negated: false,

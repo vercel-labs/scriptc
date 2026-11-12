@@ -861,6 +861,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
+  // Object.prototype.isPrototypeOf: ToObject throws on a nullish receiver,
+  // and reading the argument's prototype chain can throw.
+  "dyn.isPrototypeOf",
   "dyn.assign",
   "dyn.copyDataProperties",
   "dyn.objectRest",

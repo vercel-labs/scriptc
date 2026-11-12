@@ -21,6 +21,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.nativeSearchParamsIs",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
+  // scr_dyn_function_prototype builds the one anonymous function answering
+  // undefined on first use and retains it; no user code runs.
+  "dyn.functionPrototype",
   // Both instanceof predicates compare values: scr_dyn_perf_handle_is asks
   // the handle tag, and scr_dyn_perf_entry_is asks an object's prototype
   // chain (or, for a live record, the view its materializer builds, which

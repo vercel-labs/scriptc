@@ -75,6 +75,12 @@ void scr_perf_loop_mark(void) {
   scr_perf_loop_start_ms = now > 0 ? now : 1e-6;
 }
 
+/* A program whose main never runs the loop (a synchronous program that
+ * reads the milestones only from its exit listeners): the emitted main
+ * calls this just before those listeners run, so the loop's end is the
+ * moment Node's loop would have stopped. */
+void scr_perf_loop_end(void) { scr_perf_loop_exit_mark(); }
+
 double scr_perf_loop_start(void) { return scr_perf_loop_start_ms; }
 
 /* performance.nodeTiming's loopStart: -1 until the loop starts, like Node. */

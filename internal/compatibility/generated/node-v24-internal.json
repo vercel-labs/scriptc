@@ -78482,7 +78482,12 @@
           "tests/corpus/perf-entry-constructors.cjs",
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
           "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
           "tests/corpus/perf-node-timing.ts",
           "tests/corpus/perf-observer-delivers-at-exit.ts",
           "tests/corpus/perf-observer-family.ts",
@@ -79325,6 +79330,7 @@
         "tests": [
           "tests/corpus/perf-node-timing.ts",
           "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
           "tests/corpus/perf-performance-tojson.ts"
         ]
       },
@@ -79352,7 +79358,12 @@
         "evidence": "compiler-feature:perf_hooks.bootstrapComplete",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79379,7 +79390,12 @@
         "evidence": "compiler-feature:perf_hooks.environment",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79406,7 +79422,12 @@
         "evidence": "compiler-feature:perf_hooks.idleTime",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79433,7 +79454,12 @@
         "evidence": "compiler-feature:perf_hooks.loopExit",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79460,7 +79486,12 @@
         "evidence": "compiler-feature:perf_hooks.loopStart",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79487,7 +79518,12 @@
         "evidence": "compiler-feature:perf_hooks.nodeStart",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79514,7 +79550,12 @@
         "evidence": "compiler-feature:perf_hooks.uvMetricsInfo",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -79541,7 +79582,12 @@
         "evidence": "compiler-feature:perf_hooks.v8Start",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
-          "tests/corpus/perf-node-timing-dyn.cjs"
+          "tests/corpus/perf-node-timing-dyn.cjs",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
+          "tests/corpus/perf-loop-metrics-timer.ts",
+          "tests/corpus/perf-loop-metrics-exit-in-body.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -82062,6 +82108,9 @@
         "evidence": "compiler-feature:perf_hooks.performance.toJSON",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
           "tests/corpus/perf-performance-tojson.ts",
           "tests/corpus/perf-node-timing-dyn.cjs"
         ]
@@ -82113,6 +82162,9 @@
         "evidence": "compiler-feature:perf_hooks.nodeTiming",
         "tests": [
           "tests/corpus/perf-node-timing.ts",
+          "tests/corpus/perf-node-timing-receiver.ts",
+          "tests/corpus/perf-loop-metrics-sync.ts",
+          "tests/corpus/perf-loop-metrics-turns.ts",
           "tests/corpus/perf-performance-tojson.ts",
           "tests/corpus/perf-node-timing-dyn.cjs"
         ]

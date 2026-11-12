@@ -6759,6 +6759,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #else
     if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
 #endif
+    /* One loop turn begins here: the turn's remaining phases (timers, poll,
+     * check) and their callbacks read the counter as libuv's loop_count
+     * reports it, and a pass restarted before this point (ticks, a woken
+     * fiber) stays part of the turn that queued them. scr_perf_loop_mark
+     * installs the counter in the programs that read the metrics. */
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -7178,7 +7184,6 @@ bool scr_loop_run(ScrPromise *top_level) {
       break;
     }
 #endif
-    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     rejection_failed = scr_loop_run_pass(top_level && !top_level->top_level_handled ? top_level : NULL, first_checkpoint);
     first_checkpoint = false;
 #ifdef SCR_NODE_ISLANDS

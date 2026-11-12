@@ -226,6 +226,23 @@ export function isPerfEntryType(lowerer: Lowerer, t: IrType | null | undefined):
   return lowerer.shapes.get(t.shapeId)?.fields.some((f) => f.name === PERF_ENTRY_MARKER) === true;
 }
 
+/** The value a record built field by field reads from, bound to a hidden
+ * local when the expression is not already a plain local: the receiver's
+ * side effects run once, not once per field. */
+function bindRecordReceiver(
+  lowerer: Lowerer,
+  value: IrExpr,
+  name: string,
+  loc: SrcLoc,
+): { receiver: IrExpr; stmts: IrStmt[] } {
+  if (value.kind === "varRef") return { receiver: value, stmts: [] };
+  const local = lowerer.declareHiddenLocal(name, value.type);
+  return {
+    receiver: varRef(local.id, local.type, loc),
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+  };
+}
+
 /** An entry's toJSON() object: { name, entryType, startTime, duration,
  * detail } read off the entry record. */
 export function perfEntryJson(
@@ -235,20 +252,24 @@ export function perfEntryJson(
   loc: SrcLoc,
 ): IrExpr {
   const shape = lowerer.shapes.get(entryT.shapeId)!;
+  const bound = bindRecordReceiver(lowerer, entry, "%perfEntryJson", loc);
   const read = (name: string): IrExpr => ({
     kind: "recordGet",
-    obj: entry,
+    obj: bound.receiver,
     shapeId: entryT.shapeId,
     field: name,
     type: shape.fields.find((f) => f.name === name)!.type,
     loc,
   });
-  return {
+  const result: IrExpr = {
     kind: "recordLit",
     fields: [...PERF_ENTRY_FIELDS].sort().map((name) => ({ name, value: read(name) })),
     type: { kind: "record", shapeId: perfEntryJsonShape(lowerer.shapes) },
     loc,
   };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
 }
 
 /** True when `t` is performance.nodeTiming's record (type-mapper's
@@ -269,20 +290,26 @@ export function perfNodeTimingJson(
   loc: SrcLoc,
 ): IrExpr {
   const shape = lowerer.shapes.get(timingT.shapeId)!;
+  // The eleven fields read the receiver once: bound to a hidden local, a
+  // side-effecting receiver (a call, the record built at the read) runs once.
+  const bound = bindRecordReceiver(lowerer, timing, "%perfNodeTimingJson", loc);
   const read = (name: string): IrExpr => ({
     kind: "recordGet",
-    obj: timing,
+    obj: bound.receiver,
     shapeId: timingT.shapeId,
     field: name,
     type: shape.fields.find((f) => f.name === name)!.type,
     loc,
   });
-  return {
+  const result: IrExpr = {
     kind: "recordLit",
     fields: [...PERF_NODE_TIMING_JSON_FIELDS].sort().map((name) => ({ name, value: read(name) })),
     type: { kind: "record", shapeId: perfNodeTimingJsonShape(lowerer.shapes) },
     loc,
   };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
 }
 
 /** performance.nodeTiming itself: the milestones as one record of Node's
@@ -296,9 +323,8 @@ export function perfNodeTimingValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     .get(shapeId)!
     .fields.find((f) => f.name === PERF_NODE_TIMING_MARKER)!;
   const lib = (fn: IrLibFn): IrExpr => ({ kind: "libCall", fn, args: [], type: F64, loc });
-  // Node answers -1 before the loop starts and the loop's start time after.
-  const loopStart = lowerer.declareHiddenLocal("%perfNodeLoopStart", F64);
-  const loopStartRef = (): IrExpr => varRef(loopStart.id, F64, loc);
+  // The runtime's loopStart getter answers -1 before the loop starts and the
+  // loop's start time after, as Node's does.
   const values: Record<string, IrExpr> = {
     [PERF_NODE_TIMING_MARKER]: lowerer.absentFieldValue(marker, loc)!,
     bootstrapComplete: numLit(0, loc),
@@ -307,27 +333,7 @@ export function perfNodeTimingValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     environment: numLit(0, loc),
     idleTime: lib("perf.idleTime"),
     loopExit: lib("perf.loopExit"),
-    loopStart: {
-      kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: loopStart.id, init: lib("perf.loopStart"), loc }],
-      result: {
-        kind: "ternary",
-        cond: {
-          kind: "bin",
-          op: ">",
-          left: loopStartRef(),
-          right: numLit(0, loc),
-          type: BOOL,
-          loc,
-        },
-        then: loopStartRef(),
-        else_: numLit(-1, loc),
-        type: F64,
-        loc,
-      },
-      type: F64,
-      loc,
-    },
+    loopStart: lib("perf.loopStart"),
     name: { kind: "strLit", value: "node", type: STRING, loc },
     nodeStart: numLit(0, loc),
     startTime: numLit(0, loc),

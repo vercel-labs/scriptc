@@ -217,6 +217,9 @@ double scr_perf_now(void);
  * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
  * 4 count, 5 exceeds. */
 void scr_perf_loop_mark(void);
+/* Marks the loop's end for a program that never runs the loop (synchronous):
+ * the emitted main calls it just before the exit listeners. */
+void scr_perf_loop_end(void);
 /* The loop's event-loop metrics hook (scr_async.c): `turn` runs once per loop
  * turn, `exit` once when the loop stops. scr_perf_loop_mark installs them in
  * programs that read the metrics; otherwise both stay NULL and the loop is

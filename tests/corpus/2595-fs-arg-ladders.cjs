@@ -66,6 +66,8 @@ show(() => fs.read(3, Buffer.allocUnsafe(4), 0, 4, 0.5, () => {}));
 show(() => fs.lchmod(__filename));
 show(() => fs.lchmod(__filename, {}));
 show(() => fs.lchmod(false, 0o777, () => {}));
+// the mode is parsed before the open, so a bad mode wins over a bad path
+show(() => fs.lchmod(false, '123x', () => {}));
 show(() => fs.lchmodSync(1));
 show(() => fs.lchmodSync([]));
 show(() => fs.lchmodSync(__filename, false));

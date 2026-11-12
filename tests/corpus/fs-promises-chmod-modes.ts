@@ -53,6 +53,25 @@ async function main(): Promise<void> {
   await report("missing octal", () => fsp.chmod(missing, "644"));
   await report("missing number", () => fsp.chmod(missing, 0o644));
 
+  // A non-octal mode's message quotes the value. Node truncates a long one
+  // (up to 126 bytes are quoted whole, longer values stop after 127 bytes
+  // with "..." and no closing quote), so the error is printed short.
+  function modeError(label: string, error: unknown): void {
+    const err = error as NodeJS.ErrnoException;
+    console.log(label, err.name, err.code, err.message.length, err.message.slice(-6));
+  }
+  async function modeReport(label: string, mode: string): Promise<void> {
+    try {
+      await fsp.chmod(target, mode);
+      console.log(label, "ok");
+    } catch (error: unknown) {
+      modeError(label, error);
+    }
+  }
+  await modeReport("async mode 126", "x".repeat(126));
+  await modeReport("async mode 127", "x".repeat(127));
+  await modeReport("async mode 200", "8".repeat(200));
+
   // lchmod: the stub rejects before validating either argument.
   await report("lchmod octal", () => fsp.lchmod(target, "644"));
   await report("lchmod number", () => fsp.lchmod(target, 0o644));

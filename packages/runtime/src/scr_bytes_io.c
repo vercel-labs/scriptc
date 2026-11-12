@@ -777,7 +777,7 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
 
 static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *,
                                  double *);
-static bool scr_fs_encoding_chk(const ScrDyn *);
+bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
 static bool scr_fs_length_int32(const ScrDyn *, double *);
 static bool scr_fs_write_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *);
@@ -1893,7 +1893,7 @@ static bool scr_fs_utf8_encoding(const ScrDyn *enc) {
  * encoding (the string, or an object's `encoding` member) then goes
  * through assertEncoding unless it is 'buffer': Node throws
  * ERR_INVALID_ARG_VALUE for any truthy value Buffer.isEncoding rejects. */
-static bool scr_fs_encoding_chk(const ScrDyn *opts) {
+bool scr_fs_encoding_chk(const ScrDyn *opts) {
   if (opts->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
     bool valid = view && !scr_exc_pending() && scr_fs_encoding_chk(view);
@@ -2307,25 +2307,6 @@ ScrPromise *scr_fsp_chmod_chk(const ScrDyn *path, const ScrDyn *mode) {
   return scr_promise_settled_void();
 }
 
-/* fs.promises.lchmod(path, mode) with a typed string mode. Node's stub
- * rejects with ERR_METHOD_NOT_IMPLEMENTED before any validation where the
- * host has no O_SYMLINK (Linux); macOS runs chmod's ladder and lchmod(2). */
-ScrPromise *scr_fsp_lchmod_string(ScrStr *path, ScrStr *mode) {
-#ifndef __APPLE__
-  (void)path;
-  (void)mode;
-  static const char ni[] = "The lchmod() method is not implemented";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
-  return scr_promise_settled_void();
-#else
-  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
-  double parsed;
-  if (!scr_fs_parse_octal_mode(mode, &parsed)) return scr_promise_settled_void();
-  if (lchmod(path->data, (mode_t)parsed) != 0) scr_fs_throw(errno, "lchmod", path);
-  return scr_promise_settled_void();
-#endif
-}
-
 /* fs.promises.stat/lstat(path, null): Node's default parameter only covers
  * undefined, so after validating the path it reads options.bigint off the
  * null and throws — the promise rejects with that TypeError (no code, no
@@ -2437,272 +2418,6 @@ ScrStr *scr_fs_mkdtemp_sync_chk(const ScrDyn *prefix, const ScrDyn *opts, const 
   return r;
 }
 
-/* ── fs.mkdtempDisposableSync / fs.promises.mkdtempDisposable ─────────
- * Node 24's disposable temporary directories (lib/fs.js and
- * internal/fs/promises). Both create the directory first, report it through
- * `path` in the requested encoding, and stash `path.resolve(shown)` for a
- * `remove()` that keeps working after process.chdir(). The sync record is an
- * ordinary object whose remove and [Symbol.dispose] are separate functions
- * that delete the tree synchronously; the promise record has a null
- * prototype, an async remove / [Symbol.asyncDispose], and is what
- * `await using` calls. */
-
-/* The reported path in `encoding` (Node's binding mkdtemp re-encodes the
- * UTF-8 path through StringBytes::Encode); "buffer" is handled by the
- * caller because Node's own resolve then throws. Consumes +1 path. */
-static ScrStr *scr_fs_mkdtemp_encoded_path(ScrStr *path, const ScrStr *encoding) {
-  if (encoding == NULL || encoding->len == 0 || scr_fs_str_is(encoding, "utf8") ||
-      scr_fs_str_is(encoding, "utf-8"))
-    return path;
-  ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)path->data, path->len);
-  ScrStr *text = scr_bytes_to_str(bytes, encoding);
-  scr_bytes_release(bytes);
-  scr_str_release(path);
-  return text;
-}
-
-/* The encoding name of a mkdtemp options value: absent, false, 0, NaN and
- * the empty string keep the utf8 default (NULL), a truthy string names the
- * encoding (+1). The options shape and the name itself were validated by
- * scr_fs_encoding_chk first, exactly where Node's getOptions runs. */
-static ScrStr *scr_fs_mkdtemp_encoding_name(const ScrDyn *opts) {
-  ScrDyn *materialized = NULL;
-  if (opts->kind == SCR_DYN_TYPED_REF) {
-    materialized = scr_dyn_typed_ref_materialize(opts);
-    if (!materialized || scr_exc_pending()) {
-      scr_dyn_release(materialized);
-      return NULL;
-    }
-    opts = materialized;
-  }
-  ScrStr *name = NULL;
-  const ScrDyn *enc = opts;
-  if (opts->kind == SCR_DYN_OBJ) enc = scr_dyn_obj_get(opts, "encoding", 8);
-  if (enc != NULL && enc->kind == SCR_DYN_STR && enc->v.str->len > 0)
-    name = scr_str_retain(enc->v.str);
-  scr_dyn_release(materialized);
-  return name;
-}
-
-/* A closure over the stashed absolute path the record's functions remove. */
-static ScrClosure *scr_fs_disposable_capture(const ScrStr *full) {
-  ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
-  scr_box_set_ref(closure->caps[0], scr_dyn_new_str((ScrStr *)full));
-  return closure;
-}
-
-static ScrStr *scr_fs_disposable_captured(ScrClosure *closure) {
-  ScrDyn *path = scr_box_get_ref(closure->caps[0]);
-  ScrStr *full = path != NULL && path->kind == SCR_DYN_STR ? scr_str_retain(path->v.str) : NULL;
-  scr_dyn_release(path);
-  return full;
-}
-
-/* remove(): Node's binding.rmSync(fullPath, 0, true, 100) — recursive and
- * force-like, so a second call is harmless. */
-static ScrDyn *scr_fs_disposable_remove_call(ScrClosure *closure, ScrDyn *const *args,
-                                             size_t argc) {
-  (void)args;
-  (void)argc;
-  ScrStr *full = scr_fs_disposable_captured(closure);
-  if (full != NULL) {
-    scr_fs_rm_opts(full, true, true);
-    scr_str_release(full);
-  }
-  return scr_dyn_retain(scr_dyn_undefined());
-}
-
-/* The async form's remove(): the same synchronous delete, its outcome moved
- * into the promise (the fs/promises bridge's settled shape). */
-static ScrDyn *scr_fs_disposable_remove_async_call(ScrClosure *closure, ScrDyn *const *args,
-                                                   size_t argc) {
-  (void)args;
-  (void)argc;
-  ScrStr *full = scr_fs_disposable_captured(closure);
-  if (full != NULL) {
-    scr_fs_rm_opts(full, true, true);
-    scr_str_release(full);
-  }
-  ScrPromise *promise = scr_promise_settled_void();
-  ScrDyn *boxed = scr_dyn_new_promise(promise);
-  scr_promise_release(promise);
-  return boxed;
-}
-
-/* Builds the record. Consumes +1 `created` (the binding's raw UTF-8 path).
- * `async` selects the promise form's shape: null prototype, async remove,
- * [Symbol.asyncDispose]. Answers +1, or NULL with the exception pending. */
-static ScrDyn *scr_fs_mkdtemp_disposable_build(ScrStr *created, const ScrStr *encoding,
-                                               bool async) {
-  if (encoding != NULL && scr_fs_str_is(encoding, "buffer")) {
-    /* Node hands path.resolve(process.cwd(), <Buffer>) its second argument:
-     * validateString names paths[1]. The directory has already been
-     * created, exactly as in Node. */
-    ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)created->data, created->len);
-    bytes->is_buffer = true;
-    ScrDyn *got = scr_dyn_new_bytes(bytes);
-    scr_bytes_release(bytes);
-    scr_dyn_arg_type_fail("paths[1]", "of type string", got);
-    scr_dyn_release(got);
-    scr_str_release(created);
-    return NULL;
-  }
-  ScrStr *shown = scr_fs_mkdtemp_encoded_path(created, encoding);
-  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
-  scr_arr_push_ref(parts, scr_str_retain(shown));
-  ScrStr *full = scr_path_resolve(parts);
-  scr_arr_release(parts);
-
-  ScrDyn *record = async ? scr_dyn_new_obj_null_proto() : scr_dyn_new_obj();
-  scr_dyn_obj_set(record, "path", 4, scr_dyn_new_str(shown));
-  ScrDynThunk remove = async ? scr_fs_disposable_remove_async_call : scr_fs_disposable_remove_call;
-  scr_dyn_obj_set(record, "remove", 6,
-                  scr_dyn_new_func(scr_fs_disposable_capture(full), remove, 0, "()", "remove"));
-  ScrDyn *dispose =
-      scr_dyn_new_func(scr_fs_disposable_capture(full), remove, 0, "()",
-                       async ? "[Symbol.asyncDispose]" : "[Symbol.dispose]");
-  ScrStr *symbol_name = scr_str_new(async ? "asyncDispose" : "dispose", async ? 12 : 7);
-  ScrSym *symbol = scr_sym_well_known(symbol_name);
-  scr_str_release(symbol_name);
-  ScrDyn *key = scr_dyn_new_symbol(symbol);
-  scr_sym_release(symbol);
-  scr_dyn_symbol_key_set(record, key, dispose);
-  scr_dyn_release(key);
-  scr_dyn_release(dispose);
-  scr_str_release(shown);
-  scr_str_release(full);
-  return record;
-}
-
-/* fs.mkdtempDisposableSync(prefix): the statically typed one-argument
- * form. */
-ScrDyn *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix) {
-  ScrStr *created = scr_fs_mkdtemp(prefix);
-  return created != NULL ? scr_fs_mkdtemp_disposable_build(created, NULL, false) : NULL;
-}
-
-/* The untyped ladder: Node's getOptions (options shape, then the encoding
- * name), then getValidatedPath's 'prefix' slot, then the real mkdtemp. */
-ScrDyn *scr_fs_mkdtemp_disposable_sync_chk(const ScrDyn *prefix, const ScrDyn *opts) {
-  if (!scr_fs_encoding_chk(opts)) return NULL;
-  ScrStr *name = scr_str_new("prefix", 6);
-  ScrStr *path = scr_value_fs_path(prefix, name, false);
-  scr_str_release(name);
-  if (path == NULL) return NULL;
-  ScrStr *created = scr_fs_mkdtemp(path);
-  scr_str_release(path);
-  if (created == NULL) return NULL;
-  ScrStr *encoding = scr_fs_mkdtemp_encoding_name(opts);
-  ScrDyn *record = scr_fs_mkdtemp_disposable_build(created, encoding, false);
-  scr_str_release(encoding);
-  return record;
-}
-
-/* fs.promises.mkdtempDisposable(prefix): Node's async function turns every
- * validation and mkdtemp failure into a rejection. */
-ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix) {
-  ScrStr *created = scr_fs_mkdtemp_async(prefix);
-  ScrDyn *record =
-      created != NULL ? scr_fs_mkdtemp_disposable_build(created, NULL, true) : NULL;
-  return scr_promise_settled_ref(record, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-}
-
-ScrPromise *scr_fsp_mkdtemp_disposable_chk(const ScrDyn *prefix, const ScrDyn *opts) {
-  ScrDyn *record = NULL;
-  if (scr_fs_encoding_chk(opts)) {
-    ScrStr *name = scr_str_new("prefix", 6);
-    ScrStr *path = scr_value_fs_path(prefix, name, false);
-    scr_str_release(name);
-    if (path != NULL) {
-      ScrStr *created = scr_fs_mkdtemp_async(path);
-      scr_str_release(path);
-      if (created != NULL) {
-        ScrStr *encoding = scr_fs_mkdtemp_encoding_name(opts);
-        record = scr_fs_mkdtemp_disposable_build(created, encoding, true);
-        scr_str_release(encoding);
-      }
-    }
-  }
-  return scr_promise_settled_ref(record, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-}
-
-/* validateObject(options, 'options') as openAsBlob runs it: an object of any
- * kind (an array or a function is not one), absent for the missing argument
- * that Node defaults to an empty object. */
-static bool scr_fs_blob_options_object(const ScrDyn *options) {
-  /* Node's validateObject admits an omitted (undefined) options value and
-   * rejects null with the same type error as the primitives. */
-  if (options->kind == SCR_DYN_UNDEF) return true;
-  switch (options->kind) {
-  case SCR_DYN_OBJ:
-  case SCR_DYN_BYTES:
-  case SCR_DYN_HANDLE:
-  case SCR_DYN_PROMISE:
-    return true;
-  case SCR_DYN_TYPED_REF: return !scr_dyn_ref_is_array(options);
-  case SCR_DYN_PROXY: return scr_dyn_is_object(options);
-  default: return false; /* null and the primitives, arrays, functions */
-  }
-}
-
-
-/* fs.openAsBlob(path[, options]) — Node's SYNCHRONOUS ladder (the call
- * throws; it returns a promise that is already resolved): validateObject,
- * `options.type || ''` and its string check, getValidatedPath (the path's
- * type, a URL's conversion and the null-byte check), then the stat whose
- * failure is Node's "stat '<path>'" error. The Blob reads the file lazily,
- * re-checking the stat snapshot on every read. */
-ScrPromise *scr_fs_open_as_blob_chk(const ScrDyn *path_value, const ScrDyn *options) {
-  if (!scr_fs_blob_options_object(options)) {
-    scr_dyn_arg_type_fail("options", "of type object", options);
-    return NULL;
-  }
-  ScrDyn *raw_type = NULL;
-  if (options->kind != SCR_DYN_UNDEF) {
-    raw_type = scr_fs_option_get(options, "type");
-    if (!raw_type) return NULL;
-  }
-  ScrStr *type;
-  if (raw_type != NULL && scr_dyn_truthy(raw_type)) {
-    if (raw_type->kind != SCR_DYN_STR) {
-      scr_dyn_prop_type_fail("options.type", "of type string", raw_type);
-      scr_dyn_release(raw_type);
-      return NULL;
-    }
-    type = scr_str_retain(raw_type->v.str);
-  } else {
-    type = scr_str_new("", 0);
-  }
-  scr_dyn_release(raw_type);
-  ScrStr *name = scr_str_new("path", 4);
-  ScrStr *path = scr_value_fs_path(path_value, name, false);
-  scr_str_release(name);
-  if (path == NULL) {
-    scr_str_release(type);
-    return NULL;
-  }
-  if (memchr(path->data, 0, path->len)) {
-    scr_fs_invalid_path(path_value, path);
-    scr_str_release(path);
-    scr_str_release(type);
-    return NULL;
-  }
-  int error = 0;
-  ScrStats *st = scr_stats_poll_path(path, &error);
-  if (st == NULL) {
-    scr_fs_throw(error, "stat", path);
-    scr_str_release(path);
-    scr_str_release(type);
-    return NULL;
-  }
-  ScrDyn *blob = scr_blob_open_file(path, type, scr_stats_size(st), scr_stats_mtime_nsec(st));
-  scr_stats_release(st);
-  scr_str_release(path);
-  scr_str_release(type);
-  return scr_promise_settled_ref(blob, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-}
-
 /* fs.readFile(path, options?, cb): Node's order — the callback
  * (maybeCallback), the options walk's assertEncoding, then the path;
  * the async read itself fences. */
@@ -2737,8 +2452,8 @@ void scr_fs_watch_file_chk(const ScrDyn *path, const ScrDyn *listener, const Scr
  * callback/sync pair is not even exported elsewhere, so non-APPLE builds
  * answer the not-a-function TypeError; the promise form rejects
  * ERR_METHOD_NOT_IMPLEMENTED, Node's own linux shape). On macOS the
- * validation ladder runs in Node's order and the real lchmod(2) applies
- * where an operation survives it. */
+ * validation ladder runs in Node's order and the operation is Node's own
+ * open(O_WRONLY | O_SYMLINK) / fchmod / close ladder. */
 static bool scr_fs_lchmod_defined(const char *api) {
 #ifdef __APPLE__
   (void)api;
@@ -2751,22 +2466,54 @@ static bool scr_fs_lchmod_defined(const char *api) {
 #endif
 }
 
+/* parseFileMode's answer, at whichever point Node parses it: an octal string
+ * is read in base 8 (with the message the truncating formatter builds) and a
+ * number goes through validateUint32. */
+static bool scr_fs_lchmod_mode(const ScrDyn *mode, double *bits) {
+  if (mode->kind == SCR_DYN_STR) return scr_fs_parse_octal_mode(mode->v.str, bits);
+  *bits = mode->v.num;
+  return scr_fs_mode_chk(mode, "mode");
+}
+
 void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb,
                        const ScrStr *fence) {
   if (!scr_fs_lchmod_defined("fs.lchmod")) return;
   if (!scr_fs_cb_chk(cb, "cb")) return;
+  /* parseFileMode precedes the open: the mode is checked before the path. */
+  double bits = 0;
+  if (!scr_fs_lchmod_mode(mode, &bits)) return;
   if (!scr_fs_path_chk(path, "path")) return;
-  if (!scr_fs_mode_chk(mode, "mode")) return;
   scr_throw_lowering_fence(fence); /* the async op + callback dispatch */
 }
 
 #ifdef __APPLE__
-static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
-  ScrStr *p = path->kind == SCR_DYN_STR ? scr_str_retain(path->v.str)
-                                        : scr_bytes_string(path->v.bytes, 0, path->v.bytes->len);
-  double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
-  if (lchmod(p->data, (mode_t)m) != 0) scr_fs_throw(errno, "lchmod", p);
-  scr_str_release(p);
+/* Node's lchmod ladder: fs.lchmodSync opens O_WRONLY | O_SYMLINK, fchmods
+ * in a try and closes in its finally; fs/promises lchmod is
+ * `open(path, O_WRONLY | O_SYMLINK)` then handleFdClose(fchmod(fd, mode),
+ * fd.close). The open comes first, so a missing path is reported before a
+ * bad mode, and the descriptor is closed either way. The fchmod failure is
+ * the one reported; a close failure is reported when the fchmod succeeded.
+ * `data` is the checked path and `named` the value an error's path names. */
+static bool scr_fs_lchmod_open_chmod(const ScrStr *data, const ScrDyn *mode, const ScrStr *named) {
+  int fd = open(data->data, O_WRONLY | O_SYMLINK);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", named);
+    return false;
+  }
+  double bits = 0;
+  bool ok = scr_fs_lchmod_mode(mode, &bits);
+  int chmod_err = ok && fchmod(fd, (mode_t)bits) != 0 ? errno : 0;
+  int close_err = close(fd) != 0 ? errno : 0;
+  if (!ok) return false;
+  if (chmod_err != 0) {
+    scr_fs_throw(chmod_err, "fchmod", named);
+    return false;
+  }
+  if (close_err != 0) {
+    scr_fs_throw(close_err, "close", named);
+    return false;
+  }
+  return true;
 }
 #endif
 
@@ -2774,19 +2521,23 @@ static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
  * return-position uses lower; NULL with the exception pending. */
 ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode) {
   if (!scr_fs_lchmod_defined("fs.lchmodSync")) return NULL;
-  if (!scr_fs_path_chk(path, "path")) return NULL;
-  if (!scr_fs_mode_chk(mode, "mode")) return NULL;
 #ifdef __APPLE__
-  scr_fs_lchmod_apply(path, mode);
-  if (scr_exc_pending()) return NULL;
+  ScrStr *p = scr_fs_checked_path(path, "path");
+  if (!p) return NULL;
+  bool ok = scr_fs_lchmod_open_chmod(p, mode, p);
+  scr_str_release(p);
+  if (!ok) return NULL;
+#else
+  (void)path;
+  (void)mode;
 #endif
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* fs.promises.lchmod(path, mode) with the typed operands: Node's stub
  * rejects with ERR_METHOD_NOT_IMPLEMENTED before any validation where
- * O_SYMLINK does not exist (Linux), and macOS applies chmod's ladder and
- * the real lchmod(2). */
+ * O_SYMLINK does not exist (Linux), and macOS runs the open/fchmod/close
+ * ladder. */
 ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode) {
 #ifndef __APPLE__
   (void)path;
@@ -2796,10 +2547,23 @@ ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode) {
   return scr_promise_settled_void();
 #else
   if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
-  ScrDyn *value = scr_dyn_new_num(mode);
-  bool ok = scr_fs_mode_chk(value, "mode");
-  scr_dyn_release(value);
-  if (ok && lchmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "lchmod", path);
+  ScrDyn value = { .kind = SCR_DYN_NUM, .v.num = mode };
+  scr_fs_lchmod_open_chmod(path, &value, path);
+  return scr_promise_settled_void();
+#endif
+}
+
+ScrPromise *scr_fsp_lchmod_string(ScrStr *path, ScrStr *mode) {
+#ifndef __APPLE__
+  (void)path;
+  (void)mode;
+  static const char ni[] = "The lchmod() method is not implemented";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
+  return scr_promise_settled_void();
+#else
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  ScrDyn value = { .kind = SCR_DYN_STR, .v.str = mode };
+  scr_fs_lchmod_open_chmod(path, &value, path);
   return scr_promise_settled_void();
 #endif
 }
@@ -2812,9 +2576,10 @@ ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
   return scr_promise_settled_void();
 #else
-  if (scr_fs_path_chk(path, "path") && scr_fs_mode_chk(mode, "mode")) {
-    scr_fs_lchmod_apply(path, mode);
-  }
+  ScrStr *checked = scr_fs_checked_path(path, "path");
+  if (!checked) return scr_promise_settled_void();
+  scr_fs_lchmod_open_chmod(checked, mode, checked);
+  scr_str_release(checked);
   return scr_promise_settled_void();
 #endif
 }

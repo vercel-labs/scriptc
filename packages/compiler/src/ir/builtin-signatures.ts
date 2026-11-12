@@ -3928,8 +3928,9 @@ function buildLibFnSignatures() {
      * string — so the ALWAYS-THROW forms take the error.nodeThrow
      * polymorphic-result carve-out. mkdtempSyncChk and the lchmod sync/
      * promise pair run the REAL operation on a validated pass instead
-     * (macOS lchmod(2); non-APPLE answers Node's not-a-function /
-     * ERR_METHOD_NOT_IMPLEMENTED shapes). May-throw seeds, all of them. */
+     * (macOS runs Node's open(O_SYMLINK) / fchmod / close ladder; non-APPLE
+     * answers Node's not-a-function / ERR_METHOD_NOT_IMPLEMENTED shapes).
+     * May-throw seeds, all of them. */
     "fs.existsChk": { argTypes: [DYN, DYN], result: DYN },
     "fs.mkdtempChk": { argTypes: [DYN, DYN, STRING], result: VOID },
     "fs.mkdtempSyncChk": { argTypes: [DYN, DYN, STRING], result: STRING },

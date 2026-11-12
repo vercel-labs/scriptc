@@ -116,6 +116,14 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // An untyped path of a synchronous fs function in a JavaScript source; a
   // unit of its own so no other executable changes.
   ["scr_fs_path_value.c", "fsPathValue"],
+  // The mkdtempDisposable record builders and their statically typed entry
+  // points: the record's dispose member is keyed by the symbol unit's
+  // well-known symbols and the async form boxes its outcome through the
+  // dyn-promise unit, and the calls that select this unit select both.
+  ["scr_fs_disposable.c", all("dynAsync", "symbol")],
+  // The checked mkdtempDisposable ladders: Node's getOptions first, then the
+  // prefix through the path-value unit.
+  ["scr_fs_disposable_chk.c", all("dynAsync", "symbol", "fsPathValue")],
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
@@ -161,6 +169,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
+  // fs.openAsBlob's checked ladder: the path through the path-value unit,
+  // then the file-backed record from the Blob unit.
+  ["scr_fs_blob_chk.c", all("dynAsync", "fsPathValue")],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],

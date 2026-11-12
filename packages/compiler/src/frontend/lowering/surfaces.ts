@@ -1495,7 +1495,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // Node's stub rejects with ERR_METHOD_NOT_IMPLEMENTED where O_SYMLINK
-      // does not exist (Linux); macOS runs the real lchmod(2).
+      // does not exist (Linux); macOS runs Node's open(O_SYMLINK) / fchmod /
+      // close ladder.
       lchmod: {
         fn: "fsp.lchmod",
         params: [STRING, F64],
@@ -2577,9 +2578,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // options and prefix checks and then the real mkdtemp.
     mkdtempDisposableSync: ["fs.mkdtempDisposableSyncChk"],
     // lchmodSync is chmod's no-follow spelling, JS-ladder only (TypeScript
-    // callers fence per site); the ladder runs the REAL lchmod on APPLE,
-    // so the chmod fence witnesses it — fencing one spelling fences the
-    // operation.
+    // callers fence per site); the ladder runs Node's open(O_SYMLINK) /
+    // fchmod / close on APPLE, so the chmod fence witnesses it — fencing one
+    // spelling fences the operation.
     chmodSync: ["fs.lchmodSyncChk"],
     // The two-argument listener form.
     watch: ["fs.watchCb"],

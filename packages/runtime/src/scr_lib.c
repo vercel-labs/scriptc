@@ -4348,7 +4348,7 @@ static ScrStr *scr_fs_walk_resolve(const char *a, const char *b, size_t b_len) {
 ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
   size_t length = absolute->len;
   char *p = scr_fs_walk_dup_n(absolute->data, length);
-  ScrFsWalkTable known = {0}, seen = {0};
+  ScrFsWalkTable known = {0}, seen = {0}, restarted = {0};
   ScrStr *answer = NULL;
   bool reached_pipe_or_socket = false;
   size_t root = 0;
@@ -4426,20 +4426,41 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
         scr_str_release(base_path);
         break;
       }
-      ScrStr *text = scr_bytes_to_str(link, NULL);
+      /* A link's target is raw filesystem bytes. Resolve those bytes as
+       * the kernel would: decoding first is lossy (utf8 replaces invalid
+       * sequences, ascii masks every byte with 0x7f, latin1 maps them to
+       * other characters), so two targets the raw graph keeps apart can
+       * decode onto one another and send a walk that would terminate
+       * around a cycle it was never given. */
+      ScrStr *text = scr_str_new((const char *)link->data, link->len);
       scr_bytes_release(link);
       scr_fs_walk_table_add(&seen, id, text->data);
       scr_str_release(text);
       target = scr_fs_walk_table_get(&seen, id);
     }
-    scr_str_release(base_path);
     /* gotResolvedLink: resolve the link against the directory prefix, then
      * the part of the path that follows the link component, and restart
      * the walk at the root of that answer. */
     ScrStr *resolved_link = scr_fs_walk_resolve(previous, target, strlen(target));
     ScrStr *joined = scr_fs_walk_resolve(resolved_link->data, p + pos, p_len - pos);
     scr_str_release(resolved_link);
-    if (joined == NULL) break;
+    if (joined == NULL) {
+      scr_str_release(base_path);
+      break;
+    }
+    /* A restart resumes from the resolved path's root with no other state,
+     * so restarting twice from one path replays the same substitution
+     * forever. Raw targets make that reachable only through a cycle the
+     * stat above did not follow, and the paths seen so far bound it: a
+     * repeated restart answers the ELOOP a link cycle gets. */
+    if (scr_fs_walk_table_get(&restarted, joined->data) != NULL) {
+      scr_fs_throw(ELOOP, "stat", base_path);
+      scr_str_release(base_path);
+      scr_str_release(joined);
+      break;
+    }
+    scr_fs_walk_table_add(&restarted, joined->data, NULL);
+    scr_str_release(base_path);
     free(p);
     p = scr_fs_walk_dup_n(joined->data, joined->len);
     scr_str_release(joined);
@@ -4457,6 +4478,7 @@ ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
   free(base);
   scr_fs_walk_table_free(&known);
   scr_fs_walk_table_free(&seen);
+  scr_fs_walk_table_free(&restarted);
   return answer;
 }
 
@@ -4520,11 +4542,28 @@ bool scr_fs_parse_octal_mode(ScrStr *value, double *mode) {
     if (c < '0' || c > '7') octal = false;
   }
   if (!octal) {
-    char msg[224];
-    int len = snprintf(msg, sizeof msg,
-                       "The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received '%.*s'",
-                       (int)value->len, value->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    /* The value can be arbitrarily long, so it is formatted into a buffer
+     * sized for what is actually shown, never into a fixed stack buffer
+     * whose snprintf result may exceed it. Node truncates the quoted value
+     * the way its inspect-style formatting does: up to 126 bytes are
+     * quoted whole, longer values stop after 127 bytes with "..." and no
+     * closing quote. */
+    static const char head[] =
+        "The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received '";
+    const size_t head_len = sizeof head - 1;
+    size_t shown = value->len <= 126 ? value->len : 127;
+    size_t len = head_len + shown + (value->len <= 126 ? 1 : 3);
+    char *msg = malloc(len);
+    if (!msg) scr_trap("scriptc: out of memory\n");
+    memcpy(msg, head, head_len);
+    memcpy(msg + head_len, value->data, shown);
+    if (value->len <= 126) {
+      msg[len - 1] = '\'';
+    } else {
+      memcpy(msg + len - 3, "...", 3);
+    }
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_INVALID_ARG_VALUE");
+    free(msg);
     return false;
   }
   double parsed = 0;
@@ -7748,6 +7787,54 @@ ScrArr *scr_fs_readdir_enc(ScrStr *path, const ScrStr *encoding) {
   return arr;
 }
 
+/* The recursive walks below join every directory's DECODED entry names, as
+ * Node does, so a name whose decoding is not the raw name can join a path
+ * that normalizes onto a directory already visited — including the one
+ * being scanned: ascii masks each byte with 0x7f, so a child named 0xAE
+ * decodes to ".", and 'hex'/'base64' decode to arbitrary bytes. Node's walk
+ * has no visited check, so such a name makes it rescan the same directory
+ * forever. Every queued path is remembered here (bytes and length, since a
+ * decoded name may carry a NUL) and a repeat is skipped, which only affects
+ * trees that would otherwise never terminate. */
+typedef struct {
+  char **data;
+  size_t *lens;
+  size_t len, cap;
+} ScrFsQueuedPaths;
+
+static void scr_fs_queued_paths_free(ScrFsQueuedPaths *q) {
+  for (size_t i = 0; i < q->len; i++) free(q->data[i]);
+  free(q->data);
+  free(q->lens);
+  q->data = NULL;
+  q->lens = NULL;
+  q->len = q->cap = 0;
+}
+
+/* Records `path` unless it is already queued; answers false for a repeat. */
+static bool scr_fs_queued_paths_add(ScrFsQueuedPaths *q, const ScrStr *path) {
+  for (size_t i = 0; i < q->len; i++) {
+    if (q->lens[i] == path->len && memcmp(q->data[i], path->data, path->len) == 0) return false;
+  }
+  if (q->len == q->cap) {
+    size_t cap = q->cap ? q->cap * 2 : 8;
+    char **data = realloc(q->data, cap * sizeof *data);
+    if (!data) scr_trap("scriptc: out of memory\n");
+    q->data = data;
+    size_t *lens = realloc(q->lens, cap * sizeof *lens);
+    if (!lens) scr_trap("scriptc: out of memory\n");
+    q->lens = lens;
+    q->cap = cap;
+  }
+  char *copy = malloc(path->len ? path->len : 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, path->data, path->len);
+  q->data[q->len] = copy;
+  q->lens[q->len] = path->len;
+  q->len++;
+  return true;
+}
+
 /* Node's recursive readdir walks queue order: `lifo` pops the queue's end
  * (fs.promises readdirRecursive), otherwise the next index (readdirSync's
  * readdirSyncRecursive). Every entry's path is path.join of its directory
@@ -7781,6 +7868,8 @@ static ScrArr *scr_fs_readdir_recursive_impl(ScrStr *base, const ScrStr *encodin
   ScrStr **queue = malloc(cap * sizeof *queue);
   if (!queue) scr_trap("scriptc: out of memory\n");
   queue[0] = scr_str_retain(base);
+  ScrFsQueuedPaths queued = { 0 };
+  scr_fs_queued_paths_add(&queued, queue[0]);
   bool failed = false;
   while (head < len && !failed) {
     ScrStr *dir = lifo ? queue[--len] : queue[head++];
@@ -7802,7 +7891,8 @@ static ScrArr *scr_fs_readdir_recursive_impl(ScrStr *base, const ScrStr *encodin
       }
       scr_arr_push_ref(out, scr_path_relative(base, full));
       struct stat st;
-      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode) &&
+          scr_fs_queued_paths_add(&queued, full)) {
         if (len == cap) {
           cap *= 2;
           queue = realloc(queue, cap * sizeof *queue);
@@ -7819,6 +7909,7 @@ static ScrArr *scr_fs_readdir_recursive_impl(ScrStr *base, const ScrStr *encodin
   /* Entries before `head` were popped and released inside the walk. */
   for (size_t i = lifo ? 0 : head; i < len; i++) scr_str_release(queue[i]);
   free(queue);
+  scr_fs_queued_paths_free(&queued);
   if (failed) {
     scr_arr_release(out);
     return NULL;
@@ -7940,6 +8031,8 @@ ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recu
   size_t len = 0, cap = 8, head = 0;
   ScrFsListingNode *queue = malloc(cap * sizeof *queue);
   if (!queue) scr_trap("scriptc: out of memory\n");
+  ScrFsQueuedPaths queued = { 0 };
+  scr_fs_queued_paths_add(&queued, path);
   bool failed = !scr_fs_listing_queue(&queue, &len, &cap, scr_str_retain(path), eager);
   while (!failed && (lifo ? len > 0 : head < len)) {
     ScrFsListingNode node = lifo ? queue[--len] : queue[head++];
@@ -7993,6 +8086,10 @@ ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recu
           break;
         }
       }
+      if (full && !scr_fs_queued_paths_add(&queued, full)) {
+        scr_str_release(full);
+        full = NULL;
+      }
       if (full && !scr_fs_listing_queue(&queue, &len, &cap, full, eager)) failed = true;
     }
     scr_fs_scandir_free(scan);
@@ -8003,6 +8100,7 @@ ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recu
     scr_fs_scandir_free(queue[i].scan);
   }
   free(queue);
+  scr_fs_queued_paths_free(&queued);
   if (failed) {
     scr_fs_listing_free(l);
     return NULL;

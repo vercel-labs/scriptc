@@ -63,19 +63,6 @@ const available =
  * object. */
 const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
-  // scr_bytes_io.c is in every program, and the mkdtempDisposable record
-  // builders are the only functions reaching these: the record keys its
-  // dispose member with a well-known symbol, the async form's remove()
-  // boxes its outcome as a promise, and the untyped ladder validates its
-  // prefix through scr_value_fs_path. Every form of the call selects the
-  // symbol, dynAsync and fsPathValue features.
-  "scr_bytes_io.c -> scr_async_dyn.c": ["scr_dyn_new_promise"],
-  "scr_bytes_io.c -> scr_fs_path_value.c": ["scr_value_fs_path"],
-  // fs.openAsBlob's ladder (scr_fs_open_as_blob_chk) is the only caller of
-  // scr_blob_open_file, and every call selects dynAsync, which links
-  // scr_blob.c.
-  "scr_bytes_io.c -> scr_blob.c": ["scr_blob_open_file"],
-  "scr_bytes_io.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_release", "scr_sym_well_known"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [

@@ -257,6 +257,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
   // An untyped path of a synchronous fs function (dyn.validateFsPath).
   unit((u) => u.opts.fsPathValue === true, "scr_fs_path_value.c"),
+  // The mkdtempDisposable record builders and statically typed entry points:
+  // the record keys its dispose member with the symbol unit's well-known
+  // symbols and the async form boxes its outcome through scr_async_dyn.c,
+  // and every call that selects this unit selects both.
+  unit((u) => u.opts.dynAsync === true && u.opts.symbol === true, "scr_fs_disposable.c"),
+  // The checked mkdtempDisposable ladders: Node's getOptions first, then the
+  // prefix through the path-value unit.
+  unit(
+    (u) => u.opts.dynAsync === true && u.opts.symbol === true && u.opts.fsPathValue === true,
+    "scr_fs_disposable_chk.c",
+  ),
   // A standard library prototype object read as a value in a JavaScript
   // source: the dynamic tier's gated unit, whose work is JavaScript-only.
   unit(
@@ -306,6 +317,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Blob and File (every blob.* call selects dynAsync, whose unit boxes
   // their reads as dyn promises).
   unit((u) => u.opts.dynAsync, "scr_blob.c"),
+  // fs.openAsBlob's checked ladder: the path through the path-value unit,
+  // then the file-backed record from the Blob unit.
+  unit((u) => u.opts.dynAsync === true && u.opts.fsPathValue === true, "scr_fs_blob_chk.c"),
   // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
   // objects also serve the native fetch's gzip decoder — spread exactly once.
   unitArgs((u) =>

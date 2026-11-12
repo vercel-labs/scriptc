@@ -375,11 +375,20 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
 bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
+/* getOptions over an fs options argument (scr_bytes_io.c): the shape check
+ * and Node's assertEncoding. The checked fs entry points that run the
+ * getOptions ladder outside that unit (scr_fs_disposable_chk.c) share it. */
+bool scr_fs_encoding_chk(const ScrDyn *opts);
 /* fs.mkdtempDisposableSync: the created directory as Node 24's disposable
  * record ({ path, remove(), [Symbol.dispose]() }); the Chk form is the
- * untyped ladder over prefix and options. */
+ * untyped ladder over prefix and options. The record builder and the
+ * options encoding name live in scr_fs_disposable.c, beside the typed entry
+ * points; scr_fs_disposable_chk.c runs the ladders that also convert the
+ * prefix through the path-value unit. */
 ScrDyn *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix);
 ScrDyn *scr_fs_mkdtemp_disposable_sync_chk(const ScrDyn *prefix, const ScrDyn *opts);
+ScrDyn *scr_fs_mkdtemp_disposable_build(ScrStr *created, const ScrStr *encoding, bool async);
+ScrStr *scr_fs_mkdtemp_encoding_name(const ScrDyn *opts);
 /* fs.openAsBlob(path[, options]) — Node's synchronous validation ladder
  * (options object, type string, path, null bytes, stat), answering the
  * already-resolved promise for the lazily-read file-backed Blob. Throws on

@@ -34,6 +34,16 @@ typedef struct ScrBlobFile {
   ScrStr *path;
   double size; /* st_size when the Blob was made */
   int64_t mtime_nsec;
+  /* The object's identity when the Blob was made. A directory-entry owner
+   * can substitute another file at `path`; a replacement with the same size
+   * and mtime would pass Node's change check, so the read also requires the
+   * device and inode to match the creation snapshot. POSIX only: on Windows
+   * the creation snapshot comes from the CRT stat, which reports neither a
+   * usable device nor an inode, while the read stats the descriptor through
+   * GetFileInformationByHandle. */
+#ifndef _WIN32
+  double dev, ino;
+#endif
 } ScrBlobFile;
 
 typedef struct ScrBlobPart {
@@ -514,9 +524,9 @@ static void scr_blob_not_readable(void) {
   scr_throw_domex("NotReadableError", message);
 }
 
-/* One file part: open, re-stat, compare with the snapshot (size and mtime
- * nanoseconds, exactly libuv's check), then read its bytes. False with the
- * NotReadableError pending. */
+/* One file part: open, re-stat, compare with the snapshot (size, mtime
+ * nanoseconds and, on POSIX, the device and inode the Blob was made from),
+ * then read its bytes. False with the NotReadableError pending. */
 static bool scr_blob_read_file_part(const ScrBlobPart *part, uint8_t *out) {
   int fd = scr_fs_raw_open(part->file->path->data, O_RDONLY, 0);
   if (fd < 0) {
@@ -527,6 +537,11 @@ static bool scr_blob_read_file_part(const ScrBlobPart *part, uint8_t *out) {
   ScrStats *st = scr_stats_of_fd(fd, &error);
   bool same = st != NULL && scr_stats_size(st) == part->file->size &&
               scr_stats_mtime_nsec(st) == part->file->mtime_nsec;
+#ifndef _WIN32
+  /* size + mtime_nsec alone admit a substituted file: they are visible to
+   * whoever can write the directory, not to the Blob's owner. */
+  same = same && scr_stats_dev(st) == part->file->dev && scr_stats_ino(st) == part->file->ino;
+#endif
   if (st) scr_stats_release(st);
   if (!same) {
     scr_fs_raw_close(fd);
@@ -868,7 +883,8 @@ bool scr_blob_is(const ScrDyn *value, double kind) {
  * VERBATIM (openAsBlob validates it as a string but applies neither the
  * ASCII filter nor the lowercasing the Blob constructor does). Answers +1;
  * borrows both arguments. */
-ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec) {
+ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec, double dev,
+                           double ino) {
   scr_blob_install();
   ScrBlobFile *file = calloc(1, sizeof *file);
   if (!file) scr_trap("scriptc: out of memory\n");
@@ -876,6 +892,13 @@ ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtim
   file->path = scr_str_retain(path);
   file->size = size;
   file->mtime_nsec = mtime_nsec;
+#ifndef _WIN32
+  file->dev = dev;
+  file->ino = ino;
+#else
+  (void)dev;
+  (void)ino;
+#endif
   ScrBlob *b = scr_blob_alloc();
   b->parts = malloc(sizeof *b->parts);
   if (!b->parts) scr_trap("scriptc: out of memory\n");

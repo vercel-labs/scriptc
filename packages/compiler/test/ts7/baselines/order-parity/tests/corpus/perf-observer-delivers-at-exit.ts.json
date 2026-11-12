@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/perf-observer-delivers-at-exit.ts"
+ ],
+ "diags": []
+}

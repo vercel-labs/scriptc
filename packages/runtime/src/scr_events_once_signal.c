@@ -39,6 +39,11 @@ typedef struct ScrEosState {
 
 enum { SCR_EOS_EVENT, SCR_EOS_ERROR, SCR_EOS_ABORT };
 
+/* The fulfilled argument array is a typed array of checked-dynamic
+ * elements — the shape the compiler's promise consumers index — built here
+ * as scr_event_target.c builds events.once's over a target. */
+static ScrArrOps scr_eos_arr_ops = { scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v };
+
 typedef struct ScrEosLink {
   size_t rc;
   ScrEosState *st; /* owned */
@@ -172,6 +177,56 @@ void scr_events_once_signal_fire(ScrClosure *cb, ScrArr *args) {
   scr_eos_link_release(link);
 }
 
+/* The tail of a checked-dynamic listener: `args` are the event's arguments
+ * as the emit provided them (borrowed, argc of them). The promise settles
+ * with that vector — or rejects with the first argument of an 'error'
+ * emit — after the other listener and the abort listener leave, exactly
+ * like the adapter path above. */
+static ScrDyn *scr_eos_dyn_fire(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrEosLink *link = scr_box_get_ref(clo->caps[0]);
+  ScrEosState *st = link->st;
+  bool ok = true;
+  if (!st->settled) {
+    st->settled = true;
+    bool error = link->slot == SCR_EOS_ERROR;
+    if (error) {
+      ok = scr_eos_off(st->em, st->name, st->event_cb);
+    } else {
+      ScrStr *error_name = scr_str_new("error", 5);
+      ok = scr_eos_off(st->em, error_name, st->error_cb);
+      scr_str_release(error_name);
+    }
+    if (ok) {
+      scr_eos_remove_abort(st);
+      if (error) {
+        ScrDyn *reason =
+            argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_retain(scr_dyn_undefined());
+        /* The rejection takes the exception the cell holds: the emit's own
+         * caller sees a clean cell, as Node's listener returns normally. */
+        scr_dyn_throw(reason); /* moves reason */
+        scr_promise_reject_pending(st->promise);
+      } else {
+        ScrArr *resolved = scr_arr_new_ops(&scr_eos_arr_ops, argc ? argc : 1);
+        for (size_t i = 0; i < argc; i++)
+          scr_arr_set_ref(resolved, (double)i, scr_dyn_retain(args[i]));
+        scr_promise_fulfill_ref(st->promise, resolved, scr_arr_retain_v, scr_arr_release_v,
+                                resolved->cyc ? scr_arr_trace_v : NULL);
+      }
+    }
+  }
+  scr_eos_link_release(link);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+/* A checked-dynamic listener of the name the program does not fix: the
+ * promise carries the emit's arguments as given, so the listener needs no
+ * boxer. caps[0] is its link. */
+static ScrDyn *scr_eos_dyn_listener(ScrEosState *st, int slot, const char *name) {
+  ScrClosure *c = scr_closure_new((void *)&scr_eos_dyn_fire, 1);
+  c->caps[0] = scr_eos_link_box(st, slot);
+  return scr_dyn_new_func(c, &scr_eos_dyn_fire, 0, "()", name);
+}
+
 /* The signal's 'abort' listener: caps[0] its link, caps[1] the emitter. */
 static ScrDyn *scr_eos_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   (void)args;
@@ -227,12 +282,19 @@ static ScrPromise *scr_eos_adopt(ScrPromise *inner) {
 }
 
 /* boxer and err_boxer are borrowed (err_boxer is NULL when the awaited
- * event is 'error'); signal is borrowed. The result is +1 and never throws:
- * every failure rejects it, as Node's async function does. */
+ * event is 'error'); options is borrowed. The result is +1 and never
+ * throws: every failure rejects it, as Node's async function does. */
 ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
                                    ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
-                                   ScrEeInvoke err_inv, ScrDyn *signal) {
+                                   ScrEeInvoke err_inv, ScrDyn *options) {
   ScrPromise *result = scr_promise_new();
+  /* Node's async body: validateObject(options, 'options'), then
+   * options.signal, then validateAbortSignal, all before the executor. */
+  ScrDyn *signal = scr_events_once_options(options);
+  if (signal == NULL) {
+    scr_promise_reject_pending(result);
+    return result;
+  }
   bool with_signal = signal->kind != SCR_DYN_UNDEF;
   if (with_signal) {
     bool aborted = false;
@@ -241,11 +303,13 @@ ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *box
     if (!core) {
       scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
       scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
       return result;
     }
     if (aborted) {
       scr_eos_throw_abort(signal);
       scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
       return result;
     }
   }
@@ -299,5 +363,109 @@ ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *box
   }
   ScrPromise *inner = scr_promise_retain(st->promise);
   scr_eos_state_release(st);
+  scr_dyn_release(signal);
+  return scr_eos_adopt(inner);
+}
+
+/* events.once over a name the program does not resolve statically. The
+ * receiver registers one checked-dynamic listener for the event and, unless
+ * the name keys 'error' itself, one for 'error'; both go through the
+ * registry's untyped-value registration, so an untyped emit calls them with
+ * the arguments as given and the runtime-fixed 'error' and meta events
+ * reach them through its own typed adapters. name_value and options are
+ * borrowed. The result is +1 and never throws: every failure rejects it,
+ * as Node's async function does. */
+ScrPromise *scr_events_once_any(ScrEmitter *em, ScrDyn *name_value, ScrDyn *options) {
+  ScrPromise *result = scr_promise_new();
+  /* Node's async body: validateObject(options, 'options'), then
+   * options.signal, then validateAbortSignal, all before the executor. */
+  ScrDyn *signal = scr_events_once_options(options);
+  if (signal == NULL) {
+    scr_promise_reject_pending(result);
+    return result;
+  }
+  bool with_signal = signal->kind != SCR_DYN_UNDEF;
+  if (with_signal) {
+    bool aborted = false;
+    ScrEventTargetCore *core =
+        scr_et_signal_core_fn ? scr_et_signal_core_fn(signal, &aborted) : NULL;
+    if (!core) {
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+      scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
+      return result;
+    }
+    if (aborted) {
+      scr_eos_throw_abort(signal);
+      scr_promise_reject_pending(result);
+      scr_dyn_release(signal);
+      return result;
+    }
+  }
+  /* The registry key: a symbol keeps its identity, every other value is
+   * the property key Node's listener table stores it under. A conversion
+   * that throws rejects, as it does inside Node's executor. */
+  ScrStr *name = scr_emitter_name_dyn(name_value);
+  if (name == NULL) {
+    scr_promise_reject_pending(result);
+    scr_dyn_release(signal);
+    return result;
+  }
+  ScrEosState *st = calloc(1, sizeof *st);
+  if (!st) scr_eos_oom();
+  st->rc = 1;
+  st->promise = result;
+  st->em = em;
+  st->name = scr_str_retain(name);
+  st->signal = scr_dyn_retain(signal);
+  ScrDyn *event_fn = scr_eos_dyn_listener(st, SCR_EOS_EVENT, "resolver");
+  st->event_cb = event_fn->v.fn.clo;
+  bool error_name = !scr_str_is_symbol_key(name) && name->len == 5 &&
+                    memcmp(name->data, "error", 5) == 0;
+  ScrDyn *error_fn = error_name ? NULL : scr_eos_dyn_listener(st, SCR_EOS_ERROR, "errorListener");
+  st->error_cb = error_fn != NULL ? error_fn->v.fn.clo : NULL;
+  /* Node registers inside the promise's executor: a throwing 'newListener'
+   * listener rejects the promise, and the listener it announced is never
+   * added (the event's listener stays when only the 'error' announcement
+   * throws). No abort listener follows a throw. */
+  ScrCaught *thrown = NULL;
+  scr_emitter_release(scr_emitter_on_any(em, name, event_fn, true, false));
+  if (scr_exc_pending()) {
+    thrown = scr_exc_take();
+    scr_emitter_unadd_quiet(em, name, st->event_cb);
+  } else if (error_fn != NULL) {
+    ScrStr *error = scr_str_new("error", 5);
+    scr_emitter_release(scr_emitter_on_any(em, error, error_fn, true, false));
+    if (scr_exc_pending()) {
+      thrown = scr_exc_take();
+      scr_emitter_unadd_quiet(em, error, st->error_cb);
+    }
+    scr_str_release(error);
+  }
+  if (thrown != NULL) {
+    st->settled = true;
+    scr_rethrow(thrown);
+    scr_caught_release(thrown);
+    scr_promise_reject_pending(st->promise);
+  } else if (with_signal) {
+    ScrClosure *clo = scr_closure_new((void *)&scr_eos_abort_thunk, 2);
+    clo->caps[0] = scr_eos_link_box(st, SCR_EOS_ABORT);
+    clo->caps[1] = scr_box_new_obj(&scr_emitter_retain_v, &scr_emitter_release_v, NULL);
+    scr_box_set_ref(clo->caps[1], scr_emitter_retain(em));
+    ScrDyn *listener = scr_dyn_new_func(clo, &scr_eos_abort_thunk, 0, "()", "abortListener");
+    st->listener = listener;
+    ScrDyn *dispose = scr_events_add_abort_listener(signal, listener);
+    if (dispose) scr_dyn_release(dispose);
+    /* The signal's listener entry keeps it; the state's pointer is weak. */
+    scr_dyn_release(listener);
+  }
+  /* The registry's entries keep the listeners; these boxed references can
+   * go (an unadded one releases its link, clearing the state's pointer). */
+  scr_dyn_release(event_fn);
+  if (error_fn != NULL) scr_dyn_release(error_fn);
+  scr_str_release(name);
+  ScrPromise *inner = scr_promise_retain(st->promise);
+  scr_eos_state_release(st);
+  scr_dyn_release(signal);
   return scr_eos_adopt(inner);
 }

@@ -225,7 +225,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         }
         return out;
       }
-      if (e.name !== "console.log" && e.name !== "console.error") {
+      if (e.name !== "console.log" && e.name !== "console.error" && e.name !== "console.trace") {
         throw new LlvmUnsupportedError(`intrinsic:${e.name}`, e.loc);
       }
       // The ScrLogArg protocol: one entry-block array (sized to the
@@ -282,9 +282,13 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           B.line(`store i8 ${z}, ptr ${vp}`);
         }
       });
-      const fn =
-        (e.name === "console.error" ? "scr_console_error" : "scr_console_log") +
-        (usesParts ? "_parts" : "");
+      const consoleFn =
+        e.name === "console.trace"
+          ? "scr_console_trace"
+          : e.name === "console.error"
+            ? "scr_console_error"
+            : "scr_console_log";
+      const fn = consoleFn + (usesParts ? "_parts" : "");
       host.declare(`declare void @${fn}(${host.sizeType}, ptr)`);
       B.line(`call void @${fn}(${host.sizeType} ${args.length}, ptr %logargs)`);
       return { name: "", type: e.type };

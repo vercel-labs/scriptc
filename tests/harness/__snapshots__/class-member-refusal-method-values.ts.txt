@@ -80,12 +80,12 @@ class-member-refusal-method-values.ts:64:20 - error SC2004: uses of 'Drum.play' 
 
   hint: the declaration of 'Drum.play' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusal-method-values.ts:74:9 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+class-member-refusal-method-values.ts:74:9 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
   73 | class Shy extends Sensor {
-  74 |   watch(target: WeakRef<object>): number {
+  74 |   watch(target: BigInt64Array<ArrayBuffer>): number {
      |         ^~~~~~
-  75 |     return target.deref() === undefined ? 0 : 1;
+  75 |     return target.length === 0 ? 0 : 1;
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 

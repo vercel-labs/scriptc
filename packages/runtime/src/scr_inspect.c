@@ -4374,8 +4374,10 @@ ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
  * encoding: `Unknown encoding: %s`, the value rendered as util.format
  * renders an argument (so a Buffer's contents, a class's String, an
  * object's inspection). +1, or NULL with the exception pending when the
- * rendering calls program code that throws. scr_stream.c, which links
- * without this unit, reaches it through the slot below. */
+ * rendering calls program code that throws. This unit's definition is strong,
+ * so it replaces the weak String() default in scr_json.c wherever a program
+ * that uses streams links this unit; scr_stream.c calls the builder directly,
+ * and the units do not reference each other. */
 ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) {
   /* format's %s prints String(value) for a value whose class has a
    * built-in toString: a Buffer and a numeric typed array do (their
@@ -4398,16 +4400,6 @@ ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) {
   ScrStr *message = scr_insp_format(args, 2, &options);
   scr_dyn_release(args[0]);
   return message;
-}
-
-/* The stream unit's way to this builder (scr_inspect.h): a slot in
- * scr_json.c, which every executable links, so neither this unit nor
- * scr_stream.c leaves an undefined reference in the other's link — Darwin's
- * linker refuses an undefined weak reference, which one declaration used to
- * leave in every stream program. Runs before main, so a stream program's
- * first encoding error already sees the renderer. */
-__attribute__((constructor)) static void insp_install_unknown_encoding(void) {
-  scr_insp_unknown_encoding_fn = scr_insp_unknown_encoding_message;
 }
 
 /* The formatter over arguments that are all strings, numbers, booleans,

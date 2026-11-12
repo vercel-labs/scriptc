@@ -7458,11 +7458,11 @@ static bool scr_stream_custom_to_string(ScrDyn *value) {
 
 /* ERR_UNKNOWN_ENCODING formats the encoding with util.format's %s: a
  * number as JS ToString, a Buffer or an object with a built-in toString as
- * String(value), other objects as util.inspect at depth 0. The inspect unit
- * renders that text (scr_insp_unknown_encoding_fn, which its constructor
- * sets); a program whose stream use does not link the inspect unit leaves the
- * slot NULL, and the String() fallback below answers. A function has no
- * lowering. Always throws. */
+ * String(value), other objects as util.inspect at depth 0. The builder is
+ * the inspect unit's where the program links it and the String() default
+ * scr_json.c defines weakly where it does not, so no weak reference to an
+ * optional unit is left in this one. A function has no lowering. Always
+ * throws. */
 static void scr_stream_unknown_encoding(const ScrDyn *encoding) {
   ScrDyn *value = (ScrDyn *)encoding;
   if (value->kind == SCR_DYN_FUNC) {
@@ -7471,28 +7471,9 @@ static void scr_stream_unknown_encoding(const ScrDyn *encoding) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return;
   }
-  ScrStr *message;
-  if (scr_insp_unknown_encoding_fn) {
-    message = scr_insp_unknown_encoding_fn(value);
-    /* NULL: the rendering called program code that threw. */
-    if (!message) return;
-  } else {
-    ScrStr *text;
-    if (value->kind == SCR_DYN_NUM) {
-      char buf[40];
-      size_t n = scr_f64_to_str(value->v.num, buf);
-      text = scr_str_new(buf, n);
-    } else {
-      text = scr_dyn_string_coerce_js(value);
-    }
-    if (!text) return;
-    ScrJsonBuf b;
-    scr_jb_init(&b);
-    scr_jb_puts(&b, "Unknown encoding: ");
-    scr_jb_put_str(&b, text);
-    scr_str_release(text);
-    message = scr_jb_finish(&b);
-  }
+  ScrStr *message = scr_insp_unknown_encoding_message(value);
+  /* NULL: the rendering called program code that threw. */
+  if (!message) return;
   scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
   scr_str_release(message);
 }

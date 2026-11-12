@@ -1,9 +1,8 @@
 /* The three-argument writeFileSync forms whose options record is a `const`
- * binding. The lowering inlines the record's literal values at the write
- * site, so it accepts the binding only when the record is readonly: Node
- * reads the record when the call runs, and a mutable record may have
- * changed since its initializer (`OPTS.mode = 0o644` must reach the
- * write). */
+ * binding. The lowering inlines a readonly record's literal values at the
+ * write site; a mutable one takes the stored-record path instead, which
+ * reads the fields when the call runs, so `OPTS.mode = 0o644` reaches the
+ * write the way it does in Node. */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,20 +74,13 @@ fs.appendFileSync("scratch.json", "{}", { flag, mode: 0o600 });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
 });
 
-test("a MUTABLE const record fences: its mode may change before the call", async () => {
+test("a MUTABLE const record lowers through the stored-record read: its mode may change before the call", async () => {
   const result = await compileSource(`import * as fs from "node:fs";
 const OPTS: { encoding: "utf-8"; mode: number } = { encoding: "utf-8", mode: 0o600 };
 OPTS.mode = 0o644;
 fs.writeFileSync("scratch.json", "{}", OPTS);
 `);
-  expect(result.ok).toBe(false);
-  if (result.ok) throw new Error("expected the write options fence");
-  expect(result.diagnostics).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        message: expect.stringContaining("writeFileSync with 3 arguments"),
-      }),
-    ]),
-  );
-  expect(result.diagnostics.some((diagnostic) => diagnostic.code === "SC9001")).toBe(false);
+  // The record is not inlined (its fields are mutable), so the write reads
+  // them at the call, after the assignment: no fence.
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
 });

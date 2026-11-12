@@ -17,7 +17,17 @@ function attempt(label, run) {
     log(label, 'threw', shown(error));
   }
 }
-const writeCallback = (label) => (error) => log(label, 'callback', error ? shown(error) : 'null');
+const writeCallback = (label, done) => (error) => {
+  log(label, 'callback', error ? shown(error) : 'null');
+  if (done) done();
+};
+// The calls that do real asynchronous work are awaited one at a time: Node's
+// order for concurrent writes to one file depends on the threadpool, so the
+// printed order would otherwise differ between runs of the same program.
+const settled = (label, start) =>
+  new Promise((resolve) => {
+    attempt(label, () => start(() => resolve(undefined)));
+  });
 const write = (file, data, options) =>
   new Promise((resolve) => {
     const callback = (error) => {
@@ -39,14 +49,20 @@ async function main() {
     attempt('options number', () => fs.writeFile(file, 'x', 42, writeCallback('options number')));
     attempt('options boolean', () => fs.writeFile(file, 'x', true, writeCallback('options boolean')));
     // Any object is a record with no keys of its own: typeof is the test.
-    attempt('options promise', () => fs.writeFile(file, 'x', new Promise(() => {}), writeCallback('options promise')));
-    attempt('options array', () => fs.writeFile(file, 'x', [null], writeCallback('options array')));
+    await settled('options promise', (done) =>
+      fs.writeFile(file, 'x', new Promise(() => {}), writeCallback('options promise', done)),
+    );
+    await settled('options array', (done) =>
+      fs.writeFile(file, 'x', [null], writeCallback('options array', done)),
+    );
     attempt('options string name', () => fs.writeFile(file, 'x', 'zzz', writeCallback('string name')));
     attempt('options string buffer', () => fs.writeFile(file, 'x', 'buffer', writeCallback('string buffer')));
     attempt('flush number', () => fs.writeFile(file, 'x', { flush: 1 }, writeCallback('flush number')));
     attempt('flush string', () => fs.writeFile(file, 'x', { flush: 'no' }, writeCallback('flush string')));
     attempt('encoding name', () => fs.writeFile(file, 'x', { encoding: 'zzz' }, writeCallback('encoding name')));
-    attempt('encoding null', () => fs.writeFile(file, 'x', { encoding: null }, writeCallback('encoding null')));
+    await settled('encoding null', (done) =>
+      fs.writeFile(file, 'x', { encoding: null }, writeCallback('encoding null', done)),
+    );
     attempt('signal number', () => fs.writeFile(file, 'x', { signal: 7 }, writeCallback('signal number')));
     attempt('data number', () => fs.writeFile(file, 42, writeCallback('data number')));
     attempt('data object', () => fs.writeFile(file, {}, writeCallback('data object')));

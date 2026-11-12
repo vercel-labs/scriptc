@@ -21,6 +21,18 @@ try {
   fs.writeFileSync(file, "one", create);
   console.log("created", fs.readFileSync(file, "utf8"), (fs.statSync(file).mode & 0o777).toString(8));
 
+  // A mutable record is read at the call, not at its initializer: a field
+  // assigned in between reaches the write, and only a file this call
+  // creates takes the mode.
+  const mutable = { mode: 0o600 };
+  mutable.mode = 0o700;
+  const created = path.join(directory, "created.txt");
+  fs.writeFileSync(created, "m", mutable);
+  console.log("mutated mode", (fs.statSync(created).mode & 0o777).toString(8));
+  mutable.mode = 0o644;
+  fs.writeFileSync(created, "m", mutable);
+  console.log("existing keeps its mode", (fs.statSync(created).mode & 0o777).toString(8));
+
   const appendFlag = { flag: "a" as string };
   fs.appendFileSync(file, "+two", appendFlag);
   console.log("appended", fs.readFileSync(file, "utf8"));

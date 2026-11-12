@@ -12314,9 +12314,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12337,9 +12337,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12360,9 +12360,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12383,9 +12383,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {

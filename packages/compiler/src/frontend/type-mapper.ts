@@ -6404,6 +6404,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // crypto.Certificate — the SPKAC class. Node's instance holds no state
+  // (every method reads its argument and ignores the receiver), so the
+  // class lowers to the empty record: String(), typeof, Object.keys(),
+  // spread and JSON.stringify see what Node's object shows (Node's
+  // inspect prints "Certificate {}", which an empty record does not).
+  // Module-checked like X509Certificate.
+  if (
+    psym !== undefined &&
+    psymName === "Certificate" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return { kind: "record", shapeId: ctx.shapes.intern([], false, undefined, []) };
+  }
   // perf_hooks' PerformanceEntry, PerformanceMark and PerformanceMeasure
   // (performance.mark/measure and the getEntries family): ONE record shape
   // for the three classes, so marks and measures share PerformanceEntry[]

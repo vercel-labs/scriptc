@@ -1646,6 +1646,17 @@ function buildLibFnSignatures() {
     "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
     "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
+    /** crypto.Certificate's SPKAC methods (scr_pki.c), over the spkac
+     * argument and its optional encoding: the base64 text decodes as
+     * NETSCAPE_SPKI_b64_decode does (EVP_DecodeBlock, then d2i), and a
+     * string decodes as Buffer.from does. verifySpkac checks the signature
+     * against the key the SPKAC itself carries; exportChallenge copies the
+     * challenge, exportPublicKey writes the key's PEM. Input no decoder
+     * accepts answers false or an empty Buffer (Node answers an empty
+     * string). */
+    "crypto.spkacVerify": { argTypes: [DYN, DYN], result: BOOL },
+    "crypto.spkacChallenge": { argTypes: [DYN, DYN], result: BYTES_U8 },
+    "crypto.spkacPublicKey": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "fs.closeSync": { argTypes: [F64], result: VOID },
     "stats.isFile": { argTypes: [STATS_T], result: BOOL },
     "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },

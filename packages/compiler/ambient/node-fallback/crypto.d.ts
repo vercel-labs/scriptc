@@ -992,6 +992,20 @@ declare module "crypto" {
     multiLabelWildcards?: boolean;
     singleLabelSubdomains?: boolean;
   }
+  /* The SPKAC class. Node's instance carries no state — every method reads
+   * its argument — so the class lowers to the empty record; the methods
+   * take the base64 SPKAC text (a string decodes with the optional
+   * encoding as Buffer.from does, views and ArrayBuffers are their bytes)
+   * and answer Node's Buffer, or an empty Buffer for input no SPKAC
+   * decoder accepts (Node answers an empty string there). */
+  export class Certificate {
+    static exportChallenge(spkac: BinaryLike, encoding?: string): Buffer;
+    static exportPublicKey(spkac: BinaryLike, encoding?: string): Buffer;
+    static verifySpkac(spkac: BinaryLike): boolean;
+    exportChallenge(spkac: BinaryLike, encoding?: string): Buffer;
+    exportPublicKey(spkac: BinaryLike, encoding?: string): Buffer;
+    verifySpkac(spkac: BinaryLike): boolean;
+  }
   /* The crypto introspection statics: getFips() answers 0 (a compiled
    * binary is never a FIPS build), the three name lists bake as fresh
    * string[] literals of Node v24 answers, and constants (below) bakes

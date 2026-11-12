@@ -12290,6 +12290,42 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return x509RecordCall(lowerer, data, t, loc);
     }
   }
+  // `new crypto.Certificate()` — the SPKAC class. Its instance holds no
+  // state (Node's methods read their argument), so the value is the empty
+  // record that mapType interns for the class; builtins/certificate.ts
+  // lowers the three methods against the argument alone.
+  {
+    const callee = expr.expression;
+    const isCertificate =
+      (ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "Certificate" &&
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
+      (ts.isIdentifier(callee) &&
+        (() => {
+          const bi = lowerer.builtinImportOf(callee);
+          return bi?.module === "crypto" && bi.member === "Certificate";
+        })());
+    if (isCertificate) {
+      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
+      const value = { kind: "recordLit" as const, fields: [], type: t, loc };
+      if (args.length === 0) return value;
+      // Node's constructor ignores its arguments, but still evaluates
+      // them; keep that so a throwing argument throws here too.
+      return {
+        kind: "seqExpr",
+        stmts: args.map((a) => ({
+          kind: "exprStmt" as const,
+          expr: lowerer.lowerExpr(a),
+          loc: locOf(a),
+        })),
+        result: value,
+        type: t,
+        loc,
+      };
+    }
+  }
   if (
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&

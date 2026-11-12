@@ -415,5 +415,15 @@ ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der);
 ScrDyn *scr_crypto_x509_public_key(ScrBytes *der);
 bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key);
 bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key);
+/* crypto.Certificate's SPKAC methods over the spkac argument (a string,
+ * decoded with `encoding` as Buffer.from does, or a view/ArrayBuffer) as
+ * NETSCAPE_SPKI_b64_decode reads it (scr_pki.c). verifySpkac answers false
+ * for input no decoder accepts and for a signature the SPKAC's own key
+ * does not verify; the two exports answer a fresh Buffer, empty for that
+ * input (Node answers an empty string). All three throw Node's argument
+ * errors. */
+bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding);
+ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding);
+ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding);
 
 #endif /* SCR_CRYPTO_H */

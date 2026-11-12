@@ -147,6 +147,7 @@ import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import { lowerCertificateCall } from "./builtins/certificate.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
 import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
@@ -22238,6 +22239,7 @@ export class Lowerer {
       lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerX509Call(this, expr) ??
+      lowerCertificateCall(this, expr) ??
       lowerEcdhCall(this, expr) ??
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??

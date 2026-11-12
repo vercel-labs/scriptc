@@ -755,6 +755,13 @@ function publicDetail(tier) {
     if (source === "compiler-feature:crypto.constants") {
       return "Each crypto.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
     }
+    if (
+      /^compiler-feature:crypto\.(?:Certificate|certificate\.(?:exportChallenge|exportPublicKey|verifySpkac))$/.test(
+        source,
+      )
+    ) {
+      return "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.";
+    }
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";
     }

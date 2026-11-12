@@ -993,6 +993,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   "crypto.diffieHellman",
 ]);
 

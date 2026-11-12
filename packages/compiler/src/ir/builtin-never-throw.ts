@@ -108,6 +108,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_crypto_secure_heap_used builds a fresh record of constants (0, 0,
   // NaN, 2); no accessor runs and running out of memory ends the process.
   "crypto.secureHeapUsed",
+  // scr_crypto_x509_key_usage reads the certificate's extended key usage
+  // extension: a certificate without one answers undefined and a malformed
+  // extension is skipped, so no program-visible error is raised.
+  "crypto.x509KeyUsage",
   // The header-limit properties are plain storage: the getters retain the
   // stored value (or answer null / 0) and the setters retain the new value
   // and release the old one. No accessor, coercion or listener runs, and

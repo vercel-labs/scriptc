@@ -6394,3 +6394,295 @@ bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key) {
   sp_key_release(cert);
   return same;
 }
+
+/* ── SPKAC (crypto.Certificate) ──────────────────────────────────────────
+ * NETSCAPE_SPKI ::= SEQUENCE { spkac NETSCAPE_SPKAC, sig_algor
+ * AlgorithmIdentifier, signature BIT STRING }, and NETSCAPE_SPKAC ::=
+ * SEQUENCE { pubkey SubjectPublicKeyInfo, challenge IA5String }.
+ * NETSCAPE_SPKI_b64_decode runs EVP_DecodeBlock and then d2i, so the text
+ * is bare base64 with OpenSSL's trimming and the decoded bytes must hold a
+ * complete NETSCAPE_SPKI whose pubkey field parses too (bytes after it are
+ * ignored). Verification is NETSCAPE_SPKI_verify: the signature over the
+ * re-encoded NETSCAPE_SPKAC, checked with the key the SPKAC itself
+ * carries. The SPKAC tool signs with RSA and one of the RSA PKCS#1
+ * digests (MD5 by default), which is what this implements. */
+
+typedef struct {
+  const unsigned char *spkac;
+  size_t spkac_len;
+  const unsigned char *spki;
+  size_t spki_len;
+  const unsigned char *challenge;
+  size_t challenge_len;
+  const unsigned char *alg;
+  size_t alg_len;
+  const unsigned char *sig;
+  size_t sig_len;
+} SpSpkac;
+
+/* OpenSSL's data_ascii2bin: a base64 digit 0-63, a character
+ * EVP_DecodeBlock trims (space and tab at the start, space, tab, newline,
+ * carriage return and '-' at the end), or 0xFF for anything else. */
+static unsigned char sp_spkac_b64(unsigned char c) {
+  if (c >= 'A' && c <= 'Z') return (unsigned char)(c - 'A');
+  if (c >= 'a' && c <= 'z') return (unsigned char)(c - 'a' + 26);
+  if (c >= '0' && c <= '9') return (unsigned char)(c - '0' + 52);
+  switch (c) {
+  case '+': return 62;
+  case '/': return 63;
+  case '=': return 0;
+  case ' ': case '\t': return 0xE0;
+  case '\n': return 0xF0;
+  case '\r': return 0xF1;
+  case '-': return 0xF2;
+  default: return 0xFF;
+  }
+}
+
+/* EVP_DecodeBlock as NETSCAPE_SPKI_b64_decode calls it: leading spaces and
+ * tabs trim, trailing spaces, tabs, newlines, carriage returns and '-'s
+ * strip while more than three characters remain, the length must be a
+ * multiple of four, and every group of four yields three bytes ('='
+ * decodes as a zero digit, so padding becomes zero bytes). NULL when
+ * OpenSSL refuses, and for no content at all. */
+static unsigned char *sp_spkac_b64_decode(const unsigned char *text, size_t len, size_t *out_len) {
+  while (len > 0 && sp_spkac_b64(*text) == 0xE0) {
+    text++;
+    len--;
+  }
+  while (len > 3 && (sp_spkac_b64(text[len - 1]) | 0x13) == 0xF3) len--;
+  if (len == 0 || len % 4 != 0) return NULL;
+  unsigned char *out = malloc(len / 4 * 3);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t o = 0;
+  for (size_t i = 0; i < len; i += 4) {
+    unsigned a = sp_spkac_b64(text[i]), b = sp_spkac_b64(text[i + 1]);
+    unsigned c = sp_spkac_b64(text[i + 2]), d = sp_spkac_b64(text[i + 3]);
+    if ((a | b | c | d) & 0x80) {
+      free(out);
+      return NULL;
+    }
+    unsigned long l = (a << 18) | (b << 12) | (c << 6) | d;
+    out[o++] = (unsigned char)(l >> 16) & 0xff;
+    out[o++] = (unsigned char)(l >> 8) & 0xff;
+    out[o++] = (unsigned char)l & 0xff;
+  }
+  *out_len = o;
+  return out;
+}
+
+/* The SubjectPublicKeyInfo field's own shape, which d2i_X509_PUBKEY
+ * checks while it decodes the NETSCAPE_SPKAC: SEQUENCE {
+ * AlgorithmIdentifier, BIT STRING }. */
+static bool sp_spkac_spki_parses(const unsigned char *spki, size_t len) {
+  unsigned char *q = (unsigned char *)spki;
+  const unsigned char *end = spki + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&q, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *spki_end = q + n;
+  /* The AlgorithmIdentifier: a SEQUENCE of the OID and an optional
+   * parameter. */
+  size_t ai_len;
+  if (mbedtls_asn1_get_tag(&q, spki_end, &ai_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *alg_end = q + ai_len;
+  size_t oid_len;
+  if (mbedtls_asn1_get_tag(&q, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return false;
+  q += oid_len;
+  if (q < alg_end) {
+    size_t p_len;
+    unsigned char tag = *q;
+    if (mbedtls_asn1_get_tag(&q, alg_end, &p_len, tag) != 0) return false;
+    q += p_len;
+  }
+  if (q != alg_end) return false;
+  q = (unsigned char *)alg_end;
+  size_t bits;
+  if (mbedtls_asn1_get_tag(&q, spki_end, &bits, MBEDTLS_ASN1_BIT_STRING) != 0) return false;
+  if (bits < 1 || *q > 7) return false;
+  q += bits;
+  return q == end;
+}
+
+/* The decoded text as a NETSCAPE_SPKI, or false. `der` answers the decoded
+ * bytes the struct points into (the caller frees it); NULL when the text
+ * does not decode. */
+static bool sp_spkac_parse(const unsigned char *text, size_t len, unsigned char **der, SpSpkac *s) {
+  size_t der_len = 0;
+  *der = sp_spkac_b64_decode(text, len, &der_len);
+  if (!*der) return false;
+  memset(s, 0, sizeof *s);
+  unsigned char *p = *der;
+  const unsigned char *end = p + der_len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *outer_end = p + n;
+  s->spkac = p;
+  size_t spkac_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &spkac_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *spkac_end = p + spkac_len;
+  s->spkac_len = (size_t)(spkac_end - s->spkac);
+  s->spki = p;
+  size_t spki_len;
+  if (mbedtls_asn1_get_tag(&p, spkac_end, &spki_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  s->spki_len = (size_t)(p + spki_len - s->spki);
+  if (!sp_spkac_spki_parses(s->spki, s->spki_len)) return false;
+  p += spki_len;
+  size_t challenge_len;
+  if (mbedtls_asn1_get_tag(&p, spkac_end, &challenge_len, MBEDTLS_ASN1_IA5_STRING) != 0) return false;
+  s->challenge = p;
+  s->challenge_len = challenge_len;
+  p += challenge_len;
+  if (p != spkac_end) return false;
+  s->alg = p;
+  size_t alg_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  s->alg_len = (size_t)(p + alg_len - s->alg);
+  p += alg_len;
+  size_t sig_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &sig_len, MBEDTLS_ASN1_BIT_STRING) != 0 || sig_len < 1) return false;
+  s->sig = p + 1;
+  s->sig_len = sig_len - 1;
+  p += sig_len;
+  return p == outer_end;
+}
+
+/* getArrayBufferOrView(spkac, 'spkac', encoding): a string decodes as
+ * Buffer.from does (a non-string encoding, "" and "buffer" read as UTF-8,
+ * an unknown name throws), views and ArrayBuffers are their bytes. +1,
+ * or NULL with Node's argument error pending. */
+static ScrBytes *sp_spkac_input(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrDyn *value = spkac;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    value = scr_dyn_typed_ref_materialize(spkac);
+    if (!value) return NULL;
+  }
+  ScrBytes *bytes = NULL;
+  if (value->kind == SCR_DYN_STR) {
+    const ScrStr *name = encoding->kind == SCR_DYN_STR ? encoding->v.str : NULL;
+    ScrStr *normalized = NULL;
+    if (name && (name->len == 0 || (name->len == 6 && memcmp(name->data, "buffer", 6) == 0))) name = NULL;
+    if (name) {
+      normalized = scr_bytes_normalize_encoding(name);
+      if (normalized) name = normalized;
+    }
+    if (!name || normalized) {
+      ScrStr *utf8 = name ? NULL : scr_str_new("utf8", 4);
+      bytes = scr_bytes_from_str(value->v.str, name ? name : utf8);
+      if (utf8) scr_str_release(utf8);
+    }
+    if (normalized) scr_str_release(normalized);
+  } else if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value)) {
+    bytes = scr_bytes_buffer_source(value);
+  } else {
+    scr_dyn_arg_type_fail("spkac", "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", value);
+  }
+  if (value != spkac) scr_dyn_release(value);
+  return bytes;
+}
+
+/* Node's CheckSizeInt32, after its empty-input test: a decoded spkac
+ * longer than int32 throws ERR_OUT_OF_RANGE. Answers whether to go on
+ * (false with the error pending). */
+static bool sp_spkac_size_ok(size_t len) {
+  if (len <= (size_t)INT32_MAX) return true;
+  scr_throw_error_msg_code(SCR_ERR_RANGE, "spkac is too large", 16, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return false;
+  SCR_BYTES_SNAPSHOT(input);
+  size_t len = (size_t)scr_bytes_byte_len(input);
+  bool verified = false;
+  unsigned char *der = NULL;
+  SpSpkac s;
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(input->data, len, &der, &s)) {
+    unsigned char *p = (unsigned char *)s.alg;
+    const unsigned char *end = s.alg + s.alg_len;
+    size_t n;
+    if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) == 0) {
+      size_t oid_len;
+      if (mbedtls_asn1_get_tag(&p, p + n, &oid_len, MBEDTLS_ASN1_OID) == 0) {
+        static const unsigned char rsa_prefix[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01};
+        if (oid_len == sizeof rsa_prefix + 1 && memcmp(p, rsa_prefix, sizeof rsa_prefix) == 0) {
+          mbedtls_md_type_t md = p[sizeof rsa_prefix] == 4 ? MBEDTLS_MD_MD5 : sp_x509_rsa_md(p[sizeof rsa_prefix]);
+          mbedtls_pk_context pk;
+          mbedtls_pk_init(&pk);
+          if (md != MBEDTLS_MD_NONE && mbedtls_pk_parse_public_key(&pk, s.spki, s.spki_len) == 0 &&
+              mbedtls_pk_get_type(&pk) == MBEDTLS_PK_RSA) {
+            const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+            if (info) {
+              unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+              mbedtls_md(info, s.spkac, s.spkac_len, hash);
+              verified = mbedtls_pk_verify(&pk, md, hash, mbedtls_md_get_size(info), s.sig, s.sig_len) == 0;
+            }
+          }
+          mbedtls_pk_free(&pk);
+        }
+      }
+    }
+  }
+  free(der);
+  scr_bytes_release(input);
+  return verified;
+}
+
+ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return NULL;
+  SCR_BYTES_SNAPSHOT(input);
+  size_t len = (size_t)scr_bytes_byte_len(input);
+  unsigned char *der = NULL;
+  SpSpkac s;
+  bool parsed = false;
+  if (len > 0 && sp_spkac_size_ok(len)) parsed = sp_spkac_parse(input->data, len, &der, &s);
+  /* ASN1_STRING_to_UTF8: an IA5String's bytes become UTF-8, so a byte
+   * with the high bit set takes two bytes. */
+  size_t out_len = 0;
+  for (size_t i = 0; parsed && i < s.challenge_len; i++) out_len += s.challenge[i] < 0x80 ? 1 : 2;
+  ScrBytes *out = scr_buffer_alloc_unsafe_slow((double)out_len);
+  size_t o = 0;
+  for (size_t i = 0; parsed && i < s.challenge_len; i++) {
+    unsigned char c = s.challenge[i];
+    if (c < 0x80) {
+      out->data[o++] = c;
+    } else {
+      out->data[o++] = (unsigned char)(0xC0 | (c >> 6));
+      out->data[o++] = (unsigned char)(0x80 | (c & 0x3F));
+    }
+  }
+  free(der);
+  scr_bytes_release(input);
+  return out;
+}
+
+ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return NULL;
+  SCR_BYTES_SNAPSHOT(input);
+  size_t len = (size_t)scr_bytes_byte_len(input);
+  unsigned char *der = NULL;
+  SpSpkac s;
+  ScrStr *pem = NULL;
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(input->data, len, &der, &s)) {
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    if (mbedtls_pk_parse_public_key(&pk, s.spki, s.spki_len) == 0) {
+      unsigned char *buf = malloc(SP_DER_MAX);
+      if (!buf) scr_trap("scriptc: out of memory\n");
+      int n = mbedtls_pk_write_pubkey_der(&pk, buf, SP_DER_MAX);
+      if (n > 0) pem = sp_pem("PUBLIC KEY", buf + SP_DER_MAX - n, (size_t)n);
+      free(buf);
+    }
+    mbedtls_pk_free(&pk);
+  }
+  ScrBytes *out = scr_buffer_alloc_unsafe_slow(pem ? (double)pem->len : 0.0);
+  if (pem) {
+    memcpy(out->data, pem->data, pem->len);
+    scr_str_release(pem);
+  }
+  free(der);
+  scr_bytes_release(input);
+  return out;
+}

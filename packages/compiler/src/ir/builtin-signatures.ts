@@ -3994,6 +3994,17 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: BYTES_U8 },
     },
     "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+    /** Node's `info: true` results: the same one-shot runs, answering the
+     * { buffer, engine } checked object instead of the Buffer. The Cb form
+     * hands its (Error | null, { buffer, engine }) callback the checked
+     * value; the promise form settles with it. The Dyn twins take the JS
+     * lane's untyped data. */
+    "zlib.infoSync": { argTypes: [F64, BYTES_U8, DYN], result: DYN },
+    "zlib.infoCb": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+    "zlib.infoSyncDyn": { argTypes: [F64, DYN, DYN], result: DYN },
+    "zlib.infoCbDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+    "zlib.infoPromise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: DYN } },
+    "zlib.infoPromiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: DYN } },
     /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
      * streamNew takes Node's node_zlib_mode number and the options value
      * (undefined when absent), validates it with Node's ladder, and answers

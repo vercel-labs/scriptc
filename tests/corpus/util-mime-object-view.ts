@@ -24,6 +24,14 @@ mime.params.delete("charset");
 console.log(String(mime));
 console.log([...mime.params].map(([k, v]) => k + "=" + v).join(","));
 
+// A method read without a call is the class's function, and Node's aliases
+// share one function: `toJSON` is `toString`, and `Symbol.iterator` is
+// `entries`, so iterating through the symbol method runs `entries`.
+console.log(mime.toJSON === mime.toString, mime.params.toJSON === mime.params.toString);
+console.log(mime.params[Symbol.iterator] === mime.params.entries, mime.params.entries === mime.params.values);
+console.log(mime.toJSON.name, mime.params.toJSON.name);
+console.log([...mime.params[Symbol.iterator]()].map(([k, v]) => k + "=" + v).join("|"));
+
 // A record shape accepts the handle's own getters and methods.
 const typeOf = (value: { type: string; subtype: string; essence: string }): string =>
   value.type + "/" + value.subtype + "=" + value.essence;

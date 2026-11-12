@@ -130,10 +130,5 @@ void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer);
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)
  * unless the ops throw "not supported yet" for it. +1, or NULL with a pending exception. */
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k);
-/* The method `name` of the tag's class as a function value (+1), or NULL
- * when the class has no such method: the same value a keyed read answers,
- * so a symbol-keyed read that aliases a method (MIMEParams
- * [Symbol.iterator] is entries) answers the very function. */
-ScrDyn *scr_dyn_handle_method_value(ScrDynHandleTag tag, const char *name);
 
 #endif /* SCR_BLOB_H */

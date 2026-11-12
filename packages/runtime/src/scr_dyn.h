@@ -1409,9 +1409,6 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
 const ScrDyn *scr_dyn_to_string_tag_symbol(void);
 /* Whether key is Symbol.asyncIterator. */
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
-/* Whether key is Symbol.iterator (registered by the symbol unit when the
- * program names it); handle symbol_get ops outside that unit use it. */
-bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
 ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when

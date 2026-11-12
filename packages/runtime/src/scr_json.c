@@ -9131,12 +9131,6 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
   }
 }
 
-/* scr_blob.h: the same value a keyed read of `name` answers (+1, NULL when
- * the class has no such method), for a symbol-keyed read that aliases it. */
-ScrDyn *scr_dyn_handle_method_value(ScrDynHandleTag tag, const char *name) {
-  return scr_dynh_method_value(tag, scr_dyn_handle_ops(tag), name, strlen(name));
-}
-
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDynHandleTag tag = d->v.handle.tag;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
@@ -11171,8 +11165,14 @@ static ScrDyn *scr_builtin_iterator_method(const ScrDyn *value) {
   if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value))) return scr_dyn_array_values_function();
   if (value->kind == SCR_DYN_BYTES) return scr_iterator_function(2, &scr_builtin_bytes_iterator_call, "values");
   if (value->kind == SCR_DYN_STR) return scr_iterator_function(3, &scr_builtin_string_iterator_call, "[Symbol.iterator]");
-  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET || scr_dyn_handle_ops_of(value)->iter_pack || scr_dyn_handle_ops_of(value)->iter_step))
-    return scr_iterator_function(6, &scr_handle_iterator_call, "[Symbol.iterator]");
+  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET || scr_dyn_handle_ops_of(value)->iter_pack || scr_dyn_handle_ops_of(value)->iter_step)) {
+    /* Node's iterable classes make [Symbol.iterator] the entries function
+     * itself (`params[Symbol.iterator] === params.entries`), so a class
+     * that answers entries as a value answers that same function here. */
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
+    ScrDyn *entries = scr_dynh_method_value(value->v.handle.tag, ops, "entries", 7);
+    return entries ? entries : scr_iterator_function(6, &scr_handle_iterator_call, "[Symbol.iterator]");
+  }
   return scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]");
 }
 
@@ -11446,18 +11446,13 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
     return NULL;
   }
-  /* A handle's own symbol-keyed members answer first: a class whose
-   * Symbol.iterator is a prototype method (`params[Symbol.iterator] ===
-   * params.entries`) must read that very function, not the generic
-   * iterator the built-in-iterable path builds. A hook that answers NULL
-   * leaves the read to the built-in path, as before. */
+  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
+  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
   if (value->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
     if (member || scr_exc_pending()) return member;
   }
-  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
-  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
   ScrDyn *table = scr_dyn_symbol_receiver(value);
   if (!table && scr_exc_pending()) return NULL;
   ScrDynEntry *entry = table ? scr_dyn_symbol_entry(table, key, false) : NULL;
@@ -25161,11 +25156,6 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
-}
-
-bool scr_dyn_is_iterator_symbol(const ScrDyn *key) {
-  return scr_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
-         key->v.symbol.value == scr_iterator_symbol->v.symbol.value;
 }
 
 /* Whether native record `rec` answers reflection from its declared fields

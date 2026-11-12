@@ -193,3 +193,23 @@ NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/exp
 ```
 
 The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.
+## Dual-run testing
+
+`@scriptc/experimental/dual-run` runs a test file twice, once under Node.js and once as the executable scriptc builds, and compares the runs: test names, pass and fail results, assertion messages, program output and the exit code, with durations and stack frames normalized away. It is Node.js tooling, so a scriptc-built program cannot call it, and a compiled program never needs to.
+
+```ts
+import { dualRun } from "@scriptc/experimental/dual-run";
+
+const result = await dualRun("test/format.test.ts");
+if (!result.equal) throw new Error(result.diff);
+```
+
+`dualRun(entry, { args, stdin, env, cwd, timeoutMs })` returns `{ node, native, equal, diff }`, where each run has `stdout`, `stderr` and `exitCode`. A program that does not compile rejects with a `DualRunBuildError` whose `stderr` holds the diagnostics.
+
+The `@scriptc/experimental/dual-run/reporter` subpath is a Node.js test reporter that does the same for every file `node --test` runs:
+
+```console
+$ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+```
+
+It prints one line per file, shows a diff when the two runs differ, reports a file whose Node.js output itself varies as flaky, and fails the run on a difference. Both forms build through the `scriptc` command and its executable cache, found from `SCRIPTC_BIN`, `node_modules/.bin` or `PATH`. See [dual-run testing](https://scriptc.dev/docs/dual-run).

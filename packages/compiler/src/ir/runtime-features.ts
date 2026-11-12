@@ -444,6 +444,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  // Object.prototype.isPrototypeOf's walk and Function.prototype as a
+  // value live in scr_dyn_invoke.c.
+  "dyn.isPrototypeOf",
+  "dyn.functionPrototype",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
@@ -461,6 +465,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
   "toString",
   "valueOf",

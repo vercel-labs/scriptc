@@ -1756,7 +1756,8 @@ test("a refusal in a function called where it is written makes its package a Nod
   // An async body starts at its call but a refusal there follows its first
   // await, so it rejects a promise instead of throwing where the module
   // evaluates. The awaited promise never settles, which keeps the refusal
-  // off the path this program takes.
+  // off the path this program takes. Its fiber is never resumed either, so a
+  // sanitized build reports a skipped audit on stderr, as for the generator.
   writePackage("async-body", "module", [
     "const pending = (async () => {",
     "  await new Promise(() => {});",
@@ -1771,7 +1772,8 @@ test("a refusal in a function called where it is written makes its package a Nod
   if (!asyncBody.ok)
     expect.unreachable(asyncBody.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
   expect(islandNotes(asyncBody)).toEqual([]);
-  expect(await run(asyncBody.binaryPath, [])).toEqual({ stdout: "native\n", stderr: "", code: 0 });
+  const asyncRan = await run(asyncBody.binaryPath, []);
+  expect({ stdout: asyncRan.stdout, code: asyncRan.code }).toEqual({ stdout: "native\n", code: 0 });
 
   // An array iteration method calls its callback before returning, so a
   // refusal in that callback throws while the module evaluates too. This is

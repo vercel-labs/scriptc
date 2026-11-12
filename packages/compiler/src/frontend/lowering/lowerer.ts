@@ -155,6 +155,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
   lowerWebStreamNew,
@@ -310,6 +311,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { finalizeFunctionSourceText } from "./function-source-text.js";
 import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
@@ -592,6 +594,7 @@ import {
   lowerDerivedCtorBody,
   superCallStmt,
   lowerSuperMethodCall,
+  lowerSuperComputedMethodCall,
   superThisRef,
   lowerSuperAccessorRead,
   lowerSuperAccessorWrite,
@@ -4238,6 +4241,22 @@ export class Lowerer {
       : null;
   }
 
+  /** A class field the JS collector widened to an undefined-armed union
+   * under trust-but-verify (ClassInfo.runtimeOptionalFields): the declaring
+   * assignment wrote undefined, so a read the checker narrows to the
+   * inferred type must keep the STORED union — Node can hold the undefined
+   * the checker's later-write inference does not name. */
+  runtimeOptionalClassField(className: string, field: string): boolean {
+    for (
+      let info: ClassInfo | null | undefined = this.classes.get(className);
+      info;
+      info = info.base
+    ) {
+      if (info.runtimeOptionalFields?.has(field)) return true;
+    }
+    return false;
+  }
+
   /** A strict property or method receiver over an array-derived optional
    * value. Reuse a plain read directly or stabilize an effectful receiver
    * once, throw Node's member-read TypeError for a unit arm, and extract the
@@ -5103,6 +5122,12 @@ export class Lowerer {
    * constructors held as typed values. Given only in a program that prints
    * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
+  /** The source span the text of each lifted function is printed from, by
+   * function name: the text a boxed function prints as
+   * (function-source-text.ts). A span rather than the node keeps the entry
+   * recordable, and a name rather than the function keeps it the same
+   * function when a record replays the unit. */
+  readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5642,6 +5667,7 @@ export class Lowerer {
       functionTable("implicitFns", this.implicitFns, (fn) =>
         this.implicitFns.some((other) => other.name === fn),
       ),
+      irDataTable("functionSourceLocs", this.functionSourceLocs),
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
@@ -13304,6 +13330,7 @@ export class Lowerer {
     boxBuiltinValuesChecked(this, functions);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
+    finalizeFunctionSourceText(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -17918,8 +17945,18 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    strandUnrouted = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(
+      this,
+      fromId,
+      toId,
+      loc,
+      trappable,
+      classRoutes,
+      checked,
+      strandUnrouted,
+    );
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -18407,6 +18444,29 @@ export class Lowerer {
     if (!typeEquals(e.type, expected) && expected.kind === "union") {
       const routed = siteDiscriminantConversion(this, node, e, expected);
       if (routed) e = routed;
+    }
+    // A JavaScript value whose source union the destination cannot hold
+    // whole (`number | Vector3` into `Vector3 | undefined`): the checker
+    // records no narrowing for the guard the program wrote, but the run-time
+    // value is one of the arms. The arms the destination holds convert on
+    // their tag and the others throw the catchable TypeError at the
+    // conversion, the checked boundary every untyped JavaScript flow takes.
+    if (
+      !typeEquals(e.type, expected) &&
+      e.type.kind === "union" &&
+      expected.kind === "union" &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const helper = this.unionRetagHelper(
+        e.type.unionId,
+        expected.unionId,
+        e.loc,
+        undefined,
+        undefined,
+        false,
+        true,
+      );
+      if (helper) e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
     }
     this.requireExactShape(node, e.type, expected);
     return e;
@@ -22484,6 +22544,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
@@ -22524,6 +22585,13 @@ export class Lowerer {
 
   lowerSuperMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr {
     return lowerSuperMethodCall(this, call, access);
+  }
+
+  lowerSuperComputedMethodCall(
+    call: ts.CallExpression,
+    access: ts.ElementAccessExpression,
+  ): IrExpr {
+    return lowerSuperComputedMethodCall(this, call, access);
   }
 
   superThisRef(access: ts.PropertyAccessExpression): { thisRef: IrExpr; base: ClassInfo } {

@@ -119,12 +119,11 @@ const KNOWN: Record<string, Known> = {
   // The fixture builds a String and a Number wrapper, which used to refuse
   // with SC2020 and now compile: the case runs, but Node's
   // ERR_INVALID_ARG_TYPE names a wrapper's class (`an instance of String`)
-  // where the error formatter prints `Object`, and the program's own
-  // `String(functionValue)` prints `function () { [native code] }` for a
-  // named function where Node prints its source.
+  // where the error formatter prints `Object`. Every other line matches,
+  // function values' source text included.
   "node24-text-utilities": {
     divergence:
-      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`, and function values print without their source",
+      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`",
   },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },

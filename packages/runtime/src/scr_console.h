@@ -51,6 +51,12 @@ void scr_console_error(size_t n, const ScrLogArg *args);
  * runtime that does not understand them. */
 void scr_console_log_parts(size_t n, const ScrLogArg *args);
 void scr_console_error_parts(size_t n, const ScrLogArg *args);
+/* console.trace: "Trace" (then ": " and the formatted arguments) on stderr
+ * followed by the frames the call captured. The frames are scriptc's own
+ * function and file text (SEMANTICS.md divergence 11), as an uncaught
+ * Error's report has them; the line before them is Node's. Borrows. */
+void scr_console_trace(size_t n, const ScrLogArg *args);
+void scr_console_trace_parts(size_t n, const ScrLogArg *args);
 /* A Console instance's line on fd 1 or 2, without the global console's
  * group indentation, under the instance's ignoreErrors. */
 void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors);

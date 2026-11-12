@@ -563,6 +563,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const shapes = layouts.records;
   const classShapes = layouts.classes;
   const classObjDefs = layouts.classObjects;
+  // The function-source lookup the runtime prints a boxed function through
+  // (function-source-text.ts): rows keyed by link-time entry addresses, so
+  // the table is one of the module's definitions, and main installs it.
+  // Asked for here, before the wrappers are emitted (a row's entry is one),
+  // the string constants are, and the extern block flushes.
+  const fnSources = emitter.dyn.fnSourceTable();
   const wrappers = emitter.emitFnValueDefs();
   const asyncDefs = emitter.emitAsyncScaffolding();
   const ffiCallbacks = emitter.emitFfiCallbackDefs();
@@ -1379,6 +1385,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // The traces the weak analysis reads; overrides the runtime's weak, empty
   // default (scr_json.c).
   for (const line of weakTraceTable(emitter.weakTraces)) out.push(line);
+  if (fnSources !== null) {
+    // Declared inline: the extern block already flushed (the
+    // scr_error_set_traced precedent).
+    out.push(`declare void @scr_dyn_fn_source_install(ptr)`, ``);
+  }
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught
@@ -1482,6 +1493,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // nullable event hooks before %main — scr_events.c links only when
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
+    // The runtime prints a boxed function through the program's own source
+    // rows, so a program with any installs its lookup before %main runs.
+    ...(fnSources !== null
+      ? [`  call void @scr_dyn_fn_source_install(ptr @${fnSources.symbol})`]
+      : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
     ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
@@ -1520,7 +1536,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
-    // node:test takes Node's --test-update-snapshots out of argv first.
+    // node:test takes Node's runtime options (the snapshot update flag and
+    // the reporter options) out of argv first.
     ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]

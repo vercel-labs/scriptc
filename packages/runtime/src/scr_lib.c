@@ -197,12 +197,21 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
-/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
- * which process.execArgv reports; NULL without one. */
-static SCR_TL const char *scr_lib_exec_flag = NULL;
+/* Leading Node runtime flags taken out of process.argv (scr_lib_take_flag,
+ * scr_lib_take_flag_value) in the order they were taken; process.execArgv
+ * reports them, empty without any. A program sees at most a handful (the
+ * snapshot and reporter options), and a flag past the cap is still taken
+ * out of argv; it just does not appear in execArgv. Each flag is copied:
+ * setting process.title overwrites the original argument area on POSIX
+ * (libuv's proctitle), so a pointer into argv would not survive a program
+ * that renames itself before reading execArgv. */
+#define SCR_LIB_MAX_EXEC_FLAGS 8
+static SCR_TL const char *scr_lib_exec_flags[SCR_LIB_MAX_EXEC_FLAGS];
+static SCR_TL int scr_lib_exec_flag_count = 0;
 #if defined(_WIN32) && !defined(SCR_LIB)
-/* The flag's index in the original Windows command line, -1 without one. */
-static SCR_TL int scr_lib_exec_flag_index = -1;
+/* Each taken flag's index in the original Windows command line, in the
+ * same order: scr_lib_prepare_utf8_argv skips them when it rebuilds argv. */
+static SCR_TL int scr_lib_exec_flag_indexes[SCR_LIB_MAX_EXEC_FLAGS];
 #endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
@@ -370,7 +379,10 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
-    if (i == scr_lib_exec_flag_index) continue;
+    bool taken = false;
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
+      if (i == scr_lib_exec_flag_indexes[f]) taken = true;
+    if (taken) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -619,8 +631,10 @@ const char *scr_lib_arg(int i) {
   return scr_lib_argv[i];
 }
 
-bool scr_lib_take_flag(const char *flag) {
-  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+/* Drops process.argv[1], a leading runtime flag, and records it among the
+ * flags process.execArgv reports. Returns the recorded copy, or NULL when
+ * the flag cap is reached. */
+static const char *scr_lib_take_first_arg(const char *exec_flag) {
   char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
   if (!args) scr_trap("out of memory");
   args[0] = scr_lib_argv[0];
@@ -631,9 +645,35 @@ bool scr_lib_take_flag(const char *flag) {
   scr_lib_argv = args;
   scr_lib_argc--;
 #if defined(_WIN32) && !defined(SCR_LIB)
-  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+  if (scr_lib_exec_flag_count < SCR_LIB_MAX_EXEC_FLAGS)
+    scr_lib_exec_flag_indexes[scr_lib_exec_flag_count] =
+        (scr_lib_has_fork ? 2 : 1) + scr_lib_exec_flag_count;
 #endif
-  scr_lib_exec_flag = flag;
+  if (scr_lib_exec_flag_count >= SCR_LIB_MAX_EXEC_FLAGS) return NULL;
+  size_t size = strlen(exec_flag) + 1;
+  char *copy = malloc(size);
+  if (!copy) scr_trap("out of memory");
+  memcpy(copy, exec_flag, size);
+  scr_lib_exec_flags[scr_lib_exec_flag_count++] = copy;
+  return copy;
+}
+
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  scr_lib_take_first_arg(flag);
+  return true;
+}
+
+bool scr_lib_take_flag_value(const char *name, const char **value) {
+  if (scr_lib_argc < 2) return false;
+  const char *arg = scr_lib_argv[1];
+  size_t n = strlen(name);
+  if (strncmp(arg, name, n) != 0 || arg[n] != '=') return false;
+  const char *flag = scr_lib_take_first_arg(arg);
+  /* The value points into the flag's recorded copy, which process.title's
+   * rewrite of the argument area does not touch. Past the flag cap there is
+   * no copy, and the pointer into argv is valid only until a rename. */
+  if (value) *value = (flag != NULL ? flag : arg) + n + 1;
   return true;
 }
 
@@ -650,9 +690,9 @@ static void scr_process_exec_argv_cleanup(void) {
 ScrArr *scr_process_exec_argv(void) {
   if (!scr_exec_argv_arr) {
     scr_exec_argv_arr = scr_arr_new(SCR_ELEM_STR, 1);
-    if (scr_lib_exec_flag)
+    for (int f = 0; f < scr_lib_exec_flag_count; f++)
       scr_arr_push_ref(scr_exec_argv_arr,
-                       scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+                       scr_str_new(scr_lib_exec_flags[f], strlen(scr_lib_exec_flags[f])));
 #ifndef SCR_LIB
     scr_atexit(scr_process_exec_argv_cleanup);
 #endif
@@ -2849,9 +2889,12 @@ void scr_process_exit(double code) {
 #endif
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
-   * expected). scr_init's flush-at-exit is also skipped — flush here. */
+   * expected). scr_init's flush-at-exit is also skipped — flush here. The
+   * terminal restore the other exit path registers is skipped too, and
+   * Node restores the terminal mode on this path as well. */
   scr_stdout_settle();
   fflush(stdout);
+  scr_process_stdin_restore_mode();
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
 #ifndef SCR_LIB
@@ -6511,6 +6554,21 @@ bool scr_process_stdin_raw(void) { return scr_stdin_raw; }
 static SCR_TL DWORD scr_stdin_cooked;
 static SCR_TL bool scr_stdin_cooked_saved = false;
 
+/* The entry mode comes back when the process ends, not only when raw mode
+ * is left explicitly: libuv's uv_tty_reset_mode, which Node runs from its
+ * teardown, restores the mode a terminal was in when it first entered raw
+ * mode. A program that finishes while readline holds raw mode otherwise
+ * hands the user a terminal with echo and line editing switched off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  HANDLE h = (HANDLE)_get_osfhandle(0);
+  if (h == INVALID_HANDLE_VALUE) return;
+  (void)SetConsoleMode(h, scr_stdin_cooked);
+}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
     const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6536,6 +6594,8 @@ void scr_process_stdin_set_raw_mode(bool raw) {
   }
 }
 #elif defined(__wasi__)
+void scr_process_stdin_restore_mode(void) {}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   (void)raw;
   const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6543,7 +6603,36 @@ void scr_process_stdin_set_raw_mode(bool raw) {
 }
 #else
 static SCR_TL struct termios scr_stdin_cooked;
+static SCR_TL struct stat scr_stdin_cooked_stat;
 static SCR_TL bool scr_stdin_cooked_saved = false;
+
+/* libuv's uv_tty_reset_mode, which Node runs from its teardown: the mode
+ * the terminal was in when raw mode was first entered comes back when the
+ * process ends, so a program that finishes while readline holds raw mode
+ * does not hand the user a terminal with echo and line editing off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. Node checks the descriptor still names the
+ * file it saved (ResetStdio) and blocks SIGTTOU across the call, because a
+ * background job that no longer owns the terminal would be stopped inside
+ * its own exit; the same two guards are here. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  struct stat now;
+  if (fstat(0, &now) != 0) return;
+  if (now.st_dev != scr_stdin_cooked_stat.st_dev ||
+      now.st_ino != scr_stdin_cooked_stat.st_ino)
+    return;
+  sigset_t ttou, old;
+  sigemptyset(&ttou);
+  sigaddset(&ttou, SIGTTOU);
+  (void)pthread_sigmask(SIG_BLOCK, &ttou, &old);
+  int err;
+  do {
+    err = tcsetattr(0, TCSANOW, &scr_stdin_cooked);
+  } while (err == -1 && errno == EINTR);
+  (void)pthread_sigmask(SIG_SETMASK, &old, NULL);
+}
 
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
@@ -6556,8 +6645,15 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     struct termios t;
     if (tcgetattr(0, &t) != 0) return;
     if (!scr_stdin_cooked_saved) {
-      scr_stdin_cooked = t;
-      scr_stdin_cooked_saved = true;
+      /* The descriptor's identity goes with the mode: the restore must not
+       * write it onto a different file that took fd 0 later. A descriptor
+       * that cannot be identified is still made raw, just not restored. */
+      struct stat st;
+      if (fstat(0, &st) == 0) {
+        scr_stdin_cooked = t;
+        scr_stdin_cooked_stat = st;
+        scr_stdin_cooked_saved = true;
+      }
     }
     /* libuv uv__tty_make_raw (UV_TTY_MODE_RAW) */
     t.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);

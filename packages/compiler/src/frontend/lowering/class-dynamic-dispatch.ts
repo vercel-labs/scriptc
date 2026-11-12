@@ -8131,6 +8131,7 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "valueOf",
   "toString",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
 ]);
 

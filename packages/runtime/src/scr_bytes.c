@@ -5238,3 +5238,24 @@ bool scr_bytes_storage_movable(const ScrBytes *owner) {
   return false;
 #endif
 }
+
+/* scr_bytes.h. Here for the same reason: the descriptor I/O unit is built
+ * once, so it asks the build of this unit the program links. */
+bool scr_bytes_view_usable(const ScrBytes *b) {
+#ifdef SCR_JS_OBJECT_MODEL
+  return scr_js_bytes_live(b);
+#else
+  (void)b;
+  return true;
+#endif
+}
+
+bool scr_bytes_view_byte_length(const ScrBytes *b, double *length) {
+#ifdef SCR_JS_OBJECT_MODEL
+  *length = scr_js_bytes_byte_length(b);
+  return !scr_exc_pending();
+#else
+  *length = scr_bytes_byte_len(b);
+  return true;
+#endif
+}

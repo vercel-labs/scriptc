@@ -3356,11 +3356,23 @@ static bool scr_fs_dyn_objectish(const ScrDyn *v) {
   }
 }
 
+/* `buffer.byteLength` at the points Node reads it. A DataView whose owner
+ * is detached throws its catchable TypeError from the getter there; this
+ * answers false with the exception pending, so the ladder stops before it
+ * runs any I/O. */
+static bool scr_fs_dyn_byte_len(const ScrDyn *buffer, double *length) {
+  return scr_bytes_view_byte_length(buffer->v.bytes, length);
+}
+
 /* An ArrayBufferView's bytes as a Uint8 view over the same memory (+1), so
- * a read onto it or a write from it reaches the original view. */
+ * a read onto it or a write from it reaches the original view. A view Node
+ * counts as having no bytes (detached, or out of bounds past a shrink) has
+ * nothing to reach, and answers an empty view; NULL means the conversion
+ * raised (the exception is pending) and the caller must skip its I/O. */
 static ScrBytes *scr_fs_dyn_view(const ScrDyn *buffer) {
   ScrBytes *raw = scr_dyn_bytes_unbox(buffer);
-  ScrBytes *view = scr_bytes_raw_view(raw);
+  ScrBytes *view = scr_bytes_view_usable(raw) ? scr_bytes_raw_view(raw)
+                                              : scr_bytes_from_data(NULL, 0);
   scr_bytes_release(raw);
   return view;
 }
@@ -3393,13 +3405,12 @@ double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDy
   ScrDyn *own_offset = NULL, *own_length = NULL, *own_position = NULL;
   const ScrDyn *offv = offset, *lenv = length, *posv = position;
   double buflen = 0, off = 0, count = 0, result = 0, default_len = 0;
-  bool options_form = false, defaulted = false;
+  bool options_form = false, defaulted = false, have_len = false;
   int64_t at = -1;
   if (buffer->kind != SCR_DYN_BYTES) {
     scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
     return 0;
   }
-  buflen = scr_bytes_byte_len(buffer->v.bytes);
   options_form = argc <= 3 || scr_fs_dyn_objectish(offset);
   if (options_form) {
     /* validateObject(options, kValidateObjectAllowNullable): null and the
@@ -3424,6 +3435,9 @@ double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDy
      * error before the offset is validated. */
     if (lenv->kind == SCR_DYN_UNDEF) {
       double offnum = 0;
+      /* The subtraction's left operand, evaluated first. */
+      if (!scr_fs_dyn_byte_len(buffer, &buflen)) goto done;
+      have_len = true;
       if (offv->kind == SCR_DYN_BIGINT) {
         static const char mix[] =
             "Cannot mix BigInt and other types, use explicit conversions";
@@ -3463,6 +3477,9 @@ double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDy
     }
   }
   if (count == 0) goto done;
+  /* The empty-buffer check and validateOffsetLengthRead read byteLength;
+   * a detached DataView's getter throws at the first one. */
+  if (!have_len && !scr_fs_dyn_byte_len(buffer, &buflen)) goto done;
   if (buflen == 0) {
     scr_fs_empty_buffer_fail(buffer);
     goto done;
@@ -3484,8 +3501,10 @@ double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDy
   if (!scr_fs_dyn_fd_chk(fd)) goto done;
   {
     ScrBytes *view = scr_fs_dyn_view(buffer);
-    result = scr_fs_read_sync_at(fd->v.num, view, off, count, at);
-    scr_bytes_release(view);
+    if (view != NULL) {
+      result = scr_fs_read_sync_at(fd->v.num, view, off, count, at);
+      scr_bytes_release(view);
+    }
   }
 done:
   if (own_offset) scr_dyn_release(own_offset);
@@ -3506,9 +3525,9 @@ double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrD
   ScrDyn *own_offset = NULL, *own_length = NULL, *own_position = NULL;
   const ScrDyn *offv = offset, *lenv = length, *posv = position;
   double buflen = 0, off = 0, len = 0, at = -1, result = 0;
+  bool have_len = false;
   char range[64];
   if (buffer->kind == SCR_DYN_BYTES) {
-    buflen = scr_bytes_byte_len(buffer->v.bytes);
     if (scr_fs_dyn_objectish(offset) && !scr_fs_dyn_absent(offset)) {
       /* The destructuring reads the members in source order. */
       own_offset = scr_fs_cb_option(offset, "offset");
@@ -3518,6 +3537,10 @@ double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrD
       offv = own_offset;
       lenv = own_length;
       posv = own_position;
+      /* An absent length takes the destructuring's default, which reads
+       * buffer.byteLength before the offset is validated. */
+      if (lenv->kind == SCR_DYN_UNDEF && !scr_fs_dyn_byte_len(buffer, &buflen)) goto done;
+      have_len = lenv->kind == SCR_DYN_UNDEF;
     } else if (scr_fs_dyn_absent(offset)) {
       offv = lenv = posv = scr_dyn_undefined();
     }
@@ -3527,6 +3550,9 @@ double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrD
         goto done;
       off = offv->v.num;
     }
+    /* The length default and validateOffsetLengthWrite both read
+     * buffer.byteLength after the offset check. */
+    if (!have_len && !scr_fs_dyn_byte_len(buffer, &buflen)) goto done;
     len = lenv->kind == SCR_DYN_NUM ? lenv->v.num : buflen - off;
     if (off > buflen) {
       snprintf(range, sizeof range, "<= %.0f", buflen);
@@ -3554,8 +3580,10 @@ double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrD
     at = scr_fs_dyn_position(posv);
     {
       ScrBytes *view = scr_fs_dyn_view(buffer);
-      result = scr_fs_write_sync(fd->v.num, view, off, len, at);
-      scr_bytes_release(view);
+      if (view != NULL) {
+        result = scr_fs_write_sync(fd->v.num, view, off, len, at);
+        scr_bytes_release(view);
+      }
     }
   } else {
     if (buffer->kind != SCR_DYN_STR) {
@@ -3607,8 +3635,16 @@ static ScrArr *scr_fs_dyn_views(const ScrDyn *buffers) {
       scr_dyn_release(materialized);
       return NULL;
     }
-    scr_arr_push_ref(views, scr_fs_dyn_view(item));
+    /* A conversion that raised leaves the exception pending: drop the
+     * vector it had built rather than hand a missing view to the I/O. */
+    ScrBytes *view = scr_fs_dyn_view(item);
     scr_dyn_release(item);
+    if (view == NULL) {
+      scr_arr_release(views);
+      scr_dyn_release(materialized);
+      return NULL;
+    }
+    scr_arr_push_ref(views, view);
   }
   scr_dyn_release(materialized);
   return views;

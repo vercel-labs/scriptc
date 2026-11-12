@@ -330,6 +330,20 @@ double scr_bytes_byte_offset(const ScrBytes *b);
  * this unit the program links. */
 bool scr_bytes_storage_movable(const ScrBytes *owner);
 
+/* Whether Node's code may use `b` as it stands: false for a view whose owner
+ * was detached, or that a resize left out of bounds. Always true in a build
+ * without the JavaScript object model. A function, so a unit that is built
+ * once (the descriptor I/O unit) asks the build of this unit the program
+ * links. */
+bool scr_bytes_view_usable(const ScrBytes *b);
+
+/* `view.byteLength` at the points Node reads it: a DataView whose owner is
+ * detached or out of bounds throws its byteLength getter's TypeError, which
+ * leaves the exception pending and answers false; a typed array answers 0
+ * without one. The caller subtracts the offset. Always the plain byte length
+ * in a build without the JavaScript object model. */
+bool scr_bytes_view_byte_length(const ScrBytes *b, double *length);
+
 #ifdef SCR_JS_OBJECT_MODEL
 /* ── mutable buffers (t262-dc) ────────────────────────────────────────
  * A JavaScript program with the `mutableBuffers` fact may resize, grow or

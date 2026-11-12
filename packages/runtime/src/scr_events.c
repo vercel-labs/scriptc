@@ -1804,16 +1804,30 @@ void scr_run_exit_listeners(double code) {
     scr_island_emit(SCR_EVENTS_ISLAND_EXIT, 0, exit_name, (int)code);
     scr_str_release(exit_name);
   }
-  for (size_t i = 0; i < scr_exit_n; i++) {
+  /* Node's emitter clones the listener list before emitting. A listener
+   * that unregisters another — the finalizer registry's own 'exit'
+   * listener does, when its last pending ref is unregistered from inside
+   * the drain — must not shift the list under this walk: the removed
+   * listener still runs this time, and the listeners after it are not
+   * skipped. The snapshot holds its own closure references for the same
+   * reason. */
+  size_t n = scr_exit_n;
+  ScrExitListener *snap = n > 0 ? malloc(n * sizeof *snap) : NULL;
+  if (n > 0 && snap == NULL) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_exit_ls[i];
+    if (snap[i].cb != NULL) snap[i].cb = scr_closure_retain(snap[i].cb);
+  }
+  for (size_t i = 0; i < n; i++) {
 #ifdef SCR_WORKERS
     if (scr_context_stopping()) break;
 #endif
-    if (scr_exit_ls[i].island != 0 && scr_island_emit != NULL) {
+    if (snap[i].island != 0 && scr_island_emit != NULL) {
       ScrStr *exit_name = scr_str_new("exit", 4);
-      scr_island_emit(SCR_EVENTS_ISLAND_EXIT, scr_exit_ls[i].island, exit_name, (int)code);
+      scr_island_emit(SCR_EVENTS_ISLAND_EXIT, snap[i].island, exit_name, (int)code);
       scr_str_release(exit_name);
     } else {
-      scr_exit_ls[i].fn(scr_exit_ls[i].cb, code);
+      snap[i].fn(snap[i].cb, code);
     }
 #ifdef SCR_WORKERS
     /* The listener may have unwound for a stop request (checkpoint installs
@@ -1837,6 +1851,13 @@ void scr_run_exit_listeners(double code) {
       _Exit(status);
     }
   }
+  /* The snapshot's own references, then whatever the registry still
+   * holds: a listener that unregistered itself (or another) during the
+   * emission already released that entry. */
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].cb != NULL) scr_closure_release(snap[i].cb);
+  }
+  free(snap);
   for (size_t i = 0; i < scr_exit_n; i++) {
     if (scr_exit_ls[i].cb == NULL) continue;
     scr_closure_release(scr_exit_ls[i].cb);
@@ -1950,8 +1971,9 @@ void scr_exit_thunk_code(ScrClosure *cb, double code) {
  * multi-listener list), so one an earlier listener removed still runs
  * this time while one added now waits for the next exhaustion. A throwing
  * listener leaves its exception pending for the loop's ordinary uncaught
- * path, exactly a macrotask throw. The event is main-thread-only, like
- * Node's: a worker's loop does not emit it. */
+ * path, exactly a macrotask throw. Each thread's loop emits it, as in
+ * Node: a worker that registers a listener sees one emission when its own
+ * loop runs dry. */
 
 typedef struct {
   ScrClosure *cb; /* owned */

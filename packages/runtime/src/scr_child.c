@@ -1695,7 +1695,8 @@ struct ScrChildStream {
   /* process.channel.ref()/unref(): the IPC reader's explicit ref state.
    * Node's Control refs/unrefs the handle directly, so an explicit call
    * overrides the listener-driven state (unref lets the process exit with
-   * the channel open; ref keeps it alive with no listener at all). */
+   * the channel open while its reads keep running; ref keeps it alive
+   * with no listener at all). */
   bool chan_ref;
   bool chan_unref;
   ScrStr *encoding;
@@ -1901,7 +1902,11 @@ void scr_child_stream_release(ScrChildStream *s) {
 void *scr_child_stream_retain_v(void *p) { return scr_child_stream_retain((ScrChildStream *)p); }
 void scr_child_stream_release_v(void *p) { scr_child_stream_release((ScrChildStream *)p); }
 
-/* True while the stream has a consumer and can still deliver. */
+/* True while the stream has a consumer and can still deliver. This is a
+ * READING test only: process.channel.unref() removes the handle from the
+ * loop's keep-alive set without stopping its reads (Node's uv_unref), so
+ * unref'd channels still deliver messages whenever other work holds the
+ * loop. The keep-alive half is scr_child_streams_keep_alive below. */
 static bool scr_child_stream_watching(const ScrChildStream *s) {
 #ifdef SCR_CHILD_STREAM_FLOW
   /* Paused or resumed: the stream reads until it holds the high-water mark,
@@ -1909,8 +1914,17 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->h != NULL && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->h != NULL && !s->chan_unref &&
+  return !s->eof && s->h != NULL &&
          (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* The keep-alive half of the watching count: at least one watching stream
+ * whose channel was not unref'd. */
+static bool scr_child_streams_keep_alive(void) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (!s->chan_unref && scr_child_stream_watching(s)) return true;
+  }
+  return false;
 }
 
 /* process.channel.ref()/unref(): the explicit ref state (see the struct).
@@ -3073,7 +3087,7 @@ void scr_child_unref(ScrChild *c) {
 }
 
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 || scr_child_streams_keep_alive() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 
@@ -5223,13 +5237,24 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->fd >= 0 && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->fd >= 0 && !s->chan_unref &&
+  return !s->eof && s->fd >= 0 &&
          (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* The keep-alive half of the watching count: at least one watching stream
+ * whose channel was not unref'd. */
+static bool scr_child_streams_keep_alive(void) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (!s->chan_unref && scr_child_stream_watching(s)) return true;
+  }
+  return false;
 }
 
 /* process.channel.ref()/unref(): the explicit ref state (see the struct).
  * Becoming watched registers the reader with the child poll; losing the
- * last watcher dearms it, the listener-removal path's bookkeeping. */
+ * last watcher dearms it, the listener-removal path's bookkeeping. Only
+ * the KEEP-ALIVE side follows unref(): the reader stays watched, so an
+ * unref'd channel still delivers while a timer holds the loop open. */
 static void scr_child_stream_chan_state(ScrChildStream *s, bool ref) {
   if (s == NULL) return;
   SCR_IF_ISLAND(s, return);
@@ -6856,9 +6881,11 @@ void scr_child_unref(ScrChild *c) {
  * exists (unref'd children never keep the process alive), or a piped
  * stream still flows for a consumer (Node's flowing-pipe keep-alive —
  * it may outlive the child's own settle when a grandchild holds the
- * write end). */
+ * write end). An IPC channel the program unref'd is still watched (its
+ * messages arrive whenever other work holds the loop) but does not count
+ * here, exactly Node's uv_unref. */
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 || scr_child_streams_keep_alive() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 

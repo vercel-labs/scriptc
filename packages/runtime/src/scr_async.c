@@ -6765,15 +6765,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #else
     if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) {
 #endif
-      /* Out of ref'd work: Node emits 'beforeExit' here (on the main
-       * thread only), with process.exitCode as the argument, and re-enters
-       * the loop when the listeners scheduled more of it. The emit's own
-       * tick/microtask checkpoint runs first, so a listener's nextTick or
-       * microtask does run — but alone never causes another emission,
-       * exactly Node's liveness test. A throwing listener leaves its
-       * exception pending: the caller settles it as any macrotask throw
-       * (an uncaughtException listener can therefore keep re-emitting). */
-      if (!scr_context_is_main() || scr_process_before_exit_hook == NULL) break;
+      /* Out of ref'd work: Node emits 'beforeExit' here — the per-thread
+       * loop's exhaustion, so a worker's own loop emits it too — with
+       * process.exitCode as the argument, and re-enters the loop when the
+       * listeners scheduled more of it. The emit's own tick/microtask
+       * checkpoint runs first, so a listener's nextTick or microtask does
+       * run — but alone never causes another emission, exactly Node's
+       * liveness test. A throwing listener leaves its exception pending:
+       * the caller settles it as any macrotask throw (an
+       * uncaughtException listener can therefore keep re-emitting). */
+      if (scr_process_before_exit_hook == NULL) break;
       if (!scr_process_before_exit_hook((double)scr_exit_code_hint_get())) break;
       if (!scr_loop_run_checkpoint()) return false;
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;

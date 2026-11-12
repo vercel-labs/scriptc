@@ -3101,8 +3101,18 @@ static void scr_process_exit_finish(int code) {
  * the signal a parent observes (Node's own abort). Node also dumps a
  * native and a JavaScript stack trace before the signal; those name Node's
  * addresses and internal frames, so a compiled binary raises the signal
- * without the dump. */
+ * without the dump. A worker's abort throws Node's catchable
+ * ERR_WORKER_UNSUPPORTED_OPERATION instead: the signal would kill every
+ * thread, not just the one that asked. */
 void scr_process_abort(void) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    static const char message[] = "process.abort() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                             "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return;
+  }
+#endif
   scr_stdout_settle();
   fflush(stdout);
   fflush(stderr);
@@ -4148,16 +4158,37 @@ void scr_process_setegid(ScrDyn *id) { scr_cred_set_gid(id, "Group", "setegid", 
  * lookup names the element that failed, exactly the index the C++ layer
  * reports (i + 1) and the JS layer reads back. */
 void scr_process_setgroups(ScrDyn *groups) {
+  /* A stored TypeScript array crossing an untyped slot arrives as a
+   * typed-reference capsule: materialize it so the Array test and the
+   * element reads see the array itself. A capsule that is not an array
+   * (a class instance, a record) still fails the Array test below, as
+   * Node's Array.isArray would. */
+  ScrDyn *materialized = NULL;
+  if (groups->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(groups) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(groups);
+    if (scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    groups = materialized;
+  }
   if (groups->kind != SCR_DYN_ARR) {
     scr_dyn_arg_type_fail("groups", "an instance of Array", groups);
+    scr_dyn_release(materialized);
     return;
   }
   size_t n = groups->v.arr.len;
   for (size_t i = 0; i < n; i++) {
     char name[32];
     int m = snprintf(name, sizeof name, "groups[%zu]", i);
-    if (m < 0) return;
-    if (!scr_cred_validate_id(groups->v.arr.items[i], name)) return;
+    if (m < 0) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    if (!scr_cred_validate_id(groups->v.arr.items[i], name)) {
+      scr_dyn_release(materialized);
+      return;
+    }
   }
   gid_t *list = n > 0 ? malloc(n * sizeof *list) : NULL;
   if (n > 0 && list == NULL) scr_trap("scriptc: out of memory\n");
@@ -4166,12 +4197,14 @@ void scr_process_setgroups(ScrDyn *groups) {
     if (list[i] == (gid_t)-1) {
       free(list);
       scr_cred_unknown("Group", groups->v.arr.items[i]);
+      scr_dyn_release(materialized);
       return;
     }
   }
   int rc = setgroups(n, list);
   int e = errno;
   free(list);
+  scr_dyn_release(materialized);
   if (rc != 0) scr_fs_throw_errno_exception(e, "setgroups", NULL);
 }
 

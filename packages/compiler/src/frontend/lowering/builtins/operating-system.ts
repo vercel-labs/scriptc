@@ -169,6 +169,11 @@ export function lowerOsUserInfoCall(
       // member's value is dead unless spelling it runs something, so it is
       // evaluated for its effects and dropped.
       let decision: { text: string } | { runtime: ts.Node } = { text: "utf8" };
+      // An object literal's accessor pair defines ONE property: a getter
+      // followed by a setter still reads through the getter, so the setter
+      // must not reset the decision to the undefined default. A later data
+      // definition (a method or an ordinary property) replaces the accessor.
+      let getterDecides = false;
       for (const prop of options.properties.nodes) {
         if (ts.isSpreadAssignment(prop)) {
           // The spread copies the source's own properties and reads them at
@@ -187,6 +192,7 @@ export function lowerOsUserInfoCall(
           if (k.run) evaluate(k.run);
           if (k.key === undefined) decision = { runtime: prop };
           else if (k.key === "encoding") decision = { text: "utf8" };
+          if (k.key === undefined || k.key === "encoding") getterDecides = false;
           continue;
         }
         if (ts.isGetAccessorDeclaration(prop)) {
@@ -194,15 +200,26 @@ export function lowerOsUserInfoCall(
           // compute, and the record's shape depends on it.
           const k = staticKey(prop.name);
           if (k.run) evaluate(k.run);
-          if (k.key === undefined || k.key === "encoding") decision = { runtime: prop };
+          if (k.key === undefined || k.key === "encoding") {
+            decision = { runtime: prop };
+            // An unresolved key may name the encoding member, so a later
+            // setter must not clear the fence either.
+            getterDecides = true;
+          }
           continue;
         }
         if (ts.isSetAccessorDeclaration(prop)) {
-          // A setter-only member reads as undefined: the utf8 default.
+          // A setter-only member reads as undefined: the utf8 default. A
+          // setter placed after the getter completes the same accessor
+          // pair, so the getter still decides what the read answers.
           const k = staticKey(prop.name);
           if (k.run) evaluate(k.run);
-          if (k.key === undefined) decision = { runtime: prop };
-          else if (k.key === "encoding") decision = { text: "utf8" };
+          if (k.key === undefined) {
+            decision = { runtime: prop };
+            getterDecides = false;
+          } else if (k.key === "encoding" && !getterDecides) {
+            decision = { text: "utf8" };
+          }
           continue;
         }
         if (ts.isShorthandPropertyAssignment(prop)) {
@@ -214,6 +231,7 @@ export function lowerOsUserInfoCall(
           }
           if (!ts.isIdentifier(prop.name)) {
             decision = { runtime: prop };
+            getterDecides = false;
             continue;
           }
           // The value is the variable's, not a literal spelled here: a
@@ -225,6 +243,7 @@ export function lowerOsUserInfoCall(
           } else {
             decision = { runtime: prop };
           }
+          getterDecides = false;
           continue;
         }
         if (!ts.isPropertyAssignment(prop)) {
@@ -241,6 +260,7 @@ export function lowerOsUserInfoCall(
           // decide.
           evaluate(prop.initializer);
           decision = { runtime: prop };
+          getterDecides = false;
           continue;
         }
         if (k.key !== "encoding") {
@@ -251,6 +271,7 @@ export function lowerOsUserInfoCall(
         }
         let value: ts.Expression = prop.initializer;
         while (ts.isParenthesizedExpression(value)) value = value.expression;
+        getterDecides = false;
         if (ts.isStringLiteralLike(value)) {
           decision = { text: encodingOf(value.text) };
         } else {
@@ -964,18 +985,20 @@ export function lowerOsGetPriorityCall(
   if (value.type.kind === "f64") return finish(value, direct);
   if (value.type.kind === "undefinedT") {
     // Node's default parameter: an undefined pid reads the current
-    // process's priority (pid 0). The expression still evaluates.
-    return finish(value, (staged) =>
-      staged.kind === "unitLit"
-        ? numLit(0, loc)
-        : {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: staged, loc }],
-            result: numLit(0, loc),
-            type: F64,
-            loc,
-          },
-    );
+    // process's priority (pid 0). The expression still evaluates — but a
+    // bare unitLit has no effect and is not a valid IR statement, so it
+    // is dropped rather than staged.
+    const query = direct(numLit(0, loc));
+    if (value.kind === "unitLit") {
+      return withIgnoredArguments(lowerer, [], surplus, () => query);
+    }
+    return finish(value, (staged) => ({
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: staged, loc }],
+      result: query,
+      type: F64,
+      loc,
+    }));
   }
   // Anything else (a string, a boolean, an object, a value only the
   // runtime knows): Node's validateInteger runs in the runtime, which

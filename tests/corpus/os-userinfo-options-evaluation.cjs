@@ -42,3 +42,16 @@ console.log("constant encoding", Buffer.isBuffer(fromConstant.username));
 
 const fromShorthand = os.userInfo({ encoding: ENCODING });
 console.log("last definition", Buffer.isBuffer(fromShorthand.username));
+
+// Accessors: a setter-only member reads as undefined, the utf8 default, and
+// a method's value is a function, which ParseEncoding also reads as utf8.
+// (A getter, or a setter completing a getter's pair, computes the value the
+// binding reads, so that shape is rejected at compile time.)
+const setterOnly = os.userInfo({ set encoding(_value) {} });
+console.log("setter only", typeof setterOnly.username, setterOnly.username === plain.username);
+const methodMember = os.userInfo({
+  encoding() {
+    return "buffer";
+  },
+});
+console.log("method member", typeof methodMember.username);

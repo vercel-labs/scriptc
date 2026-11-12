@@ -82213,8 +82213,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().",
+        "status": "supported",
+        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -82236,8 +82236,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().",
+        "status": "supported",
+        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -82558,8 +82558,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "status": "supported",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -82581,8 +82581,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "status": "supported",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -82627,8 +82627,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82650,8 +82650,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82834,8 +82834,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82857,8 +82857,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82880,8 +82880,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82903,8 +82903,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82926,8 +82926,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -82949,8 +82949,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83294,8 +83294,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83317,8 +83317,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83340,8 +83340,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83363,8 +83363,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83433,7 +83433,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().",
+        "detail": "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -83456,7 +83456,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -83478,8 +83478,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83501,8 +83501,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83524,8 +83524,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83547,8 +83547,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83892,8 +83892,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83915,8 +83915,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83938,8 +83938,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     },
@@ -83961,8 +83961,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.",
         "verification": "test-backed"
       }
     }

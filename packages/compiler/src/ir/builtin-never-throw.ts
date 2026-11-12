@@ -19,6 +19,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_weak_ref_is compares the value's kind and handle tag.
+  "weakRef.is",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
   // scr_dyn_function_prototype builds the one anonymous function answering
@@ -30,8 +32,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
+  // counter; neither runs program code.
+  "perf.loopExit",
+  "perf.loopCount",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
+  // scr_events_once_any turns every failure into the result promise's
+  // rejection: an invalid options object or signal, an aborted signal, a
+  // name that cannot key the registry, a throwing 'newListener' listener
+  // (which it takes off the cell) and the awaited event's own 'error'. It
+  // throws nothing to its caller.
+  "events.onceAny",
   // scr_ni_intrinsic_register stores the value in a table.
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.

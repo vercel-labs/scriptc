@@ -364,6 +364,14 @@ typedef struct ScrChildStreamOps {
   bool (*end)(ScrStream *);
   void (*write_done)(ScrStream *, ScrError *);
   void (*final_done)(ScrStream *, ScrError *);
+  /* destroy(err): a pipe failure on bytes a completed write left queued. */
+  void (*destroy)(ScrStream *, ScrError *);
+  /* The box a readable view answers (readable_box): whether its 'close'
+   * was emitted, and Node's flushStdio resume when the child exits. */
+  bool (*closed)(ScrDyn *);
+  void (*flush)(ScrDyn *);
+  /* A native 'close' listener (fn(ScrClosure *)) on a readable view. */
+  void (*on_close)(ScrStream *, ScrClosure * /*moves*/);
 } ScrChildStreamOps;
 extern const ScrChildStreamOps scr_stream_child_ops;
 ScrDyn *scr_stream_dyn_view(ScrStream *stream); /* borrowed; +1 live method/property view */

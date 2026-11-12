@@ -8709,11 +8709,44 @@ static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
   s->cls = cls;
   return s;
 }
+static void scr_stream_child_destroy(ScrStream *s, ScrError *err /*moves*/) {
+  scr_stream_release(scr_stream_destroy(s, err));
+  if (err != NULL) scr_error_release(err);
+}
+/* +1, or NULL for a box that is not a stream view. */
+static ScrStream *scr_stream_child_unbox(ScrDyn *box) {
+  return box->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_unbox(box) : NULL;
+}
+/* A piped output socket's 'close', which Node's child 'close' waits for. */
+static bool scr_stream_child_closed(ScrDyn *box) {
+  ScrStream *s = scr_stream_child_unbox(box);
+  if (s == NULL) return true;
+  ScrStreamState *st = s->st;
+  bool closed = st->close_emitted || (st->destroyed && !st->emit_close);
+  scr_stream_release(s);
+  return closed;
+}
+/* Node's flushStdio when the child exits: resume each readable stdio
+ * stream unless a 'readable' listener holds it, so a stream the program
+ * never reads still ends and closes. */
+static void scr_stream_child_flush(ScrDyn *box) {
+  ScrStream *s = scr_stream_child_unbox(box);
+  if (s == NULL) return;
+  ScrStreamState *st = s->st;
+  if (st->has_r && !st->destroyed && !st->error_emitted && !st->r.end_emitted && !st->r.readable_listening)
+    scr_stream_release(scr_stream_resume(s));
+  scr_stream_release(s);
+}
+static void scr_stream_child_on_close(ScrStream *s, ScrClosure *cb /*moves*/) {
+  scr_pipe_on(s, "close", cb, scr_ee_inv_fixed0, true);
+}
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
+  scr_stream_child_destroy, scr_stream_child_closed, scr_stream_child_flush,
+  scr_stream_child_on_close,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

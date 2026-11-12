@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-stdout-stream-close-order.ts"
+ ],
+ "diags": []
+}

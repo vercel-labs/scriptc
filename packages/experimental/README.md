@@ -150,6 +150,24 @@ function visit(list: NodeList): void {
 
 scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux and macOS, the elements stay in an ordinary array object.
 
+## Refusals
+
+`@scriptc/experimental/refusals.json` lists the Node APIs and builtin modules that scriptc refuses, with the access a program uses to reach each one. The Node compatibility generator writes it beside the compatibility ledger, and `pnpm node-compat:check` fails when the committed table is stale. Each release publishes the table for its own compiler version.
+
+```ts
+import refusals from "@scriptc/experimental/refusals.json" with { type: "json" };
+
+for (const refusal of refusals.refusals) {
+  if (refusal.layer === "load") console.log(refusal.binding.module);
+}
+```
+
+- The top level carries `schemaVersion`, the pinned `nodeVersion`, and the `compilerVersion` the table was generated for.
+- `refusals` holds one entry per refusal site. `layer` is `"static"` for an API that scriptc refuses or `"load"` for a builtin module it does not serve.
+- `binding` is the access that reaches the refusal: the `module` (spelled like an import, such as `node:crypto`), the member `path` inside it, and `access`, one of `"call"`, `"get"`, `"construct"`, `"listen"`, or `"import"`. A module import omits `path`, and a row the sources cannot place says `"unknown"` instead.
+- A static entry names its `row` in the compatibility ledger, the compiler surface manifest entry in `manifestId`, and the row's `chapter`, `apiSymbol`, `kind`, and `label`.
+- A load entry carries the `code` and `message` of its `SC1010` diagnostic, the same text `@scriptc/experimental/register` raises; for a module fenced by construction the message names the reason.
+
 ## Load hook
 
 `@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.

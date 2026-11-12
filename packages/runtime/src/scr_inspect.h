@@ -104,9 +104,13 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
 ScrStr *scr_strdec_encoding_value(const ScrDyn *enc);
 /* The ERR_UNKNOWN_ENCODING message for a value that never names an
  * encoding, `Unknown encoding: %s` as util.format renders it (+1, or NULL
- * with the exception pending). scr_stream.c reaches it through a weak
- * reference, since every stream program links that unit and not this one. */
+ * with the exception pending). */
 ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc);
+/* The same builder, in a slot every executable links (scr_json.c): this unit
+ * sets it from its constructor, and scr_stream.c answers its String() fallback
+ * while it is NULL, since every stream program links that unit and not this
+ * one. */
+extern ScrStr *(*scr_insp_unknown_encoding_fn)(const ScrDyn *enc);
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);

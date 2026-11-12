@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-unknown-encoding-message.ts"
+ ],
+ "diags": []
+}

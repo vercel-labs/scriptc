@@ -7456,17 +7456,13 @@ static bool scr_stream_custom_to_string(ScrDyn *value) {
   return custom;
 }
 
-/* The inspect unit's ERR_UNKNOWN_ENCODING text for a value that is not an
- * encoding name (scr_insp_unknown_encoding_message). The reference is weak:
- * this unit is linked into every program that uses streams, while the
- * inspect unit is not, and a binary without it keeps the String() fallback
- * below. */
-ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) __attribute__((weak));
-
 /* ERR_UNKNOWN_ENCODING formats the encoding with util.format's %s: a
  * number as JS ToString, a Buffer or an object with a built-in toString as
- * String(value), other objects as util.inspect at depth 0. A function has
- * no lowering. Always throws. */
+ * String(value), other objects as util.inspect at depth 0. The inspect unit
+ * renders that text (scr_insp_unknown_encoding_fn, which its constructor
+ * sets); a program whose stream use does not link the inspect unit leaves the
+ * slot NULL, and the String() fallback below answers. A function has no
+ * lowering. Always throws. */
 static void scr_stream_unknown_encoding(const ScrDyn *encoding) {
   ScrDyn *value = (ScrDyn *)encoding;
   if (value->kind == SCR_DYN_FUNC) {
@@ -7476,8 +7472,8 @@ static void scr_stream_unknown_encoding(const ScrDyn *encoding) {
     return;
   }
   ScrStr *message;
-  if (scr_insp_unknown_encoding_message) {
-    message = scr_insp_unknown_encoding_message(value);
+  if (scr_insp_unknown_encoding_fn) {
+    message = scr_insp_unknown_encoding_fn(value);
     /* NULL: the rendering called program code that threw. */
     if (!message) return;
   } else {

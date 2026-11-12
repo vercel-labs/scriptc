@@ -84,6 +84,14 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+/* Set by scr_inspect.c in programs that link the inspect unit: the
+ * ERR_UNKNOWN_ENCODING message for a value that never names an encoding
+ * (scr_inspect.h's scr_insp_unknown_encoding_message). scr_stream.c links into
+ * every stream program without the inspect unit, so it answers its own
+ * String() fallback while this slot is NULL; the slot lives here because every
+ * executable links this unit, so neither of those two leaves an undefined
+ * reference in the other's link. */
+ScrStr *(*scr_insp_unknown_encoding_fn)(const ScrDyn *enc) = NULL;
 #ifdef SCR_JS_OBJECT_MODEL
 /* Set by scr_dyn_invoke.c when the object model build links it, so a
  * DataView's `constructor` is the global's own interned value. A program that

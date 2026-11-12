@@ -1321,9 +1321,14 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     !ts.isIdentifier(decl.name)
   )
     return false;
-  if (!decl.initializer) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
+  // `let x;` declares a binding JavaScript initializes to undefined at the
+  // declaration; it has no initializer to lower, but the box below models
+  // the same temporal dead zone, and the declaration itself clears it. A
+  // `const` without an initializer is not JavaScript (and a destructuring
+  // declaration writes several bindings), so both stay out.
+  if (!decl.initializer && (flags & ts.NodeFlags.Const) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
   // compile time (builtinClassAliasOf).
   if (builtinClassAliasOwnsNoSlot(lowerer, symbol)) return false;
@@ -1366,6 +1371,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
+    // `let x;` is undefined once its declaration runs, so the box holds the
+    // declared type's undefined-armed form: the declaration initializes it
+    // to that arm, and a write after the declaration keeps the slot.
+    if (!decl.initializer) type = lowerer.runtimeOptionalType(type);
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
     entry.ctx.localCounters.set(name, count + 1);
@@ -7855,6 +7864,19 @@ export function lowerVarDecl(
   }
 
   if (!decl.initializer) {
+    // A forward-captured `let x;` pre-declared as a TDZ box
+    // (predeclareForwardCapture): the binding and its scope-entry varDecl
+    // already exist, and running this declaration initializes them to
+    // undefined, exactly as JavaScript leaves the temporal dead zone here.
+    const pre = declSymbol ? lowerer.ctx.tdzPredeclared.get(declSymbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(declSymbol!);
+      const init =
+        pre.type.kind === "dyn"
+          ? dynUndefinedExpr(locOf(decl))
+          : lowerer.unassignedSlotInit(pre.type, locOf(decl))!;
+      return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
+    }
     // `let x: number;` — declared, uninitialized. tsc rejects a read before
     // assignment in the declaring function's own code (TS2454) and an
     // uninitialized const (TS1155). It checks no read inside a nested

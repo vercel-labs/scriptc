@@ -18,6 +18,14 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
+import {
+  PERF_NODE_TIMING_JSON_FIELDS,
+  PERF_NODE_TIMING_MARKER,
+  eventLoopUtilizationShape,
+  perfNodeTimingJsonShape,
+  perfNodeTimingShape,
+  uvMetricsShape,
+} from "../../type-mapper.js";
 import { builtinImportOf } from "./module-bindings.js";
 import { lowerOptionalArgument } from "../optional-arguments.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
@@ -142,6 +150,29 @@ export function lowerPerfHooksCall(
     };
   }
   if (
+    access.name.text === "toJSON" &&
+    isPerfNodeTimingType(lowerer, lowerer.mapTypeOf(lowerer.typeOf(access.expression)))
+  ) {
+    if (expr.arguments.nodes.length !== 0) {
+      lowerer.noLowering("PerformanceNodeTiming toJSON with arguments", expr);
+    }
+    const timing = lowerer.lowerExpr(access.expression);
+    if (timing.type.kind !== "record")
+      lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+    return {
+      kind: "dynFrom",
+      value: perfNodeTimingJson(lowerer, timing, timing.type, loc),
+      type: DYN,
+      loc,
+    };
+  }
+  if (access.name.text === "toJSON" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
+    if (expr.arguments.nodes.length !== 0) {
+      lowerer.noLowering("performance.toJSON with arguments", expr);
+    }
+    return { kind: "dynFrom", value: performanceJsonValue(lowerer, loc), type: DYN, loc };
+  }
+  if (
     access.name.text === "eventLoopUtilization" &&
     isPerfHooksPerformanceExpr(lowerer, access.expression)
   ) {
@@ -157,7 +188,7 @@ export function lowerPerfHooksCall(
     lowerer.noLowering(
       `perf_hooks performance.${access.name.text}`,
       expr,
-      "performance.now() (and its .bind(performance) function value), mark, measure, the getEntries family, clearMarks, clearMeasures and eventLoopUtilization are the lowered surface",
+      "performance.now() (and its .bind(performance) function value), nodeTiming, timeOrigin, toJSON, mark, measure, the getEntries family, clearMarks, clearMeasures and eventLoopUtilization are the lowered surface",
     );
   }
   return null;
@@ -195,6 +226,23 @@ export function isPerfEntryType(lowerer: Lowerer, t: IrType | null | undefined):
   return lowerer.shapes.get(t.shapeId)?.fields.some((f) => f.name === PERF_ENTRY_MARKER) === true;
 }
 
+/** The value a record built field by field reads from, bound to a hidden
+ * local when the expression is not already a plain local: the receiver's
+ * side effects run once, not once per field. */
+function bindRecordReceiver(
+  lowerer: Lowerer,
+  value: IrExpr,
+  name: string,
+  loc: SrcLoc,
+): { receiver: IrExpr; stmts: IrStmt[] } {
+  if (value.kind === "varRef") return { receiver: value, stmts: [] };
+  const local = lowerer.declareHiddenLocal(name, value.type);
+  return {
+    receiver: varRef(local.id, local.type, loc),
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+  };
+}
+
 /** An entry's toJSON() object: { name, entryType, startTime, duration,
  * detail } read off the entry record. */
 export function perfEntryJson(
@@ -204,18 +252,143 @@ export function perfEntryJson(
   loc: SrcLoc,
 ): IrExpr {
   const shape = lowerer.shapes.get(entryT.shapeId)!;
+  const bound = bindRecordReceiver(lowerer, entry, "%perfEntryJson", loc);
   const read = (name: string): IrExpr => ({
     kind: "recordGet",
-    obj: entry,
+    obj: bound.receiver,
     shapeId: entryT.shapeId,
     field: name,
     type: shape.fields.find((f) => f.name === name)!.type,
     loc,
   });
-  return {
+  const result: IrExpr = {
     kind: "recordLit",
     fields: [...PERF_ENTRY_FIELDS].sort().map((name) => ({ name, value: read(name) })),
     type: { kind: "record", shapeId: perfEntryJsonShape(lowerer.shapes) },
+    loc,
+  };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
+}
+
+/** True when `t` is performance.nodeTiming's record (type-mapper's
+ * perfNodeTimingShape). */
+export function isPerfNodeTimingType(lowerer: Lowerer, t: IrType | null | undefined): boolean {
+  if (t?.kind !== "record") return false;
+  return (
+    lowerer.shapes.get(t.shapeId)?.fields.some((f) => f.name === PERF_NODE_TIMING_MARKER) === true
+  );
+}
+
+/** performance.nodeTiming.toJSON()'s object: the milestones read off the
+ * record, in toJSON's order (uvMetricsInfo is not in it). */
+export function perfNodeTimingJson(
+  lowerer: Lowerer,
+  timing: IrExpr,
+  timingT: IrType & { kind: "record" },
+  loc: SrcLoc,
+): IrExpr {
+  const shape = lowerer.shapes.get(timingT.shapeId)!;
+  // The eleven fields read the receiver once: bound to a hidden local, a
+  // side-effecting receiver (a call, the record built at the read) runs once.
+  const bound = bindRecordReceiver(lowerer, timing, "%perfNodeTimingJson", loc);
+  const read = (name: string): IrExpr => ({
+    kind: "recordGet",
+    obj: bound.receiver,
+    shapeId: timingT.shapeId,
+    field: name,
+    type: shape.fields.find((f) => f.name === name)!.type,
+    loc,
+  });
+  const result: IrExpr = {
+    kind: "recordLit",
+    fields: [...PERF_NODE_TIMING_JSON_FIELDS].sort().map((name) => ({ name, value: read(name) })),
+    type: { kind: "record", shapeId: perfNodeTimingJsonShape(lowerer.shapes) },
+    loc,
+  };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
+}
+
+/** performance.nodeTiming itself: the milestones as one record of Node's
+ * own properties. Node keeps them as prototype getters over the process's
+ * timing, so the record is built at the read (a fresh snapshot; only the
+ * two loop milestones and the metrics move after startup, and the startup
+ * milestones of a compiled program are 0). */
+export function perfNodeTimingValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const shapeId = perfNodeTimingShape(lowerer.shapes, lowerer.unions);
+  const marker = lowerer.shapes
+    .get(shapeId)!
+    .fields.find((f) => f.name === PERF_NODE_TIMING_MARKER)!;
+  const lib = (fn: IrLibFn): IrExpr => ({ kind: "libCall", fn, args: [], type: F64, loc });
+  // The runtime's loopStart getter answers -1 before the loop starts and the
+  // loop's start time after, as Node's does.
+  const values: Record<string, IrExpr> = {
+    [PERF_NODE_TIMING_MARKER]: lowerer.absentFieldValue(marker, loc)!,
+    bootstrapComplete: numLit(0, loc),
+    duration: lib("perf.now"),
+    entryType: { kind: "strLit", value: "node", type: STRING, loc },
+    environment: numLit(0, loc),
+    idleTime: lib("perf.idleTime"),
+    loopExit: lib("perf.loopExit"),
+    loopStart: lib("perf.loopStart"),
+    name: { kind: "strLit", value: "node", type: STRING, loc },
+    nodeStart: numLit(0, loc),
+    startTime: numLit(0, loc),
+    uvMetricsInfo: {
+      kind: "recordLit",
+      fields: [
+        { name: "events", value: numLit(0, loc) },
+        { name: "eventsWaiting", value: numLit(0, loc) },
+        { name: "loopCount", value: lib("perf.loopCount") },
+      ],
+      type: { kind: "record", shapeId: uvMetricsShape(lowerer.shapes) },
+      loc,
+    },
+    v8Start: numLit(0, loc),
+  };
+  return {
+    kind: "recordLit",
+    fields: Object.keys(values)
+      .sort()
+      .map((name) => ({ name, value: values[name]! })),
+    type: { kind: "record", shapeId },
+    loc,
+  };
+}
+
+/** performance.toJSON(): { nodeTiming, timeOrigin, eventLoopUtilization }
+ * in Node's key order. The checker declares the method's result `any`, so
+ * the record is handed over as a checked-dynamic object. */
+function performanceJsonValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const eluT: IrType = { kind: "record", shapeId: eventLoopUtilizationShape(lowerer.shapes) };
+  const nodeTimingT: IrType = {
+    kind: "record",
+    shapeId: perfNodeTimingShape(lowerer.shapes, lowerer.unions),
+  };
+  const shapeId = lowerer.shapes.intern(
+    [
+      { name: "eventLoopUtilization", type: eluT },
+      { name: "nodeTiming", type: nodeTimingT },
+      { name: "timeOrigin", type: F64 },
+    ],
+    false,
+    undefined,
+    ["nodeTiming", "timeOrigin", "eventLoopUtilization"],
+  );
+  return {
+    kind: "recordLit",
+    fields: [
+      {
+        name: "eventLoopUtilization",
+        value: { kind: "call", callee: eluHelperOf(lowerer, 0, eluT), args: [], type: eluT, loc },
+      },
+      { name: "nodeTiming", value: perfNodeTimingValue(lowerer, loc) },
+      { name: "timeOrigin", value: performanceTimeOrigin(lowerer, loc) },
+    ],
+    type: { kind: "record", shapeId },
     loc,
   };
 }
@@ -861,6 +1034,152 @@ export function fencePerfEntryKeyWalk(
     node,
     `${what} over performance entries (Node keeps their fields as prototype getters, so own-key walks see none; read the fields or call toJSON())`,
   );
+}
+
+/* ── the performance object's own properties ────────────────────────── */
+
+/** A property READ on the perf_hooks `performance` object or a class of
+ * the module that no call lowering claims: nodeTiming, timeOrigin and
+ * PerformanceObserver.supportedEntryTypes. Null for every other read. */
+export function lowerPerfHooksProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const loc = locOf(expr);
+  const name = expr.name.text;
+  if (isPerfHooksPerformanceExpr(lowerer, expr.expression)) {
+    if (name === "nodeTiming") return perfNodeTimingValue(lowerer, loc);
+    if (name === "timeOrigin") return performanceTimeOrigin(lowerer, loc);
+    return null;
+  }
+  if (
+    name === "supportedEntryTypes" &&
+    perfClassOf(lowerer, expr.expression) === "PerformanceObserver"
+  ) {
+    return supportedEntryTypesValue(lowerer, loc);
+  }
+  return null;
+}
+
+/** perf_hooks.eventLoopUtilization(u1?, u2?): the module's free function,
+ * the same function as performance.eventLoopUtilization. */
+export function lowerEventLoopUtilizationCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  return lowerEventLoopUtilization(lowerer, expr);
+}
+
+/** `performance.timeOrigin`: the Unix time, in fractional milliseconds, at
+ * which `performance.now()` read zero. The runtime's clock is anchored at
+ * process start, so the origin is the wall clock minus that clock, taken
+ * once and kept: every read answers the same number, and
+ * `timeOrigin + now()` is the wall clock, as in Node. */
+export function performanceTimeOrigin(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const helper = "%perf.timeOrigin";
+  if (lowerer.liftedFnNamed(helper) === undefined) {
+    const storage = `%g.${helper}`;
+    const ready = `${storage}%ready`;
+    lowerer.globalsList.push(
+      { id: storage, name: "performance.timeOrigin", type: F64, mutable: true },
+      { id: ready, name: "%ready", type: BOOL, mutable: true },
+    );
+    const body: IrStmt[] = [
+      {
+        kind: "if",
+        cond: varRef(ready, BOOL, loc),
+        then: [{ kind: "return", value: varRef(storage, F64, loc), loc }],
+        else_: null,
+        loc,
+      },
+      {
+        kind: "assign",
+        localId: storage,
+        value: {
+          kind: "bin",
+          op: "-",
+          left: { kind: "libCall", fn: "date.now", args: [], type: F64, loc },
+          right: { kind: "libCall", fn: "perf.now", args: [], type: F64, loc },
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+      { kind: "assign", localId: ready, value: boolLit(true, loc), loc },
+      { kind: "return", value: varRef(storage, F64, loc), loc },
+    ];
+    lowerer.liftedFns.push({ name: helper, params: [], locals: [], returnType: F64, body, loc });
+    lowerer.shareHelper(helper);
+  }
+  lowerer.noteEdge(helper);
+  return { kind: "call", callee: helper, args: [], type: F64, loc };
+}
+
+/** The entry types this process reports, in Node's order. */
+const SUPPORTED_ENTRY_TYPES = [
+  "dns",
+  "function",
+  "gc",
+  "http",
+  "http2",
+  "mark",
+  "measure",
+  "net",
+  "quic",
+  "resource",
+];
+
+/** PerformanceObserver.supportedEntryTypes: Node's fixed list, one frozen
+ * array that every read answers (as in Node, `a === b` and
+ * `Object.isFrozen(a)` hold). The array is native, and a checked-dynamic
+ * read of it observes the same frozen array, so the identity survives the
+ * conversion too. */
+function supportedEntryTypesValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const helper = "%perf.supportedEntryTypes";
+  const type: IrType = { kind: "array", elem: STRING };
+  if (lowerer.liftedFnNamed(helper) === undefined) {
+    const storage = `%g.${helper}`;
+    const ready = `${storage}%ready`;
+    lowerer.globalsList.push(
+      { id: storage, name: "PerformanceObserver.supportedEntryTypes", type, mutable: true },
+      { id: ready, name: "%ready", type: BOOL, mutable: true },
+    );
+    const storageRef = (): IrExpr => varRef(storage, type, loc);
+    const body: IrStmt[] = [
+      {
+        kind: "if",
+        cond: varRef(ready, BOOL, loc),
+        then: [{ kind: "return", value: storageRef(), loc }],
+        else_: null,
+        loc,
+      },
+      {
+        kind: "assign",
+        localId: storage,
+        value: {
+          kind: "arrayLit",
+          elems: SUPPORTED_ENTRY_TYPES.map((value) => ({
+            kind: "strLit" as const,
+            value,
+            type: STRING,
+            loc,
+          })),
+          type,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "array.freeze", args: [storageRef()], type: VOID, loc },
+        loc,
+      },
+      { kind: "assign", localId: ready, value: boolLit(true, loc), loc },
+      { kind: "return", value: storageRef(), loc },
+    ];
+    lowerer.liftedFns.push({ name: helper, params: [], locals: [], returnType: type, body, loc });
+    lowerer.shareHelper(helper);
+  }
+  lowerer.noteEdge(helper);
+  return { kind: "call", callee: helper, args: [], type, loc };
 }
 
 /* ── event-loop metrics: eventLoopUtilization and monitorEventLoopDelay ── */

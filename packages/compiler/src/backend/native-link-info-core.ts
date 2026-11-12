@@ -455,6 +455,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "fetch", requires: ["emitter", "symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
+  // scr_perf.c resolves performance.measure's Node timing milestone names
+  // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
+  { feature: "dynAsync", requires: ["perfLoop"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

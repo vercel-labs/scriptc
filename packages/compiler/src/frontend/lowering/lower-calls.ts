@@ -993,6 +993,16 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (island) return island;
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
   }
+  // super[key](...): the base prototype's member named by a computed key,
+  // called over this method's own `this`. A literal key on a typed receiver
+  // is the `super.name(...)` construct; a run-time key dispatches by name.
+  if (
+    ts.isElementAccessExpression(expr.expression) &&
+    expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword &&
+    !expr.expression.questionDotToken
+  ) {
+    return lowerer.lowerSuperComputedMethodCall(expr, expr.expression);
+  }
   // `value.#m(...)` on a checked-dynamic value (`this` in a JavaScript
   // class's receiver-independent method): the private method of the
   // brand-checked receiver, or the value its private field holds.
@@ -2064,6 +2074,9 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // compile-time-known, so a literal key folds to a constant.
       lowerClassHasOwnPropertyCall(lowerer, expr, expr.expression) ??
       lowerObjectOwnMethodCall(lowerer, expr, expr.expression) ??
+      // Object.prototype.isPrototypeOf on a statically typed receiver: one
+      // identity walk of the argument's prototype chain in the runtime.
+      lowerStaticIsPrototypeOfCall(lowerer, expr, expr.expression) ??
       // Static Response.json(data, init?) builds a native Response.
       lowerResponseStaticJson(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
@@ -4091,6 +4104,53 @@ function lowerObjectOwnCall(
   return { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
+/** Object.prototype.isPrototypeOf on a statically typed receiver: the
+ * receiver and the argument become checked-dynamic values, the runtime
+ * walks the argument's prototype chain comparing each link with the receiver
+ * by identity, and a nullish receiver throws Node's ToObject TypeError. A
+ * dyn receiver keeps the shared dispatch (whose prepared callee read sees a
+ * shadowing own member), and a receiver type that declares its own member
+ * never reaches this lowering (isStdlibMember is false). */
+function lowerStaticIsPrototypeOfCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (
+    access.name.text !== "isPrototypeOf" ||
+    call.questionDotToken ||
+    access.questionDotToken ||
+    call.arguments.nodes.length > 1 ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
+    !lowerer.isStdlibMember(access)
+  )
+    return null;
+  const receiver = tryLowerExpression(lowerer, access.expression);
+  if (
+    !receiver ||
+    receiver.type.kind === "dyn" ||
+    receiver.type.kind === "void" ||
+    !lowerer.dynConvertible(receiver.type)
+  )
+    return null;
+  const loc = locOf(call);
+  const stmts: IrStmt[] = [];
+  const local = lowerer.declareHiddenLocal("%protoReceiver", receiver.type);
+  stmts.push({ kind: "varDecl", localId: local.id, init: receiver, loc });
+  const argument = call.arguments.nodes[0];
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.isPrototypeOf",
+    args: [
+      lowerer.coerceToExpected(varRef(local.id, receiver.type, loc), DYN),
+      argument ? lowerer.lowerExprExpecting(argument, DYN) : dynUndefinedExpr(loc),
+    ],
+    type: BOOL,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: BOOL, loc };
+}
+
 function lowerObjectPrototypeCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5777,6 +5837,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "segment",
   "containing",
   "resolvedOptions",
+  // Object.prototype.isPrototypeOf on a typed receiver whose value is
+  // checked-dynamic (`Object.prototype` itself, an `Object.create` result):
+  // the shared dispatch answers the inherited method on every dyn kind that
+  // has Object.prototype on its chain.
+  "isPrototypeOf",
   "test",
   "exec",
   "apply",

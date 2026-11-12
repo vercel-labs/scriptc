@@ -1721,12 +1721,13 @@ function lowerListenerArg(
 export function lowerEmitterMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   info: ClassInfo,
   superRecv?: { thisRef: IrExpr; cls: ClassInfo },
   argsOverride?: readonly ts.Expression[],
+  memberName?: string,
 ): IrExpr | null {
-  const member = access.name.text;
+  const member = memberName ?? (ts.isPropertyAccessExpression(access) ? access.name.text : "");
   const loc = locOf(call);
   const args = argsOverride ?? call.arguments.nodes;
   const lowerReceiver = (): IrExpr => {
@@ -2752,10 +2753,10 @@ export function lowerEmitOverrideSpec(lowerer: Lowerer, req: EmitSpecRequest): I
 export function emitSpecSuperForward(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
+  memberName: string,
 ): IrExpr | null {
   const ctx = lowerer.emitSpecCtx;
-  if (!ctx || access.name.text !== "emit" || call.arguments.nodes.length !== 2) return null;
+  if (!ctx || memberName !== "emit" || call.arguments.nodes.length !== 2) return null;
   const a0 = call.arguments.nodes[0]!;
   const a1 = call.arguments.nodes[1]!;
   if (!ts.isIdentifier(a0) || !ts.isSpreadElement(a1) || !ts.isIdentifier(a1.expression))
@@ -2810,14 +2811,23 @@ export function emitSpecSuperForward(
 export function lowerEmitterSuperCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   cls: ClassInfo,
+  memberName?: string,
 ): IrExpr | null {
   const thisLocal = lowerer.resolveThis();
   if (!thisLocal) return null;
   const loc = locOf(call);
   const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisLocal.type, loc };
-  return lowerEmitterMethodCall(lowerer, call, access, cls, { thisRef, cls });
+  return lowerEmitterMethodCall(
+    lowerer,
+    call,
+    access,
+    cls,
+    { thisRef, cls },
+    undefined,
+    memberName,
+  );
 }
 
 /** A typed emit that may also reach a listener registered through an

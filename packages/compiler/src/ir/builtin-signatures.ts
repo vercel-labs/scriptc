@@ -4273,8 +4273,9 @@ function buildLibFnSignatures() {
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
-    // The Node runtime flag a node:test binary took out of process.argv
-    // (--test-update-snapshots), or [] — a fresh array per read.
+    // The Node runtime flags a node:test binary took out of process.argv
+    // (--test-update-snapshots and the reporter options), or []; a fresh
+    // array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
     /** process.allowedNodeEnvironmentFlags: the interned set of option
      * names the compatibility target accepts in NODE_OPTIONS (+1 read of
@@ -4802,6 +4803,11 @@ function buildLibFnSignatures() {
     "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
     "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
+    /** Object.prototype.isPrototypeOf(receiver, value) over checked-dynamic
+     * operands: ToObject throws on a nullish receiver, and the argument's
+     * prototype chain is walked comparing each link with the receiver by
+     * identity. */
+    "dyn.isPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
     "dyn.copyDataProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.objectRest": { argTypes: [DYN, DYN], result: DYN },
@@ -4848,6 +4854,9 @@ function buildLibFnSignatures() {
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
+    /** Function.prototype as a value: an anonymous function answering
+     * undefined, length 0 and name "", one value per program. */
+    "dyn.functionPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },

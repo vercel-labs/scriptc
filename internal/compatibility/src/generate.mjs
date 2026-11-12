@@ -16,15 +16,27 @@
  *   pnpm node-compat --local        rewrite the snapshot without fetching: reclassify
  *                                   the committed rows from the current sources
  *   pnpm node-compat:check          offline implementation/profile drift check
+ *
+ * Every mode writes or checks the two refusal-table artifacts as well:
+ * generated/node-v24-refusals.json and its published copy,
+ * packages/experimental/refusals.json.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { buildRefusals, renderRefusals } from "./refusals.mjs";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
+const refusalsOutputPath = `${packageRoot}generated/node-v24-refusals.json`;
+// Published from the experimental package so a program that reads the table
+// imports it from the installed package rather than an internal path.
+const publishedRefusalsPath = `${root}packages/experimental/refusals.json`;
+const compilerVersion = JSON.parse(
+  readFileSync(`${root}packages/compiler/package.json`, "utf8"),
+).version;
 // Files derived from the ledger elsewhere: the docs build computes the
 // metadata from the public artifact, and `pnpm node-compat:backlog` builds
 // the backlog in memory. A merge that keeps a branch's copy would bring
@@ -621,6 +633,18 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
 
 function render(snapshot) {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
+}
+
+function refusalsRendered(snapshot) {
+  return renderRefusals(
+    buildRefusals(snapshot, { chapterModules: pin.chapterModules, compilerVersion }),
+  );
+}
+
+function writeRefusals(snapshot) {
+  const rendered = refusalsRendered(snapshot);
+  writeFileSync(refusalsOutputPath, rendered);
+  writeFileSync(publishedRefusalsPath, rendered);
 }
 
 function publicDetail(tier) {
@@ -1273,6 +1297,12 @@ function checkLocal() {
   if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
     throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
   }
+  const refusals = refusalsRendered(snapshot);
+  for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
+    if (readFileSync(path, "utf8") !== refusals) {
+      throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+    }
+  }
   const publicRows = publicSnapshot(snapshot).rows;
   for (const row of publicRows) {
     if (row.depth > 0 && row.scope !== "api")
@@ -1327,6 +1357,7 @@ async function main() {
     const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
     writeFileSync(internalOutputPath, render(snapshot));
     writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
+    writeRefusals(snapshot);
     console.log(
       `reclassified the compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
     );
@@ -1360,6 +1391,11 @@ async function main() {
       throw new Error("internal Node compatibility snapshot is stale; run 'pnpm node-compat'");
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
       throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
+    const refusals = refusalsRendered(snapshot);
+    for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
+      if (readFileSync(path, "utf8") !== refusals)
+        throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+    }
     console.log(
       `Node compatibility snapshot matches ${pin.tag} (${snapshot.rows.length} API rows, commit ${pin.commit.slice(0, 12)})`,
     );
@@ -1367,6 +1403,7 @@ async function main() {
   }
   writeFileSync(internalOutputPath, internalRendered);
   writeFileSync(publicOutputPath, publicRendered);
+  writeRefusals(snapshot);
   console.log(
     `wrote compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
   );

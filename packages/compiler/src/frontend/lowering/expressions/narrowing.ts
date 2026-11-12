@@ -68,6 +68,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
+import { guessedOverloadValue } from "../overload-choice.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
@@ -787,6 +788,22 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // check can produce an uninhabited value.
     if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+    // A read whose type rests on an undecided overload
+    // (guessedOverloadValue): the mapped type is the resolved overload's
+    // guess — `generateKeyPairSync("rsa-pss", options)` resolves to the PEM
+    // overload, so `.publicKey` maps to `string` although the call may
+    // answer the KeyObject pair — and the read keeps the actual value. The
+    // conversions below validate against the guess and would throw on the
+    // value the other overload answers.
+    if (
+      narrowed !== null &&
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node) ||
+        ts.isIdentifier(node)) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      guessedOverloadValue(lowerer, node)
+    )
+      return expr;
     if (
       narrowed &&
       (narrowed.kind === "f64" ||

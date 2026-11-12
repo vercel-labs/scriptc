@@ -87,7 +87,6 @@ const KNOWN: Record<string, Known> = {
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
   "node24-commonjs-metadata": { island: true },
-  "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
   "node24-diagnostics-tracing": { run: "SC1090" },

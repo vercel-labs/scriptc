@@ -319,6 +319,26 @@ describe(title, () => {
       const second = await execFileAsync(secondStage, [input, again, config], {
         ...runOptions,
         timeout: emitTimeout,
+      }).catch((cause: unknown) => {
+        // The fixture reports what it catches on stdout and exits non-zero, so
+        // a bare "Command failed" hides whether the second generation crashed,
+        // overran its stack or timed out. Say what the child said. Promisified
+        // execFile exposes the exit status as `code` (a number, or an error
+        // string such as ENOENT when the child never ran), not `status`.
+        const failed = cause as {
+          code?: number | string;
+          signal?: string | null;
+          stdout?: string;
+          stderr?: string;
+        };
+        const said = (text: string | undefined): string => (text ?? "").slice(0, 2_000);
+        throw new Error(
+          `the second generation did not reproduce the module: code=${String(failed.code)}` +
+            ` signal=${String(failed.signal)}` +
+            `\nstdout: ${said(failed.stdout)}` +
+            `\nstderr: ${said(failed.stderr)}`,
+          { cause },
+        );
       });
       expect(second.stdout).toBe("");
       expect(second.stderr).toBe("");

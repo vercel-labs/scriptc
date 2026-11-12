@@ -676,6 +676,7 @@ import {
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
+  captureRejectionSymbolValue,
   lowerEmitOverrideSpec,
   type ComputedEventPattern,
   type EmitSpecCtx,
@@ -22907,11 +22908,19 @@ export class Lowerer {
     if (module === "constants") return null;
     if (module !== null) return { module, member: access.name.text };
     // The events module object IS the EventEmitter class, so the class's
-    // defaultMaxListeners is the module property.
-    if (access.name.text === "defaultMaxListeners" && ts.isIdentifier(access.expression)) {
-      const imported = this.builtinImportOf(access.expression);
+    // defaultMaxListeners and captureRejectionSymbol are module properties.
+    if (
+      access.name.text === "defaultMaxListeners" ||
+      access.name.text === "captureRejectionSymbol"
+    ) {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
       if (imported?.module === "events" && imported.member === "EventEmitter") {
-        return { module: "events", member: "defaultMaxListeners" };
+        return { module: "events", member: access.name.text };
       }
     }
     // The RE-EXPORT FACADE's namespace spelling: `import * as assert from
@@ -23047,6 +23056,11 @@ export class Lowerer {
         type: F64,
         loc,
       };
+    }
+    // events.captureRejectionSymbol: Symbol.for('nodejs.rejection'), the
+    // one symbol the class static and every module spelling answer.
+    if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+      return captureRejectionSymbolValue(loc);
     }
     if (bi.module === "worker_threads") {
       const value = lowerWorkerMetadata(this, bi.member, loc);

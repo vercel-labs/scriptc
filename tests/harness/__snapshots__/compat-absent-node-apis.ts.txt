@@ -65,13 +65,6 @@ compat-absent-node-apis.ts:18:17 - error SC0001: Property 'createObjectURL' does
      |                 ^~~~~~~~~~~~~~~
   19 | 
 
-compat-absent-node-apis.ts:22:7 - error SC0001: Property 'close' does not exist on type 'Timeout'.
-
-  21 | const timer = setTimeout(() => {}, 1);
-  22 | timer.close();
-     |       ^~~~~
-  23 | 
-
 compat-absent-node-apis.ts:25:25 - error SC0001: Property 'timeOrigin' does not exist on type 'Performance'.
 
   24 | // perf_hooks: the time origin and the observer.

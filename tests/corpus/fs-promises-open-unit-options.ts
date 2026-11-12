@@ -49,6 +49,49 @@ const viaVoid = await fsp.open(file, void bump());
 console.log("void flags", order.join(","));
 await viaVoid.close();
 
+// An effectful flags expression with a unit-typed mode: the flags argument
+// evaluates first, and the value it answers is the one the open uses.
+order.length = 0;
+function pickReadFlags(): string {
+  order.push("flags value");
+  return "r";
+}
+const mixed = await fsp.open(file, pickReadFlags(), noMode());
+console.log("effectful flags", order.join(","), await mixed.readFile("utf8"));
+await mixed.close();
+
+// The flags value still reaches the open when the mode argument contributes
+// only its effect: "wx" creates a missing file, where the defaulted "r" fails
+// with ENOENT.
+order.length = 0;
+const fresh = path.join(dir, "fresh.txt");
+function pickWriteFlags(): string {
+  order.push("flags write");
+  return "wx";
+}
+function createMode(): undefined {
+  order.push("mode create");
+  return undefined;
+}
+const creator = await fsp.open(fresh, pickWriteFlags(), createMode());
+await creator.writeFile("new");
+await creator.close();
+console.log(
+  "effectful flags create",
+  order.join(","),
+  JSON.stringify(fs.readFileSync(fresh, "utf8")),
+);
+
+// Numeric flags take the runtime-read path; the order is the same there.
+order.length = 0;
+function pickNumericFlags(): number {
+  order.push("flags numeric");
+  return 0;
+}
+const numeric = await fsp.open(file, pickNumericFlags(), noMode());
+console.log("numeric flags", order.join(","), await numeric.readFile("utf8"));
+await numeric.close();
+
 // Mode alone still takes the flags default; the "w" flag opens for writing
 // so the mode's 0o666 can be observed through the created file.
 order.length = 0;

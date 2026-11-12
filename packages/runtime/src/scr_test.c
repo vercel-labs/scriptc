@@ -2356,14 +2356,33 @@ double scr_test_mt_set_interval(ScrClosure *cb /*moves*/, double ms) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
   return m ? scr_mt_create(m, true, cb, ms)->handle : scr_set_interval(cb, ms);
 }
+/* Node's #clearTimer removes whatever timer the handle names from the mock
+ * queue, whichever API created it: a mocked interval is cleared by
+ * clearTimeout's bound clear too (both APIs share the one #clearTimer). A
+ * handle no mock entry holds is left alone. */
+static void scr_test_mt_clear_mock(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL && e->pos != 0) scr_mt_clear(e->owner, handle);
+}
+/* clearTimeout and clearInterval are the mock's bound clear only while
+ * their own API is mocked (enable() replaces the clear with its set*).
+ * Otherwise they are the loop's clear, which acts on the loop's timers and
+ * leaves a mock Timeout alone — a real timer armed before enable() stays
+ * armed through a mocked clearTimeout. */
 void scr_test_mt_clear_timeout(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_TIMEOUT] != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 void scr_test_mt_clear_interval(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_INTERVAL] != NULL) scr_test_mt_clear_mock(handle);
+  else scr_clear_interval(handle);
+}
+/* Timeout.close() and [Symbol.dispose]() carry their own clear: a mock
+ * Timeout clears its queue entry at any time, and a loop Timeout the loop's
+ * timer, whether or not timers are mocked now. */
+void scr_test_mt_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 /* A mock Timeout's ref() and unref() return it unchanged, refresh() does
@@ -2407,6 +2426,14 @@ double scr_test_mt_set_immediate_als(ScrClosure *cb /*moves*/) {
 void scr_test_mt_clear_immediate(double handle) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
   if (m) scr_mt_clear(m, handle);
+  else scr_clear_immediate(handle);
+}
+/* Immediate.prototype[Symbol.dispose](): the immediate's own clear, not
+ * the global clearImmediate mock.timers may have replaced. A mock entry is
+ * removed from its queue; a loop immediate is the loop's to clear. */
+void scr_test_mt_immediate_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_immediate(handle);
 }
 void scr_test_mt_immediate_unref(double handle) {

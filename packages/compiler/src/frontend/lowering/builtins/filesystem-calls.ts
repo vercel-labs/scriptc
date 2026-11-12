@@ -328,45 +328,76 @@ export function lowerFsPromisesOpenCall(
       ? lowerer.mapTypeOf(lowerer.typeOf(modeNode))?.kind
       : undefined;
   const type: IrType = { kind: "promise", inner: FILEHANDLE_T };
-  const withEffects = (call: (pathArg: IrExpr) => IrExpr): IrExpr => {
-    if (effects.length === 0) return call(path);
-    const pathLocal = lowerer.declareHiddenLocal("%openPath", STRING);
-    const result = call(varRef(pathLocal.id, STRING, loc));
-    return {
-      kind: "seqExpr",
-      stmts: [
-        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
-        ...effects.map((effect): IrStmt => ({ kind: "exprStmt", expr: effect, loc: effect.loc })),
-      ],
-      result,
-      type: result.type,
-      loc,
-    };
-  };
-  if ((!flagsPresent || flagsKind === "string") && (!modePresent || modeKind === "f64")) {
-    const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
-    const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-    const flags = flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, STRING) : defaultFlags;
-    const mode = modePresent ? lowerer.lowerExprExpecting(modeNode!, F64) : defaultMode;
-    return withEffects((pathArg) => ({
-      kind: "libCall",
-      fn: "fsp.open",
-      args: [pathArg, flags, mode],
-      type,
-      loc,
-    }));
-  }
-  return withEffects((pathArg) => ({
+  const direct = (!flagsPresent || flagsKind === "string") && (!modePresent || modeKind === "f64");
+  const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
+  const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
+  const call = (pathArg: IrExpr, flags: IrExpr, mode: IrExpr): IrExpr => ({
     kind: "libCall",
-    fn: "fsp.openOptions",
-    args: [
-      pathArg,
-      flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, DYN) : dynUndefinedExpr(loc),
-      modePresent ? lowerer.lowerExprExpecting(modeNode!, DYN) : dynUndefinedExpr(loc),
-    ],
+    fn: direct ? "fsp.open" : "fsp.openOptions",
+    args: [pathArg, flags, mode],
     type,
     loc,
-  }));
+  });
+  if (effects.length === 0) {
+    const flags = flagsPresent
+      ? lowerer.lowerExprExpecting(flagsNode!, direct ? STRING : DYN)
+      : direct
+        ? defaultFlags
+        : dynUndefinedExpr(loc);
+    const mode = modePresent
+      ? lowerer.lowerExprExpecting(modeNode!, direct ? F64 : DYN)
+      : direct
+        ? defaultMode
+        : dynUndefinedExpr(loc);
+    return call(path, flags, mode);
+  }
+  // Some argument's type is only unit values: its expression contributes
+  // effects while the default stands in for its value. Every other
+  // supplied argument is bound first, in argument order, so all three
+  // evaluate exactly once as path, flags, mode — a hoisted mode effect
+  // must not run before an effectful flags expression.
+  const stmts: IrStmt[] = [];
+  const pathLocal = lowerer.declareHiddenLocal("%openPath", STRING);
+  stmts.push({ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc });
+  const argument = (
+    node: ts.Expression | undefined,
+    present: boolean,
+    effect: IrExpr | null,
+    argType: IrType,
+    defaultValue: IrExpr,
+    name: string,
+  ): IrExpr => {
+    if (!present || effect !== null) {
+      if (effect !== null) stmts.push({ kind: "exprStmt", expr: effect, loc: effect.loc });
+      return defaultValue;
+    }
+    const local = lowerer.declareHiddenLocal(name, argType);
+    stmts.push({
+      kind: "varDecl",
+      localId: local.id,
+      init: lowerer.lowerExprExpecting(node!, argType),
+      loc,
+    });
+    return varRef(local.id, argType, loc);
+  };
+  const flagsArg = argument(
+    flagsNode,
+    flagsPresent,
+    flagsEffect,
+    direct ? STRING : DYN,
+    direct ? defaultFlags : dynUndefinedExpr(loc),
+    "%openFlags",
+  );
+  const modeArg = argument(
+    modeNode,
+    modePresent,
+    modeEffect,
+    direct ? F64 : DYN,
+    direct ? defaultMode : dynUndefinedExpr(loc),
+    "%openMode",
+  );
+  const result = call(varRef(pathLocal.id, STRING, loc), flagsArg, modeArg);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 // fs.openAsBlob(path[, options]) — Node's call is synchronous: it validates

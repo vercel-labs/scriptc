@@ -21,6 +21,7 @@ import {
 } from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
+import { namedLinkInputDependencies } from "./link-inputs.js";
 import {
   toolchainEnvironmentCachePolicy,
   toolchainEnvironmentFingerprint,
@@ -435,7 +436,8 @@ export async function linkNativeExecutable(
   );
   const privateOut = join(privateOutRoot, basename(plan.outputPath));
   const linkMap = join(privateOutRoot, "link.map");
-  const mapArgs = staticLinkMapArgs(plan.target, plan.staticLink === true, linkMap);
+  const writesLinkMap =
+    staticLinkMapArgs(plan.target, plan.staticLink === true, linkMap).length !== 0;
   let stagedRoot: string | null = null;
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
@@ -444,7 +446,7 @@ export async function linkNativeExecutable(
     const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
     const zig = explicitLinker === undefined && plan.target.defaultLinker === "zig";
     const startupOrder = await startupOrderingFile(plan, privateOutRoot);
-    const linkArgs = (withLld: boolean): string[] => {
+    const linkArgs = (withLld: boolean, output = privateOut, map = linkMap): string[] => {
       const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
       return [
         ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
@@ -452,14 +454,15 @@ export async function linkNativeExecutable(
         ...(withLld && startupOrder !== null ? [`-Wl,--symbol-ordering-file=${startupOrder}`] : []),
         ...hugeTextLinkerArgs(plan.hugeText === true, (withLld && lld.length !== 0) || zig),
         ...plan.driverFlags,
-        ...mapArgs,
+        // The map is beside the output for the same reason the output moves:
+        // both describe one link, and this call reads the map it wrote.
+        ...staticLinkMapArgs(plan.target, plan.staticLink === true, map),
         ...(withLld ? inputs : inputsWithoutLld(plan.target, inputs)),
         ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
         "-o",
-        privateOut,
+        output,
       ];
     };
-    const args = linkArgs(lld.length !== 0);
     // The driver binary and the lld that `-fuse-ld=lld` selects are consumed
     // outside the linker's own input list, so the proof names them directly.
     const linkTools = [
@@ -480,22 +483,42 @@ export async function linkNativeExecutable(
     const additionalDependencyPaths = plan.dependencyPaths.filter(
       (path) => !inheritedDependencyPaths.has(resolve(path)),
     );
+    // A probe must not produce the executable this call produces: `-###` is a
+    // dry run only for some drivers (zig prints the link command and then runs
+    // it), and a probe outlives the wait when a sibling probe fails first, so
+    // a probe given the real output could link over it after the real link
+    // finished. A probe names private paths instead, in a directory of its
+    // own, with the output's own basename, which a driver may derive an
+    // output identity from.
+    const probeDependencies = async (): Promise<NativeArtifactDependency[]> => {
+      const probeOut = join(
+        await mkdtemp(join(privateOutRoot, "probe-link-")),
+        basename(plan.outputPath),
+      );
+      const toolchain = await objectLinkerDependencyPaths(
+        linker,
+        linkArgs(lld.length !== 0, probeOut, join(dirname(probeOut), "link.map")),
+        privateOutRoot,
+        [privateOutRoot, staged.root, ...plan.inputs],
+        linkTools,
+      );
+      const inputs = [...toolchain, ...additionalDependencyPaths];
+      // A trace lists the inputs the driver opened, not the files a linker
+      // script adds or a thin archive's members. Snapshot those too, or the
+      // proof would hold across a change the link read.
+      const named = await namedLinkInputDependencies(inputs, {
+        // The link runs in this process's working directory, which is what a
+        // script's relative input names resolve against.
+        cwd: process.cwd(),
+        excludedRoots: [privateOutRoot, staged.root, ...plan.inputs],
+      });
+      return [...inheritedDependencies, ...(await snapshotDependencies([...inputs, ...named]))];
+    };
     const preLinkDependencies =
       options.onArtifactReady === undefined ||
       !(await nativeArtifactDependenciesStillMatch(inheritedDependencies).catch(() => false))
         ? null
-        : await objectLinkerDependencyPaths(
-            linker,
-            args,
-            privateOutRoot,
-            [privateOutRoot, staged.root, ...plan.inputs],
-            linkTools,
-          )
-            .then(async (toolchain) => [
-              ...inheritedDependencies,
-              ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
-            ])
-            .catch(() => null);
+        : await probeDependencies().catch(() => null);
     const link = async (withLld: boolean): Promise<void> => {
       try {
         await execFileAsync(linker, linkArgs(withLld));
@@ -522,7 +545,7 @@ export async function linkNativeExecutable(
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
     if (plan.hugeText === true) rewriteHugeTextExecutable(privateOut);
-    if (mapArgs.length !== 0) {
+    if (writesLinkMap) {
       const refusal = staticExecutableRefusal(plan.target, true, await readFile(linkMap, "utf8"));
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
     }

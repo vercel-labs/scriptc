@@ -381,30 +381,46 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
         return;
       }
       // events.once(emitter, name) and events.on(emitter, name) register a
-      // listener as well: a computed name's pattern is what lets a literal
-      // emit of a name the pattern admits lower through the checked-dynamic
-      // argument vector.
+      // listener under the name they receive, whichever import binding names
+      // them (the builtin provenance resolves an alias). A literal name joins
+      // the table like any other registration; a computed name's pattern is
+      // what lets a literal or patterned emit of a name it admits lower
+      // through the checked-dynamic argument vector; an unrestricted name
+      // may register for any string event, exactly as emitter.on under one
+      // does.
       if (ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)) {
-        const called = (ts.isIdentifier(callee) ? callee : callee.name).text;
-        if ((called === "once" || called === "on") && node.arguments.nodes.length >= 2) {
+        if (node.arguments.nodes.length >= 2) {
           try {
-            const builtin = ts.isIdentifier(callee)
-              ? lowerer.builtinImportOf(callee)
-              : lowerer.builtinMemberOf(callee);
-            if (builtin?.module === "events" && builtin.member === called) {
+            // A property access names its member outright; an identifier may
+            // be an alias of any exported member, so only its provenance says
+            // which one it is.
+            const builtin = !ts.isIdentifier(callee)
+              ? callee.name.text === "once" || callee.name.text === "on"
+                ? lowerer.builtinMemberOf(callee)
+                : null
+              : lowerer.builtinImportOf(callee);
+            if (
+              builtin?.module === "events" &&
+              (builtin.member === "once" || builtin.member === "on")
+            ) {
               const [recvNode, nameNode] = node.arguments.nodes;
               const info = scannedEmitterInfo(
                 lowerer,
                 lowerer.mapTypeOf(lowerer.typeOf(recvNode!)),
               );
-              if (
-                info &&
-                streamSidesOf(lowerer, info) === null &&
-                scannedEventKey(lowerer, nameNode!) === null
-              ) {
-                const pattern = computedEventPatternOf(lowerer, nameNode!);
-                if (pattern && !computedPatternOverlapsReserved(pattern))
-                  computedPatterns.push({ ...pattern, listener: true });
+              if (info && streamSidesOf(lowerer, info) === null) {
+                const literal = scannedEventKey(lowerer, nameNode!);
+                if (literal !== null) {
+                  sigOf(literal).hasListener = true;
+                } else {
+                  const pattern = computedEventPatternOf(lowerer, nameNode!);
+                  if (pattern) {
+                    if (!computedPatternOverlapsReserved(pattern))
+                      computedPatterns.push({ ...pattern, listener: true });
+                  } else {
+                    anyNameListener = true;
+                  }
+                }
               }
               return;
             }

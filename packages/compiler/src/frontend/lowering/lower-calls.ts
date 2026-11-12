@@ -12133,8 +12133,10 @@ export function lowerRecordFieldCall(
  * are evaluated and dropped, like every Node call. URL.revokeObjectURL()
  * with NO argument: Node's ERR_MISSING_ARGS throws before the registry
  * lookup. The one-argument form coerces the id to a string (a Symbol
- * throws) and drops the registration under that exact id; ids that were
- * never registered miss. */
+ * throws); the runtime parses the string as a URL and drops the
+ * registration whose id sits between the first and second colon of its
+ * pathname, so a query or fragment still revokes the registration the
+ * bare id names, and ids that were never registered miss. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,

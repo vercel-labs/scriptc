@@ -1316,9 +1316,12 @@ function buildLibFnSignatures() {
      * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. A registered blob
      * answers a fresh "blob:nodedata:<uuid v4>" id. */
     "url.createObjectURL": { argTypes: [DYN], result: STRING },
-    /** URL.revokeObjectURL(id): the id arrives already converted and the
-     * registration under exactly that string is dropped; ids that were
-     * never registered (or were revoked) miss. Never throws. */
+    /** URL.revokeObjectURL(id): the id arrives already converted. The
+     * runtime parses it as a URL and drops the registration whose id is
+     * the pathname text between its first and second colon, so a query or
+     * fragment on the id still revokes it. Unparsable input, a pathname
+     * with no colon or a second colon, and ids that were never registered
+     * (or were revoked) miss. Never throws. */
     "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },

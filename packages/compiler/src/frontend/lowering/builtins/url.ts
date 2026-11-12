@@ -214,6 +214,12 @@ export function lowerSearchParamsNew(
  * init (`new URLSearchParams(c ? { a: "1" } : {})`) evaluates its
  * condition first and builds from the arm it selects, so each arm may be
  * any supported init shape. */
+
+/** One record initializer's value: the expression as the literal evaluates
+ * it in source order (`value`), and the conversion Node runs when the
+ * constructor appends the entry (`coerce`, in Reflect.ownKeys order). */
+type ValueOf = { value: IrExpr; coerce: (raw: IrExpr) => IrExpr };
+
 function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr {
   let inner = arg;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
@@ -244,21 +250,28 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     // slot. A JavaScript source's value may be untyped: it crosses into
     // the checked-dynamic tree and stringifies there, Node's ToString
     // (`{ a: "1", b: 2 }` answers `b=2`).
-    const valueOf = (node: ts.Node, lower: () => IrExpr): IrExpr => {
-      if (!isJsSourceFile(ts.getSourceFileOfNode(arg)))
-        return lowerer.lowerExprExpecting(node as ts.Expression, STRING);
+    const valueOf = (node: ts.Node, lower: () => IrExpr): ValueOf => {
+      if (!isJsSourceFile(ts.getSourceFileOfNode(arg))) {
+        const value = lowerer.lowerExprExpecting(node as ts.Expression, STRING);
+        return { value, coerce: (raw) => raw };
+      }
       const value = lower();
-      if (value.type.kind === "string") return value;
-      if (!lowerer.dynConvertible(value.type)) return lowerer.coerceInto(node, value, STRING);
+      if (value.type.kind === "string") return { value, coerce: (raw) => raw };
+      if (!lowerer.dynConvertible(value.type)) {
+        return { value, coerce: (raw) => lowerer.coerceInto(node, raw, STRING) };
+      }
       return {
-        kind: "libCall",
-        fn: "dyn.toStringCoerce",
-        args: [{ kind: "dynFrom", value, type: DYN, loc: value.loc }],
-        type: STRING,
-        loc: value.loc,
+        value,
+        coerce: (raw) => ({
+          kind: "libCall",
+          fn: "dyn.toStringCoerce",
+          args: [{ kind: "dynFrom", value: raw, type: DYN, loc: raw.loc }],
+          type: STRING,
+          loc: raw.loc,
+        }),
       };
     };
-    const pairs: { key: string; keyLoc: SrcLoc; value: IrExpr }[] = [];
+    const pairs: { key: string; keyLoc: SrcLoc; value: ValueOf }[] = [];
     for (const prop of arg.properties.nodes) {
       // `{ model }` appends the binding's value under its own name, like
       // the `{ model: model }` spelling.
@@ -303,18 +316,44 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     // one property twice, so every key here is distinct.)
     const isIndexKey = (key: string): boolean =>
       /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+    const indexed = pairs.map((pair, source) => ({ pair, source }));
     const ordered = [
-      ...pairs.filter((pair) => isIndexKey(pair.key)).sort((a, b) => Number(a.key) - Number(b.key)),
-      ...pairs.filter((pair) => !isIndexKey(pair.key)),
+      ...indexed
+        .filter(({ pair }) => isIndexKey(pair.key))
+        .sort((a, b) => Number(a.pair.key) - Number(b.pair.key)),
+      ...indexed.filter(({ pair }) => !isIndexKey(pair.key)),
     ];
-    for (const pair of ordered) {
+    // Node evaluates the literal's property initializers in SOURCE order
+    // and only then iterates the record in Reflect.ownKeys order (the
+    // constructor's conversion runs at append time). When the two orders
+    // differ (`{ b: f(), 0: g() }`), the initializers are read into hidden
+    // locals first, so both their effects and the values they answer come
+    // from the source order; the chain below then appends in Reflect order.
+    let reads: IrExpr[] | null = null;
+    if (ordered.some((entry, i) => entry.source !== i)) {
+      const stmts: IrStmt[] = [];
+      reads = pairs.map((pair) => {
+        const local = lowerer.declareHiddenLocal("%spValue", pair.value.value.type);
+        stmts.push({ kind: "varDecl", localId: local.id, init: pair.value.value, loc });
+        return varRef(local.id, pair.value.value.type, loc);
+      });
+      acc = {
+        kind: "seqExpr",
+        stmts,
+        result: acc,
+        type: SEARCH_PARAMS_T,
+        loc,
+      };
+    }
+    for (const { pair, source } of ordered) {
+      const raw = reads ? reads[source]! : pair.value.value;
       acc = {
         kind: "libCall",
         fn: "sp.with",
         args: [
           acc,
           { kind: "strLit", value: pair.key, type: STRING, loc: pair.keyLoc },
-          pair.value,
+          pair.value.coerce(raw),
         ],
         type: SEARCH_PARAMS_T,
         loc,
@@ -556,8 +595,9 @@ export function lowerSearchParamsMethodCall(
   // The WHATWG arity ladder: too few arguments throw Node's
   // ERR_MISSING_ARGS before any conversion (the invalid-input probes'
   // `params.get()`). Node evaluates the receiver and the present
-  // arguments first, then throws, so the receiver's effects are kept and
-  // only the missing slot is not converted.
+  // arguments first, then throws, so every supplied expression's effects
+  // are kept (`make().append(name())` calls `name()`) and only the missing
+  // slot is not converted.
   const required: Record<string, [number, string] | undefined> = {
     get: [1, 'The "name" argument must be specified'],
     getAll: [1, 'The "name" argument must be specified'],
@@ -568,7 +608,6 @@ export function lowerSearchParamsMethodCall(
   };
   const req = own(required, name);
   if (req && args.length < req[0]) {
-    const receiver = lowerer.lowerExpr(access.expression);
     const thrown = nodeThrowExpr(
       1,
       "ERR_MISSING_ARGS",
@@ -576,10 +615,19 @@ export function lowerSearchParamsMethodCall(
       lowerer.mapTypeOf(lowerer.typeOf(call)) ?? VOID,
       loc,
     );
-    if (isSafeToDiscard(receiver)) return thrown;
+    const stmts: IrStmt[] = [];
+    const receiver = lowerer.lowerExpr(access.expression);
+    if (!isSafeToDiscard(receiver)) {
+      stmts.push({ kind: "exprStmt", expr: receiver, loc: receiver.loc });
+    }
+    for (const arg of args) {
+      const value = lowerer.lowerExpr(arg);
+      if (!isSafeToDiscard(value)) stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    }
+    if (stmts.length === 0) return thrown;
     return {
       kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: receiver, loc: receiver.loc }],
+      stmts,
       result: thrown,
       type: thrown.type,
       loc,

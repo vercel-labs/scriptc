@@ -253,4 +253,51 @@ Object.defineProperty(throwingValue, "x", {
 attempt("map member getter throws", () => equal(new Map([["k", throwingValue]]), new Map([["k", { x: 1 }]])));
 attempt("set member getter throws", () => equal(new Set([throwingValue]), new Set([{ x: 1 }])));
 
+// The first object's getter runs before the matching property of the second
+// object is read, so a side effect it makes on the second object is what
+// that read answers.
+const mutatesValue: any = { x: 1 };
+const valueWriter: any = {};
+Object.defineProperty(valueWriter, "x", {
+  enumerable: true,
+  get() {
+    mutatesValue.x = 5;
+    return 1;
+  },
+});
+show("getter mutates other value", equal(valueWriter, mutatesValue));
+show("mutation persisted", mutatesValue.x);
+
+const grows: any = { x: 1 };
+const grower: any = {};
+Object.defineProperty(grower, "x", {
+  enumerable: true,
+  get() {
+    grows.extra = 2;
+    return 1;
+  },
+});
+show("getter adds other key", equal(grower, grows));
+
+const shrinks: any = { x: 1, y: 2 };
+const shrinker: any = {
+  get x() {
+    delete shrinks.y;
+    return 1;
+  },
+  y: 2,
+};
+show("getter deletes other key", equal(shrinker, shrinks));
+
+// The second object's getter runs after the first object's value is read.
+const readFirst: any = { x: 1, y: 2 };
+const lateWriter: any = {
+  get x() {
+    readFirst.y = 9;
+    return 1;
+  },
+  y: 2,
+};
+show("second getter runs after first read", equal(readFirst, lateWriter));
+
 console.log("done");

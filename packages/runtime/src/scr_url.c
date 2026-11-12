@@ -1966,24 +1966,53 @@ ScrDyn *scr_url_lookup_object_url(const ScrStr *id) {
   return NULL;
 }
 
-/* URL.revokeObjectURL(id) past the coercion: the registration whose id is
- * exactly this string is dropped (one reference to the id and the blob
- * released). Any other string misses, like Node. The argument is
- * borrowed; the caller releases it. */
+/* URL.revokeObjectURL(id) past the coercion. Node parses the string as a
+ * URL and does nothing when that fails, then reads the registration's id
+ * out of the pathname: everything after its FIRST colon and before a
+ * second one. A query or fragment therefore revokes the registration the
+ * bare id names, a different scheme before the colon revokes it too (the
+ * pathname is all that is read), and any second colon in the pathname
+ * makes the call a no-op. The registration is dropped with one reference
+ * to the id and the blob released. The argument is borrowed; the caller
+ * releases it. */
 void scr_url_revoke_object_url(ScrStr *id) {
+  ScrUrl *u = url_try_parse(id, NULL);
+  if (!u) return;
+  const ScrStr *path = u->path;
+  size_t first = SIZE_MAX;
+  for (size_t i = 0; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      first = i;
+      break;
+    }
+  }
+  if (first == SIZE_MAX) {
+    scr_url_release(u);
+    return;
+  }
+  for (size_t i = first + 1; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      scr_url_release(u);
+      return;
+    }
+  }
+  const char *key = path->data + first + 1;
+  size_t key_len = path->len - first - 1;
+  size_t prefix = sizeof "blob:nodedata:" - 1;
   ScrUrlObjectUrl **link = &scr_url_object_urls;
   while (*link) {
     ScrUrlObjectUrl *entry = *link;
-    if (entry->id->len == id->len &&
-        memcmp(entry->id->data, id->data, id->len) == 0) {
+    if (entry->id->len - prefix == key_len &&
+        memcmp(entry->id->data + prefix, key, key_len) == 0) {
       *link = entry->next;
       scr_str_release(entry->id);
       scr_dyn_release(entry->blob);
       free(entry);
-      return;
+      break;
     }
     link = &entry->next;
   }
+  scr_url_release(u);
 }
 
 /* WHATWG search getter: "" for no query AND for the bare-'?' query;

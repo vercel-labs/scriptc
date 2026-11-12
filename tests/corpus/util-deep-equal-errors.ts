@@ -77,4 +77,52 @@ typed.stack = "";
 show("typed error", equal(typed as any, plain()));
 show("typed error differ", equal(typed as any, named("Error", "other")));
 
+// The strict constructor gate runs before the error arm, so an error whose
+// constructor differs from a plain Error's never matches one, even when
+// name and message agree: a subclass that renames itself to "Error", and a
+// built-in error renamed to "Error", both stay unequal to `new Error`.
+class Renamed extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Error";
+  }
+}
+const renamed = new Renamed("boom");
+renamed.stack = "";
+show("subclass with base name", equal(plain(), renamed as any));
+show("subclass with base name reversed", equal(renamed as any, plain()));
+const renamedAgain = new Renamed("boom");
+renamedAgain.stack = "";
+show("subclass against itself", equal(renamed as any, renamedAgain as any));
+
+const typeError: any = new TypeError("boom");
+typeError.name = "Error";
+typeError.stack = "";
+show("renamed built-in", equal(plain(), typeError));
+show("renamed built-in reversed", equal(typeError, plain()));
+
+const rangeError: any = new RangeError("boom");
+rangeError.stack = "";
+show("different built-in", equal(plain(), rangeError));
+
+class SubFatal extends Fatal {
+  constructor(message: string) {
+    super(message);
+    this.stack = "";
+  }
+}
+show("nested subclass vs subclass", equal(fatal(), new SubFatal("boom") as any));
+
+// Two errors of the same subclass still match through the gate.
+show("renamed pair", equal(renamed as any, (() => {
+  const twin = new Renamed("boom");
+  twin.stack = "";
+  return twin as any;
+})()));
+
+// A subclass whose message differs stays unequal for both reasons.
+const renamedOther = new Renamed("other");
+renamedOther.stack = "";
+show("subclass message", equal(plain(), renamedOther as any));
+
 console.log("done");

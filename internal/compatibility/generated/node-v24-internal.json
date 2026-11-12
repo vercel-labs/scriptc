@@ -53790,6 +53790,8 @@
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/url-search-params-record-init-order.cjs",
+          "tests/corpus/url-search-params-record-init-order.ts",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -55252,7 +55254,9 @@
           "tests/corpus/1793-searchparams-iteration.ts",
           "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/node24-url-mutation.ts",
-          "tests/corpus/node24-url-factories.ts"
+          "tests/corpus/node24-url-factories.ts",
+          "tests/corpus/url-search-params-record-init-order.ts",
+          "tests/corpus/url-search-params-record-init-order.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55310,7 +55314,9 @@
           "tests/corpus/1793-searchparams-iteration.ts",
           "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/node24-url-mutation.ts",
-          "tests/corpus/node24-url-factories.ts"
+          "tests/corpus/node24-url-factories.ts",
+          "tests/corpus/url-search-params-record-init-order.ts",
+          "tests/corpus/url-search-params-record-init-order.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -103008,6 +103014,7 @@
           "tests/corpus/url-file-url.ts",
           "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/url-namespace-functions.ts",
+          "tests/corpus/url-revoke-object-url-key.ts",
           "tests/corpus/url-runtime-base.ts",
           "tests/corpus/url-search-params-class.ts",
           "tests/corpus/url-search-params-js.js",
@@ -103233,7 +103240,8 @@
         "tests": [
           "tests/corpus/url-factories.ts",
           "tests/corpus/url-factories-js.js",
-          "tests/corpus/9206-url-revoke-object-url.ts"
+          "tests/corpus/9206-url-revoke-object-url.ts",
+          "tests/corpus/url-revoke-object-url-key.ts"
         ]
       },
       "anchorSource": "exact"

@@ -1280,11 +1280,39 @@ static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double 
                                    double depth);
 static bool insp_obj_shows(const ScrDynProp *ent);
 static bool scr_insp_symbol_entry(ScrDyn *d, size_t i, ScrDynProp *out);
-static ScrStr *insp_table_entry(ScrDyn *table, const ScrDynProp *ent, double recurse,
-                                double depth);
-static void insp_table_symbols(ScrDyn *table, double recurse, double depth);
+static ScrStr *insp_table_entry(ScrDyn *table, ScrDyn *owner, const ScrDynProp *ent,
+                                double recurse, double depth);
+static void insp_table_symbols(ScrDyn *table, ScrDyn *owner, double recurse, double depth);
 static bool insp_fmt_object(const ScrDyn *value);
 static void insp_key_into(InspBuf *b, const char *key, size_t len);
+
+/* An entry's borrowed fields held for a render that runs user code: the key
+ * copied into an owned string, and the data value (or both accessor
+ * functions) retained. The getter a render invokes, and a custom inspect on
+ * the value it renders, may delete the property, which frees the key and the
+ * value the table lent the entry. Fills `*key` and answers the owned
+ * descriptor (insp_prop_drop releases it). */
+static ScrDynProp insp_prop_hold(const ScrDynProp *ent, ScrStr **key) {
+  ScrDynProp held = *ent;
+  if (ent->accessor) {
+    held.getter = ent->getter ? scr_dyn_retain(ent->getter) : NULL;
+    held.setter = ent->setter ? scr_dyn_retain(ent->setter) : NULL;
+  } else {
+    held.value = scr_dyn_retain(ent->value);
+  }
+  *key = scr_str_new(ent->key ? ent->key : "", ent->key_len);
+  return held;
+}
+
+static void insp_prop_drop(const ScrDynProp *held, ScrStr *key) {
+  if (held->accessor) {
+    scr_dyn_release(held->getter);
+    scr_dyn_release(held->setter);
+  } else {
+    scr_dyn_release(held->value);
+  }
+  scr_str_release(key);
+}
 
 /* The value a view's accessor receives as `this`: the checked-dynamic
  * handle the walk holds for it, or a box of the view when the render has
@@ -1320,29 +1348,33 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
     if (ent && (ent->enumerable || g_show_hidden)) key = scr_insp_dyn(symbol, recurse, depth);
   }
   if (!ent || !(ent->enumerable || g_show_hidden)) return NULL;
+  ScrStr *own_key = NULL;
+  ScrDynProp held = insp_prop_hold(ent, &own_key);
   ScrStr *val;
-  if (!ent->accessor) {
-    val = scr_insp_dyn(ent->value, recurse, depth);
+  if (!held.accessor) {
+    val = scr_insp_dyn(held.value, recurse, depth);
   } else {
     bool owned = false;
     ScrDyn *self = insp_view_this(b, box, &owned);
-    val = insp_accessor_value(ent, self, recurse, depth);
+    val = insp_accessor_value(&held, self, recurse, depth);
     if (owned) scr_dyn_release(self);
   }
   if (!val) {
     scr_str_release(key);
+    insp_prop_drop(&held, own_key);
     return NULL;
   }
   InspBuf eb = {0};
-  bool brackets = !ent->enumerable && bracket_hidden;
+  bool brackets = !held.enumerable && bracket_hidden;
   if (brackets) ib_char(&eb, '[');
   if (key) ib_bytes(&eb, key->data, key->len);
-  else insp_key_into(&eb, ent->key, ent->key_len);
+  else insp_key_into(&eb, own_key->data, own_key->len);
   if (brackets) ib_char(&eb, ']');
   ib_cstr(&eb, ": ");
   ib_bytes(&eb, val->data, val->len);
   scr_str_release(key);
   scr_str_release(val);
+  insp_prop_drop(&held, own_key);
   return ib_take(&eb);
 }
 
@@ -1902,10 +1934,15 @@ ScrStr *scr_insp_accessor_result(ScrDyn *value, ScrStr *label, double recurse, d
  * value's own rendering threw). */
 static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double recurse,
                                    double depth) {
-  bool get = ent->getter && ent->getter->kind == SCR_DYN_FUNC;
-  bool set = ent->setter && ent->setter->kind == SCR_DYN_FUNC;
-  if (!get || !insp_getter_runs(set)) return insp_accessor_tag(ent);
+  ScrDynProp held = *ent;
+  bool get = held.getter && held.getter->kind == SCR_DYN_FUNC;
+  bool set = held.setter && held.setter->kind == SCR_DYN_FUNC;
+  if (!get || !insp_getter_runs(set)) return insp_accessor_tag(&held);
   const char *label = set ? "Getter/Setter" : "Getter";
+  /* Held across the call: the getter may delete the property that owns it,
+   * which drops the table's reference to the function being called. */
+  held.getter = scr_dyn_retain(ent->getter);
+  held.setter = ent->setter ? scr_dyn_retain(ent->setter) : NULL;
   /* The getter is user code called from the inspection: the util.inspect
    * calls inside it start from Node's fresh defaults, and the options,
    * frames and nested contexts it leaves, a throw included, are not the
@@ -1913,22 +1950,35 @@ static ScrStr *insp_accessor_value(const ScrDynProp *ent, ScrDyn *owner, double 
   double token = scr_insp_custom_call_begin();
   g_indent += 2;
   scr_dyn_this_push_dyn(owner);
-  ScrDyn *tmp = scr_dyn_call(ent->getter, NULL, 0, "getter");
+  ScrDyn *tmp = scr_dyn_call(held.getter, NULL, 0, "getter");
   scr_dyn_this_pop();
   g_indent -= 2;
   scr_insp_custom_call_end(token);
   if (tmp) {
     ScrStr *out = insp_accessor_text(tmp, label, recurse, depth);
     scr_dyn_release(tmp);
+    scr_dyn_release(held.getter);
+    scr_dyn_release(held.setter);
     return out;
   }
   ScrCaught *caught = scr_exc_take();
-  if (!caught) return insp_accessor_tag(ent);
+  if (!caught) {
+    ScrStr *out = insp_accessor_tag(&held);
+    scr_dyn_release(held.getter);
+    scr_dyn_release(held.setter);
+    return out;
+  }
   ScrDyn *err = scr_caught_to_dyn(caught);
   scr_caught_release(caught);
-  if (!err) return NULL;
+  if (!err) {
+    scr_dyn_release(held.getter);
+    scr_dyn_release(held.setter);
+    return NULL;
+  }
   ScrStr *out = insp_accessor_threw(err, label, recurse, depth);
   scr_dyn_release(err);
+  scr_dyn_release(held.getter);
+  scr_dyn_release(held.setter);
   return out;
 }
 
@@ -2209,7 +2259,7 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
       bool shortened = assertion && ((ent.key_len == 6 && memcmp(ent.key, "actual", 6) == 0) ||
                                      (ent.key_len == 8 && memcmp(ent.key, "expected", 8) == 0));
       if (!shortened) {
-        ScrStr *entry = insp_table_entry(d, &ent, recurse + 1, value_depth);
+        ScrStr *entry = insp_table_entry(d, d, &ent, recurse + 1, value_depth);
         if (!entry) break;
         scr_insp_entry(entry, false);
         scr_str_release(entry);
@@ -2233,7 +2283,7 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
       scr_str_release(entry);
       if (scr_exc_pending()) break;
     }
-    if (!scr_exc_pending()) insp_table_symbols(d, recurse + 1, depth);
+    if (!scr_exc_pending()) insp_table_symbols(d, d, recurse + 1, depth);
   } else {
     /* The default view: the enumerable own properties other than name,
      * message and stack, then a hidden cause and errors. */
@@ -2262,14 +2312,17 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
     }
     /* The own enumerable symbols getKeys appends after the string keys. */
     size_t nsymbols = d->symbol_keys ? d->symbol_keys->v.arr.len : 0;
-    for (size_t i = 0; i < nsymbols; i++) {
+    for (size_t i = 0; i < nsymbols && i < (d->symbol_keys ? d->symbol_keys->v.arr.len : 0); i++) {
       ScrDynProp ent;
       if (!scr_insp_symbol_entry(d, i, &ent) || !ent.enumerable) continue;
+      ScrStr *own_key = NULL;
+      ScrDynProp held = insp_prop_hold(&ent, &own_key);
       ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
-      ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, value_depth)
-                                 : scr_insp_dyn(ent.value, recurse + 1, value_depth);
+      ScrStr *val = held.accessor ? insp_accessor_value(&held, d, recurse + 1, value_depth)
+                                  : scr_insp_dyn(held.value, recurse + 1, value_depth);
       if (!val) {
         scr_str_release(key);
+        insp_prop_drop(&held, own_key);
         break;
       }
       InspBuf eb = {0};
@@ -2278,6 +2331,7 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
       ib_bytes(&eb, val->data, val->len);
       scr_str_release(key);
       scr_str_release(val);
+      insp_prop_drop(&held, own_key);
       ScrStr *entry = ib_take(&eb);
       scr_insp_entry(entry, false);
       scr_str_release(entry);
@@ -2581,51 +2635,67 @@ static bool insp_index_key(const char *key, size_t len) {
 
 /* One own-property entry of a property table, as Node's formatProperty
  * renders it: `key: value` with the key bracketed when the entry is hidden,
- * and an accessor's getter invoked under ctx.getters. Borrows the entry and
- * the table; +1, or NULL with an exception pending. */
-static ScrStr *insp_table_entry(ScrDyn *table, const ScrDynProp *ent, double recurse,
-                                double depth) {
-  ScrStr *val = ent->accessor ? insp_accessor_value(ent, table, recurse, depth)
-                              : scr_insp_dyn(ent->value, recurse, depth);
-  if (!val) return NULL;
+ * and an accessor's getter invoked under ctx.getters with the inspected
+ * value (`owner`, the function or RegExp whose table this is) as `this`.
+ * Borrows the entry, the table and the owner; +1, or NULL with an
+ * exception pending. The entry is held first: its getter, or a custom
+ * inspect on its value, can delete the property and free the key and value
+ * the table lent it. */
+static ScrStr *insp_table_entry(ScrDyn *table, ScrDyn *owner, const ScrDynProp *ent,
+                                double recurse, double depth) {
+  ScrStr *key = NULL;
+  ScrDynProp held = insp_prop_hold(ent, &key);
+  ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse, depth)
+                              : scr_insp_dyn(held.value, recurse, depth);
+  if (!val) {
+    insp_prop_drop(&held, key);
+    return NULL;
+  }
   InspBuf eb = {0};
-  if (ent->enumerable) {
-    insp_key_into(&eb, ent->key, ent->key_len);
+  if (held.enumerable) {
+    insp_key_into(&eb, key->data, key->len);
   } else {
     /* formatProperty's hidden key: the key's rendering in brackets. */
     ib_char(&eb, '[');
-    insp_key_into(&eb, ent->key, ent->key_len);
+    insp_key_into(&eb, key->data, key->len);
     ib_char(&eb, ']');
   }
   ib_cstr(&eb, ": ");
   ib_bytes(&eb, val->data, val->len);
   scr_str_release(val);
+  insp_prop_drop(&held, key);
   return ib_take(&eb);
 }
 
 /* Appends a property table's symbol-keyed entries to the current frame, in
- * insertion order: Node lists them after every string key. */
-static void insp_table_symbols(ScrDyn *table, double recurse, double depth) {
+ * insertion order: Node lists them after every string key. A rendered
+ * entry's getter can delete a symbol property, which shortens the table's
+ * key list, so each pass re-reads its length. */
+static void insp_table_symbols(ScrDyn *table, ScrDyn *owner, double recurse, double depth) {
   size_t nsymbols = table->symbol_keys ? table->symbol_keys->v.arr.len : 0;
-  for (size_t i = 0; i < nsymbols; i++) {
+  for (size_t i = 0; i < nsymbols && i < (table->symbol_keys ? table->symbol_keys->v.arr.len : 0);
+       i++) {
     ScrDynProp found;
     if (!scr_insp_symbol_entry(table, i, &found)) continue;
-    const ScrDynProp *ent = &found;
+    ScrStr *own_key = NULL;
+    ScrDynProp held = insp_prop_hold(&found, &own_key);
     ScrStr *key = scr_insp_dyn(table->symbol_keys->v.arr.items[i], recurse, depth);
-    ScrStr *val = ent->accessor ? insp_accessor_value(ent, table, recurse, depth)
-                                : scr_insp_dyn(ent->value, recurse, depth);
+    ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse, depth)
+                                : scr_insp_dyn(held.value, recurse, depth);
     if (!val) {
       scr_str_release(key);
+      insp_prop_drop(&held, own_key);
       break;
     }
     InspBuf eb = {0};
-    if (!ent->enumerable) ib_char(&eb, '[');
+    if (!held.enumerable) ib_char(&eb, '[');
     ib_bytes(&eb, key->data, key->len);
-    if (!ent->enumerable) ib_char(&eb, ']');
+    if (!held.enumerable) ib_char(&eb, ']');
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(key);
     scr_str_release(val);
+    insp_prop_drop(&held, own_key);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
@@ -2875,7 +2945,12 @@ static size_t insp_proto_props(ScrDyn *d, double recurse, double depth, bool ren
   return count;
 }
 
-static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char *cls) {
+/* The object form of a rendered frame. `owner` is the value a getter runs
+ * with as `this` (Node's formatProperty calls it on the inspected value):
+ * `d` itself, except for a function's property table, whose owner is the
+ * function. Borrows both. +1. */
+static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double depth,
+                            const char *cls) {
   /* A plain object with a tag takes Node's tagged prefix in all three
    * forms: `Object [Math] {}`, `[Object [Math]]` past the depth limit,
    * and `Object [Math] { key: value }`. */
@@ -2916,49 +2991,59 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
     if (!insp_obj_shows(&ent)) continue;
-    ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, depth)
-                               : scr_insp_dyn(ent.value, recurse + 1, depth);
-    if (!val) break;
+    ScrStr *own_key = NULL;
+    ScrDynProp held = insp_prop_hold(&ent, &own_key);
+    ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse + 1, depth)
+                                : scr_insp_dyn(held.value, recurse + 1, depth);
+    if (!val) {
+      insp_prop_drop(&held, own_key);
+      break;
+    }
     InspBuf eb = {0};
-    if (ent.enumerable) {
-      insp_key_into(&eb, ent.key, ent.key_len);
+    if (held.enumerable) {
+      insp_key_into(&eb, own_key->data, own_key->len);
     } else {
       /* formatProperty's hidden key: the key's rendering in brackets. */
       ib_char(&eb, '[');
-      insp_key_into(&eb, ent.key, ent.key_len);
+      insp_key_into(&eb, own_key->data, own_key->len);
       ib_char(&eb, ']');
     }
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(val);
+    insp_prop_drop(&held, own_key);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
     if (scr_exc_pending()) break;
   }
-  for (size_t i = 0; i < nsymbols; i++) {
+  for (size_t i = 0; i < nsymbols && i < (d->symbol_keys ? d->symbol_keys->v.arr.len : 0); i++) {
     ScrDynProp found;
     if (!scr_insp_symbol_entry(d, i, &found)) continue;
-    const ScrDynProp *ent = &found;
+    ScrStr *own_key = NULL;
+    ScrDynProp held = insp_prop_hold(&found, &own_key);
     ScrStr *key = scr_insp_dyn(d->symbol_keys->v.arr.items[i], recurse + 1, depth);
-    ScrStr *val = ent->accessor ? insp_accessor_value(ent, d, recurse + 1, depth)
-                                : scr_insp_dyn(ent->value, recurse + 1, depth);
+    ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse + 1, depth)
+                                : scr_insp_dyn(held.value, recurse + 1, depth);
     if (!val) {
       scr_str_release(key);
+      insp_prop_drop(&held, own_key);
       break;
     }
     InspBuf eb = {0};
     /* A hidden symbol key is bracketed like a hidden string key. */
-    if (!ent->enumerable) ib_char(&eb, '[');
+    if (!held.enumerable) ib_char(&eb, '[');
     ib_bytes(&eb, key->data, key->len);
-    if (!ent->enumerable) ib_char(&eb, ']');
+    if (!held.enumerable) ib_char(&eb, ']');
     ib_cstr(&eb, ": ");
     ib_bytes(&eb, val->data, val->len);
     scr_str_release(key);
     scr_str_release(val);
+    insp_prop_drop(&held, own_key);
     ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
+    if (scr_exc_pending()) break;
   }
   /* Node appends the inherited properties of a user-defined prototype
    * after every own key, string and symbol alike. */
@@ -3590,22 +3675,33 @@ static ScrDyn *insp_default_options_set(ScrClosure *closure, ScrDyn *const *args
                                                    : scr_dyn_retain(value);
   if (!view) return NULL;
   if (view->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < scr_dyn_obj_count(view); i++) {
-      ScrDynProp ent = scr_dyn_obj_prop_at(view, i);
-      if (!ent.enumerable) continue;
-      ScrDyn *member = scr_dyn_obj_read(view, ent.key, ent.key_len);
+    /* Object.keys' snapshot, as Object.assign copies one: a getter this
+     * reads can delete its own property, which frees the key the value read
+     * ran under, so the keys are held across every read. */
+    ScrDyn *keys = scr_dyn_obj_own_keys(view);
+    if (!keys) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    for (size_t i = 0; i < keys->v.arr.len; i++) {
+      const ScrStr *key = keys->v.arr.items[i]->v.str;
+      if (!scr_dyn_obj_enumerable(view, key->data, key->len)) continue;
+      ScrDyn *member = scr_dyn_obj_read(view, key->data, key->len);
       if (!member) {
+        scr_dyn_release(keys);
         scr_dyn_release(view);
         return NULL;
       }
       /* Object.assign: an undefined value is assigned like any other, so a
        * later render sees that key as undefined. */
-      scr_dyn_obj_set(target, ent.key, ent.key_len, member);
+      scr_dyn_obj_set(target, key->data, key->len, member);
       if (scr_exc_pending()) {
+        scr_dyn_release(keys);
         scr_dyn_release(view);
         return NULL;
       }
     }
+    scr_dyn_release(keys);
   } else if (view->kind == SCR_DYN_ARR) {
     /* Object.assign copies an array's own enumerable indices, which the
      * sealed object does not have: the write throws for the first one. */
@@ -3959,7 +4055,7 @@ static ScrStr *scr_insp_regexp_props(ScrDyn *d, double recurse, double depth) {
       scr_insp_entry(entry, false);
       scr_str_release(entry);
     }
-    ScrStr *entry = insp_table_entry(table, &ent, recurse + 1, depth);
+    ScrStr *entry = insp_table_entry(table, d, &ent, recurse + 1, depth);
     if (!entry) break;
     scr_insp_entry(entry, false);
     scr_str_release(entry);
@@ -3975,7 +4071,7 @@ static ScrStr *scr_insp_regexp_props(ScrDyn *d, double recurse, double depth) {
     scr_insp_entry(entry, false);
     scr_str_release(entry);
   }
-  if (table && !scr_exc_pending()) insp_table_symbols(table, recurse + 1, depth);
+  if (table && !scr_exc_pending()) insp_table_symbols(table, d, recurse + 1, depth);
   ScrStr *b0 = scr_str_new("{", 1);
   ScrStr *b1 = scr_str_new("}", 1);
   ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, false, false);
@@ -4091,13 +4187,13 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
     for (size_t i = 0; i < scr_dyn_obj_count(ftable); i++) {
       ScrDynProp ent = scr_dyn_obj_prop_at(ftable, i);
       if (!insp_obj_shows(&ent)) continue;
-      ScrStr *entry = insp_table_entry(ftable, &ent, recurse + 1, depth);
+      ScrStr *entry = insp_table_entry(ftable, d, &ent, recurse + 1, depth);
       if (!entry) break;
       scr_insp_entry(entry, false);
       scr_str_release(entry);
       if (scr_exc_pending()) break;
     }
-    if (!scr_exc_pending()) insp_table_symbols(ftable, recurse + 1, depth);
+    if (!scr_exc_pending()) insp_table_symbols(ftable, d, recurse + 1, depth);
     ScrStr *b0 = scr_str_new("{", 1);
     ScrStr *b1 = scr_str_new("}", 1);
     /* Node styles the base only on the early return: with entries to
@@ -4148,7 +4244,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
   scr_str_release(tag);
   size_t nseen = g_nseen;
   g_pending_seen = identity;
-  ScrStr *rendered = scr_insp_obj(table, recurse, depth, prefix);
+  ScrStr *rendered = scr_insp_obj(table, d, recurse, depth, prefix);
   g_pending_seen = NULL;
   if (g_nseen > nseen) g_nseen = nseen;
   free(prefix);
@@ -4363,19 +4459,25 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       for (size_t k = 0; props && k < scr_dyn_obj_count(props); k++) {
         ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
         if (!insp_obj_shows(&ent)) continue;
+        ScrStr *own_key = NULL;
+        ScrDynProp held = insp_prop_hold(&ent, &own_key);
         /* The array itself is the getter's `this` (Node's formatProperty
          * calls it with the value it formats), not the property table. */
-        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, depth)
-                                   : scr_insp_dyn(ent.value, recurse + 1, depth);
-        if (!val) break;
+        ScrStr *val = held.accessor ? insp_accessor_value(&held, d, recurse + 1, depth)
+                                    : scr_insp_dyn(held.value, recurse + 1, depth);
+        if (!val) {
+          insp_prop_drop(&held, own_key);
+          break;
+        }
         InspBuf eb = {0};
         /* formatProperty's hidden key: the key's rendering in brackets. */
-        if (!ent.enumerable) ib_char(&eb, '[');
-        insp_key_into(&eb, ent.key, ent.key_len);
-        if (!ent.enumerable) ib_char(&eb, ']');
+        if (!held.enumerable) ib_char(&eb, '[');
+        insp_key_into(&eb, own_key->data, own_key->len);
+        if (!held.enumerable) ib_char(&eb, ']');
         ib_cstr(&eb, ": ");
         ib_bytes(&eb, val->data, val->len);
         scr_str_release(val);
+        insp_prop_drop(&held, own_key);
         ScrStr *entry = ib_take(&eb);
         /* Node's grouping pads by the array element at the entry's output
          * position (value[i] in groupArrayElements), not by the entry. */
@@ -4386,29 +4488,34 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         entries++;
         sort_tail++;
       }
-      for (size_t k = 0; k < nsymbols; k++) {
+      for (size_t k = 0; k < nsymbols && k < (d->symbol_keys ? d->symbol_keys->v.arr.len : 0);
+           k++) {
         ScrDynProp ent;
         ScrDyn *symbol = d->symbol_keys->v.arr.items[k];
         if (!scr_dyn_own_symbol_prop(d, symbol, &ent)) continue;
         if (!(ent.enumerable || g_show_hidden)) continue;
+        ScrStr *own_key = NULL;
+        ScrDynProp held = insp_prop_hold(&ent, &own_key);
         ScrStr *key = scr_insp_dyn(symbol, recurse + 1, depth);
         /* The array itself is the getter's `this` (Node's formatProperty
          * calls it with the value it formats), not the property table. */
-        ScrStr *val = ent.accessor ? insp_accessor_value(&ent, d, recurse + 1, depth)
-                                   : scr_insp_dyn(ent.value, recurse + 1, depth);
+        ScrStr *val = held.accessor ? insp_accessor_value(&held, d, recurse + 1, depth)
+                                    : scr_insp_dyn(held.value, recurse + 1, depth);
         if (!val) {
           scr_str_release(key);
+          insp_prop_drop(&held, own_key);
           break;
         }
         InspBuf eb = {0};
         /* A hidden symbol key is bracketed like a hidden string key. */
-        if (!ent.enumerable) ib_char(&eb, '[');
+        if (!held.enumerable) ib_char(&eb, '[');
         ib_bytes(&eb, key->data, key->len);
-        if (!ent.enumerable) ib_char(&eb, ']');
+        if (!held.enumerable) ib_char(&eb, ']');
         ib_cstr(&eb, ": ");
         ib_bytes(&eb, val->data, val->len);
         scr_str_release(key);
         scr_str_release(val);
+        insp_prop_drop(&held, own_key);
         ScrStr *entry = ib_take(&eb);
         bool number = entries < len && (!presence || presence[entries]) &&
                       d->v.arr.items[entries]->kind == SCR_DYN_NUM;
@@ -4451,7 +4558,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (circular > 0) return scr_insp_circular(circular);
       size_t seen_before = g_nseen;
       g_pending_seen = self;
-      ScrStr *out = scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      ScrStr *out = scr_insp_obj(d, d, recurse, depth, scr_dyn_class_name(d));
       g_pending_seen = NULL;
       if (g_nseen > seen_before) g_nseen = seen_before;
       return out;
@@ -4640,7 +4747,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(prefix);
         size_t nseen = g_nseen;
         g_pending_seen = instance;
-        out = scr_insp_obj(materialized, recurse, depth, cls);
+        out = scr_insp_obj(materialized, materialized, recurse, depth, cls);
         g_pending_seen = NULL;
         if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
@@ -4665,7 +4772,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         cls[name->len + tag_len] = '\0';
         size_t nseen = g_nseen;
         g_pending_seen = instance;
-        out = scr_insp_obj(materialized, recurse, depth, cls);
+        out = scr_insp_obj(materialized, materialized, recurse, depth, cls);
         g_pending_seen = NULL;
         if (g_nseen > nseen) g_nseen = nseen;
         free(cls);
@@ -5698,12 +5805,15 @@ static ScrStr *insp_table_cell(ScrDyn *v) {
       for (size_t i = 0; i < scr_dyn_obj_count(v); i++) {
         ScrDynProp ent = scr_dyn_obj_prop_at(v, i);
         if (!ent.enumerable) continue;
-        ScrStr *val = scr_insp_dyn(ent.value, 1, 0);
+        ScrStr *own_key = NULL;
+        ScrDynProp held = insp_prop_hold(&ent, &own_key);
+        ScrStr *val = scr_insp_dyn(held.value, 1, 0);
         InspBuf eb = {0};
-        insp_key_into(&eb, ent.key, ent.key_len);
+        insp_key_into(&eb, own_key->data, own_key->len);
         ib_cstr(&eb, ": ");
         ib_str(&eb, val);
         scr_str_release(val);
+        insp_prop_drop(&held, own_key);
         items[count++] = ib_take(&eb);
       }
       ib_cstr(&out, "{ ");

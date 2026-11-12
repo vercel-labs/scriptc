@@ -52,6 +52,17 @@ beforeAll(async () => {
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
     join(testDir, "../src/scr_alloc.c"),
+    // A promise value renders through the async core's state accessors
+    // (scr_promise_is_pending, scr_promise_is_rejected and the settled-value
+    // reader), so the async core joins the link. Its fs references
+    // (readFile, writeFile and copyFile promises) pull the units that
+    // define them, built in their SCR_FS_FLAGS shape.
+    join(testDir, "../src/scr_async.c"),
+    join(testDir, "../src/scr_bytes_io.c"),
+    join(testDir, "../src/scr_fs_bytes_write.c"),
+    join(testDir, "../src/scr_fs_flags.c"),
+    join(testDir, "../src/scr_fs_cp.c"),
+    "-DSCR_FS_FLAGS",
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
 });

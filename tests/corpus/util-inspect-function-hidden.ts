@@ -49,6 +49,32 @@ Object.defineProperty(broken, "bad", {
 });
 show("throwing getter", broken, { showHidden: true });
 
+// With getters: true each getter's value prints, and the getter runs with
+// the inspected function itself as `this` — a getter answering `this === fn`
+// reads true, and one reading `this.name` answers the function's name.
+function probed(): void {}
+const probedAny: any = probed;
+Object.defineProperty(probedAny, "self", {
+  get() { return this === probed; },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(probedAny, "hiddenSelf", {
+  get() { return this === probed; },
+  enumerable: false,
+  configurable: true,
+});
+Object.defineProperty(probedAny, "namedThis", {
+  get() { return this.name; },
+  enumerable: true,
+  configurable: true,
+});
+show("getters", probed, { showHidden: true, getters: true });
+show("getters enumerable", probed, { getters: true });
+show("getters without hidden", probed, { getters: true, showHidden: false });
+show("no getters", probed, { showHidden: true, getters: false });
+show("getters nested", { f: probed }, { showHidden: true, getters: true, depth: 1 });
+
 show("colors plain", () => 1, { colors: true });
 show("colors with entries", arrow, { colors: true });
 show("colors hidden", arrow, { colors: true, showHidden: true });

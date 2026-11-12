@@ -112,34 +112,77 @@ static ScrDyn *util_deep_property_value(const ScrDyn *owner, const ScrDynProp *p
   return value;
 }
 
+/* Copies the descriptor of the own key equal to (key, len) in `table` into
+ * `*out`, with any enumerability: Node's keyCheck reads `b[key]` by name,
+ * not through the enumerable snapshot it already took. */
+static bool util_deep_find_prop(const ScrDyn *table, const char *key, size_t len,
+                                ScrDynProp *out) {
+  if (!table) return false;
+  for (size_t j = 0; j < scr_dyn_obj_count(table); j++) {
+    ScrDynProp candidate = scr_dyn_obj_prop_at(table, j);
+    if (candidate.key_len == len && !memcmp(candidate.key, key, len)) {
+      *out = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b,
                                  const ScrDyn *owner_a, const ScrDyn *owner_b,
                                  bool skip, const ScrDeepFrame *frame) {
   if (util_deep_key_count(a) != util_deep_key_count(b)) return false;
   if (!b) return true;
-  /* Node's keyCheck walks the second side's own keys, whichever order the
-   * two sides keep: matching keys compare a's value with b's, so a getter
-   * on either side runs in b's key order. */
-  for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
+  /* Node's keyCheck snapshots Object.keys(b) before any Get runs and then
+   * reads `a[key]` and `b[key]` for each snapshot key, so a getter runs in
+   * b's key order whichever order the two sides keep theirs in. The keys are
+   * copied: a getter may add or remove b's entries, which moves, drops or
+   * frees the descriptor storage the live table holds. */
+  typedef struct {
+    const char *key;
+    size_t len;
+  } DeepKey;
+  size_t nb = scr_dyn_obj_count(b);
+  DeepKey *keys = nb ? malloc(nb * sizeof *keys) : NULL;
+  if (nb && !keys) scr_trap("scriptc: out of memory\n");
+  size_t nkeys = 0;
+  for (size_t i = 0; i < nb; i++) {
     ScrDynProp y = scr_dyn_obj_prop_at(b, i);
     if (!y.enumerable) continue;
+    char *copy = malloc(y.key_len ? y.key_len : 1);
+    if (!copy) scr_trap("scriptc: out of memory\n");
+    memcpy(copy, y.key, y.key_len);
+    keys[nkeys].key = copy;
+    keys[nkeys].len = y.key_len;
+    nkeys++;
+  }
+  bool same = true;
+  for (size_t i = 0; same && i < nkeys; i++) {
     ScrDynProp xp;
-    const ScrDynProp *x = NULL;
-    if (a) for (size_t j = 0; j < scr_dyn_obj_count(a); j++) {
-      ScrDynProp candidate = scr_dyn_obj_prop_at(a, j);
-      if (candidate.enumerable && candidate.key_len == y.key_len &&
-          !memcmp(candidate.key, y.key, y.key_len)) { xp = candidate; x = &xp; break; }
+    if (!util_deep_find_prop(a, keys[i].key, keys[i].len, &xp) || !xp.enumerable) {
+      same = false;
+      break;
     }
-    if (!x) return false;
     // Materializing a cyclic typed child can refresh its ancestor table.
     // Read both values before that refresh replaces descriptor storage.
-    ScrDyn *xv = util_deep_property_value(owner_a, x);
-    ScrDyn *yv = xv && !scr_exc_pending() ? util_deep_property_value(owner_b, &y) : NULL;
-    bool same = xv && yv && util_deep_equal(xv, yv, skip, frame);
-    scr_dyn_release(xv); scr_dyn_release(yv);
-    if (!same) return false;
+    ScrDyn *xv = util_deep_property_value(owner_a, &xp);
+    /* a's getter may have deleted b's entry for this key: Node's second Get
+     * reads `b[key]` as it stands at that moment, so the descriptor is
+     * looked up afresh rather than carried across the callback. */
+    ScrDyn *yv = NULL;
+    if (xv && !scr_exc_pending()) {
+      ScrDynProp yp;
+      yv = util_deep_find_prop(b, keys[i].key, keys[i].len, &yp)
+               ? util_deep_property_value(owner_b, &yp)
+               : scr_dyn_retain(scr_dyn_undefined());
+    }
+    same = xv && yv && util_deep_equal(xv, yv, skip, frame);
+    scr_dyn_release(xv);
+    scr_dyn_release(yv);
   }
-  return true;
+  for (size_t i = 0; i < nkeys; i++) free((void *)keys[i].key);
+  free(keys);
+  return same;
 }
 
 /* ── the built-in handle arms ──────────────────────────────────────────
@@ -183,10 +226,54 @@ static bool util_deep_same_constructor(const ScrDyn *a, const ScrDyn *b) {
   return same;
 }
 
+/* Node's strict-mode gate for object values (objectComparisonStart): an
+ * object whose `constructor` is inherited compares that value with the
+ * other side's, and one that carries its own `constructor` compares the
+ * two prototypes instead. Errors run through this gate before their
+ * error-specific checks, so a TypeError renamed to "Error" still differs
+ * from an Error, and an Error subclass instance from a plain Error. */
+static bool util_deep_strict_gate(const ScrDyn *a, const ScrDyn *b) {
+  ScrDyn *x = util_deep_constructor(a);
+  ScrDyn *y = !scr_exc_pending() ? util_deep_constructor(b) : NULL;
+  const ScrDyn *table = a->kind == SCR_DYN_OBJ ? a : a->v.arr.properties;
+  bool inherited = !table || !scr_dyn_obj_get(table, "constructor", 11);
+  bool compare_constructor = !scr_exc_pending() && x->kind != SCR_DYN_UNDEF && inherited;
+  bool same = compare_constructor && scr_dyn_same_value(x, y);
+  scr_dyn_release(x);
+  scr_dyn_release(y);
+  if (scr_exc_pending()) return false;
+  if (!compare_constructor) {
+    x = scr_dyn_get_prototype((ScrDyn *)a);
+    y = !scr_exc_pending() ? scr_dyn_get_prototype((ScrDyn *)b) : NULL;
+    same = !scr_exc_pending() && scr_dyn_same_value(x, y);
+    scr_dyn_release(x);
+    scr_dyn_release(y);
+  }
+  return same;
+}
+
 static size_t util_deep_live_entries(const ScrMap *m) {
   size_t live = 0;
   for (double i = 0; i < scr_map_iter_count(m); i++) live += scr_map_iter_live(m, i);
   return live;
+}
+
+/* Grow the matched-slot bitmap so that `need` slots are addressable. The
+ * collection being walked lives, so a member getter can append to it while
+ * the comparison runs and the walk reaches slots past the size counted
+ * before the walk began. */
+static void util_deep_used_reserve(bool **used, size_t *cap, size_t need) {
+  if (need <= *cap) return;
+  size_t next = *cap ? *cap : 8;
+  while (next < need) {
+    if (next > SIZE_MAX / 2) scr_trap("scriptc: out of memory\n");
+    next *= 2;
+  }
+  bool *grown = realloc(*used, next * sizeof *grown);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  memset(grown + *cap, 0, (next - *cap) * sizeof *grown);
+  *used = grown;
+  *cap = next;
 }
 
 /* A Set's elements or a Map's key/value pairs match member by member in any
@@ -213,8 +300,13 @@ static bool util_deep_collections(const ScrDyn *a, const ScrDyn *b, bool skip,
     }
     if (seen_a || seen_b) return seen_a && seen_b;
   }
-  bool *used = calloc(na, sizeof *used);
-  if (!used) scr_trap("scriptc: out of memory\n");
+  /* Both collections are walked live, as Node's iterators walk them: a
+   * member getter can append to either side, and Node compares the entries
+   * the iterators then reach. The matched-slot bitmap is reserved as the
+   * walk of `a` grows, so an entry appended to `a` during a comparison
+   * cannot outrun it. */
+  bool *used = NULL;
+  size_t used_cap = 0;
   ScrDeepFrame frame = { a, b, parent };
   bool same = true;
   for (double j = 0; same && j < scr_map_iter_count(mb); j++) {
@@ -225,6 +317,7 @@ static bool util_deep_collections(const ScrDyn *a, const ScrDyn *b, bool skip,
     size_t slot = 0;
     for (double i = 0; same && !matched && i < scr_map_iter_count(ma); i++) {
       if (!scr_map_iter_live(ma, i)) continue;
+      util_deep_used_reserve(&used, &used_cap, slot + 1);
       if (used[slot++]) continue;
       ScrDyn *ka = scr_map_dyn_key(ma, i);
       ScrDyn *va = is_map ? scr_map_dyn_value(ma, i) : NULL;
@@ -237,7 +330,7 @@ static bool util_deep_collections(const ScrDyn *a, const ScrDyn *b, bool skip,
     scr_dyn_release(kb);
     scr_dyn_release(vb);
     if (same && !matched) same = false;
-    if (same) used[slot - 1] = true;
+    if (same && slot > 0 && slot <= used_cap) used[slot - 1] = true;
   }
   free(used);
   return same;
@@ -396,7 +489,11 @@ static bool util_deep_date_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
 /* Node's error arm: two errors match when their name and message match,
  * their `cause` presence and value match, AggregateError's `errors` lists
  * match, and their own enumerable properties match (the stack never takes
- * part). `frame` carries the pair so a cause that points back terminates. */
+ * part). The strict constructor gate runs first, before any error slot is
+ * read, as Node's objectComparisonStart orders it: an Error subclass
+ * instance never matches a plain Error, and a renamed built-in keeps its
+ * own constructor. `frame` carries the pair so a cause that points back
+ * terminates. */
 static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
                                 const ScrDeepFrame *parent) {
   if (a->kind != SCR_DYN_OBJ || b->kind != SCR_DYN_OBJ) return false;
@@ -405,6 +502,16 @@ static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
   if (!ea || !eb) {
     if (ea) scr_error_release(ea);
     if (eb) scr_error_release(eb);
+    return false;
+  }
+  if (!skip && !util_deep_strict_gate(a, b)) {
+    scr_error_release(ea);
+    scr_error_release(eb);
+    return false;
+  }
+  if (scr_exc_pending()) {
+    scr_error_release(ea);
+    scr_error_release(eb);
     return false;
   }
   if (parent && !parent->parent) {
@@ -541,22 +648,8 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
        * DataView does not have, so a DataView never matches a numeric typed
        * array of the same width even when their bytes agree. */
       if (a->v.bytes->is_data_view != b->v.bytes->is_data_view) return false;
-    } else {
-      ScrDyn *x = util_deep_constructor(a);
-      ScrDyn *y = !scr_exc_pending() ? util_deep_constructor(b) : NULL;
-      const ScrDyn *table = a->kind == SCR_DYN_OBJ ? a : a->v.arr.properties;
-      bool inherited = !table || !scr_dyn_obj_get(table, "constructor", 11);
-      bool compare_constructor = !scr_exc_pending() && x->kind != SCR_DYN_UNDEF && inherited;
-      bool same = compare_constructor && scr_dyn_same_value(x, y);
-      scr_dyn_release(x); scr_dyn_release(y);
-      if (scr_exc_pending()) return false;
-      if (!compare_constructor) {
-        x = scr_dyn_get_prototype((ScrDyn *)a);
-        y = !scr_exc_pending() ? scr_dyn_get_prototype((ScrDyn *)b) : NULL;
-        same = !scr_exc_pending() && scr_dyn_same_value(x, y);
-        scr_dyn_release(x); scr_dyn_release(y);
-      }
-      if (!same) return false;
+    } else if (!util_deep_strict_gate(a, b)) {
+      return false;
     }
   }
   if (a->kind != SCR_DYN_BYTES) {

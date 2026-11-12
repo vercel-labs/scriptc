@@ -29,7 +29,7 @@ import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespac
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty } from "../builtins/performance.js";
+import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
@@ -599,6 +599,12 @@ export function lowerPropertyAccessExpr(
   {
     const staticName = staticFunctionNameRead(lowerer, expr);
     if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
+  }
+  // performance.nodeTiming / timeOrigin and PerformanceObserver's
+  // supportedEntryTypes: the perf_hooks values no call lowering answers.
+  {
+    const perf = lowerPerfHooksProperty(lowerer, expr);
+    if (perf) return perf;
   }
   // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
   {
@@ -6452,10 +6458,10 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
  * constructor, and dynamic values answer `.constructor` with the same one,
  * so `o.constructor === Object` and `err.constructor === TypeError` are
  * exact identity tests, and `err.constructor.name` is the constructor's
- * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array and
- * Proxy have values with Node's name, length and instanceof answers;
+ * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array, Proxy
+ * and WeakRef have values with Node's name, length and instanceof answers;
  * calling one throws Node's TypeError, and constructing through the value
- * is fenced. */
+ * is fenced, except WeakRef, which builds the reference it builds directly. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -6467,6 +6473,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakMap",
   "WeakSet",
   "FinalizationRegistry",
+  "WeakRef",
   "SharedArrayBuffer",
   "DataView",
   "BigInt64Array",

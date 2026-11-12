@@ -7778,8 +7778,10 @@ export class LlEmitter {
 
   /** Moves need plain slots that nothing else reads behind the binding's
    * back: no debugger view, no coroutine frame, no borrowed (+0) return. */
-  /** Whether the program reads event-loop utilization (perf.loopStart /
-   * perf.idleTime): main then marks the loop's start before running it. */
+  /** Whether the program reads event-loop metrics (perf.loopStart,
+   * perf.loopExit, perf.loopCount, perf.idleTime), or measures against a
+   * Node timing milestone named at run time (perf.measure): main then marks
+   * the loop's start before running it. */
   private loopMetricsRead: boolean | undefined;
   readsLoopMetrics(): boolean {
     if (this.loopMetricsRead !== undefined) return this.loopMetricsRead;
@@ -7789,7 +7791,13 @@ export class LlEmitter {
       eachNodeOfKinds(fn, scan, (node) => {
         if (
           node.kind === "libCall" &&
-          (node.fn === "perf.loopStart" || node.fn === "perf.idleTime")
+          (node.fn === "perf.loopStart" ||
+            node.fn === "perf.loopExit" ||
+            node.fn === "perf.loopCount" ||
+            node.fn === "perf.idleTime" ||
+            // performance.measure('x', 'loopStart'): the milestone name is a
+            // run-time string, so any measure may reach the loop metrics.
+            node.fn === "perf.measure")
         )
           found = true;
         return !found;

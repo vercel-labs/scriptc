@@ -3156,8 +3156,11 @@ static size_t scr_eon_register(ScrEonState *st, const ScrStr *name, ScrDynThunk 
   if (st->reg == SCR_EON_REG_EMITTER) {
     slot->clo = listener->v.fn.clo;
     if (st->adapter == NULL) {
-      /* The checked-dynamic form: an untyped emit calls the thunk. */
-      scr_emitter_release(scr_emitter_on_flex(st->em, (ScrStr *)name, listener, false, false));
+      /* The checked-dynamic form: an untyped emit calls the thunk, and the
+       * runtime-fixed events ('error' and the meta events) reach it through
+       * the registry's own typed adapters — the name crosses as a value, so
+       * it may be any of them. */
+      scr_emitter_release(scr_emitter_on_any(st->em, (ScrStr *)name, listener, false, false));
     } else if (form == SCR_EON_LISTEN_IGNORE) {
       /* The listener ignores the event's arguments, so its own closure is
        * the typed adapter: it runs the thunk with none. */

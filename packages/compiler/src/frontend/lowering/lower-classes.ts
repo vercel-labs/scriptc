@@ -254,7 +254,7 @@ import {
   construction,
   constructionPrefix,
 } from "./js-class-fields.js";
-import { lowerObjectFactoryNew } from "./object-factory-new.js";
+import { lowerObjectFactoryNew, objectReturningConstructorRefusal } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
 import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
@@ -12175,27 +12175,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (instanceConstructor) return instanceConstructor;
   const objectFactory = lowerObjectFactoryNew(lowerer, expr);
   if (objectFactory) return objectFactory;
-  if (ts.isIdentifier(expr.expression)) {
-    const symbol = lowerer.resolveValueSymbol(expr.expression);
-    const declaration =
-      symbol &&
-      symbol.declarations.find((node) => ts.isFunctionDeclaration(node) && node.body !== undefined);
-    if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body) {
-      const last = declaration.body.statements.nodes.at(-1);
-      if (
-        last &&
-        ts.isReturnStatement(last) &&
-        last.expression &&
-        ts.isObjectLiteralExpression(last.expression)
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          expr,
-          "object-returning constructors that observe this or return mixed primitive/object values",
-        );
-      }
-    }
-  }
+  const constructorRefusal = objectReturningConstructorRefusal(lowerer, expr);
+  if (constructorRefusal !== null) lowerer.unsupported("SC1090", expr, constructorRefusal);
   let selected: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(selected)) selected = selected.expression;
   if (ts.isConditionalExpression(selected)) {
@@ -13244,6 +13225,37 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
       };
     }
+    // A WeakRef construction: the reference keeps its target alive, so
+    // deref() answers it (scr_weak_ref_new). An invalid target throws the
+    // runtime's TypeError after every argument has run.
+    if (symbol !== null && ts.symbolName(symbol) === "WeakRef" && lowerer.isStdlibSymbol(symbol)) {
+      const args = expr.arguments?.nodes ?? [];
+      if (args.some(ts.isSpreadElement)) {
+        lowerer.unsupported("SC1090", expr, "WeakRef construction with spread arguments");
+      }
+      const target = args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc);
+      const surplus = args.slice(1).map((arg) => lowerer.lowerExpr(arg));
+      const created: IrExpr = {
+        kind: "libCall",
+        fn: "weakRef.new",
+        args: [target],
+        type: DYN,
+        loc,
+      };
+      if (surplus.length === 0) return created;
+      // Surplus arguments evaluate after the target and are ignored.
+      const local = lowerer.declareHiddenLocal("%weakRefTarget", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: local.id, init: target, loc },
+          ...surplus.map((value): IrStmt => ({ kind: "exprStmt", expr: value, loc })),
+        ],
+        result: { ...created, args: [varRef(local.id, DYN, loc)] },
+        type: DYN,
+        loc,
+      };
+    }
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
@@ -13442,8 +13454,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "boxed wrapper objects have no lowering — use the string primitive (the box is only distinguishable via typeof/identity, which nothing here can honor)",
         Number: "boxed wrapper objects have no lowering — use the number primitive",
         Boolean: "boxed wrapper objects have no lowering — use the boolean primitive",
-        WeakRef:
-          "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:

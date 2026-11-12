@@ -3124,9 +3124,12 @@ static void scr_process_exit_finish(int code) {
 #endif
   /* _Exit skips atexit handlers on purpose: no further code runs (matching
    * Node), and the RC audit is meaningless mid-program (live values are
-   * expected). scr_init's flush-at-exit is also skipped — flush here. */
+   * expected). scr_init's flush-at-exit is also skipped — flush here. The
+   * terminal restore the other exit path registers is skipped too, and
+   * Node restores the terminal mode on this path as well. */
   scr_stdout_settle();
   fflush(stdout);
+  scr_process_stdin_restore_mode();
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
 #ifndef SCR_LIB
@@ -6913,6 +6916,21 @@ bool scr_process_stdin_raw(void) { return scr_stdin_raw; }
 static SCR_TL DWORD scr_stdin_cooked;
 static SCR_TL bool scr_stdin_cooked_saved = false;
 
+/* The entry mode comes back when the process ends, not only when raw mode
+ * is left explicitly: libuv's uv_tty_reset_mode, which Node runs from its
+ * teardown, restores the mode a terminal was in when it first entered raw
+ * mode. A program that finishes while readline holds raw mode otherwise
+ * hands the user a terminal with echo and line editing switched off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  HANDLE h = (HANDLE)_get_osfhandle(0);
+  if (h == INVALID_HANDLE_VALUE) return;
+  (void)SetConsoleMode(h, scr_stdin_cooked);
+}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
     const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6938,6 +6956,8 @@ void scr_process_stdin_set_raw_mode(bool raw) {
   }
 }
 #elif defined(__wasi__)
+void scr_process_stdin_restore_mode(void) {}
+
 void scr_process_stdin_set_raw_mode(bool raw) {
   (void)raw;
   const char msg[] = "process.stdin.setRawMode is not a function";
@@ -6945,7 +6965,36 @@ void scr_process_stdin_set_raw_mode(bool raw) {
 }
 #else
 static SCR_TL struct termios scr_stdin_cooked;
+static SCR_TL struct stat scr_stdin_cooked_stat;
 static SCR_TL bool scr_stdin_cooked_saved = false;
+
+/* libuv's uv_tty_reset_mode, which Node runs from its teardown: the mode
+ * the terminal was in when raw mode was first entered comes back when the
+ * process ends, so a program that finishes while readline holds raw mode
+ * does not hand the user a terminal with echo and line editing off.
+ * scr_init registers it for the process exit; process.exit calls it before
+ * _Exit, which skips the handler. Node checks the descriptor still names the
+ * file it saved (ResetStdio) and blocks SIGTTOU across the call, because a
+ * background job that no longer owns the terminal would be stopped inside
+ * its own exit; the same two guards are here. */
+void scr_process_stdin_restore_mode(void) {
+  if (!scr_stdin_cooked_saved) return;
+  scr_stdin_cooked_saved = false;
+  struct stat now;
+  if (fstat(0, &now) != 0) return;
+  if (now.st_dev != scr_stdin_cooked_stat.st_dev ||
+      now.st_ino != scr_stdin_cooked_stat.st_ino)
+    return;
+  sigset_t ttou, old;
+  sigemptyset(&ttou);
+  sigaddset(&ttou, SIGTTOU);
+  (void)pthread_sigmask(SIG_BLOCK, &ttou, &old);
+  int err;
+  do {
+    err = tcsetattr(0, TCSANOW, &scr_stdin_cooked);
+  } while (err == -1 && errno == EINTR);
+  (void)pthread_sigmask(SIG_SETMASK, &old, NULL);
+}
 
 void scr_process_stdin_set_raw_mode(bool raw) {
   if (!isatty(0)) {
@@ -6958,8 +7007,15 @@ void scr_process_stdin_set_raw_mode(bool raw) {
     struct termios t;
     if (tcgetattr(0, &t) != 0) return;
     if (!scr_stdin_cooked_saved) {
-      scr_stdin_cooked = t;
-      scr_stdin_cooked_saved = true;
+      /* The descriptor's identity goes with the mode: the restore must not
+       * write it onto a different file that took fd 0 later. A descriptor
+       * that cannot be identified is still made raw, just not restored. */
+      struct stat st;
+      if (fstat(0, &st) == 0) {
+        scr_stdin_cooked = t;
+        scr_stdin_cooked_stat = st;
+        scr_stdin_cooked_saved = true;
+      }
     }
     /* libuv uv__tty_make_raw (UV_TTY_MODE_RAW) */
     t.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);

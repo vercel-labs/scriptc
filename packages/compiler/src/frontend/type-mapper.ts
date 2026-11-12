@@ -55,7 +55,7 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import { BIGINT_T, KEY_ORDER_FIELD, PERF_ENTRY_MARKER } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
@@ -222,6 +222,8 @@ export const FETCH_AMBIENT_TYPES = [
   "CustomEventInit",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
   "Headers",
   "ReadableStream",
   "ReadableStreamDefaultReader",
@@ -1239,8 +1241,10 @@ function esOwnKeyOrder(names: string[]): string[] {
   return indices.length === 0 ? names : [...indices, ...names.filter((n) => !isArrayIndex(n))];
 }
 
-/** The hidden field that marks the perf_hooks entry record shape. */
-export const PERF_ENTRY_MARKER = "%perfEntry";
+/** The hidden field that marks the perf_hooks entry record shape
+ * (ir/ir.ts defines it: the backend's dyn conversion needs it too);
+ * re-exported here so frontend call sites keep their import path. */
+export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
 export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
@@ -3010,6 +3014,8 @@ const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
   "Response",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
 ]);
 
 /** The native fetch handles (Headers, Request, Response, AbortController,

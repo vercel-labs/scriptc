@@ -990,9 +990,7 @@
  "f64.p": {},
  "f64.u": {},
  "fn-async.control.-": {
-  "T.json": "refused:SC1090",
-  "T.clone": "message",
-  "U.clone": "message"
+  "T.json": "refused:SC1090"
  },
  "fn-async.p": {
   "n2i/I.inspect": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
@@ -1020,7 +1018,6 @@
  },
  "fn-rec.u": {
   "n2i/I.inspect": "clone=message,own=wrong",
-  "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },
@@ -1048,7 +1045,6 @@
  },
  "fn-state.p": {
   "n2i/I.inspect": "clone=message,own=wrong",
-  "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },
@@ -1072,7 +1068,6 @@
  },
  "fn-this.u": {
   "n2i/I.inspect": "clone=message,own=wrong",
-  "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,own=wrong",
   "clo-i2n/I.taker": "clone=message,own=wrong"
  },

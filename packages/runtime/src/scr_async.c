@@ -5561,6 +5561,17 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
   scr_stream_dispatch_fn = dispatch;
 }
 
+/* The event-loop metrics hook (scr_perf_loop.c, when linked): `turn` counts
+ * one loop turn, `exit` records the loop's end. scr_perf_loop_mark installs
+ * them only in programs that read the metrics. */
+static SCR_TL void (*scr_loop_metrics_turn_fn)(void) = NULL;
+static SCR_TL void (*scr_loop_metrics_exit_fn)(void) = NULL;
+
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void)) {
+  scr_loop_metrics_turn_fn = turn;
+  scr_loop_metrics_exit_fn = exit;
+}
+
 #ifdef SCR_WORKERS
 static SCR_TL bool (*scr_workers_pending_fn)(void);
 static SCR_TL void (*scr_workers_dispatch_fn)(void);
@@ -7167,6 +7178,7 @@ bool scr_loop_run(ScrPromise *top_level) {
       break;
     }
 #endif
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     rejection_failed = scr_loop_run_pass(top_level && !top_level->top_level_handled ? top_level : NULL, first_checkpoint);
     first_checkpoint = false;
 #ifdef SCR_NODE_ISLANDS
@@ -7204,6 +7216,9 @@ bool scr_loop_run(ScrPromise *top_level) {
 #ifdef SCR_NODE_ISLANDS
   scr_loop_root = NULL; /* the caller owns it; checkpoints after the loop do not read it */
 #endif
+  /* The loop has stopped: performance.nodeTiming's loopExit is now fixed, so
+   * exit listeners (inline here, or atexit) still see the final value. */
+  if (scr_loop_metrics_exit_fn != NULL) scr_loop_metrics_exit_fn();
   /* Exit can now leave UNREF'd timers armed in the heap (ordinary
    * exhaustion, a fatal module root, or an unhandled rejection). They
    * never fire, so release their closures here or the RC audit counts

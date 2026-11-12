@@ -2,3 +2,5 @@
   `Object.keys`, `for...in`, object spread, and `hasOwnProperty` on an entry are unsupported, and an entry stored in an `unknown` slot prints as a plain object.
 - **Event-loop metrics:** `performance.eventLoopUtilization()` counts the main thread's CPU time since the event loop started as active time, so blocking system calls count as idle where Node counts them as active.
   `monitorEventLoopDelay()` supports `enable()`, `disable()`, `reset()`, `percentile()`, and the `min`, `max`, `mean`, `stddev`, `count`, and `exceeds` readings; the BigInt readings, `percentiles`, and non-literal option objects are unsupported.
+- **Node timing milestones:** `performance.nodeTiming` answers the class's own fields, `toJSON()`, inspection, and the `JSON.stringify` that runs `toJSON()`.
+  `nodeStart`, `v8Start`, `bootstrapComplete`, and `environment` are 0 because a compiled program has no V8 bootstrap, while `loopStart`, `loopExit`, `idleTime`, `duration`, and `uvMetricsInfo` are live.

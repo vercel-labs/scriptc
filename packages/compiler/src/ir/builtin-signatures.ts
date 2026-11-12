@@ -739,8 +739,12 @@ function buildLibFnSignatures() {
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
      * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
      * eldPercentile expects Node's validated range; eldStat(which) reads
-     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. loopExit is when
+     * the loop ended (-1 until then, Node's PerformanceNodeTiming.loopExit),
+     * loopCount the number of loop turns taken. */
     "perf.loopStart": { argTypes: [], result: F64 },
+    "perf.loopExit": { argTypes: [], result: F64 },
+    "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
     "perf.eldNew": { argTypes: [F64], result: F64 },
     "perf.eldEnable": { argTypes: [F64], result: BOOL },

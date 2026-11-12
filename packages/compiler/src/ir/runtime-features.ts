@@ -160,6 +160,14 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // new PerformanceMark and the PerformanceObserver family: their
+  // callbacks run from an immediate (scr_perf.c).
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",
@@ -430,6 +438,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  // Object.prototype.isPrototypeOf's walk and Function.prototype as a
+  // value live in scr_dyn_invoke.c.
+  "dyn.isPrototypeOf",
+  "dyn.functionPrototype",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
@@ -447,6 +459,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
   "toString",
   "valueOf",

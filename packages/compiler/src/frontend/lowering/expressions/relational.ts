@@ -54,6 +54,7 @@ import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
@@ -382,6 +383,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const perfClass = lowerPerfInstanceof(lowerer, expr);
+    if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }

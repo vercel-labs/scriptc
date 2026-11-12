@@ -32,6 +32,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.entryIs",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
+  // scr_events_once_any turns every failure into the result promise's
+  // rejection: an invalid options object or signal, an aborted signal, a
+  // name that cannot key the registry, a throwing 'newListener' listener
+  // (which it takes off the cell) and the awaited event's own 'error'. It
+  // throws nothing to its caller.
+  "events.onceAny",
   // scr_ni_intrinsic_register stores the value in a table.
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.

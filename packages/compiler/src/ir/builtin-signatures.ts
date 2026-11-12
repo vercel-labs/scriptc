@@ -6056,6 +6056,18 @@ function buildLibFnSignatures() {
      * events.once's arguments plus the checked-dynamic options value, whose
      * `signal` the runtime validates as Node does. */
     "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
+    /** events.once over a name the program does not resolve to one of its
+     * typed tuples (scr_events_once_signal.c): [emitter, name, options] → a
+     * pending promise of the event's arguments. The listeners are
+     * checked-dynamic function values, so the name crosses as the value the
+     * receiver's once() receives and the promise carries the emit's
+     * arguments as the emit provides them. Never throws: invalid options, a
+     * name that cannot key the registry, an aborted signal, a throwing
+     * 'newListener' listener and every event failure reject it. */
+    "events.onceAny": {
+      argTypes: [null, DYN, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
     /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
      * value's type that copies the borrowed already-resolved `value` promise
      * when the timer (or immediate) fires; ref false unrefs it. The result

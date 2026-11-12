@@ -1225,6 +1225,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "blob.arrayBuffer": "scr_blob_array_buffer",
   "blob.is": "scr_blob_is",
   "events.addAbortListener": "scr_events_add_abort_listener",
+  "events.onceAny": "scr_events_once_any",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",
   "abort.any": "scr_fetch_abort_any",

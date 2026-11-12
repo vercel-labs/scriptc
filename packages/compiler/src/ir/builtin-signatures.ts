@@ -624,6 +624,11 @@ function buildLibFnSignatures() {
      * acts on the handle itself rather than through the global clearTimeout
      * and clearImmediate that mock.timers replaces. */
     "timers.immediateClose": { argTypes: [F64], result: F64 },
+    /** Timeout.prototype[Symbol.dispose]() and Immediate.prototype
+     * [Symbol.dispose]() — the same handle-owned clears as close(), whose
+     * result Node discards: the call answers undefined, not the handle. */
+    "timers.dispose": { argTypes: [F64], result: VOID },
+    "timers.immediateDispose": { argTypes: [F64], result: VOID },
     /** Timeout.unref()/ref()/hasRef() — loop-liveness bookkeeping over the
      * handle id. unref/ref RETURN the handle (f64) for chaining; hasRef
      * returns bool. */
@@ -6310,6 +6315,11 @@ function buildLibFnSignatures() {
     "text.decoderEncoding": { argTypes: [DYN], result: F64 },
     "text.decoderName": { argTypes: [F64], result: STRING },
     "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+    /** TextEncoder.encodeInto over a statically typed string and Uint8Array:
+     * scr_bytes.c's typed entry, which boxes nothing. Borrowed args; the
+     * result is the call site's own `{ read, written }` record (the backend
+     * fills it from two slots), so the signature names none. */
+    "text.encodeIntoStr": { argTypes: [STRING, BYTES_U8], result: DYN },
     /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
      * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
      * Borrowed; never throws. */

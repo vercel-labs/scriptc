@@ -634,13 +634,13 @@ function cleanupCall(
     // global clear functions may be mocked for a different timer API.
     if (stdlibTypeNamed(lowerer, node, "Timeout")) {
       return {
-        call: { kind: "libCall", fn: "timers.close", args: [value], type: F64, loc },
+        call: { kind: "libCall", fn: "timers.dispose", args: [value], type: VOID, loc },
         async: false,
       };
     }
     if (stdlibTypeNamed(lowerer, node, "Immediate")) {
       return {
-        call: { kind: "libCall", fn: "timers.immediateClose", args: [value], type: F64, loc },
+        call: { kind: "libCall", fn: "timers.immediateDispose", args: [value], type: VOID, loc },
         async: false,
       };
     }

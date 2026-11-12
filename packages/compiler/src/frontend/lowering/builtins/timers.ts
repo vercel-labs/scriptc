@@ -291,12 +291,13 @@ export function lowerTimerElementCall(
   // [SymbolDispose] call the module's own clearTimeout/clearImmediate, not
   // the global functions mock.timers replaces: they act on the handle
   // whatever owns it, mock entry or loop timer. The call answers undefined
-  // (unlike close()), so the statement discards the handle these return.
+  // (unlike close()), which its own entry points declare as a void result
+  // so a used value stays undefined.
   return {
     kind: "libCall",
-    fn: isImmediate ? "timers.immediateClose" : "timers.close",
+    fn: isImmediate ? "timers.immediateDispose" : "timers.dispose",
     args: [lowerer.lowerExprExpecting(access.expression, F64)],
-    type: F64,
+    type: VOID,
     loc,
   };
 }

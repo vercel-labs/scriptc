@@ -111,6 +111,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // callback.
   "timers.close",
   "timers.immediateClose",
+  // The same clears in their disposal spelling, whose result is undefined
+  // rather than the handle.
+  "timers.dispose",
+  "timers.immediateDispose",
   // The header-limit properties are plain storage: the getters retain the
   // stored value (or answer null / 0) and the setters retain the new value
   // and release the old one. No accessor, coercion or listener runs, and
@@ -121,4 +125,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_text_encode_into_str writes the two counts of the typed encodeInto
+  // into the slots the compiler allocated: the walk runs no program code, a
+  // destination that is not a u8 byte view ends the process at the entry's
+  // own check, and running out of memory ends it too. The call reports no
+  // error the emitter could deliver.
+  "text.encodeIntoStr",
 ]);

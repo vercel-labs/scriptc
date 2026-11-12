@@ -1,4 +1,5 @@
 import { arrayClassDescriptor } from "./classes.js";
+import { mangleRecordNew } from "../mangle.js";
 import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
@@ -256,6 +257,38 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   }
   if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple")
     return emitPromiseAllTuple(host, e);
+  if (e.fn === "text.encodeIntoStr") {
+    // TextEncoder.encodeInto over a statically typed string and Uint8Array:
+    // the runtime writes the two counts into slots of ours, and the result
+    // is the { read, written } record itself, so no operand or result is a
+    // checked-dynamic value.
+    if (e.args.length !== 2 || e.type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: text.encodeIntoStr signature");
+    const text = host.emitExpr(e.args[0]!);
+    const destination = host.emitExpr(e.args[1]!);
+    const readSlot = B.slot();
+    const writtenSlot = B.slot();
+    B.entryAllocas.push(`${readSlot} = alloca double`, `${writtenSlot} = alloca double`);
+    host.declare("declare void @scr_text_encode_into_str(ptr, ptr, ptr, ptr)");
+    B.line(
+      `call void @scr_text_encode_into_str(ptr ${text.name}, ptr ${destination.name}, ptr ${readSlot}, ptr ${writtenSlot})`,
+    );
+    const shapeId = e.type.shapeId;
+    const record = B.tmp();
+    B.line(`${record} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
+    for (const [field, slot] of [
+      ["read", readSlot],
+      ["written", writtenSlot],
+    ] as const) {
+      const { ptr, type } = host.recordFieldPtr(record, shapeId, field);
+      if (type.kind !== "f64")
+        throw new InternalCompilerError(`llvm emitter bug: text.encodeIntoStr ${field} slot`);
+      const value = B.tmp();
+      B.line(`${value} = load double, ptr ${slot}`);
+      B.line(`store double ${value}, ptr ${ptr}`);
+    }
+    return host.own({ name: record, type: e.type });
+  }
   if (e.fn === "promise.entryRejected") {
     // Whether a settled entry promise rejected (borrowed operand).
     const promise = host.emitExpr(e.args[0]!);

@@ -89,6 +89,7 @@ import {
   nsUndefRead,
 } from "../lower-namespaces.js";
 import { lowerFunduleMemberRead } from "../lower-fundule.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import {
   blockedBindingUseDiag,
   unsupportedDiag,
@@ -1170,6 +1171,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
             : undefined,
       );
     }
+  }
+  // A GLOBAL binding the program declares and TypeScript erases (`declare
+  // var document: T` in a declaration file, `declare const`, or a `declare
+  // global` block) is not a variable Node has: Node resolves the reference
+  // through the global object, exactly as it resolves a name no declaration
+  // binds. The read takes the same checked-dynamic lowering an undeclared
+  // name takes in JavaScript, so a value the program stored on
+  // `globalThis.<name>` before the read is what the read answers (the
+  // checker's declared type is the claim the use site validates it against).
+  // The census gate keeps every declared global the program never writes
+  // there on its static lowering, so a program that does not assign globals
+  // pays nothing (global-object-writes.ts).
+  if (erasedGlobalBindingOf(lowerer, expr) && programMayWriteGlobalName(lowerer, expr.text, expr)) {
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
   }
   // An ambient global nothing defines compiles to exactly what Node does
   // at the access: the catchable ReferenceError "<name> is not defined".

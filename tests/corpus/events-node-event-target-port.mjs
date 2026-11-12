@@ -1,11 +1,13 @@
-// MessagePort and Worker are NodeEventTargets: an emitter behind a handle
-// whose emit() is the target's raw dispatch. It carries one argument (extra
+// MessagePort is a NodeEventTarget: an emitter behind a handle whose
+// emit() is the target's raw dispatch. It carries one argument (extra
 // arguments are ignored), throws Node's ERR_INVALID_ARG_TYPE for a non-string
 // name, does not throw on an unheard 'error' (it answers false), leaves the
 // seeded 'newListener'/'removeListener' listeners unfired on add and remove,
 // and answers a target's own listener count, names and limits — while the
 // module-level getMaxListeners reads the EventEmitter slot targets never set,
-// so it reports the process default even after setMaxListeners(n).
+// so it reports the process default even after setMaxListeners(n). A Worker
+// is not a NodeEventTarget: it extends EventEmitter, and
+// worker-listener-meta-events pins that difference.
 import { MessageChannel } from "node:worker_threads";
 import { getEventListeners, listenerCount, getMaxListeners } from "node:events";
 

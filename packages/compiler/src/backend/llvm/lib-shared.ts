@@ -977,6 +977,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.immediateHasRef": "scr_immediate_has_ref",
   "timers.immediateClose": "scr_clear_immediate",
   "timers.clearImmediate": "scr_clear_immediate",
+  // The disposal spelling's void results: the same handle-owned clears as
+  // close(), which Node's [Symbol.dispose]() answers with undefined.
+  "timers.dispose": "scr_clear_interval",
+  "timers.immediateDispose": "scr_clear_immediate",
   // Process event removals (borrowed callbacks: removal is by pointer
   // identity); registration is special-cased above (ownership moves).
   "process.offSignal": "scr_signal_off",
@@ -2068,6 +2072,8 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.setInterval": "scr_test_mt_set_interval",
   "timers.clearTimeout": "scr_test_mt_clear_timeout",
   "timers.close": "scr_test_mt_close",
+  "timers.dispose": "scr_test_mt_close",
+  "timers.immediateDispose": "scr_test_mt_immediate_close",
   "timers.clearInterval": "scr_test_mt_clear_interval",
   "timers.unref": "scr_test_mt_unref",
   "timers.ref": "scr_test_mt_ref",

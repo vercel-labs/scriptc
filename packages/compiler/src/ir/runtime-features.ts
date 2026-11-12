@@ -1954,7 +1954,7 @@ const RUNTIME_FEATURE_RULES = {
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
     // The events-module helpers whose receiver is resolved at runtime
-    // answer a NodeEventTarget (a Worker or MessagePort) through its
+    // answer a NodeEventTarget (a MessagePort) or a Worker through its
     // emitter, so those calls link the emitter unit as well.
     fns: [
       ...STREAM_LIB_FNS,

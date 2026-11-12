@@ -12813,6 +12813,29 @@ function lowerFieldValueCall(
     }
   }
   if (callee?.type.kind === "func") {
+    // A field holding a function that reads `arguments` or takes a rest
+    // parameter of untyped values: its compiled body takes one hidden
+    // argument array, which a typed caller passes natively after the
+    // declared parameters — the same ABI a variadic record field's call
+    // uses. A JavaScript caller keeps the boxed thunk below, so its arity
+    // stays Node's.
+    if (
+      callee.type.rest === true &&
+      callee.type.restAbi === undefined &&
+      !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      !call.arguments.nodes.some(ts.isSpreadElement)
+    ) {
+      const nativeArgs = checkedRestCallArgs(lowerer, call, callee.type, loc);
+      if (nativeArgs)
+        return finish({
+          kind: "callValue",
+          callee,
+          ...receiver,
+          args: nativeArgs,
+          type: callee.type.ret,
+          loc,
+        });
+    }
     if (
       ((callee.type.rest === true && callee.type.restAbi === undefined) ||
         call.arguments.nodes.length > callee.type.params.length) &&

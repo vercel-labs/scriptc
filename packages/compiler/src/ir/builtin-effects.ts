@@ -640,6 +640,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // new PerformanceMark and the observer family: Node's argument,
+  // receiver and observation-mode validation all throw catchably.
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is

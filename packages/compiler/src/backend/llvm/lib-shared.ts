@@ -396,6 +396,14 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.entryDetail": "scr_perf_entry_detail",
   "perf.entryKeep": "scr_perf_entry_keep",
   "perf.entryRef": "scr_perf_entry_ref",
+  "perf.markNew": "scr_perf_mark_new",
+  "perf.observerNew": "scr_perf_observer_new",
+  "perf.observerObserve": "scr_perf_observer_observe",
+  "perf.observerDisconnect": "scr_perf_observer_disconnect",
+  "perf.observerTake": "scr_perf_observer_take",
+  "perf.listEntries": "scr_perf_list_entries",
+  "perf.observerIs": "scr_dyn_perf_handle_is",
+  "perf.entryIs": "scr_dyn_perf_entry_is",
   "perf.loopStart": "scr_perf_loop_start",
   "perf.idleTime": "scr_perf_idle_time",
   "perf.eldNew": "scr_eld_new",
@@ -1217,6 +1225,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "blob.arrayBuffer": "scr_blob_array_buffer",
   "blob.is": "scr_blob_is",
   "events.addAbortListener": "scr_events_add_abort_listener",
+  "events.onceAny": "scr_events_once_any",
   "abort.timeout": "scr_fetch_abort_timeout",
   "abort.now": "scr_fetch_abort_now",
   "abort.any": "scr_fetch_abort_any",
@@ -2194,6 +2203,10 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "abort.timeout",
   // EventTarget listeners report their exceptions from a nextTick.
   "event.targetNew",
+  // A connected PerformanceObserver delivers from an immediate; without the
+  // loop a program that only marks would never run the callback (Node's
+  // loop drains that immediate), and the queued dispatch would leak.
+  "perf.observerNew",
   "abort.controllerNew",
   "abort.any",
   "fetch.streamNew",

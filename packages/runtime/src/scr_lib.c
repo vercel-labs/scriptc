@@ -2906,6 +2906,13 @@ SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
+/* The promise inspect reader (scr_async_dyn.c installs it when it boxes a
+ * promise; NULL in a program without that unit, which has no promise box for
+ * the inspector to meet). Defined here because scr_lib.c is always linked,
+ * while the async unit is not part of the library flavors. */
+SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pending, bool *rejected,
+                                          ScrDyn **value) = NULL;
+
 /* process.exitCode's validation: a safe integer, or a RangeError
  * (ERR_OUT_OF_RANGE). Node converts valid codes to signed int32 for
  * exitCode and exit listeners; the OS observes the low eight bits. */

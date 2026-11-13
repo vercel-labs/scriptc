@@ -5574,6 +5574,17 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
   scr_stream_dispatch_fn = dispatch;
 }
 
+/* The event-loop metrics hook (scr_perf_loop.c, when linked): `turn` counts
+ * one loop turn, `exit` records the loop's end. scr_perf_loop_mark installs
+ * them only in programs that read the metrics. */
+static SCR_TL void (*scr_loop_metrics_turn_fn)(void) = NULL;
+static SCR_TL void (*scr_loop_metrics_exit_fn)(void) = NULL;
+
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void)) {
+  scr_loop_metrics_turn_fn = turn;
+  scr_loop_metrics_exit_fn = exit;
+}
+
 #ifdef SCR_WORKERS
 static SCR_TL bool (*scr_workers_pending_fn)(void);
 static SCR_TL void (*scr_workers_dispatch_fn)(void);
@@ -6781,6 +6792,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (!scr_loop_has_reffed_work()) break;
       continue;
     }
+    /* One loop turn begins here: the turn's remaining phases (timers, poll,
+     * check) and their callbacks read the counter as libuv's loop_count
+     * reports it, and a pass restarted before this point (ticks, a woken
+     * fiber) stays part of the turn that queued them. scr_perf_loop_mark
+     * installs the counter in the programs that read the metrics. */
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -7263,6 +7280,9 @@ bool scr_loop_run(ScrPromise *top_level) {
 #ifdef SCR_NODE_ISLANDS
   scr_loop_root = NULL; /* the caller owns it; checkpoints after the loop do not read it */
 #endif
+  /* The loop has stopped: performance.nodeTiming's loopExit is now fixed, so
+   * exit listeners (inline here, or atexit) still see the final value. */
+  if (scr_loop_metrics_exit_fn != NULL) scr_loop_metrics_exit_fn();
   /* Exit can now leave UNREF'd timers armed in the heap (ordinary
    * exhaustion, a fatal module root, or an unhandled rejection). They
    * never fire, so release their closures here or the RC audit counts

@@ -556,6 +556,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["globalObjectWrites"],
   },
   {
+    name: "inspect-tables-read",
+    file: `${SRC}/frontend/lowering/inspect-tables.ts`,
+    symbol: "programTouchesInspectTables",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a read of util.inspect's function value anywhere in the program, other than as a direct call's callee, as a `.custom` member's base, or as an import binding",
+    gates:
+      "util.inspect, util.format, console.log and console.dir of a typed value render through the runtime, which reads inspect.defaultOptions, inspect.styles and inspect.colors per call; a program without such a read keeps the folded renderings",
+    narrower:
+      "the table members themselves (defaultOptions, colors, styles) and the value flow into their writes, which would need a points-to census over the program",
+    tracked: null,
+    lowererFields: ["inspectTablesTouched"],
+  },
+  {
     name: "computed-environment-write",
     file: `${SRC}/frontend/lowering/constant-conditions.ts`,
     symbol: "changesEnvironmentByComputedName",
@@ -627,6 +642,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
   ),
   scan(
+    "frontend/import-type-indexed-access.ts#importTypeIndexedAccessSources",
+    2,
+    "discovery",
+    "the files that carry a type-position `import('spec')['name']`, each rewritten on its own for the lowering world (the file's text changes, no other file does), behind the prefilter that the file's text spells `import(`",
+  ),
+  scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
     1,
     "closed-world",
@@ -683,6 +704,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
+    1,
+    "prefilter",
+    "a conditional alias needs a `require()` write in the file; the walk behind it decides each write from the symbol and the required tables",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
@@ -847,6 +874,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/inspect-tables.ts#census", 1, "inspect-tables-read"),
   decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(

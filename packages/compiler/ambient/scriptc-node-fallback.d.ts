@@ -1750,6 +1750,7 @@ declare module "node:perf_hooks" {
     | "measure"
     | "net"
     | "node"
+    | "quic"
     | "resource";
   export class PerformanceEntry {
     protected constructor();
@@ -1773,6 +1774,25 @@ declare module "node:perf_hooks" {
     readonly detail: any;
     readonly entryType: "measure";
   }
+  /* performance.nodeTiming: the process's timing milestones, in
+   * performance.now() milliseconds (a milestone that has not happened reads
+   * -1; the startup ones are 0), and libuv's metrics as of the read. */
+  export interface PerformanceNodeTiming extends PerformanceEntry {
+    readonly entryType: "node";
+    readonly bootstrapComplete: number;
+    readonly environment: number;
+    readonly idleTime: number;
+    readonly loopExit: number;
+    readonly loopStart: number;
+    readonly nodeStart: number;
+    readonly uvMetricsInfo: UVMetrics;
+    readonly v8Start: number;
+  }
+  export interface UVMetrics {
+    readonly loopCount: number;
+    readonly events: number;
+    readonly eventsWaiting: number;
+  }
   export class PerformanceObserverEntryList {
     getEntries(): PerformanceEntry[];
     getEntriesByName(name: string, type?: EntryType): PerformanceEntry[];
@@ -1784,6 +1804,8 @@ declare module "node:perf_hooks" {
   ) => void;
   export class PerformanceObserver {
     constructor(callback: PerformanceObserverCallback);
+    /* The entry types this process reports (Node's fixed list, frozen). */
+    static readonly supportedEntryTypes: readonly EntryType[];
     disconnect(): void;
     observe(
       options:
@@ -1804,6 +1826,7 @@ declare module "node:perf_hooks" {
   }
   export interface Performance {
     readonly timeOrigin: number;
+    readonly nodeTiming: PerformanceNodeTiming;
     now(): number;
     mark(name: string, options?: MarkOptions): PerformanceMark;
     measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
@@ -1813,6 +1836,9 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
+     * utilization, in that key order. */
+    toJSON(): any;
     eventLoopUtilization(
       utilization1?: EventLoopUtilization,
       utilization2?: EventLoopUtilization,
@@ -1826,6 +1852,12 @@ declare module "node:perf_hooks" {
     active: number;
     utilization: number;
   }
+  /* The module's own eventLoopUtilization: the same function as
+   * performance.eventLoopUtilization. */
+  export function eventLoopUtilization(
+    utilization1?: EventLoopUtilization,
+    utilization2?: EventLoopUtilization,
+  ): EventLoopUtilization;
   export interface EventLoopMonitorOptions {
     resolution?: number | undefined;
   }
@@ -1915,8 +1947,12 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
-  /* The id is coerced to a string before the registry lookup; a
-   * compiled program registers no blob URLs, so every id misses. */
+  /* Registers a Blob (or File) under a fresh "blob:nodedata:<uuid>" and
+   * answers that id; any other value throws ERR_INVALID_ARG_TYPE. fetch()
+   * of the id resolves the registered bytes. */
+  createObjectURL(blob: Blob): string;
+  /* The id is coerced to a string and looked up; ids that were never
+   * registered (or were revoked) miss. */
   revokeObjectURL(url: string | URL): void;
 };
 

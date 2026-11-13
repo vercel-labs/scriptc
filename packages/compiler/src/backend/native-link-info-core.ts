@@ -221,6 +221,10 @@ export interface NativeLinkFeatures {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
@@ -455,6 +459,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "fetch", requires: ["emitter", "symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
+  // scr_perf.c resolves performance.measure's Node timing milestone names
+  // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
+  { feature: "dynAsync", requires: ["perfLoop"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

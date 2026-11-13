@@ -1075,6 +1075,9 @@ ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value);
 /* The own property stored under a symbol key on an object (borrowed), or
  * NULL when it has none. */
 ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key);
+/* Whether `object` owns a callable Symbol.toPrimitive member (Node's
+ * hasBuiltInToString consults it before the toString owner). */
+bool scr_dyn_has_own_to_primitive(const ScrDyn *object);
 /* The own symbol-keyed property `key` of `object` as a property view
  * (scr_dyn_obj_prop_at; `key` and `key_len` name its private storage
  * key); false when there is none. */
@@ -1594,6 +1597,16 @@ ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
  * toString, the "[object EventTarget]" / "[object Event]" string of its
  * inherited @@toStringTag. */
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d);
+/* Registers the compiled String(instance) of a class (the method its
+ * conversion runs: [Symbol.toPrimitive]("string") or toString) under the
+ * type key of the class's instance capsules. The program registers them
+ * before it runs; an instance of a class the runtime has no function for
+ * keeps the conversion's refusal. */
+void scr_dyn_register_class_to_string(ScrStr *type_key, ScrDyn *fn);
+/* Whether the program registered a compiled String(instance) for the
+ * value's class (a conversion the program defines: Symbol.toPrimitive or
+ * toString). */
+bool scr_dyn_class_to_string_registered(const ScrDyn *d);
 void scr_dyn_typed_ref_commit(ScrDyn *d);
 /* Attach per-element access to a live array capsule (idempotent). Indexed
  * reads, `length`, in-range writes, `in`, own-property probes, and array
@@ -2502,12 +2515,18 @@ bool scr_dyn_trusted_build(void);
  * (tag, method) that calls invoke on its `this`. length is the method's
  * Function.prototype.length; rejects marks a method whose call on another
  * receiver answers a rejected promise instead of throwing (the async
- * WebIDL operations: Body's json(), ReadableStream's cancel()). */
+ * WebIDL operations: Body's json(), ReadableStream's cancel()).
+ * same_as names another entry of the same table whose function this entry
+ * is: Node aliases a prototype method by assignment (`MIMEType.prototype
+ * .toJSON = MIMEType.prototype.toString`), so both reads answer one
+ * function and `mime.toJSON === mime.toString` holds. NULL = own
+ * function. */
 typedef struct ScrDynHandleMethod {
   const char *name;
   uint32_t length;
   bool rejects;
   const char *invalid_this; /* NULL = the class's (ScrDynHandleOps) */
+  const char *same_as;      /* NULL = this entry's own function */
 } ScrDynHandleMethod;
 
 typedef struct ScrDynHandleOps {
@@ -2608,6 +2627,14 @@ typedef struct ScrDynHandleOps {
   /* A promise rejected with the pending exception (+1), for the rejects
    * methods; the owning unit supplies it, since promises are a gated unit. */
   ScrDyn *(*rejected)(void);
+  /* stream.isDestroyed / isErrored / isDisturbed / isReadable /
+   * isWritable over a handle of this class (Node's duck-typed predicates):
+   * `which` is scr_stream.c's order — 0 destroyed, 1 errored, 2 disturbed,
+   * 3 readable, 4 writable. Answers +1, or NULL when the class is not a
+   * stream whose state the predicates report (the caller keeps its own
+   * answer). The web stream classes answer Node's symbol getters here;
+   * only they set it. */
+  ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2933,6 +2960,11 @@ void scr_dyn_check_listener(const ScrDyn *cb, const char *argname);
  * generic ERR_INVALID_ARG_TYPE thrower over it (`expected` is the whole
  * "of type ..." clause). The handle dispatchers' per-arg gates. */
 const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
+/* Registers a namespace object built by scr_module_namespace_dyn.c, whose
+ * objects are ordinary dyn objects; util.types.isModuleNamespaceObject
+ * tests the registry (V8's private-slot brand). The registry borrows the
+ * object, which the builder caches for the program's lifetime. */
+void scr_dyn_mark_module_namespace(ScrDyn *object);
 /* ERR_INVALID_ARG_TYPE with the runtime-rendered Received tail (the
  * error.argTypeThrow libCall). Borrows all three; always throws. */
 SCR_COLD void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const ScrDyn *got);

@@ -17,6 +17,11 @@
  * object's own not-extensible state answers Node's "Cannot add property".
  * One object per module keeps its identity.
  *
+ * A JavaScript source takes a namespace of constant exports as a copy of
+ * the values (moduleNamespaceObject); scr_module_namespace_copy_value keeps
+ * the first copy per module, marks it as a module namespace and answers it
+ * to every later request, so that copy has the same per-module identity.
+ *
  * Node models the exports as writable data properties on a sealed object, so
  * Object.isFrozen answers false and Object.isSealed true. Live reads need
  * accessors here, and the accessor shape cannot be sealed without also
@@ -125,15 +130,17 @@ static ScrDyn *scr_module_namespace_dyn_build(ScrArr *keys, ScrDyn *getter, ScrD
 }
 
 /* Node's isModuleNamespaceObject brand over this thread's boxed namespaces:
- * only a program module's ("file:") box carries it. A builtin's box does
- * not, because handed on untypedly it stands in for values Node answers
+ * a program module's ("file:") box and a builtin's ES module spelling
+ * ("esm:") box carry it. The sub-namespace member's box uses the bare
+ * builtin id and does not, because it stands in for values Node answers
  * false for (`fs.promises` and the other sub-module members are CommonJS
  * exports objects); asked of the import binding itself the call site
  * answers without the box. */
 static bool scr_module_namespace_dyn_brand(const ScrDyn *value) {
   for (ScrModuleNamespaceDyn *ns = scr_module_namespace_dyns; ns; ns = ns->next) {
     if (ns->object != value) continue;
-    return ns->id->len >= 5 && memcmp(ns->id->data, "file:", 5) == 0;
+    if (ns->id->len >= 5 && memcmp(ns->id->data, "file:", 5) == 0) return true;
+    return ns->id->len >= 4 && memcmp(ns->id->data, "esm:", 4) == 0;
   }
   return false;
 }
@@ -155,4 +162,49 @@ ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter,
   *ns = (ScrModuleNamespaceDyn){ scr_str_retain(id), scr_dyn_retain(object), scr_module_namespace_dyns };
   scr_module_namespace_dyns = ns;
   return object;
+}
+
+/* A JavaScript source's namespace: the object it built from the module's
+ * export values (moduleNamespaceObject), which Node answers as the module's
+ * one namespace object. The first copy the program builds is kept for the
+ * program's lifetime, marked as a module namespace for util.types, and
+ * answered to every later request for the same module, so a namespace taken
+ * as a value twice is the same object as in Node. `object` is borrowed; the
+ * result is +1. */
+typedef struct ScrModuleNamespaceCopy {
+  ScrStr *id;
+  ScrDyn *object; /* retained for the program's lifetime */
+  struct ScrModuleNamespaceCopy *next;
+} ScrModuleNamespaceCopy;
+
+static SCR_TL ScrModuleNamespaceCopy *scr_module_namespace_copies;
+static SCR_TL bool scr_module_namespace_copy_cleanup_registered;
+
+static void scr_module_namespace_copy_cleanup(void) {
+  while (scr_module_namespace_copies) {
+    ScrModuleNamespaceCopy *copy = scr_module_namespace_copies;
+    scr_module_namespace_copies = copy->next;
+    scr_str_release(copy->id);
+    scr_dyn_release(copy->object);
+    free(copy);
+  }
+}
+
+ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object) {
+  for (ScrModuleNamespaceCopy *copy = scr_module_namespace_copies; copy; copy = copy->next) {
+    if (copy->id->len == id->len && memcmp(copy->id->data, id->data, id->len) == 0)
+      return scr_dyn_retain(copy->object);
+  }
+  if (!scr_module_namespace_copy_cleanup_registered) {
+    scr_atexit(scr_module_namespace_copy_cleanup);
+    scr_module_namespace_copy_cleanup_registered = true;
+  }
+  scr_dyn_mark_module_namespace(object);
+  ScrModuleNamespaceCopy *copy = malloc(sizeof(*copy));
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  *copy = (ScrModuleNamespaceCopy){
+    scr_str_retain(id), scr_dyn_retain(object), scr_module_namespace_copies
+  };
+  scr_module_namespace_copies = copy;
+  return scr_dyn_retain(object);
 }

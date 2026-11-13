@@ -757,7 +757,10 @@ export function lowerPathParseCall(
 /** `path.format(pathObject)` — the object's root, dir, base, name and ext
  * (each a string or an optional string; absent fields and undefined read
  * as "", which Node's `||` treats alike) passed to the runtime's format.
- * Other argument shapes fence. */
+ * An untyped call whose argument is not such a record (a value from a
+ * JavaScript source, null, a number, a boxed string) goes through the
+ * runtime's format over the untyped value, which reads the fields as Node's
+ * `_format` does and rejects a non-object argument with Node's TypeError. */
 export function lowerPathFormatCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -772,31 +775,28 @@ export function lowerPathFormatCall(
       "format(pathObject) takes one object",
     );
   }
-  const fence: () => never = () =>
-    lowerer.noLowering(
-      "path.format with this argument type",
-      arg,
-      "an object whose root, dir, base, name and ext are strings or optional strings",
-    );
   const value = lowerer.lowerExpr(arg);
-  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if ((result === null || result.kind === "dyn") && value.type.kind === "dyn") {
-    // The untyped lane: the runtime reads dir, root, base, name and ext off
-    // the object as Node's _format does, and answers base itself when there
-    // is no dir, which need not be a string. A statically typed record
-    // keeps the verified shape below.
-    return {
-      kind: "libCall",
-      fn: "path.formatValue",
-      args: [value, boolLit(win32, loc)],
-      type: DYN,
-      loc,
-    };
-  }
-  if (value.type.kind !== "record") fence();
+  // The untyped lane: the runtime reads dir, root, base, name and ext off
+  // the object as Node's _format does, answers base itself when there is no
+  // dir (which need not be a string), and rejects a non-object argument
+  // with Node's TypeError. A statically verified record keeps the direct
+  // shape below; every other argument a call can hold (a JavaScript
+  // source's value, null, a number, a boxed string, a record the compiler
+  // cannot read statically) reaches the same runtime entry, so it answers
+  // Node's result instead of a refusal. The result stays untyped: Node
+  // answers a non-string `base` itself when there is no dir, so forcing
+  // the declared string here would check a value Node passes through.
+  const dynamicLane = (): IrExpr => ({
+    kind: "libCall",
+    fn: "path.formatValue",
+    args: [lowerer.coerceToExpected(value, DYN), boolLit(win32, loc)],
+    type: DYN,
+    loc,
+  });
+  if (value.type.kind !== "record") return dynamicLane();
   const recordT = value.type;
   const shape = lowerer.shapes.get(recordT.shapeId);
-  if (!shape || shape.tuple || shape.indexValue) fence();
+  if (!shape || shape.tuple || shape.indexValue) return dynamicLane();
   const fieldTypes = new Map<string, IrType>();
   for (const f of shape.fields) {
     if (!PATH_FIELDS.includes(f.name)) continue;
@@ -807,7 +807,7 @@ export function lowerPathFormatCall(
           .get(f.type.unionId)
           ?.arms.every((a) => a.kind === "string" || a.kind === "undefinedT") ??
           false));
-    if (!ok) fence();
+    if (!ok) return dynamicLane();
     fieldTypes.set(f.name, f.type);
   }
   const fn = win32 ? "path.win32Format" : "path.format";

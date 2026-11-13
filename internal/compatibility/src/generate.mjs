@@ -1009,6 +1009,20 @@ function publicDetail(tier) {
     if (tier.status === "not-implemented")
       return "Not implemented in scriptc's static module-loader subset yet.";
     if (
+      /^compiler-feature:stream\.stream\.(?:isDestroyed|isErrored|isDisturbed|isReadable|isWritable|Readable\.isDisturbed)$/.test(
+        source,
+      )
+    ) {
+      return "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.";
+    }
+    if (
+      /^compiler-feature:stream\.readable\.(?:map|filter|forEach|toArray|some|find|every|flatMap|drop|take|reduce)$/.test(
+        source,
+      )
+    ) {
+      return "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.";
+    }
+    if (
       source.startsWith("compiler-feature:stream.") ||
       source.startsWith("compiler-feature:webstreams.")
     ) {

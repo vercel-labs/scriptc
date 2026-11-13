@@ -42,3 +42,57 @@ conditional-class-heritage.ts:53:42 - error SC1090: narrowing a 'Shape' to 'Squa
   54 | 
 
   hint: the instance keeps the layout of the class it was built as: use the value at its declared type (the 'instanceof' test itself answers as Node does)
+
+conditional-class-heritage.ts:72:38 - error SC1090: extending a nested conditional class value that selects between different classes are not supported yet
+
+  71 | const inner = Math.random() < 0.5;
+  72 | class Nested extends (pick ? Shape : (inner ? Leaf : Shape)) {
+     |                                      ^~~~~~~~~~~~~~~~~~~~~~
+  73 |   own = 5;
+
+  hint: only a single conditional records which class it selected: write one conditional over two classes
+
+conditional-class-heritage.ts:75:16 - error SC2004: uses of 'Nested' inherit the blocker on its declaration
+
+  74 | }
+  75 | const nested = Nested;
+     |                ^~~~~~
+  76 | console.log(nested.name);
+
+  hint: the declaration of 'Nested' did not compile — fix the diagnostic reported there and these sites clear with it
+
+conditional-class-heritage.ts:80:37 - error SC1090: extending a nested conditional class value that selects between different classes are not supported yet
+
+  79 | const Inner = inner ? Leaf : Shape;
+  80 | class Bound extends (pick ? Shape : Inner) {
+     |                                     ^~~~~
+  81 |   own = 6;
+
+  hint: only a single conditional records which class it selected: write one conditional over two classes
+
+conditional-class-heritage.ts:83:15 - error SC2004: uses of 'Bound' inherit the blocker on its declaration
+
+  82 | }
+  83 | const bound = Bound;
+     |               ^~~~~
+  84 | console.log(bound.name);
+
+  hint: the declaration of 'Bound' did not compile — fix the diagnostic reported there and these sites clear with it
+
+conditional-class-heritage.ts:95:31 - error SC1090: extending a conditional class value with an arm that overrides the inherited static 'label' is not supported yet
+
+  94 | }
+  95 | class Labeled extends (pick ? Relabeled : Named) {}
+     |                               ^~~~~~~~~
+  96 | console.log(Labeled.label);
+
+  hint: static reads through the class resolve against the class its type names, so the selected arm's override would not be read: add statics under new names, or extend one class
+
+conditional-class-heritage.ts:96:13 - error SC2004: uses of 'Labeled' inherit the blocker on its declaration
+
+  95 | class Labeled extends (pick ? Relabeled : Named) {}
+  96 | console.log(Labeled.label);
+     |             ^~~~~~~~~~~~~
+  97 | 
+
+  hint: the declaration of 'Labeled' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -7403,6 +7403,62 @@ function armAddsInstanceBehavior(arm: ClassInfo, typed: ClassInfo): boolean {
   return true;
 }
 
+/** The first static member a conditional heritage's arm class redeclares
+ * below the class the heritage is TYPED as, when the typed class (or a class
+ * above it) also declares it: an override of an inherited static. Node reads
+ * the selected arm's member through the derived class; a static read the
+ * compiler resolves against the typed class cannot follow it. */
+function armShadowedStatic(arm: ClassInfo, typed: ClassInfo): string | null {
+  for (let current: ClassInfo | null = arm; current && current !== typed; current = current.base) {
+    const own = new Set<string>([
+      ...(current.declaredStatics ?? []),
+      ...current.staticFields.map((field) => field.name),
+      ...[...(current.staticMethods?.keys() ?? [])].map((key) =>
+        key.startsWith("get:") || key.startsWith("set:") ? key.slice(4) : key,
+      ),
+      ...(current.genericStatics?.keys() ?? []),
+    ]);
+    for (const name of own) if (staticDeclarerOf(typed, name) !== null) return name;
+  }
+  return null;
+}
+
+/** The arms a conditional heritage can select, with nested conditionals
+ * (and the parentheses around them) flattened: `c1 ? A : (c2 ? B : C)`
+ * selects A, B or C. A `const` bound to a conditional (`const Inner = c2 ?
+ * B : C`) is the same nested choice, so it flattens too. */
+function conditionalHeritageLeaves(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  visiting = new Set<ts.Node>(),
+): ts.Expression[] {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (visiting.has(expression)) return [expression];
+  visiting.add(expression);
+  if (ts.isIdentifier(expression)) {
+    const declaration = lowerer
+      .resolveValueSymbol(expression)
+      ?.declarations.find(
+        (decl) =>
+          ts.isVariableDeclaration(decl) &&
+          decl.initializer !== undefined &&
+          (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0,
+      );
+    let initializer =
+      declaration && ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
+    while (initializer && ts.isParenthesizedExpression(initializer))
+      initializer = initializer.expression;
+    if (initializer && ts.isConditionalExpression(initializer))
+      return conditionalHeritageLeaves(lowerer, initializer, visiting);
+    return [expression];
+  }
+  if (!ts.isConditionalExpression(expression)) return [expression];
+  return [
+    ...conditionalHeritageLeaves(lowerer, expression.whenTrue, visiting),
+    ...conditionalHeritageLeaves(lowerer, expression.whenFalse, visiting),
+  ];
+}
+
 /** Lowers a class's computed heritage expression once, into the base its
  * shape collection reads: a class value the class can lay out natively
  * (`computedClassBases`, keyed by the class's name), else the run-time
@@ -7474,23 +7530,57 @@ export function lowerComputedClassHeritage(
     const armClasses = [expression.whenTrue, expression.whenFalse].map(
       (arm) => [arm, storedClassValueType(lowerer, arm)] as const,
     );
-    for (const [arm, stored] of armClasses) {
-      if (stored?.kind !== "classval" || stored.className === known.className) continue;
-      const armInfo = lowerer.classes.get(stored.className);
-      if (!typed || !armInfo || armAddsInstanceBehavior(armInfo, typed))
-        lowerer.unsupported(
-          "SC1090",
-          arm,
-          "extending a conditional class value with an arm that declares its own instance members",
-          "the class takes the shape of the class its type names, so the other arm's constructor, fields and overrides would not run: give both arms that class's instance shape (a static-only mixin, or the class itself)",
-        );
-    }
+    // A nested conditional arm is typed as its own arms' common class, which
+    // can be the typed class itself (`c1 ? Base : c2 ? Leaf : Base`) while
+    // one of its arms is a subclass with instance behavior. Every class the
+    // heritage can select is checked, not the nested arm's type.
+    const leafClasses = conditionalHeritageLeaves(lowerer, expression).map(
+      (arm) => [arm, storedClassValueType(lowerer, arm)] as const,
+    );
+    // Only a pair of named arms records which one ran (below), so a nested
+    // conditional that can select different classes would answer
+    // `instanceof` against them from the static chain, not the selection.
+    const nested = [expression.whenTrue, expression.whenFalse].find(
+      (arm) => conditionalHeritageLeaves(lowerer, arm).length > 1,
+    );
+    const leafNames = new Set(
+      leafClasses.map(([, stored]) => (stored?.kind === "classval" ? stored.className : null)),
+    );
+    if (nested !== undefined && (leafNames.size > 1 || leafNames.has(null)))
+      lowerer.unsupported(
+        "SC1090",
+        nested,
+        "extending a nested conditional class value that selects between different classes",
+        "only a single conditional records which class it selected: write one conditional over two classes",
+      );
+    else
+      for (const [arm, stored] of leafClasses) {
+        if (stored?.kind !== "classval" || stored.className === known.className) continue;
+        const armInfo = lowerer.classes.get(stored.className);
+        if (!typed || !armInfo || armAddsInstanceBehavior(armInfo, typed))
+          lowerer.unsupported(
+            "SC1090",
+            arm,
+            "extending a conditional class value with an arm that declares its own instance members",
+            "the class takes the shape of the class its type names, so the other arm's constructor, fields and overrides would not run: give both arms that class's instance shape (a static-only mixin, or the class itself)",
+          );
+        else {
+          const shadowed = armShadowedStatic(armInfo, typed);
+          if (shadowed !== null)
+            lowerer.unsupported(
+              "SC1090",
+              arm,
+              `extending a conditional class value with an arm that overrides the inherited static '${shadowed}'`,
+              "static reads through the class resolve against the class its type names, so the selected arm's override would not be read: add statics under new names, or extend one class",
+            );
+        }
+      }
     // The class lays out as the typed class, but which class it EXTENDS is
     // the run-time selection: `instanceof` against the arms reads the
     // condition the class statement evaluated rather than the static class
     // chain. Only a pair of NAMED arms has a selection to record — a nested
-    // conditional arm has its own condition, and an arm the compiler cannot
-    // name keeps the static answer.
+    // conditional is refused above unless every arm it can take is one class,
+    // and an arm the compiler cannot name keeps the static answer.
     const whenTrue = armClasses[0]![1];
     const whenFalse = armClasses[1]![1];
     if (

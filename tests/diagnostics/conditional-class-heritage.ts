@@ -51,3 +51,46 @@ class Tile extends (pick ? Square : Shape) {
 }
 const shape: Shape = new Tile();
 if (shape instanceof Square) console.log(shape.area());
+
+// A nested conditional is typed as the class its arms share, which can be
+// the outer typed class itself while an inner arm is a subclass with its own
+// constructor, fields, and overrides. Node runs the selected leaf's
+// initialization and dispatches its overrides, and only a single conditional
+// records which class it selected, so a nested one that can select different
+// classes is refused rather than laid out as the shared class.
+class Leaf extends Shape {
+  sides = 4;
+  constructor() {
+    super();
+    console.log("Leaf constructor");
+  }
+  override area(): number {
+    return 9;
+  }
+}
+const inner = Math.random() < 0.5;
+class Nested extends (pick ? Shape : (inner ? Leaf : Shape)) {
+  own = 5;
+}
+const nested = Nested;
+console.log(nested.name);
+
+// A const bound to the inner conditional is the same nested choice.
+const Inner = inner ? Leaf : Shape;
+class Bound extends (pick ? Shape : Inner) {
+  own = 6;
+}
+const bound = Bound;
+console.log(bound.name);
+
+// A static the selected arm redeclares over the typed class's is read
+// through the derived class in Node; a read resolved against the typed
+// class would answer the base's value instead.
+class Named {
+  static label = "named";
+}
+class Relabeled extends Named {
+  static override label = "relabeled";
+}
+class Labeled extends (pick ? Relabeled : Named) {}
+console.log(Labeled.label);

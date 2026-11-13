@@ -14,6 +14,11 @@
  *   pending checks after every fs call (the MAY_THROW_LIB_FNS seed).
  *   scr_fs_exists never throws, like Node's existsSync.
  */
+/* The inspect unit renders process.kill's offending-signal message when the
+ * program links it; this file must also link without it (scr_inspect.h's
+ * note), so the reference is declared optional before scr_runtime.h pulls the
+ * header in. */
+#define SCR_OPTIONAL_INSPECT_REF 1
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
 #include "scr_dir_private.h"
@@ -1988,15 +1993,14 @@ static void scr_kill_unknown_signal_text(const char *text, size_t len) {
  * reference global, so an optional runtime unit's symbol must not reach the
  * archive's link surface (the embedder's link would carry a dangling
  * scr_ prefix). The archive renders the plain String() form instead, the
- * same narrowing the census reference above takes. */
-#if !defined(SCR_LIB)
-/* The %s rendering Node's message formatter gives the offending signal:
- * util.format's %s, which inspects an object without a custom toString.
- * The inspect unit renders it exactly when the program links that unit
- * (any program that prints does); a program without it keeps the plain
- * String() form. NULL with an exception pending when a hook throws. */
-extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
-#endif
+ * same narrowing the census reference above takes.
+ *
+ * The weak declaration lives in scr_inspect.h (SCR_OPTIONAL_INSPECT_REF), the
+ * translation unit's first declaration of the name: this file includes
+ * scr_runtime.h, which declares it strongly, and Apple's clang ignores the
+ * weak attribute on a redeclaration, so the reference stayed strong and the
+ * macOS link failed with `Undefined symbols: _scr_insp_dyn_format_s` when no
+ * inspect unit was linked (the runtime unit tests). */
 static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
 #if !defined(SCR_LIB)
   /* util.format's %s inspects an object only when its toString is a

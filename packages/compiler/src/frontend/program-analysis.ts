@@ -55,6 +55,10 @@ export class ProgramAnalysis {
     SourceFile,
     ReadonlyMap<string, readonly { order: number; node: Identifier }[]>
   >();
+  /** Per member name: whether an implementation file writes or deletes it
+   * (methodNameWritten, the void-method-written fact). Bounded by this
+   * program's lifetime like the other caches here. */
+  readonly methodNameWrites = new Map<string, boolean>();
 
   clear(): void {
     this.createRequireReasons.clear();
@@ -71,5 +75,6 @@ export class ProgramAnalysis {
     this.requireFirstRunnable.clear();
     this.splitRequireBindings.clear();
     this.fileIdentifiers.clear();
+    this.methodNameWrites.clear();
   }
 }

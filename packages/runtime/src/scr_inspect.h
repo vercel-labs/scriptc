@@ -146,8 +146,26 @@ extern SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
 /* format's %s over a dyn value: strings verbatim, numbers and bigints by
  * their formatNumber/formatBigInt spellings, an object whose toString the
  * program owns as String(value), and everything else inspected at depth 0
- * with compact 3 and no colors — the caller's depth is not used. */
+ * with compact 3 and no colors — the caller's depth is not used.
+ *
+ * A caller that must link without the inspect unit (a runtime unit test, or
+ * an archive whose program never selected it) defines
+ * SCR_OPTIONAL_INSPECT_REF before including this header. The declaration is
+ * then the translation unit's FIRST one with the weak attribute, so a
+ * missing definition resolves to NULL instead of failing the link. The
+ * attribute has to be on that first declaration: Apple's clang ignores it on
+ * a redeclaration of an already-declared function, which left the reference
+ * strong and failed the macOS link with `Undefined symbols`, and on Mach-O an
+ * undefined reference is weak only when it is declared weak_import. */
+#if defined(SCR_OPTIONAL_INSPECT_REF)
+#if defined(__APPLE__)
+extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak_import));
+#else
+extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
+#else
 ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
+#endif
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 /* A showHidden render for `surface`; custom < 0 keeps the caller's custom
  * inspection setting, 0 disables it (console.dir). */

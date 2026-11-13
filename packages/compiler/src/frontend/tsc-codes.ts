@@ -405,21 +405,17 @@ const memberWriteTarget = (node: ts.Node): boolean => {
   }
 };
 
-const methodNameWrites = new WeakMap<ts.Program, Map<string, boolean>>();
-
 /** Whether some implementation file can replace the member named `name`
  * on any receiver: a write or `delete` of a property access or a
  * string-keyed element access of that name, a call argument naming it (a
  * reflective definition such as `Object.defineProperty(o, name, …)` or
  * `Reflect.set(o, name, v)`), or an object literal argument with a member
  * of that name (`Object.assign(C.prototype, { name() {} })`). A write
- * through a computed key the source does not spell is not seen. */
+ * through a computed key the source does not spell is not seen. The
+ * answers live on the program's analysis, so they last exactly as long as
+ * the snapshot they were read from. */
 const methodNameWritten = (program: ts.Program, name: string): boolean => {
-  let names = methodNameWrites.get(program);
-  if (names === undefined) {
-    names = new Map();
-    methodNameWrites.set(program, names);
-  }
+  const names = program.analysis.methodNameWrites;
   const known = names.get(name);
   if (known !== undefined) return known;
   let written = false;

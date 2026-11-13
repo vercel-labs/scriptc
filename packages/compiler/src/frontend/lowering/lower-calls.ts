@@ -230,7 +230,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
-import { fenceX509KeyWalk } from "./builtins/x509.js";
+import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -9683,6 +9683,27 @@ function defineReceiverAsDyn(
   return target;
 }
 
+/** Whether a key expression's ToPropertyKey runs no program code: a
+ * primitive (or a union of primitives) converts without calling user
+ * methods, so a static own-key answer may skip the conversion. */
+function primitiveKey(lowerer: Lowerer, node: ts.Node): boolean {
+  const allowed = (t: IrType | null | undefined): boolean => {
+    if (!t) return false;
+    if (t.kind === "union") {
+      const def = lowerer.unions.get(t.unionId);
+      return !!def && def.arms.every(allowed);
+    }
+    return (
+      t.kind === "string" ||
+      t.kind === "f64" ||
+      t.kind === "bool" ||
+      t.kind === "symbol" ||
+      isUnitType(t)
+    );
+  };
+  return allowed(lowerer.mapTypeOf(lowerer.typeOf(node)));
+}
+
 function lowerObjectStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10750,6 +10771,23 @@ function lowerObjectStaticCall(
     const recvNode = call.arguments.nodes[0]!;
     const keyNode = call.arguments.nodes[1]!;
     const probed = tryLowerExpression(lowerer, recvNode);
+    // A certificate has no own properties at all: Node keeps every field,
+    // getter and method on the prototype, so Object.hasOwn answers false
+    // for every key (symbols included). Both arguments still evaluate; a
+    // key whose ToPropertyKey could run the program's own code (an object
+    // key) keeps the general path below.
+    if (probed && isX509Type(lowerer, probed.type) && primitiveKey(lowerer, keyNode)) {
+      const loc = locOf(call);
+      const stmts: IrStmt[] = [];
+      const receiver = lowerer.lowerExpr(recvNode);
+      if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+      const keyExpr = lowerer.lowerExpr(keyNode);
+      if (!isSafeToDiscard(keyExpr)) stmts.push({ kind: "exprStmt", expr: keyExpr, loc });
+      const answer: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      return stmts.length === 0
+        ? answer
+        : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
+    }
     const arrayKey = probed?.type.kind === "array" ? lowerer.lowerExpr(keyNode) : null;
     if (probed?.type.kind === "array" && arrayKey?.type.kind === "f64") {
       // Numeric own keys use the array's slot/property presence directly.

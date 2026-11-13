@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import {
   clearResolveCaches,
   projectDtsRuntimeSibling,
+  resolveBareModule,
   rememberProjectTypes,
   rememberedProjectTypes,
   resolveInTypeRoots,
@@ -240,6 +241,114 @@ test("a node10 project finds declarations by path where the exports map names no
     expect(
       resolveTypesAsProject(main, "bread-proof/rise", { typeRoots: [], byPath: false }, false),
     ).toBeNull();
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the scriptc export condition is selected before node, require and default", async () => {
+  const dir = await projectTree({
+    "node_modules/platform-choice/package.json": JSON.stringify({
+      name: "platform-choice",
+      version: "1.0.0",
+      type: "module",
+      // scriptc last, after node and default: its branch still wins.
+      exports: {
+        ".": {
+          types: "./index.d.ts",
+          node: "./node.mjs",
+          default: "./default.mjs",
+          scriptc: "./scriptc.mjs",
+        },
+      },
+    }),
+    "node_modules/platform-choice/index.d.ts": "export declare const value: string;\n",
+    "node_modules/platform-choice/node.mjs": "export const value = 'node';\n",
+    "node_modules/platform-choice/default.mjs": "export const value = 'default';\n",
+    "node_modules/platform-choice/scriptc.mjs": "export const value = 'scriptc';\n",
+    "node_modules/platform-choice-require/package.json": JSON.stringify({
+      name: "platform-choice-require",
+      version: "1.0.0",
+      exports: {
+        ".": { require: "./require.cjs", scriptc: "./scriptc.cjs", default: "./default.cjs" },
+      },
+    }),
+    "node_modules/platform-choice-require/require.cjs": 'exports.value = "require";\n',
+    "node_modules/platform-choice-require/scriptc.cjs": 'exports.value = "scriptc";\n',
+    "node_modules/platform-choice-require/default.cjs": 'exports.value = "default";\n',
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    const runtime = (pkg: string) => realpathSync(join(dir, "node_modules", pkg));
+    // The compiled program runs the adapter the package ships for scriptc,
+    // whatever place the map gives that key.
+    expect(resolveBareModule(main, "platform-choice", "js-only")?.typesFile).toBe(
+      runtime("platform-choice/scriptc.mjs"),
+    );
+    // The types branch keeps its lead, so the adapter is checked against
+    // the package's declarations.
+    expect(resolveBareModule(main, "platform-choice", "types-only")?.typesFile).toBe(
+      runtime("platform-choice/index.d.ts"),
+    );
+    // A require edge asks its own condition set, and scriptc still leads.
+    expect(
+      resolveBareModule(main, "platform-choice-require", "js-only", "require")?.typesFile,
+    ).toBe(runtime("platform-choice-require/scriptc.cjs"));
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the scriptc export condition leads in the typed world, for self-references and package imports", async () => {
+  const dir = await projectTree({
+    // scriptc listed after default in each map: its branch still wins.
+    "package.json": JSON.stringify({
+      name: "adapter-app",
+      type: "module",
+      exports: { ".": { default: "./src/index.ts", scriptc: "./src/adapter.ts" } },
+      imports: { "#impl": { default: "./src/a.ts", scriptc: "./src/b.ts" } },
+    }),
+    "src/index.ts": 'export const value: string = "default";\n',
+    "src/adapter.ts": 'export const value: string = "scriptc";\n',
+    "src/a.ts": 'export const which: string = "a";\n',
+    "src/b.ts": 'export const which: string = "b";\n',
+    "main.ts": "",
+    "node_modules/typed-choice/package.json": JSON.stringify({
+      name: "typed-choice",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { default: "./index.js", scriptc: "./adapter.js" } },
+    }),
+    "node_modules/typed-choice/index.js": 'export const value = "default";\n',
+    "node_modules/typed-choice/index.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-choice/adapter.js": 'export const value = "scriptc";\n',
+    "node_modules/typed-choice/adapter.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/package.json": JSON.stringify({
+      name: "typed-first",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { import: "./index.js", scriptc: "./adapter.js", types: "./types.d.ts" } },
+    }),
+    "node_modules/typed-first/types.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/index.d.ts": "export declare const value: string;\n",
+    "node_modules/typed-first/adapter.d.ts": "export declare const value: string;\n",
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    expect(resolveProjectModule(main, "adapter-app")).toBe(join(dir, "src/adapter.ts"));
+    expect(resolveProjectModule(main, "#impl")).toBe(join(dir, "src/b.ts"));
+    // A typed package's declarations are the scriptc branch's twins.
+    expect(resolveBareModule(main, "typed-choice")?.typesFile).toBe(
+      join(dir, "node_modules/typed-choice/adapter.d.ts"),
+    );
+    // A types entry leads the scriptc branch wherever the map lists it.
+    expect(resolveBareModule(main, "typed-first")?.typesFile).toBe(
+      join(dir, "node_modules/typed-first/types.d.ts"),
+    );
   } finally {
     clearResolveCaches();
     await rm(dir, { recursive: true, force: true });

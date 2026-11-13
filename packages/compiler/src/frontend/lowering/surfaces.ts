@@ -1,5 +1,6 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import { isLoweredConsoleMember } from "./builtins/console.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -1641,11 +1642,24 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "os.getPriority",
         params: [F64],
         result: F64,
-        valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
+        valueParams: [{ mode: "optional", type: F64, defaultValue: 0, name: "pid" }],
+        // Untyped callers' adapter: Node's default pid and validateInteger's
+        // type error, rendered from the value itself.
+        checked: { fn: "os.getPriorityChk", args: [] },
       },
       // A one-argument call is setPriority(0, priority)
-      // (lowerOsSetPriorityCall completes it).
-      setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
+      // (lowerOsSetPriorityCall completes it). Untyped callers' adapter
+      // keeps Node's one-argument shift and argument checks.
+      setPriority: {
+        fn: "os.setPriority",
+        params: [F64, F64],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: F64, name: "pid" },
+          { mode: "required", type: F64, name: "priority" },
+        ],
+        checked: { fn: "os.setPriorityChk", args: [] },
+      },
       // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
       // from one uv_cpu_info snapshot.
       cpus: { fn: "os.cpusTake", params: [], result: VOID },
@@ -2658,6 +2672,11 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
+    // The untyped callers' validating adapters (the JavaScript lane and the
+    // untyped arm of the typed lane) read and set the same scheduling
+    // priority: same surface, same fence.
+    getPriority: ["os.getPriorityChk"],
+    setPriority: ["os.setPriorityChk"],
   },
 };
 
@@ -3084,7 +3103,16 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.env",
       kind: "node-builtin",
       name: "process.env",
-      fns: ["process.envGet", "process.envSet", "process.envUnset", "process.envPairs"],
+      fns: [
+        "process.envGet",
+        "process.envGetDyn",
+        "process.envSet",
+        "process.envSetDyn",
+        "process.envSetKeyDyn",
+        "process.envUnset",
+        "process.envUnsetDyn",
+        "process.envPairs",
+      ],
       note: "reads, writes, deletes, and enumeration of the process environment (the process global)",
     },
     {
@@ -3137,7 +3165,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
-      fns: ["process.chdir"],
+      fns: ["process.chdir", "process.chdirDyn"],
     },
     {
       id: "node-builtin.process.pid",
@@ -3176,6 +3204,48 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.getgroups"],
     },
     {
+      id: "node-builtin.process.setuid",
+      kind: "node-builtin",
+      name: "process.setuid",
+      fns: ["process.setuid"],
+      note: "selects the process's user id with Node's id ladder (a uint32 number or a name string, ERR_UNKNOWN_CREDENTIAL and the kernel's ErrnoException); absent on Windows",
+    },
+    {
+      id: "node-builtin.process.seteuid",
+      kind: "node-builtin",
+      name: "process.seteuid",
+      fns: ["process.seteuid"],
+      note: "selects the effective user id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setgid",
+      kind: "node-builtin",
+      name: "process.setgid",
+      fns: ["process.setgid"],
+      note: "selects the process's group id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setegid",
+      kind: "node-builtin",
+      name: "process.setegid",
+      fns: ["process.setegid"],
+      note: "selects the effective group id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setgroups",
+      kind: "node-builtin",
+      name: "process.setgroups",
+      fns: ["process.setgroups"],
+      note: "takes an array of ids, validates every element by index, and answers the first unknown group; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.initgroups",
+      kind: "node-builtin",
+      name: "process.initgroups",
+      fns: ["process.initgroups"],
+      note: "validates the user and extra group, then calls initgroups(3); absent on Windows",
+    },
+    {
       id: "node-builtin.process.ppid",
       kind: "node-builtin",
       name: "process.ppid",
@@ -3185,7 +3255,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.title",
       kind: "node-builtin",
       name: "process.title",
-      fns: ["process.title", "process.setTitle"],
+      fns: ["process.title", "process.setTitle", "process.setTitleDyn"],
       note: "reads and writes of the process title are one surface",
     },
     {
@@ -3255,6 +3325,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.cpuUserDiff",
         "process.cpuSystemDiff",
         "process.cpuPrevValidate",
+        "process.cpuDynPrepare",
+        "process.cpuDynField",
       ],
       note: "the plain-sample and previous-value diff forms are one surface",
     },
@@ -3267,6 +3339,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.threadCpuSystem",
         "process.threadCpuUserDiff",
         "process.threadCpuSystemDiff",
+        "process.cpuDynPrepare",
+        "process.cpuDynField",
       ],
       note: "the plain-sample and previous-value diff forms are one surface",
     },
@@ -3295,28 +3369,90 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.kill",
       kind: "node-builtin",
       name: "process.kill",
-      fns: ["process.kill", "process.killNum"],
+      fns: ["process.kill", "process.killNum", "process.killSigDyn", "process.killDyn"],
       note: "the signal-name and signal-number forms are one surface",
     },
     {
       id: "node-builtin.process.umask",
       kind: "node-builtin",
       name: "process.umask",
-      fns: ["process.umask"],
+      fns: ["process.umask", "process.umaskChk", "process.umaskDyn"],
     },
     {
       id: "node-builtin.process.exit",
       kind: "node-builtin",
       name: "process.exit",
-      fns: ["process.exit", "process.exiting"],
+      fns: ["process.exit", "process.exitDyn", "process.exiting"],
       note: "process.exit and the process._exiting flag read are one surface",
+    },
+    {
+      id: "node-builtin.process.abort",
+      kind: "node-builtin",
+      name: "process.abort",
+      fns: ["process.abort"],
+      note: "flushes stdout and stderr and raises SIGABRT; without Node's native and JavaScript stack dumps",
+    },
+    {
+      id: "node-builtin.process.finalization",
+      kind: "node-builtin",
+      name: "process.finalization",
+      fns: ["process.finalization"],
+      note: "register, registerBeforeExit and unregister on one stable object; the callbacks run from process 'exit'/'beforeExit' listeners installed at the first registration",
     },
     {
       id: "node-builtin.process.exitCode",
       kind: "node-builtin",
       name: "process.exitCode",
-      fns: ["process.setExitCode", "process.setExitCodeTracked", "process.hasExitCode"],
+      fns: [
+        "process.setExitCode",
+        "process.setExitCodeDyn",
+        "process.setExitCodeTracked",
+        "process.setExitCodeDynTracked",
+        "process.hasExitCode",
+      ],
       note: "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it",
+    },
+    {
+      id: "node-builtin.process.hasUncaughtExceptionCaptureCallback",
+      kind: "node-builtin",
+      name: "process.hasUncaughtExceptionCaptureCallback",
+      fns: ["process.hasUncaughtCapture"],
+      note: "whether a capture callback is installed",
+    },
+    {
+      id: "node-builtin.process.setUncaughtExceptionCaptureCallback",
+      kind: "node-builtin",
+      name: "process.setUncaughtExceptionCaptureCallback",
+      fns: ["process.setUncaughtCapture"],
+      note: "installs a function or null; the callback takes precedence over uncaughtException listeners and a second install throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
+    },
+    {
+      id: "node-builtin.process.debugPort",
+      kind: "node-builtin",
+      name: "process.debugPort",
+      fns: ["process.debugPort", "process.setDebugPort"],
+      note: "9229 until written; writes convert with ToInt32, accept 0 or 1024 to 65535, and keep the previous value on a refused write",
+    },
+    {
+      id: "node-builtin.process.sourceMapsEnabled",
+      kind: "node-builtin",
+      name: "process.sourceMapsEnabled",
+      fns: ["process.sourceMapsEnabled", "process.setSourceMapsEnabled"],
+      note: "false until setSourceMapsEnabled stores a validated boolean",
+    },
+    {
+      id: "node-builtin.process.ref",
+      kind: "node-builtin",
+      name: "process.ref",
+      fns: ["process.ref"],
+      note: "reads the nodejs.ref symbol (else the ref member) and calls a callable with the argument as receiver",
+    },
+    {
+      id: "node-builtin.process.unref",
+      kind: "node-builtin",
+      name: "process.unref",
+      fns: ["process.unref"],
+      note: "reads the nodejs.unref symbol (else the unref member) and calls a callable with the argument as receiver",
     },
     // ── the tls CA store (lowerTlsCaCall / lowerTlsRootCertificates): the
     // host's trust anchors, read and replaced. Dedicated paths, and
@@ -3700,6 +3836,39 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
   )
     return;
+  // A JavaScript read off a value the lowering BUILT as a record (os.cpus()'s
+  // rows, os.userInfo()'s record, a stdlib data interface filled field by
+  // field): the checker's property symbol is the stdlib declaration, but the
+  // value on hand is the record, so the field read the property lowering
+  // performs below is the honest one. Only a record answers here: the
+  // receiver must still be a value the checker reads as data, not a stdlib
+  // global or constructor whose members keep their fence (`globalThis.Set
+  // .prototype` is not a record field).
+  {
+    const lowered = tryLowerExpression(lowerer, recv);
+    // The checker spells a data interface whose record the lowering never
+    // materialized (os.cpus()'s rows read through a binding in JavaScript,
+    // where the value on hand is checked-dynamic): the boxed member read is
+    // the honest one, so the keyed-read claim below this fence applies
+    // exactly as for a checker-dyn receiver. The interface's shape must
+    // carry the member, which keeps stdlib globals and constructors
+    // (`globalThis.Set.prototype`) and non-record types (`any[]`'s
+    // methods) behind the fence.
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(recv));
+    const declared =
+      mapped?.kind === "record"
+        ? lowerer.shapes.get(mapped.shapeId)
+        : lowered?.type.kind === "record"
+          ? lowerer.shapes.get(lowered.type.shapeId)
+          : undefined;
+    if (
+      declared !== undefined &&
+      !declared.tuple &&
+      declared.fields.some((f) => f.name === member) &&
+      (lowered?.type.kind === "dyn" || lowered?.type.kind === "record")
+    )
+      return;
+  }
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;
@@ -3781,7 +3950,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     hint =
       "console.log/info/debug (stdout), console.error/warn (stderr), assert, count, " +
       "countReset, dir, dirxml, group, groupCollapsed, groupEnd, table, time, timeEnd, " +
-      "timeLog, clear, profile, profileEnd, and timeStamp are the supported console surface " +
+      "timeLog, clear, trace, profile, profileEnd, and timeStamp are the supported " +
+      "console surface " +
       "(arguments render with Node's console semantics: strings verbatim, everything else " +
       "through the static util.inspect)";
   } else if (container === "TextEncoder") {

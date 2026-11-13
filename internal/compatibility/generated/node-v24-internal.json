@@ -18996,7 +18996,9 @@
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
           "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
           "tests/corpus/4900-console-instances.ts",
           "tests/corpus/4901-console-instance-errors.ts",
           "tests/corpus/5095-console-count-group.ts",
@@ -19004,12 +19006,14 @@
           "tests/corpus/5097-console-table.ts",
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/corpus/inspect-getters.ts",
-          "tests/harness/console-trace.test.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/console-trace-output.cjs",
+          "tests/corpus/stdout-patch-console-arguments.js",
+          "tests/harness/console-trace.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -19055,8 +19059,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.profile",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.profile",
         "tests": [
           "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
@@ -19081,8 +19085,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.profileEnd",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.profileEnd",
         "tests": [
           "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
@@ -19107,8 +19111,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.timeStamp",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.timeStamp",
         "tests": [
           "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
@@ -19160,14 +19164,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.assert",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.assert",
         "tests": [
-          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts",
-          "tests/corpus/console-dir-show-hidden.ts"
+          "tests/corpus/5095-console-count-group.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -19190,8 +19192,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.clear",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.clear",
         "tests": [
           "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
@@ -19216,8 +19218,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.count",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.count",
         "tests": [
           "tests/corpus/5095-console-count-group.ts",
           "tests/corpus/5098-console-time-warnings.ts",
@@ -19244,8 +19246,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.countReset",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.countReset",
         "tests": [
           "tests/corpus/5095-console-count-group.ts",
           "tests/corpus/5098-console-time-warnings.ts",
@@ -19272,14 +19274,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.debug",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.debug",
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
-          "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
+          "tests/corpus/stdout-patch-console-arguments.js"
         ]
       },
       "anchorSource": "exact"
@@ -19302,14 +19309,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.dir",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.dir",
         "tests": [
-          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts",
-          "tests/corpus/console-dir-show-hidden.ts"
+          "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/5095-console-count-group.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19332,14 +19337,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.dirxml",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.dirxml",
         "tests": [
-          "tests/corpus/inspect-getters.ts",
           "tests/corpus/5096-console-assert-dir.ts",
-          "tests/corpus/5099-console-methods-dynamic.cjs",
-          "tests/corpus/5884-inspect-layout-options.ts",
-          "tests/corpus/console-dir-show-hidden.ts"
+          "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/5095-console-count-group.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19362,14 +19365,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.error",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.error",
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
-          "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
+          "tests/corpus/stdout-patch-console-arguments.js"
         ]
       },
       "anchorSource": "exact"
@@ -19392,8 +19400,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.group",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.group",
         "tests": [
           "tests/corpus/5095-console-count-group.ts",
           "tests/corpus/5098-console-time-warnings.ts",
@@ -19420,8 +19428,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.groupCollapsed",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.groupCollapsed",
         "tests": [
           "tests/corpus/5095-console-count-group.ts",
           "tests/corpus/5098-console-time-warnings.ts",
@@ -19448,8 +19456,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.groupEnd",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.groupEnd",
         "tests": [
           "tests/corpus/5095-console-count-group.ts",
           "tests/corpus/5098-console-time-warnings.ts",
@@ -19476,14 +19484,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.info",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.info",
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
-          "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
+          "tests/corpus/stdout-patch-console-arguments.js"
         ]
       },
       "anchorSource": "exact"
@@ -19506,14 +19519,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.log",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.log",
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
-          "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
+          "tests/corpus/stdout-patch-console-arguments.js"
         ]
       },
       "anchorSource": "exact"
@@ -19536,8 +19554,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.table",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.table",
         "tests": [
           "tests/corpus/5097-console-table.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs"
@@ -19563,10 +19581,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.time",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.time",
         "tests": [
-          "tests/corpus/5098-console-time-warnings.ts"
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -19589,10 +19608,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.timeEnd",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.timeEnd",
         "tests": [
-          "tests/corpus/5098-console-time-warnings.ts"
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -19615,10 +19635,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.timeLog",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.timeLog",
         "tests": [
-          "tests/corpus/5098-console-time-warnings.ts"
+          "tests/corpus/5098-console-time-warnings.ts",
+          "tests/corpus/5099-console-methods-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -19644,6 +19665,7 @@
         "status": "partial",
         "evidence": "compiler-feature:console.console.trace",
         "tests": [
+          "tests/corpus/console-trace-output.cjs",
           "tests/harness/console-trace.test.ts"
         ]
       },
@@ -19667,14 +19689,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:console.warn",
+        "status": "supported",
+        "evidence": "compiler-feature:console.console.warn",
         "tests": [
           "tests/corpus/1460-console-error-warn.ts",
-          "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/2631-create-require/main.ts",
+          "tests/corpus/console-method-format.ts",
+          "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
-          "tests/harness/npm-static.test.ts"
+          "tests/corpus/console-object-value.ts",
+          "tests/corpus/2440-console-inspect-args.ts",
+          "tests/corpus/4294-console-line-sizes.ts",
+          "tests/corpus/4295-console-template-parts.ts",
+          "tests/corpus/4296-console-glued-long-parts.ts",
+          "tests/corpus/stdout-patch-console-arguments.js"
         ]
       },
       "anchorSource": "exact"
@@ -27375,8 +27402,11 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.env",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1464-env-writes.ts",
+          "tests/corpus/1465-env-value.ts",
+          "tests/corpus/1528-delete-records-env.ts",
+          "tests/corpus/process-env-computed-keys.js",
+          "tests/corpus/process-env-dynamic-access.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -28009,8 +28039,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.umask",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/process-umask-argument-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -28468,8 +28499,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.exit",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1445-exit-process-exit.ts",
+          "tests/corpus/process-exit-argument.cjs",
+          "tests/corpus/process-exit-value-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -33381,8 +33413,11 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2314-process-introspection.ts",
-          "tests/corpus/990-process-basics.ts"
+          "tests/corpus/1464-env-writes.ts",
+          "tests/corpus/1465-env-value.ts",
+          "tests/corpus/1528-delete-records-env.ts",
+          "tests/corpus/process-env-computed-keys.js",
+          "tests/corpus/process-env-dynamic-access.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -33628,8 +33663,11 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.env",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1464-env-writes.ts",
+          "tests/corpus/1465-env-value.ts",
+          "tests/corpus/1528-delete-records-env.ts",
+          "tests/corpus/process-env-computed-keys.js",
+          "tests/corpus/process-env-dynamic-access.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -33711,6 +33749,7 @@
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/console-error-codes.cjs",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
@@ -33719,6 +33758,8 @@
           "tests/corpus/node-dns-resolve-errors.cjs",
           "tests/corpus/node-dns-resolver-class.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/process-error-codes.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
@@ -34763,8 +34804,11 @@
       "anchor": "err_console_writable_stream",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM",
+        "tests": [
+          "tests/corpus/console-error-codes.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37631,7 +37675,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_TYPE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -37652,7 +37698,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_VALUE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -38910,7 +38958,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_OUT_OF_RANGE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -40127,7 +40177,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_SYSTEM_ERROR",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -40633,10 +40684,10 @@
       "anchor": "err_uncaught_exception_capture_already_set",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:errors.ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -40717,8 +40768,11 @@
       "anchor": "err_unknown_credential",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL",
+        "tests": [
+          "tests/corpus/process-error-codes.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40795,7 +40849,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_SIGNAL",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77452,19 +77508,30 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/1353-os-basics.ts",
           "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts",
           "tests/corpus/1540-os-userinfo.ts",
+          "tests/corpus/2096-os-type.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/4598-os-available-parallelism.ts",
           "tests/corpus/5140-os-host-facts.ts",
           "tests/corpus/5141-os-constants.ts",
           "tests/corpus/5883-os-set-priority.ts",
           "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-cpus-rows.cjs",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/os-priority-callable.cjs",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
           "tests/corpus/os-user-info-encoding.ts",
-          "tests/corpus/os-userinfo-passwd-entry.ts"
+          "tests/corpus/os-userinfo-options.cjs",
+          "tests/corpus/os-userinfo-passwd-entry.ts",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -77671,10 +77738,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.availableParallelism",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.availableParallelism",
         "tests": [
-          "tests/corpus/4598-os-available-parallelism.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77697,10 +77769,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.arch",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.arch",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77723,10 +77800,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.cpus",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.cpus",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/os-cpus-rows.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77749,10 +77827,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.endianness",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.endianness",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77775,10 +77858,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.freemem",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.freemem",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77801,10 +77889,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.getPriority",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.getPriority",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-priority-callable.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77827,11 +77918,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.homedir",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.homedir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77854,10 +77947,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.hostname",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.hostname",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77880,10 +77978,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.loadavg",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.loadavg",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77906,10 +78009,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.machine",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.machine",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77932,8 +78040,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.networkInterfaces",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.networkInterfaces",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
           "tests/corpus/2917-builtin-callable-widths.ts"
@@ -77959,11 +78067,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.platform",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.platform",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77986,11 +78098,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.release",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.release",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78013,10 +78129,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.setPriority",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.setPriority",
         "tests": [
-          "tests/corpus/5883-os-set-priority.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-priority-callable.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78039,11 +78158,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.tmpdir",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.tmpdir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78066,11 +78187,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.totalmem",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.totalmem",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78093,11 +78218,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.type",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.type",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78120,10 +78249,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.uptime",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.uptime",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78146,15 +78280,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.userInfo",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.userInfo",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/1540-os-userinfo.ts",
           "tests/corpus/os-userinfo-passwd-entry.ts",
           "tests/corpus/9204-os-user-info-buffer.ts",
-          "tests/corpus/os-user-info-encoding.ts"
+          "tests/corpus/os-user-info-encoding.ts",
+          "tests/corpus/os-userinfo-options.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78177,10 +78311,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.version",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.version",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78203,11 +78342,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.EOL",
+        "status": "supported",
+        "evidence": "compiler-feature:os.EOL",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -78230,8 +78373,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.constants",
+        "status": "supported",
+        "evidence": "compiler-feature:os.constants",
         "tests": [
           "tests/corpus/5141-os-constants.ts"
         ]
@@ -78256,10 +78399,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.devNull",
+        "status": "supported",
+        "evidence": "compiler-feature:os.devNull",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -82928,9 +83076,16 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/compiler/test/node-value-reads.test.ts",
           "packages/compiler/test/process-builtin-values.test.ts",
           "tests/corpus/1443-signal-handlers.ts",
+          "tests/corpus/1445-exit-process-exit.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/1464-env-writes.ts",
+          "tests/corpus/1465-env-value.ts",
+          "tests/corpus/1528-delete-records-env.ts",
           "tests/corpus/2215-process-emit-warning-exit.cjs",
+          "tests/corpus/2310-process-next-tick.ts",
           "tests/corpus/2314-process-introspection.ts",
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
@@ -82942,7 +83097,6 @@
           "tests/corpus/5194-process-emit-warning-tick.cjs",
           "tests/corpus/5210-process-memory-usage.ts",
           "tests/corpus/5211-process-identity.ts",
-          "tests/corpus/5809-process-exit-and-rejections.cjs",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts",
           "tests/corpus/6422-process-exitcode-read.ts",
@@ -82957,22 +83111,84 @@
           "tests/corpus/compat-js-value-reads-require.cjs",
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/next-tick-commonjs-entry.cjs",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-imports.cjs",
+          "tests/corpus/process-abort.ts",
           "tests/corpus/process-allowed-node-env-flags-destructured.cjs",
           "tests/corpus/process-allowed-node-env-flags.ts",
+          "tests/corpus/process-argv-surface.mjs",
+          "tests/corpus/process-before-exit-exit.cjs",
+          "tests/corpus/process-before-exit-typed.ts",
+          "tests/corpus/process-before-exit-unref.cjs",
+          "tests/corpus/process-before-exit.cjs",
+          "tests/corpus/process-builtin-module-lookup.cjs",
           "tests/corpus/process-builtin-values.js",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-channel-absent.cjs",
+          "tests/corpus/process-channel-disconnect/main.ts",
+          "tests/corpus/process-channel-ipc/main.ts",
+          "tests/corpus/process-channel-ref-cycle/main.ts",
+          "tests/corpus/process-chdir-value-forms.cjs",
+          "tests/corpus/process-constrained-memory.ts",
+          "tests/corpus/process-cpu-usage-previous-value.cjs",
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts",
+          "tests/corpus/process-cwd-name-thread.mjs",
+          "tests/corpus/process-cwd-value.cjs",
+          "tests/corpus/process-cwd-value.mjs",
+          "tests/corpus/process-debug-port.cjs",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-env-computed-keys.js",
+          "tests/corpus/process-env-dynamic-access.cjs",
+          "tests/corpus/process-exit-argument.cjs",
+          "tests/corpus/process-exit-event.mjs",
+          "tests/corpus/process-exit-value-forms.cjs",
+          "tests/corpus/process-feature-flags.mjs",
+          "tests/corpus/process-finalization-errors.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization.ts",
           "tests/corpus/process-hrtime.js",
+          "tests/corpus/process-ignored-arguments.cjs",
+          "tests/corpus/process-ipc-surface/main.ts",
+          "tests/corpus/process-kill-argument-forms.cjs",
+          "tests/corpus/process-kill-chdir-errors.cjs",
+          "tests/corpus/process-load-env-file-forms.cjs",
+          "tests/corpus/process-memory-usage-array-buffers.cjs",
+          "tests/corpus/process-multiple-resolves-listeners.cjs",
+          "tests/corpus/process-multiple-resolves-no-listener.cjs",
+          "tests/corpus/process-multiple-resolves-typed.ts",
+          "tests/corpus/process-multiple-resolves.cjs",
           "tests/corpus/process-named-signals.cjs",
+          "tests/corpus/process-next-tick-callback-checks.cjs",
+          "tests/corpus/process-next-tick-order.cjs",
+          "tests/corpus/process-permission.ts",
+          "tests/corpus/process-pid-ppid.mjs",
+          "tests/corpus/process-platform-arch-version.mjs",
+          "tests/corpus/process-ref-protocol.cjs",
+          "tests/corpus/process-rejection-handled.cjs",
+          "tests/corpus/process-release-object.mjs",
+          "tests/corpus/process-signal-events.mjs",
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-stdio-descriptors.cjs",
           "tests/corpus/process-stream-drain.ts",
+          "tests/corpus/process-title-value-forms.cjs",
+          "tests/corpus/process-umask-argument-forms.cjs",
+          "tests/corpus/process-uncaught-exception-events.cjs",
           "tests/corpus/process-uncaught-handler-throws.cjs",
           "tests/corpus/process-uncaught-loop.cjs",
           "tests/corpus/process-uncaught-module.mjs",
           "tests/corpus/process-uncaught-monitor.cjs",
           "tests/corpus/process-uncaught-rejection.cjs",
           "tests/corpus/process-uncaught-sync.cjs",
+          "tests/corpus/process-unhandled-rejection-events.cjs",
+          "tests/corpus/process-versions-object.mjs",
           "tests/corpus/process-versions-storage.ts",
+          "tests/corpus/process-warning-events.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-errors.mjs",
@@ -82981,7 +83197,9 @@
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/fenced.ts",
           "tests/fixtures/node-types/util-callables.ts",
+          "tests/harness/__snapshots__/node-types-fenced.txt",
           "tests/harness/event-loop.test.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -83019,8 +83237,19 @@
       "anchor": "event-beforeexit",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.'beforeExit'",
+        "tests": [
+          "tests/corpus/process-before-exit.cjs",
+          "tests/corpus/process-before-exit-exit.cjs",
+          "tests/corpus/process-before-exit-unref.cjs",
+          "tests/corpus/process-before-exit-typed.ts",
+          "tests/corpus/process-multiple-resolves.cjs",
+          "tests/corpus/process-multiple-resolves-listeners.cjs",
+          "tests/corpus/process-multiple-resolves-no-listener.cjs",
+          "tests/corpus/process-multiple-resolves-typed.ts",
+          "tests/corpus/process-rejection-handled.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83037,9 +83266,10 @@
       "anchor": "event-disconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'disconnect'",
         "tests": [
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts"
@@ -83060,10 +83290,12 @@
       "anchor": "event-exit",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'exit'",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-exit-event.mjs",
+          "tests/corpus/process-unhandled-rejection-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83081,9 +83313,10 @@
       "anchor": "event-message",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'message'",
         "tests": [
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts"
@@ -83109,8 +83342,19 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.'multipleResolves'",
+        "tests": [
+          "tests/corpus/process-before-exit.cjs",
+          "tests/corpus/process-before-exit-exit.cjs",
+          "tests/corpus/process-before-exit-unref.cjs",
+          "tests/corpus/process-before-exit-typed.ts",
+          "tests/corpus/process-multiple-resolves.cjs",
+          "tests/corpus/process-multiple-resolves-listeners.cjs",
+          "tests/corpus/process-multiple-resolves-no-listener.cjs",
+          "tests/corpus/process-multiple-resolves-typed.ts",
+          "tests/corpus/process-rejection-handled.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83127,8 +83371,19 @@
       "anchor": "event-rejectionhandled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.'rejectionHandled'",
+        "tests": [
+          "tests/corpus/process-before-exit.cjs",
+          "tests/corpus/process-before-exit-exit.cjs",
+          "tests/corpus/process-before-exit-unref.cjs",
+          "tests/corpus/process-before-exit-typed.ts",
+          "tests/corpus/process-multiple-resolves.cjs",
+          "tests/corpus/process-multiple-resolves-listeners.cjs",
+          "tests/corpus/process-multiple-resolves-no-listener.cjs",
+          "tests/corpus/process-multiple-resolves-typed.ts",
+          "tests/corpus/process-rejection-handled.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83146,7 +83401,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.'workerMessage'",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83163,7 +83421,7 @@
       "anchor": "event-uncaughtexception",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'uncaughtException'",
         "tests": [
           "tests/corpus/process-uncaught-sync.cjs",
@@ -83171,7 +83429,8 @@
           "tests/corpus/process-uncaught-module.mjs",
           "tests/corpus/process-uncaught-rejection.cjs",
           "tests/corpus/process-uncaught-monitor.cjs",
-          "tests/corpus/process-uncaught-handler-throws.cjs"
+          "tests/corpus/process-uncaught-handler-throws.cjs",
+          "tests/corpus/process-uncaught-exception-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83207,7 +83466,7 @@
       "anchor": "event-uncaughtexceptionmonitor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'uncaughtExceptionMonitor'",
         "tests": [
           "tests/corpus/process-uncaught-sync.cjs",
@@ -83215,7 +83474,8 @@
           "tests/corpus/process-uncaught-module.mjs",
           "tests/corpus/process-uncaught-rejection.cjs",
           "tests/corpus/process-uncaught-monitor.cjs",
-          "tests/corpus/process-uncaught-handler-throws.cjs"
+          "tests/corpus/process-uncaught-handler-throws.cjs",
+          "tests/corpus/process-uncaught-exception-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83233,10 +83493,12 @@
       "anchor": "event-unhandledrejection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'unhandledRejection'",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-exit-event.mjs",
+          "tests/corpus/process-unhandled-rejection-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83254,12 +83516,13 @@
       "anchor": "event-warning",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.'warning'",
         "tests": [
           "tests/corpus/2215-process-emit-warning-exit.cjs",
           "tests/corpus/5194-process-emit-warning-tick.cjs",
-          "tests/corpus/5188-util-deprecate-flags.cjs"
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/process-warning-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83314,7 +83577,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.'worker'",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83331,11 +83597,12 @@
       "anchor": "signal-events",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.SIGINT, SIGHUP, etc.",
         "tests": [
           "tests/corpus/1443-signal-handlers.ts",
-          "tests/corpus/process-named-signals.cjs"
+          "tests/corpus/process-named-signals.cjs",
+          "tests/corpus/process-signal-events.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -83371,10 +83638,10 @@
       "anchor": "processabort",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.abort",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-abort.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83392,11 +83659,11 @@
       "anchor": "processavailablememory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.availableMemory",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.availableMemory",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/2314-process-introspection.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83414,11 +83681,12 @@
       "anchor": "processchdirdirectory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.chdir",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.chdir",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-chdir-value-forms.cjs",
+          "tests/corpus/process-ignored-arguments.cjs",
+          "tests/corpus/process-kill-chdir-errors.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83436,11 +83704,11 @@
       "anchor": "processconstrainedmemory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.constrainedMemory",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.constrainedMemory",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-constrained-memory.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83458,11 +83726,11 @@
       "anchor": "processcpuusagepreviousvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.cpuUsage",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.cpuUsage",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/2314-process-introspection.ts",
+          "tests/corpus/process-cpu-usage-previous-value.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83480,11 +83748,14 @@
       "anchor": "processcwd",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.cwd",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.cwd",
         "tests": [
           "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-cwd-value.cjs",
+          "tests/corpus/process-cwd-value.mjs",
+          "tests/corpus/process-cwd-name-thread.mjs",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83502,9 +83773,10 @@
       "anchor": "processdisconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.disconnect",
         "tests": [
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts"
@@ -83525,8 +83797,8 @@
       "anchor": "processdlopenmodule-filename-flags",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -83543,12 +83815,13 @@
       "anchor": "processemitwarningwarning-options",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.emitWarning",
         "tests": [
           "tests/corpus/2215-process-emit-warning-exit.cjs",
           "tests/corpus/5194-process-emit-warning-tick.cjs",
-          "tests/corpus/5188-util-deprecate-flags.cjs"
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/process-warning-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83566,12 +83839,13 @@
       "anchor": "processemitwarningwarning-type-code-ctor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.emitWarning",
         "tests": [
           "tests/corpus/2215-process-emit-warning-exit.cjs",
           "tests/corpus/5194-process-emit-warning-tick.cjs",
-          "tests/corpus/5188-util-deprecate-flags.cjs"
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/process-warning-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83613,7 +83887,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.process.execve",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83630,11 +83907,12 @@
       "anchor": "processexitcode",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.exit",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.exit",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1445-exit-process-exit.ts",
+          "tests/corpus/process-exit-argument.cjs",
+          "tests/corpus/process-exit-value-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83657,10 +83935,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.register",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83683,10 +83963,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.registerBeforeExit",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83709,10 +83991,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.unregister",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83730,11 +84014,13 @@
       "anchor": "processgetactiveresourcesinfo",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.getActiveResourcesInfo",
         "tests": [
+          "tests/corpus/2314-process-introspection.ts",
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83752,11 +84038,12 @@
       "anchor": "processgetbuiltinmoduleid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.getBuiltinModule",
         "tests": [
           "tests/corpus/process-builtin-values.js",
-          "packages/compiler/test/process-builtin-values.test.ts"
+          "packages/compiler/test/process-builtin-values.test.ts",
+          "tests/corpus/process-builtin-module-lookup.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83774,10 +84061,12 @@
       "anchor": "processgetegid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.getegid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.getegid",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83795,10 +84084,12 @@
       "anchor": "processgeteuid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.geteuid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.geteuid",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83816,11 +84107,12 @@
       "anchor": "processgetgid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.getgid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.getgid",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83838,10 +84130,12 @@
       "anchor": "processgetgroups",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.getgroups",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.getgroups",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83859,11 +84153,12 @@
       "anchor": "processgetuid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.getuid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.getuid",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83881,10 +84176,12 @@
       "anchor": "processhasuncaughtexceptioncapturecallback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.hasUncaughtExceptionCaptureCallback",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-ref-protocol.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83907,10 +84204,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.hrtime",
         "tests": [
-          "tests/corpus/process-hrtime.js"
+          "tests/corpus/process-hrtime.js",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83928,10 +84226,11 @@
       "anchor": "processhrtimebigint",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.hrtime.bigint",
         "tests": [
-          "tests/corpus/process-hrtime.js"
+          "tests/corpus/process-hrtime.js",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83949,8 +84248,12 @@
       "anchor": "processinitgroupsuser-extragroup",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.initgroups",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83967,11 +84270,13 @@
       "anchor": "processkillpid-signal",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.kill",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.kill",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1461-process-pid-getuid-kill.ts",
+          "tests/corpus/process-named-signals.cjs",
+          "tests/corpus/process-kill-chdir-errors.cjs",
+          "tests/corpus/process-kill-argument-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83989,9 +84294,10 @@
       "anchor": "processloadenvfilepath",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.loadEnvFile",
         "tests": [
+          "tests/corpus/process-load-env-file-forms.cjs",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-imports.cjs",
@@ -84014,10 +84320,12 @@
       "anchor": "processmemoryusage",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.memoryUsage",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.memoryUsage",
         "tests": [
-          "tests/corpus/5210-process-memory-usage.ts"
+          "tests/corpus/5210-process-memory-usage.ts",
+          "tests/corpus/process-memory-usage-array-buffers.cjs",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84053,10 +84361,11 @@
       "anchor": "processmemoryusagerss",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.memoryUsage.rss",
         "tests": [
-          "tests/corpus/5210-process-memory-usage.ts"
+          "tests/corpus/5210-process-memory-usage.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84079,10 +84388,14 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.nextTick",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/2310-process-next-tick.ts",
+          "tests/corpus/next-tick-commonjs-entry.cjs",
+          "tests/corpus/process-next-tick-callback-checks.cjs",
+          "tests/corpus/process-next-tick-order.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84128,10 +84441,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.ref",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-ref-protocol.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84149,11 +84464,11 @@
       "anchor": "processresourceusage",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.resourceUsage",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.resourceUsage",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/2314-process-introspection.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84171,9 +84486,10 @@
       "anchor": "processsendmessage-sendhandle-options-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.send",
         "tests": [
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts"
@@ -84194,8 +84510,12 @@
       "anchor": "processsetegidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.setegid",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84212,8 +84532,12 @@
       "anchor": "processseteuidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.seteuid",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84230,8 +84554,12 @@
       "anchor": "processsetgidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.setgid",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84248,8 +84576,12 @@
       "anchor": "processsetgroupsgroups",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.setgroups",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84266,8 +84598,12 @@
       "anchor": "processsetuidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.setuid",
+        "tests": [
+          "tests/corpus/process-credential-arguments.cjs",
+          "tests/corpus/process-credential-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84289,10 +84625,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.setSourceMapsEnabled",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-ref-protocol.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84310,10 +84648,12 @@
       "anchor": "processsetuncaughtexceptioncapturecallbackfn",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.setUncaughtExceptionCaptureCallback",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-ref-protocol.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84331,11 +84671,11 @@
       "anchor": "processthreadcpuusagepreviousvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.threadCpuUsage",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.threadCpuUsage",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/2314-process-introspection.ts",
+          "tests/corpus/process-cpu-usage-previous-value.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84358,11 +84698,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.umask",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.umask",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/process-umask-argument-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84380,11 +84721,12 @@
       "anchor": "processumaskmask",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.umask",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.umask",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/process-umask-argument-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84407,10 +84749,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.unref",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-source-maps-flag.cjs",
+          "tests/corpus/process-capture-callbacks.cjs",
+          "tests/corpus/process-ref-protocol.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84428,11 +84772,11 @@
       "anchor": "processuptime",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.uptime",
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.uptime",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/2314-process-introspection.ts",
+          "tests/corpus/process-ignored-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84472,10 +84816,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.arch",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-platform-arch-version.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84493,11 +84838,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.argv",
+        "status": "supported",
+        "evidence": "compiler-feature:process.argv",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-argv-surface.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84515,10 +84859,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.argv0",
+        "status": "supported",
+        "evidence": "compiler-feature:process.argv0",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/process-argv-surface.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84536,8 +84880,14 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.channel",
+        "tests": [
+          "tests/corpus/process-channel-ipc/main.ts",
+          "tests/corpus/process-channel-ref-cycle/main.ts",
+          "tests/corpus/process-channel-disconnect/main.ts",
+          "tests/corpus/process-channel-absent.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -84554,8 +84904,14 @@
       "anchor": "processchannelref",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.channel.ref",
+        "tests": [
+          "tests/corpus/process-channel-ipc/main.ts",
+          "tests/corpus/process-channel-ref-cycle/main.ts",
+          "tests/corpus/process-channel-disconnect/main.ts",
+          "tests/corpus/process-channel-absent.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84572,8 +84928,14 @@
       "anchor": "processchannelunref",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.process.channel.unref",
+        "tests": [
+          "tests/corpus/process-channel-ipc/main.ts",
+          "tests/corpus/process-channel-ref-cycle/main.ts",
+          "tests/corpus/process-channel-disconnect/main.ts",
+          "tests/corpus/process-channel-absent.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84591,7 +84953,11 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.config",
+        "tests": [
+          "tests/fixtures/node-types/fenced.ts",
+          "tests/harness/__snapshots__/node-types-fenced.txt"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -84608,9 +84974,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.connected",
         "tests": [
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/6420-process-send-presence.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts"
@@ -84631,11 +84998,13 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.debugPort",
         "tests": [
           "tests/corpus/compat-js-value-reads.mjs",
-          "tests/corpus/compat-js-value-reads-require.cjs"
+          "tests/corpus/compat-js-value-reads-require.cjs",
+          "tests/corpus/process-debug-port.cjs",
+          "tests/corpus/process-source-maps-flag.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84653,11 +85022,14 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.env",
+        "status": "supported",
+        "evidence": "compiler-feature:process.env",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/1464-env-writes.ts",
+          "tests/corpus/1465-env-value.ts",
+          "tests/corpus/1528-delete-records-env.ts",
+          "tests/corpus/process-env-computed-keys.js",
+          "tests/corpus/process-env-dynamic-access.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84675,11 +85047,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.execArgv",
+        "status": "supported",
+        "evidence": "compiler-feature:process.execArgv",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-argv-surface.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84697,11 +85068,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.execPath",
+        "status": "supported",
+        "evidence": "compiler-feature:process.execPath",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-argv-surface.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84719,17 +85089,17 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.exitCode",
+        "status": "supported",
+        "evidence": "compiler-feature:process.exitCode",
         "tests": [
-          "tests/corpus/5809-process-exit-and-rejections.cjs",
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
           "tests/corpus/2943-process-exit-code-invalid.ts",
           "tests/corpus/2944-process-exit-code-wrap.ts",
           "tests/corpus/6422-process-exitcode-read.ts",
           "tests/corpus/6423-process-exitcode-default.ts",
-          "tests/corpus/6424-process-exit-keeps-exitcode.ts"
+          "tests/corpus/6424-process-exit-keeps-exitcode.ts",
+          "tests/corpus/process-exit-value-forms.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84747,11 +85117,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.cached_builtins",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84769,11 +85140,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.debug",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84791,11 +85163,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.inspector",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84818,11 +85191,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.ipv6",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84840,11 +85214,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.require_module",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84862,11 +85237,12 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.tls",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84889,11 +85265,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.tls_alpn",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84916,11 +85293,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.tls_ocsp",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84943,11 +85321,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.tls_sni",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84970,11 +85349,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.typescript",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -84997,11 +85377,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.uv",
         "tests": [
           "tests/corpus/8856-process-features.ts",
-          "tests/corpus/8856-process-features-typed/main.ts"
+          "tests/corpus/8856-process-features-typed/main.ts",
+          "tests/corpus/process-feature-flags.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85024,10 +85405,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:process.mainModule",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/diagnostics/compat-absent-node-values.ts",
+          "packages/compiler/test/node-value-reads.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -85045,11 +85427,13 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.noDeprecation",
         "tests": [
           "tests/corpus/5188-util-deprecate-flags.cjs",
           "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/fixtures/node-types/util-callables.ts"
         ]
       },
@@ -85068,8 +85452,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.permission",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85086,8 +85473,11 @@
       "anchor": "processpermissionhasscope-reference",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.permission.has",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85109,8 +85499,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.permission.drop",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85127,11 +85520,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.pid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.pid",
         "tests": [
-          "tests/corpus/990-process-basics.ts",
-          "tests/corpus/2314-process-introspection.ts"
+          "tests/corpus/process-pid-ppid.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85149,10 +85541,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.platform",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-platform-arch-version.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85170,10 +85563,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.ppid",
+        "status": "supported",
+        "evidence": "compiler-feature:process.ppid",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/process-pid-ppid.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85191,10 +85584,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.release",
+        "status": "supported",
+        "evidence": "compiler-feature:process.release",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/process-release-object.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85254,8 +85647,11 @@
       "anchor": "processreportwritereportfilename-err",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.process.report.writeReport",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -85398,8 +85794,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.excludeEnv",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85442,11 +85841,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.sourceMapsEnabled",
         "tests": [
           "tests/corpus/compat-js-value-reads.mjs",
-          "tests/corpus/compat-js-value-reads-require.cjs"
+          "tests/corpus/compat-js-value-reads-require.cjs",
+          "tests/corpus/process-debug-port.cjs",
+          "tests/corpus/process-source-maps-flag.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85491,10 +85892,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.fd",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-stdio-descriptors.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85539,10 +85941,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.fd",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-stdio-descriptors.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85605,10 +86008,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.fd",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-stdio-descriptors.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85626,11 +86030,13 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.throwDeprecation",
         "tests": [
           "tests/corpus/5188-util-deprecate-flags.cjs",
           "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/fixtures/node-types/util-callables.ts"
         ]
       },
@@ -85649,10 +86055,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.process.title",
+        "status": "supported",
+        "evidence": "compiler-feature:process.title",
         "tests": [
-          "tests/corpus/5211-process-identity.ts"
+          "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/process-title-value-forms.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85670,8 +86077,15 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.traceDeprecation",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85688,8 +86102,15 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.traceProcessWarnings",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85706,10 +86127,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.version",
         "tests": [
-          "tests/corpus/compat-process-basics.ts"
+          "tests/corpus/compat-process-basics.ts",
+          "tests/corpus/process-platform-arch-version.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -85727,10 +86149,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:process.versions",
         "tests": [
-          "tests/corpus/process-versions-storage.ts"
+          "tests/corpus/process-versions-storage.ts",
+          "tests/corpus/process-versions-object.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -106194,6 +106617,9 @@
           "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts",
+          "tests/corpus/util-inspect-colors-errors.ts",
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts",
           "tests/corpus/util-inspect-colors-values.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
@@ -107436,7 +107862,10 @@
           "tests/corpus/util-inspect-promise-state.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
-          "tests/corpus/util-inspect-colors-values.ts"
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts",
+          "tests/corpus/util-inspect-colors-errors.ts",
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107473,7 +107902,10 @@
           "tests/corpus/util-inspect-promise-state.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
-          "tests/corpus/util-inspect-colors-values.ts"
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts",
+          "tests/corpus/util-inspect-colors-errors.ts",
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107686,7 +108118,10 @@
           "tests/corpus/util-inspect-regexp-hidden.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
-          "tests/corpus/util-inspect-colors-values.ts"
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts",
+          "tests/corpus/util-inspect-colors-errors.ts",
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107721,7 +108156,10 @@
           "tests/corpus/util-inspect-regexp-hidden.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
-          "tests/corpus/util-inspect-colors-values.ts"
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts",
+          "tests/corpus/util-inspect-colors-errors.ts",
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107749,7 +108187,8 @@
         "tests": [
           "tests/corpus/7524-inspect-custom.ts",
           "tests/corpus/7525-inspect-custom.cjs",
-          "tests/corpus/util-inspect-options.ts"
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-colors-builtins.ts"
         ]
       },
       "anchorSource": "ancestor"

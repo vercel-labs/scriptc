@@ -2713,6 +2713,26 @@ function isWorkerHandleSymbol(
   );
 }
 
+/** The process IPC channel (`process.channel`): an owned runtime handle
+ * whose live object is a checked-dynamic value, so a binding or parameter
+ * carrying one stays DYN and its ref/unref dispatch dynamically. The
+ * fallback declares it globally as ProcessChannel; @types/node declares
+ * the same shape as Channel in "child_process". */
+function isProcessChannelSymbol(
+  symbol: ts.Symbol | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (name !== "Channel" && name !== "ProcessChannel") return false;
+  return symbol.declarations.some((d) => {
+    if (!ts.isInterfaceDeclaration(d) && !ts.isClassDeclaration(d)) return false;
+    const sf = ts.getSourceFileOfNode(d);
+    if (!ctx.isStdlibFile(sf)) return false;
+    return name === "ProcessChannel" || isDeclaredInAmbientModule(d, "child_process");
+  });
+}
+
 /** The `{ message: any }` object type (or its union with undefined) that
  * worker_threads declares as receiveMessageOnPort's result. */
 /** A union of dns lookup option bags with numbers and nullish values that
@@ -5278,6 +5298,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   )
     return DYN;
   if (isWorkerHandleSymbol(psym, ctx)) return DYN;
+  if (isProcessChannelSymbol(psym, ctx)) return DYN;
   // fs/promises.FileHandle: an owned descriptor object. Module provenance
   // distinguishes it from user interfaces with the same name; both the
   // fallback and @types/node declare it in "fs/promises".

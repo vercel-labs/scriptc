@@ -2187,6 +2187,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               stmts: [
                 { kind: "varDecl", localId: tmp.id, init: value, loc },
                 { kind: "assign", localId: g.id, value: result, loc },
+                // A conditional whole export that selected this table answers
+                // Node's shared exports object, so its slots follow the write.
+                ...lowerer.cjsConditionalExportMirrorStmts(g.id, result, expr.right, loc),
               ],
               result,
               type: value.type,

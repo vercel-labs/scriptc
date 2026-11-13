@@ -103,6 +103,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
   "process.exit",
+  // process.exit(expr) and the exitCode writes convert the value with
+  // Node's setter rules: the non-numeric-string TypeError, the Symbol and
+  // BigInt conversion TypeErrors, and the integer ERR_OUT_OF_RANGE.
+  "process.exitDyn",
   "text.encodeInto",
   "buffer.isAscii",
   "buffer.isUtf8",
@@ -347,8 +351,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onSignal",
   "process.offSignal",
   "process.prependSignal",
+  "process.onBeforeExit",
+  "process.offBeforeExit",
+  "process.prependBeforeExit",
   "process.onUnhandledRejection",
   "process.onRejectionHandled",
+  "process.onMultipleResolves",
+  "process.offMultipleResolves",
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
@@ -612,16 +621,32 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // The dynamic pid/signal forms: Node's loose pid guard, unknown-signal
+  // TypeError, and the ToNumber/ToString conversion errors.
+  "process.killSigDyn",
+  "process.killDyn",
   // A replaced process.stdout/stderr.write runs JavaScript: what it throws
   // propagates from the call.
   "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
+  "process.setExitCodeDyn",
+  "process.setExitCodeDynTracked",
+  // process.env's proxy ToStrings dynamic keys and values, so a Symbol or a
+  // toString that throws throws from the read/write.
+  "process.envGetDyn",
+  "process.envSetDyn",
+  "process.envSetKeyDyn",
+  "process.envUnsetDyn",
+  // process.title = expr ToStrings (a Symbol throws).
+  "process.setTitleDyn",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",
+  // The dynamic prev path runs the same validation on any value.
+  "process.cpuDynPrepare",
   // An unreadable resident set throws Node's uv_resident_set_memory
   // error; the Windows credential members throw the missing-member
   // TypeError.
@@ -630,6 +655,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.geteuid",
   "process.getegid",
   "process.getgroups",
+  "process.setuid",
+  "process.seteuid",
+  "process.setgid",
+  "process.setegid",
+  "process.setgroups",
+  "process.initgroups",
+  "process.setUncaughtCapture",
+  "process.setDebugPort",
+  "process.setSourceMapsEnabled",
+  "process.ref",
+  "process.unref",
   // perf_hooks user timing: Node's argument validation, the unset-mark
   // SyntaxError DOMException, and the detail's DataCloneError.
   "perf.mark",
@@ -1015,8 +1051,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",
+  "process.chdirDyn",
+  // A worker's scr_process_abort raises Node's catchable
+  // ERR_WORKER_UNSUPPORTED_OPERATION, which the program may catch; the main
+  // thread settles stdout and raises SIGABRT, so the check after the call
+  // never runs there.
+  "process.abort",
+  // The umask argument validators: parseFileMode's ERR_INVALID_ARG_VALUE for
+  // a non-octal string and the ERR_INVALID_ARG_TYPE for other types, then
+  // validateUint32's integer/range RangeErrors.
+  "process.umaskDyn",
+  "process.umaskChk",
   "os.getPriority",
   "os.setPriority",
+  "os.getPriorityChk",
+  "os.setPriorityChk",
   // Node's SystemError when the passwd entry of the effective uid answers
   // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
   // take their own lookup when the record's begin call did not run.

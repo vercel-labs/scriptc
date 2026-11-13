@@ -1880,7 +1880,21 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    // A conditional whole export answers below through a slot; the receiver
+    // check comes first so that path cannot invoke a receiver-dependent
+    // export with no `this`.
     refuseModuleMemberThis(lowerer, expr, nameId);
+    // A module whose whole export is chosen at run time among static export
+    // tables (react/index.js): the callee is that module's own slot, which
+    // its executed branch filled (conditionalExportMemberCall).
+    const conditional = conditionalExportMemberCall(
+      lowerer,
+      expr,
+      expr.expression.expression,
+      nameId.text,
+      loc,
+    );
+    if (conditional) return conditional;
     const generic = lowerer.genericFnOf(nameId);
     if (generic) return lowerer.lowerGenericCall(expr, generic);
     const sig = lowerer.fnSigOf(nameId);
@@ -2730,6 +2744,29 @@ function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
  * calls). tsc guarantees the callee is callable; anything that lowers to
  * a non-func IR type was already rejected while lowering the callee.
  * HYBRID (function-with-properties) values call through their %call slot. */
+/** The call of a member of a module whose whole export is chosen at run time
+ * among static export tables (`react/index.js`'s `module.exports = require(…)`
+ * in an if/else): the callee is the slot the executed branch filled, which the
+ * member read takes too (lowerPropertyAccessExpr). The checker's synthesized
+ * member symbols are shared between modules that re-export the same tables, so
+ * the module decides. Null for every other member call. */
+function conditionalExportMemberCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  recv: ts.Expression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const dep = ts.isIdentifier(recv)
+    ? lowerer.cjsModuleBindingDepOf(recv)
+    : lowerer.cjsModuleRefDepOf(recv);
+  const slot = dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, member);
+  if (slot === null) return null;
+  let callee: IrExpr = { kind: "varRef", localId: slot.id, type: slot.type, loc };
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
+  return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
 /** A call of a namespace member (`N.f(1)`, `ns.f(1)`): the member resolves
  * like a bare identifier. `receiverEvaluated` says the caller evaluates the
  * receiver itself before the call (`(await import("./m")).f(1)`): the
@@ -2751,6 +2788,17 @@ function lowerNsMemberCall(
   // members answer null there and resolve below.
   const facadeServed = lowerer.lowerNamespaceBuiltinCall(expr, access);
   if (facadeServed) return facadeServed;
+  // A member of a module whose whole export is chosen at run time among
+  // static export tables (react/index.js): the callee is that module's own
+  // slot, which its executed branch filled (conditionalExportMemberCall).
+  const conditional = conditionalExportMemberCall(
+    lowerer,
+    expr,
+    access.expression,
+    nsMember.text,
+    loc,
+  );
+  if (conditional) return conditional;
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   refuseModuleMemberThis(lowerer, expr, nsMember);

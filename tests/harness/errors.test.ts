@@ -3248,6 +3248,43 @@ exports.plain = function (x) { return x * 2; };
     );
   });
 
+  test("a conditional module alias used other than as a member read keeps its named fence", async () => {
+    // `l` holds whichever table's exports object the branch required. A call
+    // `l.setMode()` passes that object as `this`, which the alias's member
+    // slots cannot provide, so the variable keeps its ordinary treatment and
+    // refuses where it runs instead of reading `l` as undefined.
+    const r = await compileAndRun(
+      "conditional-alias-member-call",
+      `'use strict';
+var l;
+if (process.env.CJS_ALIAS_CALL_MODE === 'one') {
+  l = require('./one.cjs');
+} else {
+  l = require('./two.cjs');
+}
+console.log(l.mode);
+l.setMode('late');
+console.log(l.mode);
+`,
+      "cjs",
+      {
+        "one.cjs": `'use strict';
+exports.mode = 'one';
+exports.setMode = function (mode) { exports.mode = mode; };
+`,
+        "two.cjs": `'use strict';
+exports.mode = 'two';
+exports.setMode = function (mode) { exports.mode = mode; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: the exports object of '\.\/two\.cjs' as a value .* is not supported yet \[SC1090 at .*conditional-alias-member-call\.cjs:6\]\n$/,
+    );
+  });
+
   test("a namespace import's export that passes this on with apply or call compiles", async () => {
     // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
     // receiver to a function that `dual` returns, which reads it only to

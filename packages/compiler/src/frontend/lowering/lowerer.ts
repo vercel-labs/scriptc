@@ -3723,6 +3723,10 @@ export class Lowerer {
   readonly cjsConditionalAliases = new Map<ts.Symbol, CjsConditionalAlias | null>();
   /** The member slots of those aliases, registered by collectGlobals. */
   readonly cjsConditionalAliasGlobals = new Map<ts.Symbol, Map<string, IrGlobal>>();
+  /** The selection global of each of those aliases: the write that ran
+   * stores the index (+ 1) of the table it required, so a member that table
+   * assigns later forwards to the alias slots (cjsConditionalExportMirrors). */
+  readonly cjsConditionalAliasSelectGlobals = new Map<ts.Symbol, IrGlobal>();
   /** Export member slots of a module whose whole export is chosen at run
    * time between static tables (react/index.js), by module. The checker's
    * synthesized property symbols are shared between modules that re-export
@@ -6184,6 +6188,7 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsConditionalAliases",
     "cjsConditionalAliasGlobals",
+    "cjsConditionalAliasSelectGlobals",
     "cjsConditionalWholeExportGlobals",
     "cjsConditionalWholeExportSelectGlobals",
     "cjsConditionalExportMirrors",

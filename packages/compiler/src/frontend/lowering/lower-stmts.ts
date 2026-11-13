@@ -10469,8 +10469,9 @@ function lowerCjsExportStatement(
 /** `l = require("./x")` of a module-local variable whose value is chosen at
  * run time among static export tables (react-dom/server.node.js): the
  * require runs the table's module, then each member slot takes that table's
- * value — exactly what Node's `l` holds after this statement, so the member
- * reads the file performs later answer the executed branch. */
+ * value — what Node's `l` holds after this statement, so the member reads the
+ * file performs later answer the executed branch. A member the table assigns
+ * afterwards forwards to the slots (cjsConditionalExportMirrors). */
 function lowerCjsConditionalAliasWrite(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -10493,6 +10494,14 @@ function lowerCjsConditionalAliasWrite(
       value: lowerer.coerceInto(expr, value, g.type),
       loc,
     });
+  }
+  // Record which table was taken, after the copies: `l` is that table's own
+  // exports object, so a member the table assigns later forwards to these
+  // slots while they are its own.
+  const select = lowerer.cjsConditionalAliasSelectGlobals.get(alias.symbol);
+  if (select !== undefined) {
+    const index = alias.writes.indexOf(write);
+    body.push({ kind: "assign", localId: select.id, value: numLit(index + 1, loc), loc });
   }
   return { kind: "block", body, loc };
 }

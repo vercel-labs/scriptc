@@ -1954,26 +1954,49 @@ function collectCjsConditionalExportMirrors(lowerer: Lowerer, parts: FileParts[]
     targets.forEach((target, index) => {
       for (const name of target.names) {
         const slot = lowerer.cjsConditionalWholeExportSlotOf(sf, name);
-        if (slot === null) continue;
-        const symbol = lowerer.cjsModuleExportSymbol(target.req.dep, name);
-        if (symbol === undefined) continue;
-        const g = lowerer.globalsBySymbol.get(symbol);
-        if (g === undefined || g.id === slot.id) continue;
-        const edges = lowerer.cjsConditionalExportMirrors.get(g.id) ?? [];
-        if (
-          edges.some(
-            (edge) =>
-              edge.select === select.id &&
-              edge.selectValue === index + 1 &&
-              edge.slot.id === slot.id,
-          )
-        )
-          continue;
-        edges.push({ select: select.id, selectValue: index + 1, slot });
-        lowerer.cjsConditionalExportMirrors.set(g.id, edges);
+        if (slot !== null)
+          addCjsConditionalExportMirror(lowerer, target.req.dep, name, select, index + 1, slot);
       }
     });
   }
+  // A conditional module alias (`l = require("./a")` in one arm, `l =
+  // require("./b")` in the other) holds the table's own exports object in
+  // Node, so a member the table assigns after the write shows through `l`.
+  for (const [symbol, slots] of lowerer.cjsConditionalAliasGlobals) {
+    const alias = cjsConditionalAliasOf(lowerer, symbol);
+    const select = lowerer.cjsConditionalAliasSelectGlobals.get(symbol);
+    if (alias === null || select === undefined) continue;
+    alias.writes.forEach((write, index) => {
+      for (const [name, slot] of slots)
+        addCjsConditionalExportMirror(lowerer, write.req.dep, name, select, index + 1, slot);
+    });
+  }
+}
+
+/** Forward writes of table `dep`'s export member `name` into `slot` while
+ * `select` holds `selectValue`. */
+function addCjsConditionalExportMirror(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  name: string,
+  select: IrGlobal,
+  selectValue: number,
+  slot: IrGlobal,
+): void {
+  const symbol = lowerer.cjsModuleExportSymbol(dep, name);
+  if (symbol === undefined) return;
+  const g = lowerer.globalsBySymbol.get(symbol);
+  if (g === undefined || g.id === slot.id) return;
+  const edges = lowerer.cjsConditionalExportMirrors.get(g.id) ?? [];
+  if (
+    edges.some(
+      (edge) =>
+        edge.select === select.id && edge.selectValue === selectValue && edge.slot.id === slot.id,
+    )
+  )
+    return;
+  edges.push({ select: select.id, selectValue, slot });
+  lowerer.cjsConditionalExportMirrors.set(g.id, edges);
 }
 
 /** How many places in the file write the export member `name`: member
@@ -2174,8 +2197,20 @@ function registerCjsConditionalAliasGlobals(
       }
       // A partial registration would leave reads of the missing member
       // unresolvable; keep the whole alias on its ordinary treatment.
-      if (complete && slots.size === alias.names.length)
+      if (complete && slots.size === alias.names.length) {
         lowerer.cjsConditionalAliasGlobals.set(symbol, slots);
+        // The write that ran stores the 1-based index of the table it
+        // required; 0 means no write has run. A member that table assigns
+        // later forwards into the slots while they are its own.
+        const select: IrGlobal = {
+          id: `%g.${tag}%alias.${decl.name.text}%select`,
+          name: `${decl.name.text}%select`,
+          type: F64,
+          mutable: true,
+        };
+        lowerer.cjsConditionalAliasSelectGlobals.set(symbol, select);
+        lowerer.globalsList.push(select);
+      }
     }
   }
 }

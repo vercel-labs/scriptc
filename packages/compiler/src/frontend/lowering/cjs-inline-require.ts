@@ -699,10 +699,11 @@ function cjsWholeExportMemberNamesOf(lowerer: Lowerer, dep: ts.SourceFile): stri
  * the writes cover every path through one top-level if/else chain. Each
  * member then has one slot the executed write fills from the table it
  * required, and a `l.member` read after the write answers that slot — the
- * value Node's `l.member` answers. A read the executed path reaches before
- * the write sees Node's uninitialized `undefined`, and `l.member` throws its
- * TypeError; the slot model has no uninitialized state, so such a read
- * throws that TypeError itself. */
+ * value Node's `l.member` answers. The slot also follows the table's later
+ * writes of that member, since `l` is the table's own exports object. A read
+ * the executed path reaches before the write sees Node's uninitialized
+ * `undefined`, and `l.member` throws its TypeError; the slot model has no
+ * uninitialized state, so such a read throws that TypeError itself. */
 export interface CjsConditionalAlias {
   symbol: ts.Symbol;
   decl: ts.VariableDeclaration;
@@ -740,6 +741,7 @@ function computeConditionalAlias(lowerer: Lowerer, symbol: ts.Symbol): CjsCondit
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   if (!ts.sourceTextIncludes(sf, "require")) return null;
   const writes: { assign: ts.BinaryExpression; req: InlineRequire }[] = [];
+  const readNames = new Set<string>();
   let conforms = true;
   ts.walkPreorder(sf, (node) => {
     if (!conforms) return "stop";
@@ -749,9 +751,18 @@ function computeConditionalAlias(lowerer: Lowerer, symbol: ts.Symbol): CjsCondit
     if (symbolOfIdentifierValue(lowerer, node) !== symbol) return undefined;
     const target = writeTargetOf(node);
     if (target === null) {
-      // Reads of the variable are `l.member` — the alias slots answer them —
-      // and must run at the module's own top level: one inside a function may
-      // run before the branch did.
+      // Reads of the variable are `l.member` values, which the alias slots
+      // answer. The variable itself has no storage, so any other use
+      // (`typeof l`, `l[k]`, a call `l.f()` that passes `l` as its receiver,
+      // a member write) keeps the ordinary treatment.
+      const member = conditionalAliasMemberValueRead(node);
+      if (member === null) {
+        conforms = false;
+        return "stop";
+      }
+      readNames.add(member);
+      // Reads must run at the module's own top level: one inside a function
+      // may run before the branch did.
       let inFunction = false;
       for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
         if (ts.isSourceFile(p)) break;
@@ -801,7 +812,33 @@ function computeConditionalAlias(lowerer: Lowerer, symbol: ts.Symbol): CjsCondit
     const have = new Set(names);
     if (first.some((name) => !have.has(name))) return null;
   }
+  // A member no table exports reads undefined in Node; it has no slot.
+  for (const name of readNames) if (!first.includes(name)) return null;
   return { symbol, decl, writes, names: first, branchIndex };
+}
+
+/** The member name when `ident` is the object of a plain `ident.member` read
+ * whose value is all the program uses: not written, deleted, called (a call
+ * passes the object as `this`), or constructed. Null for every other use. */
+function conditionalAliasMemberValueRead(ident: ts.Identifier): string | null {
+  const access = ident.parent;
+  if (
+    !ts.isPropertyAccessExpression(access) ||
+    access.expression !== ident ||
+    access.questionDotToken !== undefined ||
+    !ts.isIdentifier(access.name)
+  )
+    return null;
+  if (writeTargetOf(access) !== null) return null;
+  // `(l.f)()` still passes `l` as the receiver.
+  let outer: ts.Node = access;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const user = outer.parent;
+  if (ts.isDeleteExpression(user)) return null;
+  if ((ts.isCallExpression(user) || ts.isNewExpression(user)) && user.expression === outer)
+    return null;
+  if (ts.isTaggedTemplateExpression(user) && user.tag === outer) return null;
+  return access.name.text;
 }
 
 /** Whether the alias's writes leave it assigned on every path: each is a

@@ -156,7 +156,6 @@ import {
 import {
   ADOPTED_OPTIONS,
   type AdmittedOpinion,
-  type MethodNameWrites,
   isJsSourceFileName,
   jsOpinion,
   jsTscCodeTriage,
@@ -2409,7 +2408,6 @@ function jsOpinionOf7(
   d: ts.Diagnostic,
   projectCheckJs: boolean,
   syntacticOf: (sf: ts.SourceFile) => readonly ts.Diagnostic[],
-  methodNameWrites: MethodNameWrites,
 ): Opinion | null {
   if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return null;
   const opinion = jsOpinion(d.code);
@@ -2433,7 +2431,7 @@ function jsOpinionOf7(
   if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
   if (nodeFree) return opinion;
   const node = diagnosticNode7(sf, pos, end);
-  if (opinion.site !== undefined && !opinion.site(node, d, p, methodNameWrites)) return null;
+  if (opinion.site !== undefined && !opinion.site(node, d, p)) return null;
   if (opinion.view === "island" && isStrictCode(node)) return null;
   return opinion;
 }
@@ -8176,10 +8174,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // project world, the JSX text). The lowering asks opinionAt about one of
   // them; a view's lowering path is gated on the record, never on syntax.
   const admittedOpinions = new Map<string, AdmittedOpinion>();
-  // The member names some implementation file writes, per program the gate
-  // consults (tsc-codes.ts, methodNameWritten): owned by this pass, so the
-  // compiled compiler keeps no cache keyed by a weak reference.
-  const methodNameWrites: MethodNameWrites = new Map();
   const recordAdmittedOpinion = (site: AdmittedOpinion): void => {
     admittedOpinions.set(`${site.file}\0${site.pos}\0${site.end}\0${site.code}`, site);
   };
@@ -8350,7 +8344,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
         );
         return false;
       }
-      const opinion = jsOpinionOf7(p, d, projectCheckJs, syntacticOf, methodNameWrites);
+      const opinion = jsOpinionOf7(p, d, projectCheckJs, syntacticOf);
       if (opinion !== null) {
         admitted.push({ d, opinion });
         return false;

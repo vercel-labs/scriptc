@@ -291,6 +291,12 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.createReadStreamSignal",
   "fs.createWriteStreamSignal",
   "http.clientSignal",
+  // The net entries that read a signal option at run time (the socket and
+  // server close on abort through events.addAbortListener).
+  "net.connectDyn",
+  "net.connectDynCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "http.requestDyn",
   "http.requestDynCb",
   "https.requestDyn",
@@ -1755,6 +1761,22 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
+  /** dns.Resolver and the resolve/reverse/setServers forms (the stub
+   * resolver): scr_dns_resolve.c over the dgram unit, so programs that
+   * only look up names keep their exact link line. */
+  dnsResolve: rule({
+    fns: [
+      "dns.resolveChk",
+      "dns.resolvePromise",
+      "dns.resolveRrChk",
+      "dns.resolveRrPromise",
+      "dns.resolverNew",
+      "dns.resolverIs",
+      "dns.setServers",
+      "dns.promisesSetServers",
+      "dns.promisesGetServers",
+    ],
+  }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -2653,6 +2675,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgramDyn: false,
     textCodecDyn: false,
     dnsPromises: false,
+    dnsResolve: false,
     dynAsync: false,
     promiseGeneric: false,
     dynBuiltinClass: false,

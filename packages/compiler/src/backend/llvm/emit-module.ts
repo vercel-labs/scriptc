@@ -652,6 +652,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesNet = runtimeFeatures.net;
   const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
+  // The stub resolver (dns.Resolver, resolve*, reverse, setServers): its
+  // install registers the loop's share and the Resolver handle class, and
+  // native/executable.ts links scr_dns_resolve.c by the same predicate.
+  const usesDnsResolve = runtimeFeatures.dnsResolve;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
   // Fetch-referencing programs register native fetch before main.
@@ -741,6 +745,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_net_dyn_install()`);
   }
   if (usesDgram) emitter.declare(`declare void @scr_dgram_install()`);
+  if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
@@ -1548,6 +1553,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
+    ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,

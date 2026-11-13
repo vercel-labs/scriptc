@@ -3,7 +3,6 @@
 // for marking the rows a verified absence instead of an unverified
 // registry gap.
 import { AsyncResource } from "node:async_hooks";
-import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { findPackageJSON, register } from "node:module";
 import { Readable, Writable } from "node:stream";
@@ -27,10 +26,6 @@ const resource = new AsyncResource("Probe");
 console.log(resource.runInAsyncScope(() => 1), resource.asyncId());
 const emitter = new EventEmitterAsyncResource({ name: "Probe" });
 emitter.emit("x");
-
-// dns: a resolver instance.
-const resolver = new Resolver();
-resolver.cancel();
 
 // process: the worker events and the execve entry point.
 process.on("worker", () => {});

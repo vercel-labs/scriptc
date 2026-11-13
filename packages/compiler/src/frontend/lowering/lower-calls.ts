@@ -281,6 +281,7 @@ import {
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
+  lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
   EMITTER_API_MEMBERS,
@@ -2318,6 +2319,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (fileHandleDispose) return fileHandleDispose;
     const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
     if (streamDispose) return streamDispose;
+    const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);
+    if (netServerDispose) return netServerDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");

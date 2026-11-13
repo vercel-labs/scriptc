@@ -2271,11 +2271,7 @@ static ScrDyn *ws_readable_from(ScrDyn *iterable) {
       scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
-    /* scr_inspect.c's strong definition renders the value; a program that
-     * links scr_lib.c without it gets scr_lib.c's weak fallback, which
-     * answers NULL — keep the plain String() form then. */
     ScrStr *text = scr_insp_dyn_format_s(iterable, 0);
-    if (!text) text = scr_dyn_string_coerce_js(iterable);
     if (!text) return NULL;
     size_t n = text->len + 17;
     char *buf = malloc(n);

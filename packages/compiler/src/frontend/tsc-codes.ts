@@ -105,23 +105,12 @@ export const ADOPTED_OPTIONS = [
  */
 export type OpinionView = "checker" | "widen" | "throw" | "island";
 
-/** The member names some implementation file writes, per program: the cache
- * the preflight pass owns for `methodNameWritten`. */
-export type MethodNameWrites = Map<ts.Program, Map<string, boolean>>;
-
 export interface Opinion {
   readonly view: OpinionView;
   /** The row admits only the constructs this guard accepts at the
    * diagnostic's node. The program is the one the diagnostic came from, for
-   * a guard that asks the checker about the node's types. `writes` is the
-   * preflight pass's cache of the member names some implementation file
-   * writes, keyed by the program it was taken from. */
-  readonly site?: (
-    node: ts.Node,
-    diagnostic: ts.Diagnostic,
-    program: ts.Program,
-    writes?: MethodNameWrites,
-  ) => boolean;
+   * a guard that asks the checker about the node's types. */
+  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean;
   /** Keep the diagnostic in checked JavaScript: the project asked tsc for
    * this opinion. */
   readonly checkedJs?: "enforce";
@@ -423,16 +412,8 @@ const memberWriteTarget = (node: ts.Node): boolean => {
  * `Reflect.set(o, name, v)`), or an object literal argument with a member
  * of that name (`Object.assign(C.prototype, { name() {} })`). A write
  * through a computed key the source does not spell is not seen. */
-const methodNameWritten = (
-  program: ts.Program,
-  name: string,
-  writes?: MethodNameWrites,
-): boolean => {
-  let names = writes?.get(program);
-  if (names === undefined) {
-    names = new Map();
-    writes?.set(program, names);
-  }
+const methodNameWritten = (program: ts.Program, name: string): boolean => {
+  const names = program.analysis.methodNameWrites;
   const known = names.get(name);
   if (known !== undefined) return known;
   let written = false;
@@ -480,12 +461,7 @@ const methodNameWritten = (
  * answer any value, and so can a reassignable binding, a property holding
  * the function, or a class method the program writes, so their calls are
  * not. */
-const undefinedAtRunTime = (
-  node: ts.Node,
-  program: ts.Program,
-  writes?: MethodNameWrites,
-  depth = 0,
-): boolean => {
+const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): boolean => {
   if (depth > 8) return false;
   const checker = program.getTypeChecker();
   let expr = node;
@@ -497,7 +473,7 @@ const undefinedAtRunTime = (
       ts.isVariableDeclaration(decl) &&
       decl.initializer !== undefined &&
       constInitializerOf(decl.initializer) &&
-      undefinedAtRunTime(decl.initializer, program, writes, depth + 1)
+      undefinedAtRunTime(decl.initializer, program, depth + 1)
     );
   }
   if (!ts.isCallExpression(expr) || expr.questionDotToken) return false;
@@ -520,7 +496,7 @@ const undefinedAtRunTime = (
     const name = decl.name;
     return (
       (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isPrivateIdentifier(name)) &&
-      !methodNameWritten(program, name.text, writes)
+      !methodNameWritten(program, name.text)
     );
   }
   if (!ts.isIdentifier(callee) || !ts.isVariableDeclaration(named)) return false;
@@ -533,12 +509,8 @@ const undefinedAtRunTime = (
  * discarded negation is never read, and an operand that is always
  * `undefined` tests false. Any other void-typed operand keeps the triage
  * row, because the lowering has no runtime value for it. */
-const voidTruthinessKnown = (
-  node: ts.Node,
-  _d: ts.Diagnostic,
-  program: ts.Program,
-  writes?: MethodNameWrites,
-): boolean => discardedVoidNegation(node) || undefinedAtRunTime(node, program, writes);
+const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
+  discardedVoidNegation(node) || undefinedAtRunTime(node, program);
 
 /* ---- family reasons ---- */
 

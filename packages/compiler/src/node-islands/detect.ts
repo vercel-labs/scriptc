@@ -1451,7 +1451,7 @@ class ModuleScanner {
   private visitIdentifier(node: ts.Identifier): void {
     const name = node.text;
     this.collectGlobalRead(node);
-    if (name !== "WeakRef" && name !== "FinalizationRegistry") return;
+    if (name !== "FinalizationRegistry") return;
     if (this.declared.has(name)) return;
     const parent = node.parent;
     if (parent === undefined) return;

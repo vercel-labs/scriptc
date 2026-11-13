@@ -248,13 +248,18 @@ declare module "net" {
      * callback fires once the server accepts. */
     listen(handle: BoundSocket, callback?: () => void): Server;
     /* The explicit-interface bind: host is an IP literal (absent or
-     * undefined = the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY
-     * and reusePort requests kernel connection distribution where Node
-     * supports it. */
+     * undefined = the host-less dual-stack any); path names a Unix socket
+     * (a leading '\0' is the abstract namespace) and is mutually exclusive
+     * with the port form; ipv6Only sets IPV6_V6ONLY and reusePort requests
+     * kernel connection distribution where Node supports it. Every field
+     * is optional, as in Node's net.ListenOptions: the runtime answers
+     * ERR_INVALID_ARG_VALUE for an option bag with neither port nor path. */
     listen(
       options: {
-        port: number | undefined;
+        port?: number | string | undefined;
+        path?: string | undefined;
         host?: string | undefined;
+        backlog?: number;
         ipv6Only?: boolean;
         reusePort?: boolean;
       },

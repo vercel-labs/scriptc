@@ -576,6 +576,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.createMac",
+      "kind": "node-builtin",
+      "name": "crypto.createMac",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.createPrivateKey",
       "kind": "node-builtin",
       "name": "crypto.createPrivateKey",
@@ -773,6 +779,12 @@
       "id": "node-builtin.crypto.scryptSync",
       "kind": "node-builtin",
       "name": "crypto.scryptSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.secureHeapUsed",
+      "kind": "node-builtin",
+      "name": "crypto.secureHeapUsed",
       "status": "static"
     },
     {
@@ -3168,6 +3180,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isArgumentsObject",
+      "kind": "node-builtin",
+      "name": "util/types.isArgumentsObject",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isArrayBuffer",
       "kind": "node-builtin",
       "name": "util/types.isArrayBuffer",
@@ -3303,6 +3321,12 @@
       "id": "node-builtin.util.types.isMapIterator",
       "kind": "node-builtin",
       "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isModuleNamespaceObject",
+      "kind": "node-builtin",
+      "name": "util/types.isModuleNamespaceObject",
       "status": "static"
     },
     {

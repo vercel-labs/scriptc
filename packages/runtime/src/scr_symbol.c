@@ -203,6 +203,8 @@ ScrDyn *scr_dyn_new_symbol(ScrSym *value) {
   if (value->reg_box) return scr_dyn_retain(value->reg_box);
   if (value->box) return scr_dyn_retain(value->box);
   ScrDyn *box = scr_dyn_symbol_ref(scr_sym_retain(value), scr_sym_release_box, scr_sym_to_string, scr_sym_desc);
+  /* A registry symbol is permanent, so it is not a weak target. */
+  box->v.symbol.registered = value->reg_key != NULL;
   value->box = box;
   /* A registered symbol lives until its thread exits, and so does its box:
    * the registry keeps a reference (dropped by scr_sym_registry_cleanup),

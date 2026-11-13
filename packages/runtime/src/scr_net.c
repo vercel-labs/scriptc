@@ -3860,25 +3860,34 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
     if (last->kind == SCR_DYN_FUNC) cb = scr_dyn_listener_closure0(last);
   }
   const ScrDyn *opts = NULL;
+  ScrDyn *made = NULL; /* a checked value's materialized bag (+1) */
   const ScrDyn *port = NULL;
   const ScrDyn *host = NULL;
   const ScrDyn *path = NULL;
   /* normalizeArgs: `typeof arg0 === "object" && arg0 !== null` is the
    * options bag — a plain object, an array, a view, a promise or a native
    * handle all answer "object", and only a plain object carries port, host
-   * and path. A pipe-name string is the path, everything else is the port
-   * (with a string second argument as the host). connect() and
-   * connect(undefined) reach the same missing-argument error, so an absent
-   * argument is its undefined value. */
+   * and path. A named typed record crosses as a capsule, whose properties
+   * only its materialized view carries: the source declared a record, so
+   * the ladder reads that view and its rendering has the fields. A
+   * pipe-name string is the path, everything else is the port (with a
+   * string second argument as the host). connect() and connect(undefined)
+   * reach the same missing-argument error, so an absent argument is its
+   * undefined value. */
   bool opts_keys = false;
   switch (a0->kind) {
   case SCR_DYN_OBJ:
     opts = a0;
     opts_keys = true;
     break;
+  case SCR_DYN_TYPED_REF:
+    made = scr_dyn_typed_ref_materialize(a0);
+    if (scr_exc_pending()) goto fail; /* an unreadable record: its own error wins */
+    opts = made;
+    opts_keys = true;
+    break;
   case SCR_DYN_ARR:
   case SCR_DYN_BYTES:
-  case SCR_DYN_TYPED_REF:
   case SCR_DYN_PROMISE:
   case SCR_DYN_PROXY:
   case SCR_DYN_HANDLE:
@@ -4007,6 +4016,7 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
     if (timeout_ms > 0) ps->timeout_ms = timeout_ms;
     if (signal != NULL) scr_net_sock_arm_abort(ps, signal, add_abort);
     if (cb != NULL) scr_net_ls_add(&ps->conn_ls, cb, NULL, true);
+    scr_dyn_release(made);
     return ps;
   }
 
@@ -4151,9 +4161,11 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
   scr_net_sock_dial_peer(s);
   scr_net_sock_register(s);
   if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  scr_dyn_release(made);
   return s;
 
 fail:
+  scr_dyn_release(made);
   if (cb != NULL) scr_closure_release(cb);
   return NULL;
 }
@@ -4312,9 +4324,19 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
     bag = a0;
     bag_keys = true;
     break;
+  case SCR_DYN_TYPED_REF:
+    /* a named typed record crosses as a capsule; its materialized view is
+     * the bag Node's `in` and property reads would see */
+    made = scr_dyn_typed_ref_materialize(a0);
+    if (scr_exc_pending()) {
+      scr_dyn_release(made);
+      return;
+    }
+    bag = made;
+    bag_keys = true;
+    break;
   case SCR_DYN_ARR:
   case SCR_DYN_BYTES:
-  case SCR_DYN_TYPED_REF:
   case SCR_DYN_PROMISE:
   case SCR_DYN_PROXY:
   case SCR_DYN_HANDLE:
@@ -5356,23 +5378,42 @@ static int scr_net_keepalive_count(double n) {
  * the coercions above apply. False with the exception pending when a
  * value's ToNumber throws (Node's ~~ runs the same hooks). */
 bool scr_net_sock_set_keepalive_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed*/) {
-  ScrDyn *enable = scr_dyn_obj_get(options, "enable", 6);
-  ScrDyn *delay = scr_dyn_obj_get(options, "initialDelay", 12);
-  ScrDyn *interval = scr_dyn_obj_get(options, "interval", 8);
-  ScrDyn *count = scr_dyn_obj_get(options, "count", 5);
+  /* A named typed record crosses as a capsule: its properties live in the
+   * materialized view, which is what Node's reads would find. */
+  ScrDyn *view =
+      options->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(options) : NULL;
+  if (options->kind == SCR_DYN_TYPED_REF && scr_exc_pending()) {
+    scr_dyn_release(view);
+    return false;
+  }
+  const ScrDyn *bag = view != NULL ? view : options;
+  ScrDyn *enable = scr_dyn_obj_get(bag, "enable", 6);
+  ScrDyn *delay = scr_dyn_obj_get(bag, "initialDelay", 12);
+  ScrDyn *interval = scr_dyn_obj_get(bag, "interval", 8);
+  ScrDyn *count = scr_dyn_obj_get(bag, "count", 5);
   bool on = enable != NULL && scr_dyn_truthy(enable);
   double delay_ms = 0, interval_ms = 0, count_n = 0;
-  if (delay != NULL && !scr_dyn_number_coerce_js(delay, &delay_ms)) return false;
+  if (delay != NULL && !scr_dyn_number_coerce_js(delay, &delay_ms)) {
+    scr_dyn_release(view);
+    return false;
+  }
   bool has_interval = interval != NULL && interval->kind != SCR_DYN_UNDEF;
-  if (has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) return false;
+  if (has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) {
+    scr_dyn_release(view);
+    return false;
+  }
   bool has_count = count != NULL && count->kind != SCR_DYN_UNDEF;
-  if (has_count && !scr_dyn_number_coerce_js(count, &count_n)) return false;
+  if (has_count && !scr_dyn_number_coerce_js(count, &count_n)) {
+    scr_dyn_release(view);
+    return false;
+  }
   /* Node keeps the last values on the socket (undefined interval/count
    * included) and applies the whole set, here and again at afterConnect. */
   s->ka_interval_s = has_interval ? scr_net_keepalive_seconds(interval_ms) : 0;
   s->ka_count = has_count ? scr_net_keepalive_count(count_n) : 0;
   int delay_s = scr_net_keepalive_seconds(delay_ms);
   scr_net_sock_set_keepalive(s, on, (double)delay_s * 1000.0);
+  scr_dyn_release(view);
   return true;
 }
 

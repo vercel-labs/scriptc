@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-realpath-native-callback.cjs"
+ ],
+ "diags": []
+}

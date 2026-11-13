@@ -21,14 +21,18 @@ import {
   type IrLibFn,
   type IrStmt,
   type IrType,
+  NULL_T,
   STRING,
   type SrcLoc,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import { defaultAfterUndefined } from "../optional-arguments.js";
+import { isConstantOperand } from "../expressions/library-callbacks.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -44,6 +48,8 @@ export function lowerFsCallbackCall(
 ): IrExpr {
   if (expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering("filesystem callback call with spread arguments", expr);
+  // fs.realpath.native is Node's same realpath binding under a second name;
+  // the runtime dispatcher folds the two spellings into one op.
   const timestamp = ["utimes", "futimes", "lutimes"].includes(bi.member);
   const args: IrExpr = {
     kind: "dynArrLit",
@@ -166,13 +172,44 @@ export function lowerFsVectorOrTruncateCall(
 ): IrExpr {
   const vector = bi.member !== "ftruncateSync";
   const required = vector ? 2 : 1;
-  if (
-    expr.arguments.nodes.length < required ||
-    expr.arguments.nodes.length > required + 1 ||
-    expr.arguments.nodes.some(ts.isSpreadElement)
-  )
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < required || nodes.length > required + 1 || nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with this argument shape`, expr);
-  const args = [lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64)];
+  // The descriptor, the vector and the position the typed ABI pins down; a
+  // JavaScript call with any of them left untyped runs Node's ladder (the
+  // buffers argument's ArrayBufferView[] check, the empty-vector early
+  // return, the position rule, then the descriptor) over the values.
+  const buffersTyped = (() => {
+    if (!vector) return true;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+    return type?.kind === "array" && type.elem.kind === "bytes" && type.elem.elem === "u8";
+  })();
+  const positionKind = fsArgKind(lowerer, nodes[required]);
+  const typed =
+    fsArgKind(lowerer, nodes[0]) === "number" &&
+    buffersTyped &&
+    (positionKind === "number" || positionKind === "absent");
+  if (!typed && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const dynArgs: IrExpr[] = [lowerer.lowerExprExpecting(nodes[0]!, DYN)];
+    if (nodes[1]) dynArgs.push(lowerer.lowerExprExpecting(nodes[1], DYN));
+    else dynArgs.push(dynUndefinedExpr(loc));
+    if (vector) {
+      const position = nodes[2];
+      dynArgs.push(position ? lowerer.lowerExprExpecting(position, DYN) : dynUndefinedExpr(loc));
+    }
+    return {
+      kind: "libCall",
+      fn: vector
+        ? bi.member === "readvSync"
+          ? "fs.readvSyncDyn"
+          : "fs.writevSyncDyn"
+        : "fs.ftruncateSyncDyn",
+      args: dynArgs,
+      type: vector ? F64 : VOID,
+      loc,
+    };
+  }
+  const args = [lowerer.lowerExprExpecting(nodes[0]!, F64)];
   if (vector) args.push(lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, arrayOf(BYTES_U8)));
   const optional = expr.arguments.nodes[required];
   args.push(
@@ -183,17 +220,56 @@ export function lowerFsVectorOrTruncateCall(
   return { kind: "libCall", fn: fn.fn, args, type: vector ? F64 : VOID, loc };
 }
 
-// Numeric open flags are interpreted symbolically at the call site. The
-// O_* bit values differ between Darwin and Linux, so emit a stable mask
-// and let the target runtime select its own native constants.
-export function lowerFsNumericOpenCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr {
-  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
-    lowerer.noLowering("openSync with numeric flags and this argument shape", expr);
+/** The statically visible kind of an optional fs argument: `absent` for the
+ * call's omitted argument and the spellings Node's `??=` treats as one
+ * (`undefined`, `null`), `number`/`string`/`boolean` when the checker narrows
+ * the value to that scalar, and `dyn` for everything only the runtime sees
+ * (`any`, unions, restored narrowings). Each kind selects the entry point
+ * whose argument types match, so a typed call keeps its fast path and a value
+ * that needs Node's ladder runs it at run time. */
+function fsArgKind(lowerer: Lowerer, node: ts.Expression | null | undefined): FsArgKind {
+  if (!node) return "absent";
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (mapped === null) return "dyn";
+  switch (mapped.kind) {
+    case "f64":
+      return "number";
+    case "string":
+      return "string";
+    case "bool":
+      return "boolean";
+    case "undefinedT":
+    case "nullT":
+    case "void":
+      return "absent";
+    default:
+      return "dyn";
   }
+}
+
+type FsArgKind = "absent" | "number" | "string" | "boolean" | "dyn";
+
+/** Whether the expression's static type can carry `null`. Node's option
+ * reads compare a member with undefined alone, so a null-typed member is
+ * present and its own validation reports it at run time. */
+function canBeNull(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (lowerer.typeOf(node).flags & ts.TypeFlags.Null) !== 0;
+}
+
+/** The value Node's `value ??= def` answers: the argument's own effects, then
+ * the default. Used where the argument's static type is one Node treats as
+ * absent (`mkdirSync(p, true)` and `mkdirSync(p, null)` both mean the
+ * defaults). */
+function defaultAfter(lowerer: Lowerer, node: ts.Expression, dflt: IrExpr): IrExpr {
+  return defaultAfterUndefined(lowerer.lowerExpr(node), dflt);
+}
+
+/** Numeric open flags written as an inline bitwise OR of fs.constants.O_*
+ * members, as the compiler's platform-independent mask. The O_* values differ
+ * between Darwin and Linux, so an inline expression keeps emitting the mask
+ * the target runtime maps to its own constants. Null for any other numeric
+ * expression, whose value is already the target's own bits. */
+function inlineFlagsMask(lowerer: Lowerer, input: ts.Expression): number | null {
   const bits: Record<string, number | undefined> = {
     O_RDONLY: 0,
     O_WRONLY: 1,
@@ -205,8 +281,8 @@ export function lowerFsNumericOpenCall(
     O_TRUNC: 64,
     O_APPEND: 128,
   };
-  const flagsOf = (input: ts.Expression): number | null => {
-    let node = input;
+  const flagsOf = (expr: ts.Expression): number | null => {
+    let node = expr;
     while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)) node = node.expression;
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.BarToken) {
       const left = flagsOf(node.left);
@@ -227,54 +303,183 @@ export function lowerFsNumericOpenCall(
     }
     return null;
   };
-  const mask = flagsOf(expr.arguments.nodes[1]!);
-  if (mask === null) {
-    lowerer.noLowering(
-      "openSync with computed numeric flags",
-      expr.arguments.nodes[1]!,
-      "use an inline bitwise OR of fs.constants.O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_EXCL/O_NOFOLLOW/O_NONBLOCK/O_TRUNC/O_APPEND",
-    );
+  return flagsOf(input);
+}
+
+// fs.openSync(path, flags[, mode]) with Node's flag and mode grammar:
+// stringToFlags reads a string flag name, a number as raw open(2) bits, and
+// an omitted/`null`/`undefined` flags as "r"; parseFileMode reads the
+// creation mode as a number or an octal string and passes 0o666 for an absent
+// one. The path validates first, then the flags, then the mode.
+export function lowerFsOpenSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement))
+    lowerer.noLowering("openSync with this argument shape", expr);
+  const path = lowerFsPath(lowerer, args[0]!);
+  const flagsKind = fsArgKind(lowerer, args[1]);
+  const modeKind = fsArgKind(lowerer, args[2]);
+  const call = (fn: IrLibFn, fnArgs: IrExpr[]): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args: fnArgs,
+    type: F64,
+    loc,
+  });
+  // parseFileMode's default: an absent creation mode is Node's 0o666.
+  const defaultMode = numLit(0o666, loc);
+  const numericMode = (): IrExpr =>
+    args[2] ? lowerBuiltinOptionalDefault(lowerer, args[2], F64, defaultMode, true) : defaultMode;
+  const dynMode = (): IrExpr =>
+    args[2] ? lowerer.lowerExprExpecting(args[2], DYN) : dynUndefinedExpr(loc);
+
+  if (flagsKind !== "number") {
+    if (flagsKind === "dyn" || flagsKind === "boolean") {
+      // stringToFlags' arm is the runtime's to pick: a number is raw bits, a
+      // string is the flag grammar, and anything else throws its TypeError.
+      const flags = lowerer.lowerExprExpecting(args[1]!, DYN);
+      return call("fs.openDynSync", [path, flags, dynMode()]);
+    }
+    // "r" for an omitted, `null` or `undefined` flags value.
+    const defaultFlags = strLit("r", loc);
+    const flags = args[1]
+      ? lowerBuiltinOptionalDefault(lowerer, args[1], STRING, defaultFlags, true)
+      : defaultFlags;
+    if (modeKind === "string") {
+      return call("fs.openStrModeSync", [
+        path,
+        flags,
+        lowerer.lowerExprExpecting(args[2]!, STRING),
+      ]);
+    }
+    if (modeKind === "absent" || modeKind === "number")
+      return call("fs.openSync", [path, flags, numericMode()]);
+    return call("fs.openModeDynSync", [path, flags, dynMode()]);
   }
-  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-  // Node treats an undefined creation mode as an omitted one.
-  const mode = expr.arguments.nodes[2]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
-    : defaultMode;
+  const mask = inlineFlagsMask(lowerer, args[1]!);
+  if (mask !== null) {
+    if (modeKind === "string") {
+      return call("fs.openNumericStrSync", [
+        path,
+        { kind: "numLit", value: mask, type: F64, loc },
+        lowerer.lowerExprExpecting(args[2]!, STRING),
+      ]);
+    }
+    if (modeKind !== "absent" && modeKind !== "number") {
+      return call("fs.openNumericDynSync", [
+        path,
+        { kind: "numLit", value: mask, type: F64, loc },
+        dynMode(),
+      ]);
+    }
+    return call("fs.openNumericSync", [
+      path,
+      { kind: "numLit", value: mask, type: F64, loc },
+      numericMode(),
+    ]);
+  }
+  const flags = lowerer.lowerExprExpecting(args[1]!, F64);
+  if (modeKind === "string") {
+    return call("fs.openNativeStrSync", [
+      path,
+      flags,
+      lowerer.lowerExprExpecting(args[2]!, STRING),
+    ]);
+  }
+  if (modeKind === "absent" || modeKind === "number")
+    return call("fs.openNativeSync", [path, flags, numericMode()]);
+  return call("fs.openNativeDynSync", [path, flags, dynMode()]);
+}
+
+// chmodSync(path, mode) and fchmodSync(fd, mode): parseFileMode reads the
+// mode as a number or an octal string (an absent mode throws Node's
+// ERR_INVALID_ARG_TYPE for `undefined`), and fchmodSync validates the mode
+// before the descriptor. A statically numeric mode keeps the typed entry
+// point — the runtime validates it there — so this answers null for the
+// generic lowering, and the other kinds take the string and value forms.
+export function lowerFsModeSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "chmodSync" | "fchmodSync",
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) return null;
+  const kind = fsArgKind(lowerer, args[1]);
+  if (member === "fchmodSync" && fsArgKind(lowerer, args[0]) !== "number") {
+    // The descriptor is only known at run time: parseFileMode reads the mode
+    // first, then getValidatedFd checks the fd, both over the values.
+    return {
+      kind: "libCall",
+      fn: "fs.fchmodSyncDyn",
+      args: [
+        lowerer.lowerExprExpecting(args[0]!, DYN),
+        args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc),
+      ],
+      type: VOID,
+      loc,
+    };
+  }
+  if (kind === "number") return null;
+  // The target the member names: the path for chmodSync, the descriptor for
+  // fchmodSync — a number where the typed entry point takes one, a
+  // dynamic value where Node's ladder reads it.
+  const target = (type: IrType): IrExpr =>
+    member === "chmodSync"
+      ? lowerFsPath(lowerer, args[0]!)
+      : lowerer.lowerExprExpecting(args[0]!, type);
+  if (kind === "string") {
+    return {
+      kind: "libCall",
+      fn: member === "chmodSync" ? "fs.chmodSyncStr" : "fs.fchmodSyncStr",
+      args: [target(F64), lowerer.lowerExprExpecting(args[1]!, STRING)],
+      type: VOID,
+      loc,
+    };
+  }
   return {
     kind: "libCall",
-    fn: "fs.openNumericSync",
-    args: [path, { kind: "numLit", value: mask, type: F64, loc }, mode],
-    type: F64,
+    fn: member === "chmodSync" ? "fs.chmodSyncDyn" : "fs.fchmodSyncDyn",
+    args: [target(DYN), args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc)],
+    type: VOID,
     loc,
   };
 }
 
-// fs.openSync(path, flags[, mode]) with Node's string flags: the runtime
-// selects the O_* bits from the flag text, and mode is the creation mode
-// open(2) applies when the file is created. An omitted mode passes Node's
-// 0o666 default, so every call reaches the runtime with three arguments.
-export function lowerFsOpenCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (
-    expr.arguments.nodes.length < 2 ||
-    expr.arguments.nodes.length > 3 ||
-    expr.arguments.nodes.some(ts.isSpreadElement)
-  )
-    lowerer.noLowering("openSync with this argument shape", expr);
-  const mode = expr.arguments.nodes[2];
-  const defaultMode = numLit(0o666, loc);
-  return {
-    kind: "libCall",
-    fn: "fs.openSync",
-    args: [
-      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING),
-      // Node treats an undefined creation mode as an omitted one.
-      mode ? lowerBuiltinOptionalDefault(lowerer, mode, F64, defaultMode) : defaultMode,
-    ],
-    type: F64,
-    loc,
-  };
+// closeSync(fd), fsyncSync(fd), fdatasyncSync(fd) and fchownSync(fd, uid,
+// gid): the descriptor primitives whose arguments are values Node passes to
+// getValidatedFd (and, for fchown, validateInteger for the owner ids first).
+// A call whose values the compiler pinned to numbers keeps the typed entry
+// points — the runtime validates them there — so this answers null for the
+// generic lowering and emits the run-time ladder for every other kind, where
+// Node's typeof check reports the value it received instead of a coercion.
+export function lowerFsDescriptorSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "closeSync" | "fsyncSync" | "fdatasyncSync" | "fchownSync",
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = expr.arguments.nodes;
+  const arity = member === "fchownSync" ? 3 : 1;
+  if (args.length > arity || args.some(ts.isSpreadElement)) return null;
+  if (args.every((arg) => fsArgKind(lowerer, arg) === "number")) return null;
+  const fn: IrLibFn =
+    member === "closeSync"
+      ? "fs.closeSyncDyn"
+      : member === "fsyncSync"
+        ? "fs.fsyncSyncDyn"
+        : member === "fdatasyncSync"
+          ? "fs.fdatasyncSyncDyn"
+          : "fs.fchownSyncDyn";
+  const dynArgs: IrExpr[] = [];
+  for (let index = 0; index < arity; index += 1) {
+    const arg = args[index];
+    dynArgs.push(arg ? lowerer.lowerExprExpecting(arg, DYN) : dynUndefinedExpr(loc));
+  }
+  return { kind: "libCall", fn, args: dynArgs, type: VOID, loc };
 }
 
 // fs/promises.open(path[, flags[, mode]]) — string flags and numeric
@@ -388,6 +593,85 @@ export function lowerFsRenameCallbackCall(
   };
 }
 
+/** Whether an fs fd/offset/length-style argument's static type is the typed
+ * form's number. An omitted argument is the form's default, and `nullable`
+ * admits a literal null where the lowering completes it to the runtime's -1
+ * current-offset sentinel. */
+function fsNumberArg(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  nullable: boolean,
+): boolean {
+  if (node === undefined) return true;
+  let value: ts.Expression = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (nullable && value.kind === ts.SyntaxKind.NullKeyword) return true;
+  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "f64";
+}
+
+/** The typed readSync forms: readSync(fd, buffer), readSync(fd, buffer,
+ * literalOptions), and readSync(fd, buffer, offset, length[, position]) over
+ * a Uint8Array/Buffer descriptor. Anything else a JavaScript source writes
+ * takes Node's run-time ladder. */
+function readSyncTypedForm(lowerer: Lowerer, expr: ts.CallExpression): boolean {
+  const nodes = expr.arguments.nodes;
+  if (!fsNumberArg(lowerer, nodes[0], false)) return false;
+  const bufferType = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+  if (bufferType?.kind !== "bytes" || bufferType.elem !== "u8") return false;
+  if (nodes.length === 2) return true;
+  if (nodes.length === 3) {
+    let value: ts.Expression = nodes[2]!;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    return ts.isObjectLiteralExpression(value) || value.kind === ts.SyntaxKind.NullKeyword;
+  }
+  return (
+    fsNumberArg(lowerer, nodes[2], false) &&
+    fsNumberArg(lowerer, nodes[3], false) &&
+    fsNumberArg(lowerer, nodes[4], true)
+  );
+}
+
+/** The typed writeSync forms: the Uint8Array/Buffer window (with an omitted
+ * or literal-null offset/length/position, a literal options object, or a
+ * numeric offset with a numeric length and position) and the utf8 string
+ * form. Anything else a JavaScript source writes takes Node's run-time
+ * ladder, which also reads the options object and supports every encoding. */
+function writeSyncTypedForm(lowerer: Lowerer, expr: ts.CallExpression): boolean {
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 2 || nodes.length > 5) return false;
+  if (!fsNumberArg(lowerer, nodes[0], false)) return false;
+  const dataType = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+  if (dataType?.kind === "bytes") {
+    if (dataType.elem !== "u8") return false;
+    if (nodes.length === 2) return true;
+    if (nodes.length === 3) {
+      let value: ts.Expression = nodes[2]!;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      return (
+        ts.isObjectLiteralExpression(value) ||
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        lowerer.mapTypeOf(lowerer.typeOf(nodes[2]!))?.kind === "f64"
+      );
+    }
+    return (
+      fsNumberArg(lowerer, nodes[2], false) &&
+      fsNumberArg(lowerer, nodes[3], false) &&
+      fsNumberArg(lowerer, nodes[4], true)
+    );
+  }
+  if (dataType?.kind === "string") {
+    if (nodes.length > 4 || !fsNumberArg(lowerer, nodes[2], true)) return false;
+    const encoding = nodes[3];
+    if (encoding === undefined) return true;
+    const encodingType = lowerer.typeOf(encoding);
+    return (
+      encodingType.isStringLiteralType() &&
+      (encodingType.value === "utf8" || encodingType.value === "utf-8")
+    );
+  }
+  return false;
+}
+
 // fs.readSync's classic and options-object buffer forms normalize into
 // one fixed-width IR call. Current-offset forms use Node/libuv's -1
 // sentinel; a numeric position performs offset-preserving I/O.
@@ -408,6 +692,20 @@ export function lowerFsReadSyncCall(
       expr,
       supported,
     );
+  }
+  // JavaScript arguments outside the typed signature (an untyped fd or
+  // buffer, a bigint or untyped position, an options value only the runtime
+  // sees) take Node's argument checks at run time, then the same read. The
+  // call's own argument count decides Node's options form, so it crosses as
+  // a number.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && !readSyncTypedForm(lowerer, expr)) {
+    const nodes = expr.arguments.nodes;
+    const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+      const node = nodes[i];
+      return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+    });
+    args.push(numLit(nodes.length, loc));
+    return { kind: "libCall", fn: "fs.readSyncArgs", args, type: F64, loc };
   }
   if (expr.arguments.nodes.length === 2) {
     return lowerFsSyncBufferWindow(
@@ -434,28 +732,6 @@ export function lowerFsReadSyncCall(
       );
     }
     lowerer.noLowering("readSync with a non-literal options argument", optionsNode, supported);
-  }
-  // JavaScript arguments outside the typed signature (an untyped fd or
-  // buffer, a bigint or untyped position) take Node's argument checks at
-  // run time, then the same read.
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-    const nodes = expr.arguments.nodes;
-    const typed = [F64, BYTES_U8, F64, F64, F64].every((want, i) => {
-      const node = nodes[i];
-      if (node === undefined) return true;
-      let value: ts.Expression = node;
-      while (ts.isParenthesizedExpression(value)) value = value.expression;
-      if (i === 4 && value.kind === ts.SyntaxKind.NullKeyword) return true;
-      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
-      return t !== null && (want.kind === "bytes" ? t.kind === "bytes" : t.kind === "f64");
-    });
-    if (!typed) {
-      const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
-        const node = nodes[i];
-        return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
-      });
-      return { kind: "libCall", fn: "fs.readSyncDyn", args, type: F64, loc };
-    }
   }
   const args: IrExpr[] = [
     lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64),
@@ -502,6 +778,22 @@ export function lowerFsWriteSyncCall(
       expr,
       supported,
     );
+  }
+  // A JavaScript call whose argument kinds the typed forms below do not pin
+  // down runs Node's own ladder over the values: the view form's options
+  // object and validateOffsetLengthWrite, or the string form's
+  // validateEncoding and encoding.
+  if (
+    expr.arguments.nodes.length <= 5 &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !writeSyncTypedForm(lowerer, expr)
+  ) {
+    const nodes = expr.arguments.nodes;
+    const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+      const node = nodes[i];
+      return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+    });
+    return { kind: "libCall", fn: "fs.writeSyncArgs", args, type: F64, loc };
   }
   const dataNode = expr.arguments.nodes[1]!;
   const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
@@ -672,6 +964,36 @@ function encodingOptions(lowerer: Lowerer, options: ts.Expression, type: IrType)
   return typeEquals(value.type, type) ? value : lowerer.coerceInto(options, value, type);
 }
 
+/** The `{ encoding, flag }` options record of readFileSync: the runtime runs
+ * Node's whole options ladder (getOptions' encoding and signal checks,
+ * stringToFlags, open(2) with 0o666) over the record, so the flag may be a
+ * name, open(2) bits or a value the call site did not pin down. The answer's
+ * arm is the call site's type: a string, a Buffer, or the unchecked value. */
+function lowerFsReadOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  options: ts.Expression,
+  source: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const lowered = lowerer.lowerExpr(options);
+  const value = lowered.type.kind === "dyn" ? lowered : lowerer.coerceInto(options, lowered, DYN);
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const fn: IrLibFn =
+    result?.kind === "string"
+      ? "fs.readFileSyncStrOpts"
+      : result?.kind === "bytes"
+        ? "fs.readFileSyncBytesOpts"
+        : "fs.readFileSyncDyn";
+  return {
+    kind: "libCall",
+    fn,
+    args: [source, value],
+    type: result?.kind === "string" ? STRING : result?.kind === "bytes" ? BYTES_U8 : DYN,
+    loc,
+  };
+}
+
 /** Encoding-bearing reads share Buffer's decoder and runtime alias checks.
  * Keep the read and encoding evaluation in source order in one helper. */
 export function lowerFsEncodedRead(
@@ -684,42 +1006,79 @@ export function lowerFsEncodedRead(
     return null;
   const options = expr.arguments.nodes[1]!;
   const optionsType = lowerer.mapTypeOf(lowerer.typeOf(options));
-  if (optionsType?.kind !== "string" && optionsType?.kind !== "record") return null;
-  if (optionsType.kind === "record") {
-    const fields = lowerer.shapes.get(optionsType.shapeId)?.fields;
-    if (
-      !fields ||
-      fields.find((entry) => entry.name === "encoding")?.type.kind !== "string" ||
-      fields.some((entry) => entry.name !== "encoding")
-    )
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  // The unchecked read: Node's whole options ladder (getOptions' encoding and
+  // signal checks, stringToFlags, open(2) with 0o666) runs over the value at
+  // run time. Every option shape the call site did not pin down takes it —
+  // an untyped helper's parameter, a union, a record with keys beyond
+  // encoding/flag, or a value getOptions rejects.
+  const dynamicRead = (): IrExpr => ({
+    kind: "libCall",
+    fn: "fs.readFileSyncDyn",
+    args: [
+      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+      lowerer.lowerExprExpecting(options, DYN),
+    ],
+    type: DYN,
+    loc,
+  });
+  const fields =
+    optionsType?.kind === "record" ? lowerer.shapes.get(optionsType.shapeId)?.fields : undefined;
+  const simpleRecord =
+    fields !== undefined &&
+    fields.length > 0 &&
+    fields.every((entry) => entry.name === "encoding" || entry.name === "flag");
+  const encodingField = simpleRecord
+    ? fields.find((entry) => entry.name === "encoding")
+    : undefined;
+  const flagRead = simpleRecord && fields.some((entry) => entry.name === "flag");
+  // The fd form never opens a path: Node ignores a record's flag, and only
+  // the encoding-only reads below have a descriptor lowering.
+  if (descriptor) {
+    if (optionsType?.kind !== "string" && !(simpleRecord && encodingField?.type.kind === "string"))
       return null;
+  } else if (optionsType?.kind === "string") {
+    // A bare encoding is a string read unless the call site's answer is not
+    // statically a string: an empty encoding is Node's Buffer answer, and an
+    // unpinned answer may be an encoding only the runtime ladder can judge
+    // ('buffer' passes assertEncoding and then fails in the decode).
+    const literal = lowerer.typeOf(options);
+    const empty = literal.isStringLiteralType() && literal.value === "";
+    if (empty || result?.kind !== "string") return dynamicRead();
+  } else if (simpleRecord) {
+    // The path forms take the whole record — the flag included — to the
+    // runtime; any encoding value that is not statically a string can select
+    // the Buffer answer, so those go with it.
+    if (flagRead || encodingField?.type.kind !== "string")
+      return lowerFsReadOptionsCall(
+        lowerer,
+        expr,
+        options,
+        lowerFsPath(lowerer, expr.arguments.nodes[0]!),
+        loc,
+      );
+    if (encodingIsEmptyLiteral(lowerer, options) || result?.kind !== "string") return dynamicRead();
+  } else {
+    return dynamicRead();
   }
   const sourceType = descriptor ? F64 : STRING;
   const source = descriptor
     ? lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, sourceType)
     : lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  // Past the branches above the options are a bare encoding or the simple
+  // record whose encoding key selects this read.
+  const optionsRecord = optionsType?.kind === "record" ? optionsType : undefined;
   const encoding: IrExpr =
-    optionsType.kind === "string"
+    optionsType?.kind === "string"
       ? lowerer.lowerExprExpecting(options, STRING)
       : {
           kind: "recordGet",
-          obj: encodingOptions(lowerer, options, optionsType),
-          shapeId: optionsType.shapeId,
+          obj: encodingOptions(lowerer, options, optionsRecord!),
+          shapeId: optionsRecord!.shapeId,
           field: "encoding",
           type: STRING,
           loc,
         };
-  // Empty encodings return a Buffer, and unknown string spellings may
-  // throw. Keep the runtime result when the selected overload admits both
-  // strings and Buffers rather than promising a string from its argument.
-  if (!descriptor && lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string")
-    return {
-      kind: "libCall",
-      fn: "fs.readFileSyncDyn",
-      args: [source, lowerer.coerceToExpected(encoding, DYN)],
-      type: DYN,
-      loc,
-    };
   return {
     kind: "libCall",
     fn: descriptor ? "fs.readFdEncoded" : "fs.readFileEncoded",
@@ -727,6 +1086,20 @@ export function lowerFsEncodedRead(
     type: STRING,
     loc,
   };
+}
+
+/** Whether an options object literal spells an empty encoding, Node's
+ * Buffer answer: a fresh read before the decode would answer bytes. */
+function encodingIsEmptyLiteral(lowerer: Lowerer, options: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(options)) return false;
+  for (const prop of options.properties.nodes) {
+    if (!ts.isPropertyAssignment(prop)) continue;
+    if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) continue;
+    if (prop.name.text !== "encoding") continue;
+    const type = lowerer.typeOf(prop.initializer);
+    return type.isStringLiteralType() && type.value === "";
+  }
+  return false;
 }
 
 /** fs.promises.readFile(path, encoding | { encoding }) when its result is a
@@ -847,45 +1220,186 @@ export function lowerFsStreamCreate(
   );
 }
 
-// mkdirSync(p, options): the lowered options form is a literal
-// `{ recursive?: <boolean literal>, mode?: <number> }` — recursive:
-// true routes to Node's recursive algorithm (the mode, when present,
-// applies to every directory the walk creates, like Node's), false/
-// absent is the plain mkdir. The recursive form's return value (the
-// first created directory, `string | undefined` under @types/node)
-// has no lowering — statement position only.
+/** mkdirSync's answer: Node's `string | undefined` (the first directory the
+ * recursive walk created) where the call keeps it, and void where the
+ * statement discards it — the shape the statement form has always emitted. */
+function mkdirResultType(lowerer: Lowerer, expr: ts.CallExpression): IrType {
+  const parent = expr.parent;
+  if (parent !== undefined && ts.isExpressionStatement(parent)) return VOID;
+  // A call whose declared type is void (mkdirSync's single-directory forms)
+  // keeps the statement shape; one the checker types `string | undefined`
+  // keeps the walk's answer, narrowed to the checked union when the type
+  // world spells it another way (`string` alone, an `any`).
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (mapped === null) return lowerer.withUndefinedArm(STRING);
+  if (mapped.kind === "void" || mapped.kind === "undefinedT") return VOID;
+  return mapped.kind === "union" ? mapped : lowerer.withUndefinedArm(STRING);
+}
+
+// mkdirSync(p, options) with Node's option ladder: a number or a string is
+// the mode itself, an absent/`null`/`undefined`/boolean options value means
+// the 0o777 default, and an options object reads `recursive` (validated as a
+// boolean) and then `mode` (parseFileMode under the name "options.mode").
+// The runtime runs the same ladder for an options value only it can see. The
+// recursive walk answers the first directory it created; the statement forms
+// keep their void entry points, which release it.
 export function lowerFsMkdirSyncCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments.nodes[1]!;
-  const options = parseMkdirOptions(optsNode);
-  if (!options) {
-    lowerer.noLowering(
-      "mkdirSync with an options argument beyond { recursive, mode }",
-      optsNode,
-      "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
-    );
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+    lowerer.noLowering(`mkdirSync with ${args.length} arguments`, expr);
+  const path = lowerFsPath(lowerer, args[0]!);
+  const type = mkdirResultType(lowerer, expr);
+  const optsNode = args[1];
+  const kind = fsArgKind(lowerer, optsNode);
+  const keepsValue = type.kind !== "void";
+  if (kind === "number")
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeValueSync" : "fs.mkdirModeSync",
+      args: [path, lowerer.lowerExprExpecting(optsNode!, F64)],
+      type,
+      loc,
+    };
+  if (kind === "string")
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeStrValueSync" : "fs.mkdirModeStrSync",
+      args: [path, lowerer.lowerExprExpecting(optsNode!, STRING)],
+      type,
+      loc,
+    };
+  if (kind === "absent") {
+    // A top-level mode is never recursive: the answer is undefined and the
+    // statement form drops it, the value form narrows Node's union to it.
+    const mode = optsNode
+      ? defaultAfter(lowerer, optsNode, numLit(0o777, loc))
+      : numLit(0o777, loc);
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeValueSync" : optsNode ? "fs.mkdirModeSync" : "fs.mkdirSync",
+      args: optsNode || keepsValue ? [path, mode] : [path],
+      type,
+      loc,
+    };
   }
-  const { recursive, modeNode } = options;
-  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
-  if (!recursive) {
-    return mode
-      ? { kind: "libCall", fn: "fs.mkdirModeSync", args: [path, mode], type: VOID, loc }
-      : { kind: "libCall", fn: "fs.mkdirSync", args: [path], type: VOID, loc };
+  const options = kind === "boolean" ? null : parseMkdirOptions(optsNode!);
+  if (options) {
+    const recursiveKind = fsArgKind(lowerer, options.recursive);
+    const modeKind = fsArgKind(lowerer, options.mode);
+    // The typed forms model Node's boolean `recursive` and its number or
+    // octal-string `mode`. Any other typed arm — a null member (Node reads
+    // a member by comparing it with undefined, so null is present and its
+    // own validation reports it) or a boolean mode or a numeric recursive —
+    // runs the runtime ladder, which throws Node's error instead of folding
+    // the value away.
+    const typedMode =
+      options.mode === null ||
+      modeKind === "number" ||
+      modeKind === "string" ||
+      (modeKind === "absent" && !canBeNull(lowerer, options.mode));
+    const typedRecursive =
+      options.recursive === null ||
+      isBooleanLiteral(options.recursive) ||
+      recursiveKind === "boolean" ||
+      (recursiveKind === "absent" && !canBeNull(lowerer, options.recursive));
+    if (typedRecursive && typedMode) {
+      const recursiveNode = options.recursive;
+      const recursive: IrExpr =
+        recursiveNode === null
+          ? boolLit(false, loc)
+          : isTrueLiteral(recursiveNode)
+            ? boolLit(true, loc)
+            : isFalseLiteral(recursiveNode)
+              ? boolLit(false, loc)
+              : recursiveKind === "boolean"
+                ? lowerer.lowerExprExpecting(recursiveNode, BOOL)
+                : defaultAfter(lowerer, recursiveNode, boolLit(false, loc));
+      const modeNode = options.mode;
+      const mode: IrExpr =
+        modeNode === null
+          ? numLit(0o777, loc)
+          : modeKind === "string"
+            ? lowerer.lowerExprExpecting(modeNode, STRING)
+            : modeKind === "number"
+              ? lowerer.lowerExprExpecting(modeNode, F64)
+              : defaultAfter(lowerer, modeNode, numLit(0o777, loc));
+      const fn: IrLibFn =
+        modeKind === "string"
+          ? type.kind === "void"
+            ? "fs.mkdirObjStrVoidSync"
+            : "fs.mkdirObjStrSync"
+          : type.kind === "void"
+            ? "fs.mkdirObjVoidSync"
+            : "fs.mkdirObjSync";
+      const call = (pathArg: IrExpr, modeArg: IrExpr, recursiveArg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn,
+        args: [pathArg, modeArg, recursiveArg],
+        type,
+        loc,
+      });
+      // Node constructs the options object before the call, so its
+      // initializers run in source order; the emitted call evaluates its
+      // arguments path, mode, recursive. When recursive is written first,
+      // keep the members in locals so that order holds. Only a constant
+      // member may cross the other: a variable read can see what the other
+      // initializer assigns, and an effect must stay where it is written.
+      const keepsSourceOrder =
+        modeNode !== null &&
+        recursiveNode !== null &&
+        options.first === "recursive" &&
+        !isConstantOperand(lowerer, recursiveNode) &&
+        !isConstantOperand(lowerer, modeNode);
+      if (!keepsSourceOrder) return call(path, mode, recursive);
+      const pathLocal = lowerer.declareHiddenLocal("%mkdirPath", STRING);
+      const recursiveLocal = lowerer.declareHiddenLocal("%mkdirRecursive", BOOL);
+      const modeLocal = lowerer.declareHiddenLocal("%mkdirMode", mode.type);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+          { kind: "varDecl", localId: recursiveLocal.id, init: recursive, loc: recursive.loc },
+          { kind: "varDecl", localId: modeLocal.id, init: mode, loc: mode.loc },
+        ],
+        result: call(
+          varRef(pathLocal.id, STRING, loc),
+          varRef(modeLocal.id, mode.type, loc),
+          varRef(recursiveLocal.id, BOOL, loc),
+        ),
+        type,
+        loc,
+      };
+    }
   }
-  if (!ts.isExpressionStatement(expr.parent)) {
-    lowerer.noLowering(
-      "mkdirSync's return value in the recursive form",
-      expr,
-      "the first-created-directory result has no lowering — call it as a statement",
-    );
-  }
-  return mode
-    ? { kind: "libCall", fn: "fs.mkdirRecursiveModeSync", args: [path, mode], type: VOID, loc }
-    : { kind: "libCall", fn: "fs.mkdirRecursiveSync", args: [path], type: VOID, loc };
+  // An options value whose arms only the runtime sees, or whose typed arms
+  // are ones Node's ladder reports rather than folds: the runtime runs that
+  // ladder over the whole object.
+  const lowered = lowerer.lowerExpr(optsNode!);
+  const value = lowered.type.kind === "dyn" ? lowered : lowerer.coerceInto(optsNode!, lowered, DYN);
+  return {
+    kind: "libCall",
+    fn: type.kind === "void" ? "fs.mkdirDynVoidSync" : "fs.mkdirDynSync",
+    args: [path, value],
+    type,
+    loc,
+  };
+}
+
+function isBooleanLiteral(node: ts.Expression): boolean {
+  const kind = withoutParenthesesTypeWrappers(node).kind;
+  return kind === ts.SyntaxKind.TrueKeyword || kind === ts.SyntaxKind.FalseKeyword;
+}
+
+function isTrueLiteral(node: ts.Expression): boolean {
+  return withoutParenthesesTypeWrappers(node).kind === ts.SyntaxKind.TrueKeyword;
+}
+
+function isFalseLiteral(node: ts.Expression): boolean {
+  return withoutParenthesesTypeWrappers(node).kind === ts.SyntaxKind.FalseKeyword;
 }
 
 // fs.promises.mkdir(p, options): the mkdirSync matrix behind settled
@@ -899,14 +1413,15 @@ export function lowerFsPromisesMkdirCall(
 ): IrExpr {
   const optsNode = expr.arguments.nodes[1]!;
   const options = parseMkdirOptions(optsNode);
-  if (!options) {
+  if (!options || (options.recursive && !isBooleanLiteral(options.recursive))) {
     lowerer.noLowering(
-      "fs.promises.mkdir with an options argument beyond { recursive, mode }",
+      "fs.promises.mkdir with an options argument beyond { recursive: <boolean literal>, mode }",
       optsNode,
       "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
     );
   }
-  const { recursive, modeNode } = options;
+  const recursive = options.recursive ? isTrueLiteral(options.recursive) : false;
+  const modeNode = options.mode;
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   const type: IrType = { kind: "promise", inner: VOID };
@@ -1087,6 +1602,24 @@ export function lowerFsWriteDescriptorCall(
       expr,
       supported,
     );
+  }
+  const encodingNode = expr.arguments.nodes[2];
+  if (encodingNode !== undefined) {
+    // Node reads the third argument over the descriptor too (its encoding
+    // and signal validation, the flush flag, and — for string data written
+    // as utf8 — the flag and mode ladders), so only an encoding that
+    // changes nothing is accepted here; every other value keeps the fence.
+    const encodingType = lowerer.typeOf(encodingNode);
+    if (
+      !encodingType.isStringLiteralType() ||
+      (encodingType.value !== "utf8" && encodingType.value !== "utf-8")
+    ) {
+      lowerer.noLowering(
+        "writeFileSync(fd) with an options argument",
+        encodingNode,
+        'the lowered descriptor form is writeFileSync(fd, data) and writeFileSync(fd, data, "utf8"); Node\'s option record over a descriptor (a non-utf8 encoding, flush, signal, or the flag and mode the utf8 fast path parses) has no lowering yet',
+      );
+    }
   }
   const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
   return {
@@ -1394,7 +1927,7 @@ export function lowerFsWriteOptionsCall(
           m.name,
           operation,
           FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
+          'the supported options are { mode: <number | octal string>, encoding: "utf8", flag: "w" | "wx" }',
         );
       }
     }
@@ -1403,23 +1936,24 @@ export function lowerFsWriteOptionsCall(
     lowerer.noLowering(
       `${operation} with 3 arguments`,
       optsNode,
-      'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
+      'the supported options are { mode: <number | octal string>, encoding: "utf8", flag: "w" | "wx" }',
     );
   }
   return finishWrite(optionValues);
 }
 
 /** writeFileSync/appendFileSync with the options the plain forms do not
- * cover: an encoding other than utf8, a flag from Node's wider table, a
- * Buffer/TypedArray data argument, or any options at all on appendFileSync
- * (whose default flag is "a"). Answers null when the record is one the
- * plain-write lowerings already handle, so their IR is unchanged.
+ * cover: an encoding other than utf8, a flag from Node's wider table (or
+ * open(2) bits), a Buffer/TypedArray data argument, or any options at all on
+ * appendFileSync (whose default flag is "a"). Answers null when the record is
+ * one the plain-write lowerings already handle, so their IR is unchanged.
  *
  * The data is encoded at the call (Node's Buffer.from(data, encoding)); the
  * flag decides whether an existing file is truncated, appended to or left
- * alone. scr_fs_flags.c parses the flag table and validates the encoding,
- * flag and mode in Node's order, so the option values may be computed at the
- * call: each is staged in source order into a hidden local. */
+ * alone. scr_fs_flags.c parses the flag table, runs stringToFlags over a
+ * number or an unpinned value, and validates the encoding, flag and mode in
+ * Node's order, so the option values may be computed at the call: each is
+ * staged in source order into a hidden local. */
 export function lowerFsSyncWriteOptionsCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1440,14 +1974,40 @@ export function lowerFsSyncWriteOptionsCall(
   // The plain forms cover utf8 string data with no flag (writeFileSync) or
   // the "w"/"wx" pair; those keep the IR they always had.
   let plain = !append;
-  const optionValues: { kind: "mode" | "encoding" | "flag"; node: ts.Expression }[] = [];
+  // A mode whose static type is not a number — an octal string, or a value
+  // the call site did not pin down — takes the runtime's parseFileMode
+  // ladder through a dynamic mode slot instead of the numeric one.
+  let modeDyn = false;
+  // The same for a flag whose static type is not a string: a number is
+  // open(2) bits, and a value the call site did not pin down runs
+  // stringToFlags at the call's run time.
+  let flagDyn = false;
+  const optionValues: {
+    kind: "mode" | "encoding" | "flag";
+    node?: ts.Expression;
+    ir?: IrExpr;
+  }[] = [];
   const optsType = lowerer.typeOf(optsNode);
+  // A stored options record (a const, an argument, a call's result) whose
+  // fields are a subset of { mode, encoding, flag }: the record is
+  // evaluated once at the call, where Node evaluates the argument.
+  const stored =
+    optsType.isStringLiteralType() || optionsLiteralOf(lowerer, optsNode) !== null
+      ? null
+      : writeOptionsRecord(lowerer, optsNode);
   if (optsType.isStringLiteralType()) {
     // The bare-encoding spelling — writeFileSync(p, data, "latin1") — is
     // the options record's encoding key alone.
     if (!append && (optsType.value === "utf8" || optsType.value === "utf-8")) return null;
     optionValues.push({ kind: "encoding", node: optsNode });
     plain = false;
+  } else if (stored !== null) {
+    // Field types decide the slots: a record field is never a literal, so
+    // the encoding takes the runtime's name check and an unpinned mode or
+    // flag takes the parseFileMode / stringToFlags ladders.
+    plain = false;
+    if (stored.mode !== undefined && stored.mode.kind !== "f64") modeDyn = true;
+    if (stored.flag !== undefined && stored.flag.kind !== "string") flagDyn = true;
   } else {
     const literal = optionsLiteralOf(lowerer, optsNode);
     if (literal === null) return null;
@@ -1455,6 +2015,14 @@ export function lowerFsSyncWriteOptionsCall(
       const m = optionMember(property);
       if (!m) return null;
       if (m.name === "mode") {
+        // Node's parseFileMode: a number goes through validateUint32, an
+        // octal string parses base 8, and a nullish value is the 0o666
+        // default. Only the numeric spelling keeps the numeric slot; the
+        // others run the ladder at the call's run time.
+        if (fsArgKind(lowerer, m.value) !== "number") {
+          modeDyn = true;
+          plain = false;
+        }
         optionValues.push({ kind: "mode", node: m.value });
       } else if (m.name === "encoding") {
         // The runtime validates and decodes the name (Node's order:
@@ -1464,8 +2032,13 @@ export function lowerFsSyncWriteOptionsCall(
         if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) plain = false;
         optionValues.push({ kind: "encoding", node: m.value });
       } else if (m.name === "flag") {
+        // A flag name the call site spelled is parsed by the flag table at
+        // the call; a number is open(2) bits and anything else unpinned
+        // takes the dynamic slot, where the runtime runs Node's
+        // `options.flag || default` and stringToFlags.
         const t = lowerer.typeOf(m.value);
         if (!t.isStringLiteralType() || (t.value !== "w" && t.value !== "wx")) plain = false;
+        if (fsArgKind(lowerer, m.value) !== "string") flagDyn = true;
         optionValues.push({ kind: "flag", node: m.value });
       } else {
         // The options-record stance: documented keys with no lowering
@@ -1476,13 +2049,18 @@ export function lowerFsSyncWriteOptionsCall(
           m.name,
           operation,
           FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          "the supported options are { mode: <number>, encoding: <BufferEncoding>, flag: <open(2) flag name> }",
+          "the supported options are { mode: <number | octal string>, encoding: <BufferEncoding>, flag: <open(2) flag name> }",
         );
       }
     }
   }
   if (dataKind !== "string") plain = false;
   if (plain) return null;
+  // A dynamic flag rides the dynamic-mode family, whose flag slot takes a
+  // dynamic value as well. A numeric mode staged with it is boxed into the
+  // dynamic mode slot and runs the mode ladder's validateUint32 arm, the
+  // same check the numeric slot makes.
+  if (flagDyn) modeDyn = true;
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const data = lowerer.lowerExprExpecting(
     dataNode,
@@ -1496,12 +2074,71 @@ export function lowerFsSyncWriteOptionsCall(
   ];
   // Every option value is an ordinary expression: lower it in object-literal
   // order into a hidden local, so a call or getter runs exactly once, where
-  // Node's argument evaluation runs it.
-  let mode: IrExpr = numLit(0o666, loc);
+  // Node's argument evaluation runs it. The dynamic slots take the defaults
+  // boxed, since the call reads both of them through dynamic parameters.
+  const box = (value: IrExpr): IrExpr =>
+    modeDyn ? { kind: "dynFrom", value, type: DYN, loc } : value;
+  let mode: IrExpr = box(numLit(0o666, loc));
   let encoding: IrExpr = strLit("utf8", loc);
-  let flag: IrExpr = strLit(append ? "a" : "w", loc);
+  let flag: IrExpr = box(strLit(append ? "a" : "w", loc));
+  // A stored options record is evaluated whole after the path and the data,
+  // where Node evaluates the third argument, then read field by field.
+  if (stored !== null) {
+    const local = lowerer.declareHiddenLocal("%writeOptions", stored.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: stored.init, loc: stored.init.loc });
+    const obj = varRef(local.id, local.type, loc);
+    if (stored.mode !== undefined)
+      optionValues.push({
+        kind: "mode",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "mode",
+          stored.mode,
+          modeDyn ? "dyn" : "number",
+          box(numLit(0o666, loc)),
+          loc,
+        ),
+      });
+    if (stored.encoding !== undefined)
+      optionValues.push({
+        kind: "encoding",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "encoding",
+          stored.encoding,
+          "string",
+          strLit("utf8", loc),
+          loc,
+        ),
+      });
+    if (stored.flag !== undefined)
+      optionValues.push({
+        kind: "flag",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "flag",
+          stored.flag,
+          modeDyn ? "dyn" : "string",
+          box(strLit(append ? "a" : "w", loc)),
+          loc,
+        ),
+      });
+  }
   for (const option of optionValues) {
-    const type = option.kind === "mode" ? F64 : STRING;
+    const type =
+      option.kind === "mode"
+        ? modeDyn
+          ? DYN
+          : F64
+        : option.kind === "flag" && modeDyn
+          ? DYN
+          : STRING;
     const slot = lowerer.declareHiddenLocal(
       option.kind === "mode"
         ? "%writeMode"
@@ -1511,8 +2148,8 @@ export function lowerFsSyncWriteOptionsCall(
     stmts.push({
       kind: "varDecl",
       localId: slot.id,
-      init: lowerer.lowerExprExpecting(option.node, type),
-      loc: locOf(option.node),
+      init: option.ir ?? lowerer.lowerExprExpecting(option.node!, type),
+      loc: option.ir?.loc ?? locOf(option.node!),
     });
     const ref = varRef(slot.id, slot.type, loc);
     if (option.kind === "mode") mode = ref;
@@ -1521,8 +2158,19 @@ export function lowerFsSyncWriteOptionsCall(
   }
   const pathRef = varRef(pathLocal.id, pathLocal.type, loc);
   const dataRef = varRef(dataLocal.id, dataLocal.type, loc);
-  const fn: IrLibFn =
-    dataKind === "bytes"
+  const fn: IrLibFn = modeDyn
+    ? dataKind === "bytes"
+      ? append
+        ? "fs.appendFileBytesOptionsDynModeSync"
+        : "fs.writeFileBytesOptionsDynModeSync"
+      : dataKind === "data"
+        ? append
+          ? "fs.appendFileDataOptionsDynModeSync"
+          : "fs.writeFileDataOptionsDynModeSync"
+        : append
+          ? "fs.appendFileOptionsDynModeSync"
+          : "fs.writeFileOptionsDynModeSync"
+    : dataKind === "bytes"
       ? append
         ? "fs.appendFileBytesOptionsSync"
         : "fs.writeFileBytesOptionsSync"
@@ -1745,6 +2393,147 @@ function optionsLiteralOf(
   return value;
 }
 
+/** A mode or flag field may be absent (its nullish arm answers the write's
+ * default) or one of the two spellings the runtime's parseFileMode /
+ * stringToFlags ladders read; an encoding field is a name. */
+const WRITE_MODE_FIELD_ARMS: readonly IrType[] = [F64, STRING];
+const WRITE_ENCODING_FIELD_ARMS: readonly IrType[] = [STRING];
+
+/** Whether a stored options field's type is one the dynamic slot can carry:
+ * exactly one of `arms`, optionally with one nullish arm the default
+ * absorbs. */
+function writeOptionFieldOk(lowerer: Lowerer, ft: IrType, arms: readonly IrType[]): boolean {
+  const absent = (t: IrType): boolean => typeEquals(t, UNDEFINED_T) || typeEquals(t, NULL_T);
+  if (ft.kind !== "union") return arms.some((a) => typeEquals(ft, a));
+  const unionArms = lowerer.unions.get(ft.unionId)?.arms;
+  if (!unionArms || unionArms.length === 0) return false;
+  if (unionArms.filter(absent).length > 1) return false;
+  if (!unionArms.every((a) => absent(a) || arms.some((k) => typeEquals(a, k)))) return false;
+  return unionArms.some((a) => arms.some((k) => typeEquals(a, k)));
+}
+
+/** The options argument of a write whose value is not an object literal but
+ * whose type IS an object record with no more than the documented mode,
+ * encoding and flag keys: the record is staged once and its fields read
+ * from it. Null when any field's type cannot ride its slot (a name the
+ * value could never be, a key this lowering does not implement), so the
+ * caller keeps its fence. */
+function writeOptionsRecord(
+  lowerer: Lowerer,
+  optsNode: ts.Expression,
+): {
+  init: IrExpr;
+  type: IrType;
+  shapeId: string;
+  mode?: IrType;
+  encoding?: IrType;
+  flag?: IrType;
+} | null {
+  const opts = lowerer.lowerExpr(optsNode);
+  if (opts.type.kind !== "record") return null;
+  const shapeId = opts.type.shapeId;
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape || shape.tuple === true || shape.indexValue !== undefined) return null;
+  const out: {
+    init: IrExpr;
+    type: IrType;
+    shapeId: string;
+    mode?: IrType;
+    encoding?: IrType;
+    flag?: IrType;
+  } = { init: opts, type: opts.type, shapeId };
+  for (const field of shape.fields) {
+    if (field.optional === true) return null;
+    if (field.name === "mode") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_MODE_FIELD_ARMS)) return null;
+      out.mode = field.type;
+    } else if (field.name === "flag") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_MODE_FIELD_ARMS)) return null;
+      out.flag = field.type;
+    } else if (field.name === "encoding") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_ENCODING_FIELD_ARMS)) return null;
+      out.encoding = field.type;
+    } else {
+      // A key this lowering does not implement (flush, signal, or anything
+      // undocumented) keeps the fence.
+      return null;
+    }
+  }
+  return out;
+}
+
+/** A stored options record's field read. A field whose type carries a
+ * nullish arm answers `dflt` there (Node's `?? default`); every other arm
+ * is narrowed by its tag and, for the dynamic slot, boxed for the runtime
+ * ladder. `writeOptionsRecord` only hands over types this can carry. */
+function writeOptionFieldValue(
+  lowerer: Lowerer,
+  shapeId: string,
+  obj: IrExpr,
+  name: string,
+  ft: IrType,
+  slot: "number" | "string" | "dyn",
+  dflt: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: ft, loc };
+  if (slot === "number") return read;
+  if (ft.kind !== "union") {
+    if (slot === "string") return read;
+    return ft.kind === "dyn" ? read : { kind: "dynFrom", value: read, type: DYN, loc };
+  }
+  const arms = lowerer.unions.get(ft.unionId)!.arms;
+  const kept = arms.filter((a) => !typeEquals(a, UNDEFINED_T) && !typeEquals(a, NULL_T));
+  const narrowed = (arm: IrType): IrExpr => ({
+    kind: "unionNarrow",
+    unionId: ft.unionId,
+    tag: lowerer.armTag(ft.unionId, arm),
+    value: read,
+    type: arm,
+    loc,
+  });
+  const box = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+  let held: IrExpr;
+  if (slot === "string") held = narrowed(STRING);
+  else if (kept.length === 1) held = box(narrowed(kept[0]!));
+  else
+    held = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: ft.unionId,
+        tag: lowerer.armTag(ft.unionId, kept[0]!),
+        negated: false,
+        value: read,
+        type: BOOL,
+        loc,
+      },
+      then: box(narrowed(kept[0]!)),
+      else_: box(narrowed(kept[1]!)),
+      type: DYN,
+      loc,
+    };
+  const absent = lowerer.armTag(ft.unionId, UNDEFINED_T);
+  const nullish = absent >= 0 ? absent : lowerer.armTag(ft.unionId, NULL_T);
+  if (kept.length === arms.length) return held;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: ft.unionId,
+      tag: nullish,
+      negated: false,
+      value: read,
+      type: BOOL,
+      loc,
+    },
+    then: dflt,
+    else_: held,
+    type: dflt.type,
+    loc,
+  };
+}
+
 export function lowerFsReadPathCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1796,39 +2585,43 @@ export function lowerFsReadPathCall(
 }
 
 /** Both mkdir forms accept the same literal option shape; evaluation stays in the caller. */
-function parseMkdirOptions(
-  node: ts.Expression,
-): { recursive: boolean; modeNode: ts.Expression | null } | null {
+function parseMkdirOptions(node: ts.Expression): {
+  recursive: ts.Expression | null;
+  mode: ts.Expression | null;
+  /** The first member written in the literal: the object is constructed
+   * before the call, so its initializers run in that order. */
+  first: "recursive" | "mode" | null;
+} | null {
   if (!ts.isObjectLiteralExpression(node)) return null;
-  let recursive = false;
-  let modeNode: ts.Expression | null = null;
+  let recursive: ts.Expression | null = null;
+  let mode: ts.Expression | null = null;
+  let first: "recursive" | "mode" | null = null;
   for (const property of node.properties.nodes) {
     const member = optionMember(property);
     if (!member) return null;
     if (member.name === "recursive") {
-      if (member.value.kind === ts.SyntaxKind.TrueKeyword) recursive = true;
-      else if (member.value.kind === ts.SyntaxKind.FalseKeyword) recursive = false;
-      else return null;
+      recursive = member.value;
+      first ??= "recursive";
     } else if (member.name === "mode") {
-      modeNode = member.value;
-    } else {
-      return null;
-    }
+      mode = member.value;
+      first ??= "mode";
+    } else return null;
   }
-  return { recursive, modeNode };
+  return { recursive, mode, first };
 }
 
 /** fs.existsSync(path) where the path value is not statically a string: a
- * Buffer path, an `any`-typed value, or a union of those with strings and the
- * unit arms. A statically typed Buffer takes the typed entry point
- * (scr_fs_exists_bytes); an `any`-typed value or a union takes the value
- * form, which decides the arm at run time. Node answers false for any other
- * value and reports DEP0187 once, which the value form (scr_fs_exists_dyn.c)
- * does; a plain string argument keeps the typed call. Null for the URL type,
- * which converts to a string path before the call, and for every union
- * holding an arm the value form cannot answer. Node ignores arguments past
- * the first but still evaluates them, so surplus arguments are lowered here
- * rather than dropped.
+ * Buffer path, an `any`-typed value, a URL, or any other value. Node's
+ * existsSync answers false for every path getValidatedPath rejects —
+ * anything that is not a string, a Uint8Array or a file: URL — and reports
+ * DEP0187 once, which the value form (scr_fs_exists_dyn.c) does. A
+ * statically typed Buffer takes the typed entry point (scr_fs_exists_bytes)
+ * and every other non-string value takes the value form, which decides the
+ * arm at run time; only a plain string argument keeps the typed call. A URL
+ * path whose conversion the fs URL machinery already lifted to a string
+ * arrives here as a string. Null for a value the value form cannot carry.
+ * Node ignores arguments past the first but still evaluates them, so surplus
+ * arguments are lowered here rather than dropped.
  */
 export function lowerFsExistsValueCall(
   lowerer: Lowerer,
@@ -1839,27 +2632,37 @@ export function lowerFsExistsValueCall(
   // stage; the ordinary call path rejects it.
   if (expr.arguments.nodes.some(ts.isSpreadElement)) return null;
   const arg = expr.arguments.nodes[0];
-  if (!arg) return null;
-  const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
-  const ok = (arm: IrType | null) =>
-    arm?.kind === "string" || (arm !== null && typeEquals(arm, BYTES_U8));
+  const type = arg ? lowerer.mapTypeOf(lowerer.typeOf(arg)) : null;
   const unit = (arm: IrType | null) =>
     arm?.kind === "undefinedT" || arm?.kind === "nullT" || arm?.kind === "void";
-  // A null mapped type is `any`/`unknown`: the runtime decides.
-  let value = type === null || type.kind === "dyn" || (type.kind !== "string" && ok(type));
-  if (!value && type?.kind === "union") {
-    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
-    value = arms.some(ok) && arms.every((arm) => ok(arm) || unit(arm));
-  }
-  if (!value) return null;
+  const unitExpr =
+    arg !== undefined &&
+    (arg.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(arg) && arg.text === "undefined"));
+  // A statically typed string (the URL path machinery converts file: URLs to
+  // one) keeps the typed entry point.
+  if (arg !== undefined && type !== null && type.kind === "string") return null;
+  // A null mapped type is `any`/`unknown`: the runtime decides. Everything
+  // else must be a value the checked-dynamic form can carry.
+  const boxable =
+    arg === undefined ||
+    type === null ||
+    type.kind === "dyn" ||
+    typeEquals(type, BYTES_U8) ||
+    unit(type) ||
+    unitExpr ||
+    lowerer.dynConvertible(type);
+  if (!boxable) return null;
   // A statically typed Buffer path answers through its own entry point
   // (scr_fs_exists_bytes): the value form would box it, and a fully typed
-  // program links no dynamic tier. A `dyn` or union path keeps the value
-  // form, which decides the arm at run time.
+  // program links no dynamic tier. Every other non-string path keeps the
+  // value form, which decides the arm at run time.
   const bytesPath = type !== null && typeEquals(type, BYTES_U8);
-  const lowered = bytesPath
-    ? lowerer.lowerExprExpecting(arg, BYTES_U8)
-    : lowerer.lowerExprExpecting(arg, DYN);
+  const lowered =
+    arg === undefined
+      ? dynUndefinedExpr(loc)
+      : bytesPath
+        ? lowerer.lowerExprExpecting(arg, BYTES_U8)
+        : lowerer.lowerExprExpecting(arg, DYN);
   const fn = bytesPath ? "fs.existsSyncBytes" : "fs.existsSyncValue";
   const surplus = expr.arguments.nodes.slice(1);
   if (surplus.length === 0) {

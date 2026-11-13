@@ -564,6 +564,13 @@ describe("determinism attestation ↔ fence parity", () => {
       // (date-values.ts) without reading ambient state. The local's
       // initializer is the Date expression the fences witness.
       "date.fromTime",
+      // Extracts the native Stats snapshot from the checked-dynamic object
+      // a stat call's run-time options ladder already answered: no ambient
+      // filesystem state is read, and the statSync/lstatSync/fstatSync (or
+      // callback) spelling that produced the object is the surface the
+      // fences witness.
+      "fs.statsFromDyn",
+      "fs.statsFromDynOpt",
     ]);
     const missing = Object.keys(libFnSignatures()).filter(
       (fn) =>

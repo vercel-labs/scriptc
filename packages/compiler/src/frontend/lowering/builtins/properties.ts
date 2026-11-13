@@ -11,6 +11,7 @@ import {
   CHILDWRITER_T,
   DATE_T,
   DIR_T,
+  DYN,
   F64,
   FILEHANDLE_T,
   type IrExpr,
@@ -66,6 +67,23 @@ const BIGINT_STATS_FIELDS: Record<string, IrLibFn> = {
   ),
   ...NANOSECOND_FIELDS,
 };
+
+/** A Stats/BigIntStats member read off a checked-dynamic value. The stat
+ * calls' run-time options ladder answers Node's object, whose member table
+ * (number or bigint) only the `bigint` option read at the call knows, so
+ * the member reads off the object at run time — `typeof stats.size` answers
+ * "bigint" for a BigIntStats the call chose. */
+function statsDynMember(expr: ts.PropertyAccessExpression, receiver: IrExpr, name: string): IrExpr {
+  const loc = locOf(expr);
+  return {
+    kind: "dynKeyGet",
+    key: { kind: "strLit", value: name, type: STRING, loc },
+    ...(expr.questionDotToken ? { optional: true as const } : {}),
+    value: receiver,
+    type: DYN,
+    loc,
+  };
+}
 export function lowerBuiltinExtraProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -310,6 +328,7 @@ export function lowerBuiltinExtraProperty(
     kind === "stats" ? STATS_FIELDS : kind === "bigintStats" ? BIGINT_STATS_FIELDS : undefined;
   if (statsFields !== undefined && Object.hasOwn(statsFields, name)) {
     const receiver = lowerer.lowerExpr(expr.expression);
+    if (receiver.type.kind === "dyn") return statsDynMember(expr, receiver, name);
     const fn = statsFields[name]!;
     // The Date fields are the millisecond value rounded, as Node's
     // dateFromMs builds them; every other Stats number is a bigint on

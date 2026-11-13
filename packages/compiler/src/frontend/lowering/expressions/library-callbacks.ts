@@ -196,7 +196,7 @@ export function requiredLibraryCallbackRead(
  * not one, whatever declares it: an argument evaluated in between can assign
  * a `let`, a `var`, a parameter or another module's exported binding, and a
  * `const` read before its declaration throws where it is read. */
-function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
+export function isConstantOperand(lowerer: Lowerer, node: ts.Expression): boolean {
   const e = withoutParenthesesTypeWrappers(node);
   if (
     ts.isStringLiteralLike(e) ||

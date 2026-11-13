@@ -4452,9 +4452,14 @@ function validateFunction(
       e.fn === "text.encodeIntoStr";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
-      // their `bigint` option picks BigIntStats' reads over Stats'.
+      // their `bigint` option picks BigIntStats' reads over Stats'. The
+      // checked-dynamic extraction answers the handle the slot's member
+      // table reads, so it takes either table's type too.
       const statsVariant =
-        (e.fn === "fs.statSync" || e.fn === "fs.lstatSync" || e.fn === "fs.fstatSync") &&
+        (e.fn === "fs.statSync" ||
+          e.fn === "fs.lstatSync" ||
+          e.fn === "fs.fstatSync" ||
+          e.fn === "fs.statsFromDyn") &&
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
       if (!statsVariant)
@@ -5205,7 +5210,29 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+    // mkdirSync's value forms answer the first directory a recursive walk
+    // created, or undefined; the lowering fills the call site's union.
+    if (
+      e.fn === "fs.mkdirObjSync" ||
+      e.fn === "fs.mkdirObjStrSync" ||
+      e.fn === "fs.mkdirDynSync" ||
+      e.fn === "fs.mkdirModeValueSync" ||
+      e.fn === "fs.mkdirModeStrValueSync"
+    ) {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "string") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) err(`libCall ${e.fn} must return the 'string | undefined' union`, e.loc);
+      return true;
+    }
+    if (
+      e.fn === "fs.statProbeSync" ||
+      e.fn === "fs.lstatProbeSync" ||
+      e.fn === "fs.statsFromDynOpt"
+    ) {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
         def &&

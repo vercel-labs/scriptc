@@ -78,6 +78,11 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // symbol keys are scr_symbol.c's, which every feature selecting the unit
   // requires (LINK_FEATURE_REQUIREMENTS).
   "scr_event_target.c -> scr_dyn_invoke.c": ["scr_dyn_invoke"],
+  // process.finalization's one-per-feature ExperimentalWarning asks the
+  // deferred warning queue, and every call that reaches the finalization
+  // registration selects dynAsync (runtime-features.ts). An events program
+  // without the registration (a held procStream type) links neither.
+  "scr_events.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
   // The checked-data writes with a mode, a flag or an options record

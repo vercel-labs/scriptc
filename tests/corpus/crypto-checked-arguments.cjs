@@ -52,6 +52,28 @@ attempt("generatePrimeSync string", () => crypto.generatePrimeSync("16"));
 attempt("generatePrimeSync float", () => crypto.generatePrimeSync(16.5));
 attempt("getCipherInfo object", () => crypto.getCipherInfo({}));
 
+// A surplus argument whose evaluation answers null or undefined still runs
+// for its side effects, and the call completes with the declared answers.
+attempt("surplus computed null", () => crypto.checkPrimeSync(5n, {}, (() => null)()));
+console.log("effects", effects.join());
+effects.length = 0;
+attempt("surplus computed undefined", () => crypto.checkPrimeSync(5n, {}, (() => undefined)()));
+console.log("effects", effects.join());
+effects.length = 0;
+attempt("surplus null literal", () => crypto.checkPrimeSync(5n, {}, null));
+attempt("surplus void 0", () => crypto.checkPrimeSync(5n, {}, void 0));
+attempt("getCipherInfo surplus undefined", () =>
+  crypto.getCipherInfo("aes-128-cbc", { ivLength: 16 }, (() => undefined)()).name,
+);
+console.log("effects", effects.join());
+effects.length = 0;
+attempt("hash update surplus null", () => crypto.createHash("sha256").update("x", "utf8", (() => null)()).digest("hex"));
+attempt("hash update surplus undefined", () =>
+  crypto.createHash("sha256").update("x", "utf8", (() => undefined)()).digest("hex"),
+);
+console.log("effects", effects.join());
+effects.length = 0;
+
 let sync = true;
 crypto.checkPrime(5n, (error, verdict) => {
   console.log("checkPrime options-as-callback", sync, error, verdict);

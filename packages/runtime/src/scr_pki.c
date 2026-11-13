@@ -3650,21 +3650,45 @@ static bool sp_x931_digest(mbedtls_md_type_t md) {
   return false;
 }
 
-/* The DigestInfo OpenSSL signs under X9.31 padding: the digest's
- * AlgorithmIdentifier and the digest itself, as the PKCS#1 v1.5 prefix
- * carries them (RSA_add_pkcs1_prefix). Written ending at em + bytes; its
- * length, or 0 when it does not fit or the ASN.1 writer fails. */
-static size_t sp_x931_digest_info(mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
-                                  unsigned char *em, size_t bytes) {
-  unsigned char *c = em + bytes;
-  int r, len = 0;
-  if ((r = mbedtls_asn1_write_octet_string(&c, em, hash, hash_len)) < 0) return 0;
-  len += r;
-  if ((r = sp_write_md_alg(&c, em, md)) < 0) return 0;
-  len += r;
-  if ((r = mbedtls_asn1_write_len(&c, em, (size_t)len)) < 0) return 0;
-  if ((r = mbedtls_asn1_write_tag(&c, em, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0) return 0;
-  return (size_t)(em + bytes - c);
+static void sp_rsa_error(const char *packed, const char *reason, const char *code);
+
+/* The X9.31 hash identifier byte OpenSSL writes after the digest. */
+static int sp_x931_hash_id(mbedtls_md_type_t md) {
+  switch (md) {
+  case MBEDTLS_MD_SHA1:
+    return 0x33;
+  case MBEDTLS_MD_SHA256:
+    return 0x34;
+  case MBEDTLS_MD_SHA512:
+    return 0x35;
+  case MBEDTLS_MD_SHA384:
+    return 0x36;
+  default:
+    return -1;
+  }
+}
+
+/* OpenSSL's X9.31 encoding of a digest in a `bytes`-long block: 0x6B, a
+ * run of 0xBB filler, 0xBA, the digest, its hash identifier byte and 0xCC.
+ * Answers false with Node's error when the block cannot hold it. */
+static bool sp_x931_encode(mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
+                           unsigned char *em, size_t bytes) {
+  int id = sp_x931_hash_id(md);
+  if (bytes <= hash_len) {
+    sp_throw_openssl("1C8000AB", "Provider routines", "key size too small", "ERR_OSSL_KEY_SIZE_TOO_SMALL", true);
+    return false;
+  }
+  if (id < 0 || bytes < hash_len + 4) {
+    sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+    return false;
+  }
+  em[0] = 0x6B;
+  memset(em + 1, 0xBB, bytes - hash_len - 4);
+  em[bytes - hash_len - 3] = 0xBA;
+  memcpy(em + bytes - hash_len - 2, hash, hash_len);
+  em[bytes - 2] = (unsigned char)id;
+  em[bytes - 1] = 0xCC;
+  return true;
 }
 
 /* Applies the RSA padding of a signature operation. */
@@ -3811,20 +3835,12 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
             : mbedtls_rsa_rsassa_pss_sign_ext(rsa, sp_random, NULL, md, (unsigned)hash_len, hash, salt, sig);
     sig_len = bytes;
   } else if (sp_is_rsa(key->key) && key->padding == 5) {
-    /* X9.31: 0x6A || 0xBB... || 0xBA || DigestInfo, then the private
-     * operation. */
+    /* X9.31: the encoded digest, then the private operation. */
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
     if (!sp_x931_digest(md)) return NULL;
     unsigned char em[MBEDTLS_MPI_MAX_SIZE];
-    size_t info = sp_x931_digest_info(md, hash, hash_len, em, bytes);
-    if (info == 0 || bytes < info + 2) {
-      sp_throw_openssl("1C8000AB", "Provider routines", "key size too small", "ERR_OSSL_KEY_SIZE_TOO_SMALL", true);
-      return NULL;
-    }
-    memset(em, 0xBB, bytes - info - 1);
-    em[0] = 0x6A;
-    em[bytes - info - 1] = 0xBA;
+    if (!sp_x931_encode(md, hash, hash_len, em, bytes)) return NULL;
     r = mbedtls_rsa_private(rsa, sp_random, NULL, em, sig);
     mbedtls_platform_zeroize(em, sizeof em);
     sig_len = bytes;
@@ -3876,21 +3892,20 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
     return mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, any, sig) == 0;
   }
   if (sp_is_rsa(key->key) && key->padding == 5) {
-    /* X9.31: recover the encoding and check its header, filler, trailer
-     * and the DigestInfo it carries. */
+    /* X9.31: recover the encoding and check its header, filler, digest,
+     * hash identifier and trailer. */
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
     if (!sp_x931_digest(md)) return false;
     if (sig_len != bytes) return false;
+    int id = sp_x931_hash_id(md);
     unsigned char em[MBEDTLS_MPI_MAX_SIZE];
-    unsigned char expected[MBEDTLS_MPI_MAX_SIZE];
     if (mbedtls_rsa_public(rsa, sig, em) != 0) return false;
-    size_t info = sp_x931_digest_info(md, hash, hash_len, expected, bytes);
-    bool ok = info != 0 && bytes >= info + 2 && em[0] == 0x6A && em[bytes - info - 1] == 0xBA &&
-              memcmp(em + bytes - info, expected + bytes - info, info) == 0;
-    for (size_t i = 1; ok && i < bytes - info - 1; i++) ok = em[i] == 0xBB;
+    bool ok = id >= 0 && bytes >= hash_len + 4 && em[0] == 0x6B && em[bytes - hash_len - 3] == 0xBA &&
+              em[bytes - 2] == (unsigned char)id && em[bytes - 1] == 0xCC &&
+              memcmp(em + bytes - hash_len - 2, hash, hash_len) == 0;
+    for (size_t i = 1; ok && i < bytes - hash_len - 3; i++) ok = em[i] == 0xBB;
     mbedtls_platform_zeroize(em, sizeof em);
-    mbedtls_platform_zeroize(expected, sizeof expected);
     return ok;
   }
   if (sp_is_ec(key->key) && key->p1363) {

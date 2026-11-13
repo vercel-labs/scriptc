@@ -41,4 +41,12 @@ void scr_dyn_dirent_finish(ScrDyn *obj);
  * installs from a constructor — scr_string.h declares it beside the key.
  */
 
+/* process.ref(maybeRefable) / process.unref(maybeRefable): read the
+ * nodejs.ref / nodejs.unref symbol on the value (falling back to its ref /
+ * unref member) and call it with the value as the receiver. null and
+ * undefined are Node's no-op; a non-callable member's TypeError propagates
+ * from the call, so both can throw (MAY THROW). */
+void scr_process_ref(ScrDyn *maybe);
+void scr_process_unref(ScrDyn *maybe);
+
 #endif /* SCR_SYMBOL_H */

@@ -775,6 +775,13 @@ function buildLibFnSignatures() {
     "process.threadCpuUserDiff": { argTypes: [F64], result: F64 },
     "process.threadCpuSystemDiff": { argTypes: [F64], result: F64 },
     "process.cpuPrevValidate": { argTypes: [F64, F64], result: VOID },
+    /** cpuUsage(prev) / threadCpuUsage(prev) for a prev the frontend cannot
+     * type as { user, system }: Node's validation of a truthy prev (the
+     * object and field TypeErrors, the non-negative finite ERR_INVALID_ARG_VALUE
+     * RangeError) followed by one clock sample (thread != 0 picks the thread
+     * clock), then cpuDynField(0/1) reads the user/system difference. */
+    "process.cpuDynPrepare": { argTypes: [DYN, F64], result: VOID },
+    "process.cpuDynField": { argTypes: [F64], result: F64 },
     "process.rusage": { argTypes: [F64], result: F64 },
     "process.activeResources": { argTypes: [], result: arrayOf(STRING) },
     "timers.immediateUnref": { argTypes: [F64], result: F64 },
@@ -810,6 +817,15 @@ function buildLibFnSignatures() {
     /** process.prependListener("exit", cb): the same listener in front of
      * the exit registry's existing entries. */
     "process.prependExit": { argTypes: [null], result: VOID },
+    /** The process 'beforeExit' event — process.on/once/off/removeListener/
+     * prependListener("beforeExit"). Same callback shapes and adapters as
+     * 'exit', but a registry of its own: listeners run each time the loop
+     * runs out of ref'd work (main thread only) with process.exitCode, and
+     * work they schedule re-enters the loop (Node re-emits at the next
+     * exhaustion). Never throw. */
+    "process.onBeforeExit": { argTypes: [null, BOOL], result: VOID },
+    "process.offBeforeExit": { argTypes: [null], result: VOID },
+    "process.prependBeforeExit": { argTypes: [null], result: VOID },
     /** process.stdin listener registration — stdin.on/once("data" | "end" |
      * "error", cb). args: [cb, once bool]. data callbacks: () => void or
      * (chunk: Uint8Array) => void; end: () => void; error: () => void or
@@ -1011,6 +1027,14 @@ function buildLibFnSignatures() {
      * -20..19, RangeError ERR_OUT_OF_RANGE), then the priority; a failure
      * throws Node's SystemError. */
     "os.setPriority": { argTypes: [F64, F64], result: VOID },
+    /** The checked-dynamic forms, for arguments untyped JavaScript supplies
+     * (a string, a boolean, an object, a value only the runtime knows):
+     * Node's whole argument ladder runs in the runtime — getPriority's
+     * default pid, setPriority's one-argument shift, validateInteger's
+     * ERR_INVALID_ARG_TYPE rendered from the value, then the range checks
+     * and the call. May throw. */
+    "os.getPriorityChk": { argTypes: [DYN], result: F64 },
+    "os.setPriorityChk": { argTypes: [DYN, DYN], result: VOID },
     /** os.cpus(): cpusTake snapshots every CPU and answers the count;
      * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
      * 4 idle, 5 irq) read the snapshot. Never throw. */
@@ -1030,9 +1054,21 @@ function buildLibFnSignatures() {
      * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
      * Never throws. */
     "process.umask": { argTypes: [F64], result: F64 },
+    /** The umask argument validators Node runs before the call: an integer
+     * in [0, 4294967295] (ERR_OUT_OF_RANGE RangeErrors, catchable). */
+    "process.umaskChk": { argTypes: [F64], result: F64 },
+    /** umask(expr) for a non-number expr: Node's parseFileMode — a string
+     * must be octal ([0-7]+, else ERR_INVALID_ARG_VALUE), other types are
+     * the ERR_INVALID_ARG_TYPE TypeError. */
+    "process.umaskDyn": { argTypes: [DYN], result: F64 },
     /** chdir(2) — throws Node's fs-shaped error (ENOENT/EACCES/ENOTDIR,
      * syscall "chdir") on failure. */
     "process.chdir": { argTypes: [STRING], result: VOID },
+    /** chdir(expr) for a non-string expr: Node's validateString rejects it
+     * with the ERR_INVALID_ARG_TYPE "directory" message (no ToString — an
+     * object, array, null and a symbol all throw), and a string takes the
+     * same call. */
+    "process.chdirDyn": { argTypes: [DYN], result: VOID },
     "process.loadEnvFile": { argTypes: [DYN], result: VOID },
     /** process._exiting: true once the exit sequence began (exit listeners
      * running) — the runtime flag scr_run_exit_listeners/process.exit set.
@@ -3419,6 +3455,10 @@ function buildLibFnSignatures() {
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "child.propsOnDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
     "process.connected": { argTypes: [], result: BOOL },
+    /** process.channel: the fork IPC channel (undefined without one, null
+     * once disconnected, else the cached Control object with ref()/
+     * unref()). +1. Never throws. */
+    "process.channel": { argTypes: [], result: DYN },
     /** Whether this fork child opened its channel; part of process.send's
      * presence in programs with fork targets. Never throws. */
     "process.ipcOpen": { argTypes: [], result: BOOL },
@@ -4503,15 +4543,32 @@ function buildLibFnSignatures() {
      * interned undefined-arm instance). BOTH source forms — `process.env.FOO`
      * and `process.env[expr]` — lower here. Purely static; never throws. */
     "process.envGet": { argTypes: [STRING], result: VOID },
+    /** `process.env[expr]` with a key the frontend cannot fence to a string:
+     * Node's proxy ToStrings the key (a Symbol reads undefined rather than
+     * throwing — the runtime's envGetDyn does the same) and answers the
+     * same interned `string | undefined` union as process.envGet. A key
+     * object whose toString throws propagates that throw. */
+    "process.envGetDyn": { argTypes: [DYN], result: VOID },
+    /** `process.env[k] = v` for a non-string value: Node's proxy ToStrings
+     * the value (a Symbol value throws the toString TypeError). */
+    "process.envSetDyn": { argTypes: [STRING, DYN], result: VOID },
+    /** Both sides dynamic: the key is ToString'd first, then the value —
+     * Node's proxy order — so a key or value that throws throws in that
+     * order. */
+    "process.envSetKeyDyn": { argTypes: [DYN, DYN], result: VOID },
     /** setenv(3): (name, value) string args → void. Later envGet reads and
-     * spawned children observe the write, like Node (values are strings —
-     * the frontend fences non-string RHS). Never throws. */
+     * spawned children observe the write, like Node (a non-string RHS takes
+     * the checked-dynamic envSetDyn, whose ToString Node's proxy runs).
+     * The frontend rejects writes when --define fixes the variable. */
     "process.envSet": { argTypes: [STRING, STRING], result: VOID },
     /** `delete process.env[NAME]` — unsetenv(3): the mutation is visible to
      * every later read (process.envGet asks getenv fresh) and inherited by
      * spawned children, exactly Node. Statement position only (JS's boolean
      * result is constant true there). Borrows the name; never throws. */
     "process.envUnset": { argTypes: [STRING], result: VOID },
+    /** `delete process.env[expr]`: the same unsetenv, with Node's proxy
+     * ToString of the key (a Symbol key is a no-op answering true). */
+    "process.envUnsetDyn": { argTypes: [DYN], result: VOID },
     /** The whole environment as alternating [k0, v0, k1, v1, ...] strings in
      * environ order — the raw material of the process.env SNAPSHOT record
      * (the frontend's interned %env.snapshot helper keyed-writes the pairs
@@ -4519,11 +4576,27 @@ function buildLibFnSignatures() {
      * array; never throws. */
     "process.envPairs": { argTypes: [], result: arrayOf(STRING) },
     "process.exit": { argTypes: [F64], result: VOID },
+    /** process.abort(): settles stdout, then raises SIGABRT with the default
+     * disposition (Node's dump names its own frames, so the compiled binary
+     * raises the signal without it). Never returns. */
+    "process.abort": { argTypes: [], result: VOID },
+    /** process.finalization: the stable register/registerBeforeExit/
+     * unregister object (fresh +1 reference to one cached value). */
+    "process.finalization": { argTypes: [], result: DYN },
+    /** process.exit(expr) for a non-number expr: Node's exitCode setter
+     * converts ('' is a TypeError, ' ' is 0, '0x10' is 16, null and
+     * undefined clear) before exiting with the resulting status. */
+    "process.exitDyn": { argTypes: [DYN], result: VOID },
     /** Numeric process.exitCode write (integer validation, implicit exit status). */
     "process.setExitCode": { argTypes: [F64], result: VOID },
     /** The process.exitCode write of a program that also reads the
      * property: the same validation, and the code counts as assigned. */
     "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
+    /** Dyn process.exitCode writes: Node's conversion (' ' → 0, '0x10' →
+     * 16, null/undefined clear, '' and non-numeric text are the TypeError)
+     * then the integer validation. */
+    "process.setExitCodeDyn": { argTypes: [DYN], result: VOID },
+    "process.setExitCodeDynTracked": { argTypes: [DYN], result: VOID },
     /** The code for process.exit() with no argument, or zero when unset. */
     "process.currentExitCode": { argTypes: [], result: F64 },
     /** Whether process.exitCode reads a code rather than undefined. Never throws. */
@@ -4545,6 +4618,34 @@ function buildLibFnSignatures() {
     "process.geteuid": { argTypes: [], result: F64 },
     "process.getegid": { argTypes: [], result: F64 },
     "process.getgroups": { argTypes: [], result: arrayOf(F64) },
+    /** setuid(2) / seteuid(2) / setgid(2) / setegid(2), setgroups(2) and
+     * initgroups(3): Node's JS wrappers validate the id (a uint32 number or
+     * a name string) and the runtime answers Node's ERR_UNKNOWN_CREDENTIAL,
+     * ErrnoException and ERR_INVALID_ARG_TYPE errors (MAY THROW). */
+    "process.setuid": { argTypes: [DYN], result: VOID },
+    "process.seteuid": { argTypes: [DYN], result: VOID },
+    "process.setgid": { argTypes: [DYN], result: VOID },
+    "process.setegid": { argTypes: [DYN], result: VOID },
+    "process.setgroups": { argTypes: [DYN], result: VOID },
+    "process.initgroups": { argTypes: [DYN, DYN], result: VOID },
+    /** process.hasUncaughtExceptionCaptureCallback() and its setter: the
+     * setter takes a function or null, and a second callback throws Node's
+     * ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET. */
+    "process.hasUncaughtCapture": { argTypes: [], result: BOOL },
+    "process.setUncaughtCapture": { argTypes: [DYN], result: VOID },
+    /** process.debugPort: 9229 until written; the setter keeps the previous
+     * value when Node's range check refuses the write (ERR_OUT_OF_RANGE). */
+    "process.debugPort": { argTypes: [], result: F64 },
+    "process.setDebugPort": { argTypes: [DYN], result: VOID },
+    /** process.sourceMapsEnabled: false until setSourceMapsEnabled(true);
+     * the setter validates a boolean (ERR_INVALID_ARG_TYPE). */
+    "process.sourceMapsEnabled": { argTypes: [], result: BOOL },
+    "process.setSourceMapsEnabled": { argTypes: [DYN], result: VOID },
+    /** process.ref(maybeRefable) / process.unref(maybeRefable): read the
+     * nodejs.ref / nodejs.unref symbol (else the ref / unref member) and
+     * call it with the receiver. */
+    "process.ref": { argTypes: [DYN], result: VOID },
+    "process.unref": { argTypes: [DYN], result: VOID },
     /** process.ppid: the parent's pid at the read. Never throws. */
     "process.ppid": { argTypes: [], result: F64 },
     /** process.title: libuv's process title (argv[0] until set); setTitle
@@ -4552,6 +4653,9 @@ function buildLibFnSignatures() {
      * console title on Windows). Never throw. */
     "process.title": { argTypes: [], result: STRING },
     "process.setTitle": { argTypes: [STRING], result: VOID },
+    /** process.title = expr for a non-string expr: Node ToStrings the value
+     * (a Symbol throws; arrays join with ",") and writes the result. */
+    "process.setTitleDyn": { argTypes: [DYN], result: VOID },
     /** process.argv0: the original argv[0]. Never throws. */
     "process.argv0": { argTypes: [], result: STRING },
     /** process.release: the compatibility target's stable release object
@@ -4649,6 +4753,14 @@ function buildLibFnSignatures() {
      * constant true. */
     "process.kill": { argTypes: [F64, STRING], result: BOOL },
     "process.killNum": { argTypes: [F64, F64], result: BOOL },
+    /** kill(pid, expr) and kill(expr, signal) for expressions outside the
+     * fast paths: Node's loose `pid != (pid | 0)` guard (null and undefined
+     * are the type error; "1", [], true and the empty string convert), its
+     * signal grammar (a number that is not an int32 is ERR_UNKNOWN_SIGNAL
+     * with util.format's text; falsy signals mean SIGTERM), and the
+     * ToNumber/ToString conversions with their TypeError texts. */
+    "process.killSigDyn": { argTypes: [F64, DYN], result: BOOL },
+    "process.killDyn": { argTypes: [DYN, DYN], result: BOOL },
     /** The raw byte writes: one borrowed string arg → bool (constantly true
      * — this synchronous runtime never queues backpressure). stdoutWrite
      * shares console.log's stream, each call is submitted promptly, and
@@ -6366,6 +6478,13 @@ function buildLibFnSignatures() {
      * Node's payload. */
     "process.onRejectionHandled": { argTypes: [DYN, BOOL], result: VOID },
     "process.offRejectionHandled": { argTypes: [DYN], result: VOID },
+    /** process.on/once/off('multipleResolves', fn): the third rejection-event
+     * registry. A resolve/reject that reaches an already-resolved promise
+     * delivers ('resolve' | 'reject', promise, value) on a nextTick queued
+     * at that settle, once per settle in settle order, and the first
+     * delivery that reaches a listener warns DEP0160 once per process. */
+    "process.onMultipleResolves": { argTypes: [DYN, BOOL], result: VOID },
+    "process.offMultipleResolves": { argTypes: [DYN], result: VOID },
     /** process warnings (scr_async_dyn.c): onWarning/offWarning register
      * dyn listeners; emitWarning applies Node's full argument grammar over
      * the call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY

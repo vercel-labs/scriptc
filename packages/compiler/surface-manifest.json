@@ -2422,6 +2422,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.process.abort",
+      "kind": "node-builtin",
+      "name": "process.abort",
+      "status": "static",
+      "note": "flushes stdout and stderr and raises SIGABRT; without Node's native and JavaScript stack dumps"
+    },
+    {
       "id": "node-builtin.process.allowedNodeEnvironmentFlags",
       "kind": "node-builtin",
       "name": "process.allowedNodeEnvironmentFlags",
@@ -2479,6 +2486,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.process.debugPort",
+      "kind": "node-builtin",
+      "name": "process.debugPort",
+      "status": "static",
+      "note": "9229 until written; writes convert with ToInt32, accept 0 or 1024 to 65535, and keep the previous value on a refused write"
+    },
+    {
       "id": "node-builtin.process.env",
       "kind": "node-builtin",
       "name": "process.env",
@@ -2519,6 +2533,13 @@
       "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
     },
     {
+      "id": "node-builtin.process.finalization",
+      "kind": "node-builtin",
+      "name": "process.finalization",
+      "status": "static",
+      "note": "register, registerBeforeExit and unregister on one stable object; the callbacks run from process 'exit'/'beforeExit' listeners installed at the first registration"
+    },
+    {
       "id": "node-builtin.process.getBuiltinModule",
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
@@ -2556,11 +2577,25 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.process.hasUncaughtExceptionCaptureCallback",
+      "kind": "node-builtin",
+      "name": "process.hasUncaughtExceptionCaptureCallback",
+      "status": "static",
+      "note": "whether a capture callback is installed"
+    },
+    {
       "id": "node-builtin.process.hrtime",
       "kind": "node-builtin",
       "name": "process.hrtime",
       "status": "static",
       "note": "native monotonic tuple clock and bigint member; direct calls and stored JavaScript callable values"
+    },
+    {
+      "id": "node-builtin.process.initgroups",
+      "kind": "node-builtin",
+      "name": "process.initgroups",
+      "status": "static",
+      "note": "validates the user and extra group, then calls initgroups(3); absent on Windows"
     },
     {
       "id": "node-builtin.process.isTTY",
@@ -2602,6 +2637,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.process.ref",
+      "kind": "node-builtin",
+      "name": "process.ref",
+      "status": "static",
+      "note": "reads the nodejs.ref symbol (else the ref member) and calls a callable with the argument as receiver"
+    },
+    {
       "id": "node-builtin.process.release",
       "kind": "node-builtin",
       "name": "process.release",
@@ -2623,6 +2665,55 @@
       "note": "the rows read on process.stdout/stderr (terminal geometry)"
     },
     {
+      "id": "node-builtin.process.setUncaughtExceptionCaptureCallback",
+      "kind": "node-builtin",
+      "name": "process.setUncaughtExceptionCaptureCallback",
+      "status": "static",
+      "note": "installs a function or null; the callback takes precedence over uncaughtException listeners and a second install throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET"
+    },
+    {
+      "id": "node-builtin.process.setegid",
+      "kind": "node-builtin",
+      "name": "process.setegid",
+      "status": "static",
+      "note": "selects the effective group id with Node's id ladder; absent on Windows"
+    },
+    {
+      "id": "node-builtin.process.seteuid",
+      "kind": "node-builtin",
+      "name": "process.seteuid",
+      "status": "static",
+      "note": "selects the effective user id with Node's id ladder; absent on Windows"
+    },
+    {
+      "id": "node-builtin.process.setgid",
+      "kind": "node-builtin",
+      "name": "process.setgid",
+      "status": "static",
+      "note": "selects the process's group id with Node's id ladder; absent on Windows"
+    },
+    {
+      "id": "node-builtin.process.setgroups",
+      "kind": "node-builtin",
+      "name": "process.setgroups",
+      "status": "static",
+      "note": "takes an array of ids, validates every element by index, and answers the first unknown group; absent on Windows"
+    },
+    {
+      "id": "node-builtin.process.setuid",
+      "kind": "node-builtin",
+      "name": "process.setuid",
+      "status": "static",
+      "note": "selects the process's user id with Node's id ladder (a uint32 number or a name string, ERR_UNKNOWN_CREDENTIAL and the kernel's ErrnoException); absent on Windows"
+    },
+    {
+      "id": "node-builtin.process.sourceMapsEnabled",
+      "kind": "node-builtin",
+      "name": "process.sourceMapsEnabled",
+      "status": "static",
+      "note": "false until setSourceMapsEnabled stores a validated boolean"
+    },
+    {
       "id": "node-builtin.process.threadCpuUsage",
       "kind": "node-builtin",
       "name": "process.threadCpuUsage",
@@ -2641,6 +2732,13 @@
       "kind": "node-builtin",
       "name": "process.umask",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.process.unref",
+      "kind": "node-builtin",
+      "name": "process.unref",
+      "status": "static",
+      "note": "reads the nodejs.unref symbol (else the unref member) and calls a callable with the argument as receiver"
     },
     {
       "id": "node-builtin.process.uptime",

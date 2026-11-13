@@ -152,7 +152,24 @@ export function cjsResolvePaths(fromFile: string, request: string): string[] | n
 }
 
 const extensions = [".js", ".json", ".node"];
-const requireConditions = new Set(["node", "require", "node-addons", "module-sync", "default"]);
+const scriptcCondition = "scriptc";
+const requireConditions = new Set([
+  "node",
+  "require",
+  "node-addons",
+  "module-sync",
+  "default",
+  scriptcCondition,
+]);
+
+/** Condition keys with scriptc's own condition moved first: a package can
+ * point the code scriptc compiles at an adapter with a scriptc branch, and
+ * it is selected whatever order the map lists its conditions in. */
+function scriptcConditionFirst(keys: string[]): string[] {
+  const index = keys.indexOf(scriptcCondition);
+  if (index <= 0) return keys;
+  return [scriptcCondition, ...keys.slice(0, index), ...keys.slice(index + 1)];
+}
 const packageRequest = /^((?:@[^/\\%]+\/)?[^./\\%][^/\\%]*)(\/.*)?$/;
 const invalidSegment =
   /(^|\\|\/)((\.|%2e)(\.|%2e)?|(n|%6e|%4e)(o|%6f|%4f)(d|%64|%44)(e|%65|%45)(_|%5f)(m|%6d|%4d)(o|%6f|%4f)(d|%64|%44)(u|%75|%55)(l|%6c|%4c)(e|%65|%45)(s|%73|%53))(\\|\/|$)/i;
@@ -353,7 +370,7 @@ class CjsResolver {
           this.invalidConfig(pkg, base, '"exports" cannot contain numeric property keys.');
         }
       }
-      for (const condition of keys) {
+      for (const condition of scriptcConditionFirst(keys)) {
         if (!requireConditions.has(condition)) continue;
         const result = this.target(pkg, conditions[condition], key, wildcard, internal, base);
         if (result !== undefined) return result;

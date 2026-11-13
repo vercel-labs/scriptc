@@ -498,12 +498,58 @@ static bool scr_rej_fire(ScrRejListener **list, size_t *n, ScrDyn **args, size_t
 static SCR_TL ScrRejListener *scr_uncaught_ls[2];
 static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
+static void scr_uncaught_sync_hook(void);
+
+/* process.setUncaughtExceptionCaptureCallback's callback: when set, it
+ * handles every uncaught exception INSTEAD of the 'uncaughtException'
+ * listeners (after the monitors), and its own throw is the fatal error. */
+static SCR_TL ScrDyn *scr_capture_fn = NULL;
+
+static void scr_capture_teardown(void) {
+  scr_dyn_release(scr_capture_fn);
+  scr_capture_fn = NULL;
+}
+
+bool scr_process_has_uncaught_capture(void) { return scr_capture_fn != NULL; }
+
+/* node:internal/process/execution's setUncaughtExceptionCaptureCallback:
+ * null clears (checked first, so it never validates); anything that is not
+ * a function throws ERR_INVALID_ARG_TYPE; a second callback while one is
+ * active throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET. */
+void scr_process_set_uncaught_capture(ScrDyn *fn) {
+  if (fn->kind == SCR_DYN_NULL) {
+    scr_dyn_release(scr_capture_fn);
+    scr_capture_fn = NULL;
+    scr_uncaught_sync_hook();
+    return;
+  }
+  if (!scr_dyn_is_callable(fn)) {
+    scr_dyn_arg_type_fail("fn", "of type function or null", fn);
+    return;
+  }
+  if (scr_capture_fn != NULL) {
+    static const char msg[] =
+        "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                             "ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET");
+    return;
+  }
+  static SCR_TL bool armed = false;
+  if (!armed) {
+    armed = true;
+    scr_atexit(scr_capture_teardown);
+  }
+  scr_capture_fn = scr_dyn_retain(fn);
+  scr_uncaught_sync_hook();
+}
 
 static void scr_uncaught_sync_hook(void) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_pe_node) return; /* the hook raises through Node's process */
 #endif
-  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1]) ? scr_uncaught_dispatch : NULL;
+  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1] || scr_capture_fn)
+                                    ? scr_uncaught_dispatch
+                                    : NULL;
 }
 
 static void scr_uncaught_teardown(void) {
@@ -660,8 +706,21 @@ static int scr_uncaught_dispatch(bool from_promise) {
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
   scr_str_release(text);
   bool ok = scr_rej_fire(&scr_uncaught_ls[1], &scr_uncaught_n[1], args, 2);
-  bool handled = ok && scr_uncaught_n[0] > 0;
-  if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  bool handled;
+  if (ok && scr_capture_fn != NULL) {
+    /* The capture callback replaces the 'uncaughtException' listeners: it
+     * receives the error alone, and answering handles the exception. Its
+     * own throw is the fatal one (the pending exception the fatal path
+     * below prints). */
+    ScrDyn *capture_args[1] = {error};
+    ScrDyn *result = scr_dyn_call(scr_capture_fn, capture_args, 1, "callback");
+    ok = !scr_exc_pending();
+    scr_dyn_release(result);
+    handled = ok;
+  } else {
+    handled = ok && scr_uncaught_n[0] > 0;
+    if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  }
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
@@ -717,6 +776,144 @@ static void scr_rjh_dispatch(ScrPromise *p) {
   scr_dyn_release(boxed);
   scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
   SCR_PE_LEAVE();
+}
+
+/* ── process 'multipleResolves' ────────────────────────────────────────
+ * V8 reports a resolution or rejection that arrives at a promise which
+ * already resolved to Node's promiseRejectHandler, which — while a listener
+ * is registered — queues a nextTick emitting ('resolve' | 'reject',
+ * promise, value) and then, if that emit reached a listener, warns DEP0160
+ * ONCE per process. Node checks `hasMultipleResolvesListener` (its cached
+ * listener count) at the settle, so an unlistened promise schedules
+ * nothing; the tick re-checks the registry, so a listener removed before
+ * it runs sees nothing and warns nothing. The settle paths in scr_async.c
+ * call the hook; this unit owns the registry, the queued events and the
+ * deprecation. */
+static SCR_TL ScrRejListener *scr_mr_listeners = NULL;
+static SCR_TL size_t scr_nmr = 0, scr_mr_cap = 0;
+
+typedef struct {
+  ScrPromise *promise; /* +1 */
+  ScrDyn *value;       /* +1 */
+  int type;            /* 0 = resolve, 1 = reject */
+} ScrMrEvent;
+
+static SCR_TL ScrMrEvent *scr_mr_events = NULL;
+static SCR_TL size_t scr_mr_head = 0, scr_mr_len = 0, scr_mr_events_cap = 0;
+static SCR_TL bool scr_mr_events_armed = false;
+static SCR_TL bool scr_mr_warned = false;
+
+static void scr_mr_events_teardown(void) {
+  for (size_t i = scr_mr_head; i < scr_mr_len; i++) {
+    scr_promise_release(scr_mr_events[i].promise);
+    scr_dyn_release(scr_mr_events[i].value);
+  }
+  free(scr_mr_events);
+  scr_mr_events = NULL;
+  scr_mr_head = scr_mr_len = scr_mr_events_cap = 0;
+}
+
+static void scr_mr_teardown(void) {
+  for (size_t i = 0; i < scr_nmr; i++) scr_rej_release(&scr_mr_listeners[i]);
+  free(scr_mr_listeners);
+  scr_mr_listeners = NULL;
+  scr_nmr = scr_mr_cap = 0;
+}
+
+static void scr_mr_tick(void);
+
+/* A losing settle's value, already dyn (+1): dropped when nobody
+ * listens (scr_async.c's typed note has the same contract). */
+static void scr_mr_note_dyn(ScrPromise *p, int type, ScrDyn *value) {
+  if (scr_multiple_resolves_fn == NULL) {
+    scr_dyn_release(value);
+    return;
+  }
+  scr_multiple_resolves_fn(p, type, value);
+}
+
+/* The settle-time hook: the losing value moves into a queued event. */
+static void scr_mr_note(ScrPromise *p, int type, ScrDyn *value) {
+  if (!scr_mr_events_armed) {
+    scr_mr_events_armed = true;
+    scr_atexit(scr_mr_events_teardown);
+  }
+  if (scr_mr_len == scr_mr_events_cap) {
+    size_t cap = scr_mr_events_cap ? scr_mr_events_cap * 2 : 4;
+    ScrMrEvent *grown = realloc(scr_mr_events, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_mr_events = grown;
+    scr_mr_events_cap = cap;
+  }
+  scr_mr_events[scr_mr_len++] = (ScrMrEvent){scr_promise_retain(p), value, type};
+  scr_next_tick_raw(scr_mr_tick);
+}
+
+static void scr_mr_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* Node's own promise hooks report these */
+#endif
+  scr_multiple_resolves_fn = scr_nmr > 0 ? scr_mr_note : NULL;
+}
+
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once) {
+  if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "multipleResolves", fn)) return;
+  static SCR_TL bool teardown_armed = false;
+  if (!teardown_armed) {
+    teardown_armed = true;
+    scr_atexit(scr_mr_teardown);
+  }
+  scr_rej_push(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, fn, once);
+  scr_mr_sync_hook();
+}
+
+void scr_process_off_multiple_resolves(ScrDyn *fn) {
+  if (scr_pe_listen(3, "multipleResolves", fn)) return;
+  scr_rej_remove(scr_mr_listeners, &scr_nmr, fn);
+  scr_mr_sync_hook();
+}
+
+/* The DEP0160 report Node's deprecate() wrapper makes after a delivery
+ * reached a listener: once per process, dropped outright while
+ * process.noDeprecation is set (and then not marked, so a later delivery
+ * under a cleared flag still warns — Node's deprecated() wrapper checks
+ * the flag before its own once guard). */
+static void scr_mr_deprecate(void) {
+  if (scr_mr_warned || scr_process_deprecation_flag_on(0)) return;
+  scr_mr_warned = true;
+  static const char text[] = "The multipleResolves event has been deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0160", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+/* One queued event per losing settle, in settle order (Node's nextTick
+ * FIFO). The registry is re-read now: no listener left, no event. */
+static void scr_mr_tick(void) {
+  if (scr_mr_head == scr_mr_len) return;
+  ScrMrEvent ev = scr_mr_events[scr_mr_head++];
+  if (scr_mr_head == scr_mr_len) scr_mr_head = scr_mr_len = 0;
+  const char *name = ev.type == 0 ? "resolve" : "reject";
+  ScrStr *text = scr_str_new(name, ev.type == 0 ? 7 : 6);
+  ScrDyn *kind = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrDyn *boxed = scr_dyn_new_promise(ev.promise);
+  ScrDyn *args[3] = {kind, boxed, ev.value};
+  SCR_PE_ENTER();
+  bool listened = scr_nmr > 0;
+  bool ok = !listened || scr_rej_fire(&scr_mr_listeners, &scr_nmr, args, 3);
+  scr_mr_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
+  scr_dyn_release(kind);
+  scr_dyn_release(boxed);
+  if (listened && ok) scr_mr_deprecate();
+  scr_dyn_release(ev.value);
+  scr_promise_release(ev.promise);
 }
 
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
@@ -1029,6 +1226,7 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
 static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
   ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
   if (!scr_promise_is_pending(p)) {
+    scr_mr_note_dyn(p, 0, scr_dyn_retain(value));
     scr_dyn_release(value);
   } else {
     scr_promise_resolve_dyn(p, value); /* moves value in */
@@ -1068,7 +1266,12 @@ void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *r
   if (scr_exc_pending()) {
     ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
     if (now == p) scr_promise_reject_pending(p);
-    else scr_exc_clear();
+    else {
+      /* The box swapped on a thenable adoption: the throw is the losing
+       * settle V8 reports as reject-after-resolve. */
+      scr_promise_multiple_resolves_note(p, 1, scr_exc_current_cell());
+      scr_exc_clear();
+    }
     scr_promise_release(now);
   }
   scr_box_release(target);
@@ -1126,6 +1329,9 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
       scr_promise_fulfill_void(resolved);
       scr_box_set_ref(box, resolved);
     }
+  } else {
+    /* resolve() again after the first resolution (any kind). */
+    scr_mr_note_dyn(p, 0, scr_dyn_new_promise(source));
   }
   scr_promise_release(p);
 }
@@ -1227,22 +1433,29 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
-/* process.noDeprecation (0) and process.throwDeprecation (1): ordinary
- * writable process properties, undefined until the program assigns them.
- * A compiled binary takes no Node command-line flags, so only those
- * assignments set them. */
-static SCR_TL ScrDyn *scr_deprecation_flags[2] = {NULL, NULL};
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3):
+ * ordinary writable process properties, undefined until the program
+ * assigns them. A compiled binary takes no Node command-line flags, so
+ * only those assignments set them. */
+static SCR_TL ScrDyn *scr_deprecation_flags[4] = {NULL, NULL, NULL, NULL};
 static SCR_TL bool scr_deprecation_flags_registered = false;
 
+static size_t scr_deprecation_flag_slot(double which) {
+  if (which == 0) return 0;
+  if (which == 1) return 1;
+  return which == 2 ? 2 : 3;
+}
+
 static void scr_deprecation_flags_teardown(void) {
-  for (size_t i = 0; i < 2; i++) {
+  for (size_t i = 0; i < 4; i++) {
     scr_dyn_release(scr_deprecation_flags[i]);
     scr_deprecation_flags[i] = NULL;
   }
 }
 
 ScrDyn *scr_process_deprecation_flag(double which) {
-  ScrDyn *value = scr_deprecation_flags[which != 0];
+  ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot(which)];
   return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
@@ -1251,15 +1464,23 @@ void scr_process_set_deprecation_flag(double which, ScrDyn *value) {
     scr_deprecation_flags_registered = true;
     scr_atexit(scr_deprecation_flags_teardown);
   }
-  size_t slot = which != 0;
+  size_t slot = scr_deprecation_flag_slot(which);
   ScrDyn *previous = scr_deprecation_flags[slot];
   scr_deprecation_flags[slot] = scr_dyn_retain(value);
   scr_dyn_release(previous);
 }
 
 bool scr_process_deprecation_flag_on(int which) {
-  const ScrDyn *value = scr_deprecation_flags[which != 0];
+  const ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot((double)which)];
   return value != NULL && scr_dyn_truthy(value);
+}
+
+/* Node's onWarning trace test: process.traceProcessWarnings for every
+ * warning, process.traceDeprecation for deprecations too. A set flag makes
+ * the report print the warning's own stack in place of its one-line
+ * "Name: message" and drops the one-time hint. */
+static bool scr_warning_trace_on(bool deprecation) {
+  return scr_process_deprecation_flag_on(3) || (deprecation && scr_process_deprecation_flag_on(2));
 }
 
 /* The warning's name as warning.toString() reads it: the own property, or
@@ -1330,7 +1551,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
     ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
     if (!scr_exc_pending())
       (void)scr_ni_warning(w, code, detail,
-                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0),
+                           scr_process_deprecation_flag_on(3) != 0,
+                           scr_process_deprecation_flag_on(2) != 0);
     scr_dyn_release(code);
     scr_dyn_release(detail);
     return;
@@ -1345,15 +1568,23 @@ static void scr_warning_dispatch(ScrDyn *w) {
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
   if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
+  /* process.traceProcessWarnings / process.traceDeprecation: the report
+   * prints the warning's own stack instead of the one-line heading (Node's
+   * onWarning). The stack carries the heading too, so the name and message
+   * reads stay for the untraced report and for a warning whose stack was
+   * deleted. */
+  bool trace = scr_warning_trace_on(deprecation);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
   ScrDyn *ed = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+  ScrDyn *es = trace && !scr_exc_pending() ? scr_warning_field(w, "stack", 5) : NULL;
   if (scr_exc_pending()) {
     /* A read that threw reports nothing; the exception propagates. */
     scr_str_release(name);
     scr_dyn_release(em);
     scr_dyn_release(ec);
     scr_dyn_release(ed);
+    scr_dyn_release(es);
     return;
   }
   ScrJsonBuf report;
@@ -1366,11 +1597,18 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_put_str(&report, ec->v.str);
     scr_jb_puts(&report, "] ");
   }
-  if (name) scr_jb_put_str(&report, name);
-  else scr_jb_puts(&report, "Warning");
+  if (es && es->kind == SCR_DYN_STR) {
+    /* The stack starts with the "Name: message" heading Node's untraced
+     * report spells out below. */
+    scr_jb_put_str(&report, es->v.str);
+  } else {
+    if (name) scr_jb_put_str(&report, name);
+    else scr_jb_puts(&report, "Warning");
+    scr_jb_puts(&report, ": ");
+    if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  }
   scr_str_release(name);
-  scr_jb_puts(&report, ": ");
-  if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  scr_dyn_release(es);
   if (ed && ed->kind == SCR_DYN_STR) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
@@ -1378,9 +1616,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_dyn_release(em);
   scr_dyn_release(ec);
   scr_dyn_release(ed);
-  /* Node's one-time trace hint, after the first report; deprecations
-   * name their own trace flag. */
-  if (!scr_warning_trace_hint_shown) {
+  /* Node's one-time trace hint, after the first untraced report;
+   * deprecations name their own trace flag. */
+  if (!trace && !scr_warning_trace_hint_shown) {
     scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
@@ -1438,6 +1676,7 @@ static void scr_pe_move_all(void) {
               SCR_UNCAUGHT_EVENT(false), front);
   scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection", front);
   scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled", front);
+  scr_pe_move(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, "multipleResolves", front);
   ScrDyn **warn = scr_warn_listeners;
   size_t nwarn = scr_nwarn;
   scr_warn_listeners = NULL;

@@ -1,8 +1,8 @@
-fenced.ts:5:13 - error SC2020: 'process.hasUncaughtExceptionCaptureCallback' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:5:13 - error SC2020: 'process.config' is typed by @types/node but has no scriptc lowering yet
 
   4 |  * or a binary that runs with the wrong behavior. */
-  5 | console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
-    |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | console.log(process.config); // the process introspection statics and the capture-callback probe lower now; the build configuration does not
+    |             ^~~~~~~~~~~~~~
   6 | /* setInterval lowers, and under @types/node its Timeout RETURN now maps
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)

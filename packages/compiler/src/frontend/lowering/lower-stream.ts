@@ -3560,14 +3560,12 @@ function pipelineOptions(
 
 /** stream.isDestroyed, isErrored, isDisturbed, isReadable and isWritable
  * (and Readable.isDisturbed): Node's duck-typed predicates. A value typed
- * as a stream class answers from the stream's state; an untyped value, a
- * union and a primitive are judged at run time, where a native stream
- * answers the same way, a primitive answers as Node's property reads do,
- * and any other value throws by name. Values of other static types are
- * refused here: Node would judge them by properties this lowering does
- * not read. The answer converts to the type the checker gives the call
- * (boolean, or boolean | null where Node answers null for a value
- * without that side). */
+ * as a stream class answers from the stream's state; every other value is
+ * judged at run time, where a native stream answers the same way, a web
+ * stream answers through its state, and any other value answers as Node's
+ * property reads do (a primitive carries none of them). The answer
+ * converts to the type the checker gives the call (boolean, or
+ * boolean | null where Node answers null for a value without that side). */
 function lowerStreamPredicate(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3651,14 +3649,6 @@ function lowerStreamPredicate(
       : lowerer.lowerExpr(node);
     const info =
       value.type.kind === "object" ? lowerer.classes.get(value.type.className) : undefined;
-    const primitive =
-      value.type.kind === "string" ||
-      value.type.kind === "f64" ||
-      value.type.kind === "bool" ||
-      value.type.kind === "bigint" ||
-      value.type.kind === "symbol" ||
-      value.type.kind === "nullT" ||
-      value.type.kind === "undefinedT";
     if (streamSidesOf(lowerer, info)) {
       answer = {
         kind: "libCall",
@@ -3667,12 +3657,12 @@ function lowerStreamPredicate(
         type: DYN,
         loc,
       };
-    } else if (
-      value.type.kind === "dyn" ||
-      ((primitive || value.type.kind === "union") && lowerer.dynConvertible(value.type))
-    ) {
+    } else if (value.type.kind === "dyn" || lowerer.dynConvertible(value.type)) {
       // The checker's type and the lowered value's can differ (a literal
-      // `undefined`, a narrowed binding): the lowered value decides.
+      // `undefined`, a narrowed binding): the lowered value decides. Every
+      // value Node's predicates accept takes this path, so a plain object,
+      // an array, a function or a class instance is judged by the state
+      // members it carries, as Node's duck typing judges it.
       answer = {
         kind: "libCall",
         fn: "stream.isDyn",
@@ -3684,7 +3674,7 @@ function lowerStreamPredicate(
       lowerer.noLowering(
         `${what} over a '${lowerer.fmt(value.type)}'`,
         node,
-        "the predicates answer for the node:stream classes, for untyped values that hold one, and for primitives",
+        "every value the predicates accept converts to a checked-dynamic value; this type does not",
       );
     }
   }
@@ -6419,13 +6409,6 @@ function lowerOperatorValue(
     return lowerDynObjectLiteral(lowerer, node);
   const v = lowerer.lowerExpr(node);
   if (v.type.kind === "dyn") return v;
-  if (literalObject && v.type.kind !== "undefinedT" && v.type.kind !== "nullT") {
-    lowerer.noLowering(
-      `${what} that are not an object literal`,
-      node,
-      "write the options inline, e.g. { concurrency: 2 }",
-    );
-  }
   if (!lowerer.dynConvertible(v.type)) {
     lowerer.noLowering(`${what} of type '${lowerer.fmt(v.type)}'`, node);
   }
@@ -6524,20 +6507,23 @@ function lowerStreamOperator(
       );
     }
     case "find": {
-      const t = lowerer.typeOf(call);
-      const inner = lowerer.checker.getTypeArguments(t as ts.TypeReference)[0];
-      if (inner && !(inner.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown))) {
-        lowerer.noLowering(
-          "find with a type-guard callback",
-          call,
-          "the result is a checked-dynamic value — use a boolean predicate and narrow the result",
-        );
-      }
+      const signature = lowerer.checker.getResolvedSignature(call);
+      const guard =
+        signature !== undefined &&
+        lowerer.checker.getTypePredicateOfSignature(signature) !== undefined;
       const fn = fnArg(1);
-      return lib("readable.opFind", [recv, fn, ...withSignal(opts(1))], {
+      const answer = lib("readable.opFind", [recv, fn, ...withSignal(opts(1))], {
         kind: "promise",
         inner: DYN,
       });
+      if (!guard) return answer;
+      // A type-guard callback narrows the answer's type: the runtime value
+      // is checked-dynamic, and the promise is checked against the
+      // declared result when it settles.
+      const expected = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return expected && !typeEquals(answer.type, expected)
+        ? lowerer.coerceToExpected(answer, expected)
+        : answer;
     }
     case "reduce": {
       const t = lowerer.typeOf(call);
@@ -6555,11 +6541,11 @@ function lowerStreamOperator(
         } else if (mapped?.kind === "string") {
           kind = 3;
           inner = STRING;
-        } else if (mapped?.kind !== "dyn") {
+        } else if (!mapped || (mapped.kind !== "dyn" && !lowerer.dynConvertible(mapped))) {
           lowerer.noLowering(
             `reduce with a '${mapped ? lowerer.fmt(mapped) : lowerer.checker.typeToString(resultTs)}' result`,
             call,
-            "reduce results are numbers, booleans, strings, or checked-dynamic values",
+            "the accumulator must convert to a checked-dynamic value",
           );
         }
       }
@@ -6570,13 +6556,23 @@ function lowerStreamOperator(
       );
       const o = bind(opts(2), "%opOptions");
       const head = [recv, fn, init, boolLit(args.length >= 2, loc), o, numLit(kind, loc)];
-      if (!takesOptions) return lib("readable.opReduce", head, { kind: "promise", inner });
-      const setup = reduceSignalSetup(lowerer, o, loc);
-      decls.push(...setup.stmts);
-      return lib("readable.opReduceSignal", [...head, setup.abort, setup.cbOpts], {
-        kind: "promise",
-        inner,
-      });
+      let answer: IrExpr;
+      if (!takesOptions) {
+        answer = lib("readable.opReduce", head, { kind: "promise", inner });
+      } else {
+        const setup = reduceSignalSetup(lowerer, o, loc);
+        decls.push(...setup.stmts);
+        answer = lib("readable.opReduceSignal", [...head, setup.abort, setup.cbOpts], {
+          kind: "promise",
+          inner,
+        });
+      }
+      // A checked-dynamic accumulator (a record, say) settles as its
+      // declared type when the promise is awaited.
+      const expected = kind === 0 ? lowerer.mapTypeOf(lowerer.typeOf(call)) : null;
+      return expected && !typeEquals(answer.type, expected)
+        ? lowerer.coerceToExpected(answer, expected)
+        : answer;
     }
   }
   throw new InternalCompilerError(`unknown stream operator ${member}`);

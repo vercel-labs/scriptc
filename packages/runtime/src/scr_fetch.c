@@ -700,6 +700,26 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* util.transferableAbortSignal(signal): node checks the argument and
+ * answers the same signal. The transfer marking it leaves on the signal is
+ * read only by structuredClone/postMessage, which copy any AbortSignal the
+ * same way, so the same box (+1) is the whole observable behavior. */
+ScrDyn *scr_util_transferable_abort_signal(ScrDyn *signal) {
+  if (signal == NULL) signal = scr_dyn_undefined();
+  if (signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
+  return scr_dyn_retain(signal);
+}
+
+/* util.transferableAbortController(): an ordinary AbortController (+1),
+ * whose signal carries the same (unobserved) transfer marking. */
+ScrDyn *scr_util_transferable_abort_controller(void) {
+  return scr_fetch_abort_controller_new();
+}
+
 static ScrDyn *sf_abort_controller_invoke(
     void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
     size_t argc, const char *what) {
@@ -7113,6 +7133,44 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   return result;
 }
 
+#ifdef SCR_WEB_BODIES
+/* fetch() of an object URL (URL.createObjectURL's "blob:nodedata:<uuid>"):
+ * the registered Blob or File answers 200 OK with its bytes, its size as
+ * Content-Length and its type as Content-Type (an empty value when the
+ * Blob carries none), like undici's blob: response. The request URL is
+ * already serialized without its fragment; only GET reaches here. */
+static ScrDyn *sf_object_url_response(ScrStr *url) {
+  ScrDyn *blob = scr_url_lookup_object_url(url);
+  if (!blob) { sf_type_error("fetch failed"); return NULL; }
+  ScrBytes *bytes = NULL;
+  ScrStr *type = NULL;
+  bool ok = sf_blob_body(blob, &bytes, &type);
+  scr_dyn_release(blob);
+  if (!ok) { sf_type_error("fetch failed"); return NULL; }
+  size_t size = bytes->len;
+  ScrDyn *body = scr_dyn_new_bytes(bytes); scr_bytes_release(bytes);
+  ScrDyn *headers = scr_dyn_new_obj();
+  char length_text[32];
+  int length_len = snprintf(length_text, sizeof length_text, "%zu", size);
+  ScrStr *length_value = scr_str_new(length_text, (size_t)length_len);
+  scr_dyn_obj_set(headers, "content-length", 14, scr_dyn_new_str(length_value));
+  scr_str_release(length_value);
+  ScrStr *mime = type ? type : scr_str_new("", 0);
+  scr_dyn_obj_set(headers, "content-type", 12, scr_dyn_new_str(mime));
+  scr_str_release(mime);
+  ScrDyn *init = scr_dyn_new_obj(); scr_dyn_obj_set(init, "headers", 7, headers);
+  ScrStr *ok_text = scr_str_new("OK", 2);
+  scr_dyn_obj_set(init, "statusText", 10, scr_dyn_new_str(ok_text)); scr_str_release(ok_text);
+  ScrDyn *result = scr_fetch_response_new(body, init); scr_dyn_release(body); scr_dyn_release(init);
+  if (result) {
+    SfResponse *response = result->v.handle.ptr;
+    scr_str_release(response->url); response->url = scr_str_new(url->data, url->len);
+    response->headers->immutable = true;
+  }
+  return result;
+}
+#endif
+
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (init && init->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(init);
@@ -7335,7 +7393,8 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
   bool https = sf_eq_ci(u->scheme, "https");
   bool data_url = sf_eq_ci(u->scheme, "data");
-  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url) {
+  bool object_url = sf_eq_ci(u->scheme, "blob");
+  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url && !object_url) {
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
     scr_str_release(method);
@@ -7425,6 +7484,28 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
     if (response) { scr_promise_resolve_dyn(promise, response); }
     else scr_promise_reject_pending(promise);
+    return promise;
+  }
+
+  /* An object URL resolves in-process to the registered blob's bytes;
+   * like undici's blob: scheme only GET is implemented — any other method
+   * is a "fetch failed" rejection. Without a Blob in the program the
+   * registry is necessarily empty (createObjectURL accepts only a Blob),
+   * so every lookup misses. */
+  if (object_url) {
+#ifdef SCR_WEB_BODIES
+    ScrDyn *response = NULL;
+    if (method->len == 3 && memcmp(method->data, "GET", 3) == 0) {
+      ScrStr *request_url = sf_url_serialize(u);
+      response = sf_object_url_response(request_url);
+      scr_str_release(request_url);
+    }
+#else
+    ScrDyn *response = NULL;
+#endif
+    scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
+    if (response) { scr_promise_resolve_dyn(promise, response); }
+    else return sf_reject_now(promise, "fetch failed");
     return promise;
   }
 

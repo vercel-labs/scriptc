@@ -224,6 +224,33 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
 });
 
+test("scr_util_compare builds its object model twin for the detached-buffer check", () => {
+  // util.isDeepStrictEqual's ArrayBuffer arm asks the mutable-buffers registry
+  // whether either side is detached, and answers V8's construct TypeError when
+  // both report length 0. ScrJsBufferOps exists only in the object model build,
+  // so a program with the object model links this unit's twin and every other
+  // program keeps the default object.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_util_compare.c",
+  );
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "js-om",
+    "js-om-workers",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
+});
+
 test("the dynamic call path reads an own call/apply/bind in one build", () => {
   // scr_dyn_invoke.c reads a function's own call/apply/bind before the
   // native lowering, in the same build as scr_json.c's member write path

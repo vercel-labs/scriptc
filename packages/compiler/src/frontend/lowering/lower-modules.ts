@@ -129,6 +129,7 @@ import {
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { customInspectRegistrations } from "./lower-inspect.js";
+import { classToStringRegistrations } from "./class-to-primitive.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
 import {
@@ -4404,8 +4405,13 @@ export function buildMain(lowerer: Lowerer): IrFunction {
     });
   }
   // Classes with custom inspect methods register their compiled calls for
-  // the runtime's inspect walk before any module runs, in every thread.
-  body.unshift(...customInspectRegistrations(lowerer, loc));
+  // the runtime's inspect walk, and classes whose conversion method the
+  // untyped path runs register their compiled String(instance), before any
+  // module runs, in every thread.
+  body.unshift(
+    ...classToStringRegistrations(lowerer, loc),
+    ...customInspectRegistrations(lowerer, loc),
+  );
   // Node's startup refusal (a resolution the graph carries that Node
   // rejects — preflight's Node-order resolution walk — or a module-LINK
   // SyntaxError from either named-import checker): the graph is refused

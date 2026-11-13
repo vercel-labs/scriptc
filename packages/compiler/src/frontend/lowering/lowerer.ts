@@ -4715,6 +4715,11 @@ export class Lowerer {
    * a checked-dynamic value may be a Node island value and code the build
    * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
+  /** Whether the program reads util.inspect's function value
+   * (programTouchesInspectTables), so its defaultOptions, colors and styles
+   * tables can change and static inspect renderings route through the
+   * runtime; computed on first use, null until then. */
+  inspectTablesTouched: boolean | null = null;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -6063,6 +6068,7 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    "inspectTablesTouched",
     // The census of the program's writes on the global object, a pure
     // function of its modules, read again when a unit replays.
     "globalObjectWrites",
@@ -7844,7 +7850,8 @@ export class Lowerer {
    * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
     if (ns.type.moduleId.startsWith("builtin:")) {
-      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
+      const esmNamespace = this.esmNamespaceOfModuleNsValue(ns);
+      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc, esmNamespace);
       // The namespace expression still runs first: an awaited import()
       // suspends the caller until the import settles.
       if (boxed === null || isSafeToRepeat(ns)) return boxed;
@@ -7858,6 +7865,21 @@ export class Lowerer {
     }
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
+  }
+
+  /** Whether a builtin module value is the ES module namespace OBJECT (an
+   * `import * as ns` binding or a dynamic import value), which Node brands
+   * as a module namespace, rather than the CommonJS exports object a
+   * require()/default-import/named-import spelling or a sub-namespace
+   * member (`fs.promises`) answers. A receiver-evaluation wrapper
+   * (`(await import("node:fs")).promises`) keeps its result's own value. */
+  private esmNamespaceOfModuleNsValue(expr: IrExpr): boolean {
+    if (expr.kind === "moduleNsRef") return expr.esmNamespace === true;
+    if (expr.kind === "seqExpr") {
+      const result = expr.result;
+      if (result.type.kind === "moduleNs") return this.esmNamespaceOfModuleNsValue(result);
+    }
+    return true;
   }
 
   /** A `Promise<module namespace>` taken as `Promise<unknown>` (or as
@@ -14065,6 +14087,25 @@ export class Lowerer {
             break;
           }
         }
+        // That class's conversion method runs the same way, from the
+        // untyped conversion runtime (classToStringRegistrations): the
+        // nearest declaration at or above the constructed class, like the
+        // custom inspect method. Its units exist only for classes whose
+        // plan the untyped conversion can run.
+        const converted = this.classes.get(name.slice(1, -".constructor".length)) ?? null;
+        for (const conversion of ["sym:toPrimitive", "toString"] as const) {
+          let declaredAt: ClassInfo | null = null;
+          for (let c = converted; c; c = c.base) {
+            if (units.has(`%${c.def.name}.${conversion}`)) {
+              declaredAt = c;
+              break;
+            }
+          }
+          if (declaredAt) {
+            this.noteVirtualEdge(declaredAt, conversion);
+            break;
+          }
+        }
       }
     };
     // Class EXPRESSIONS collect while init bodies lower (below): their
@@ -15073,16 +15114,6 @@ export class Lowerer {
       )
     )
       this.deferredRefusalWarnings.push(diag);
-  }
-
-  /** Whether the value of `node`, lowered as `value`, is a function the
-   * runtime holds as a plain function value: a typed function, or a held
-   * built-in constructor in an untyped slot. */
-  isFunctionValue(node: ts.Expression, value: IrExpr): boolean {
-    return (
-      value.type.kind === "func" ||
-      (value.type.kind === "dyn" && this.holdsBuiltinConstructor(node))
-    );
   }
 
   /** Whether every value of `node` is a built-in primitive constructor
@@ -17109,13 +17140,23 @@ export class Lowerer {
         if (object) return object;
       }
       // A node:path family is its module object (pathModuleValue), the
-      // bare module the target platform's family.
+      // bare module the target platform's family. The ES module spelling's
+      // value is the module namespace object instead: the same member
+      // surface, branded as a module namespace like Node's.
       if (
         expr.type.kind === "moduleNs" &&
         (expr.type.moduleId === "builtin:path" ||
           expr.type.moduleId === "builtin:path/posix" ||
           expr.type.moduleId === "builtin:path/win32")
       ) {
+        if (this.esmNamespaceOfModuleNsValue(expr)) {
+          const boxed = this.moduleNamespaceDyn(
+            expr as IrExpr & {
+              type: IrType & { kind: "moduleNs" };
+            },
+          );
+          if (boxed !== null) return boxed;
+        }
         const family =
           expr.type.moduleId !== "builtin:path"
             ? expr.type.moduleId.slice("builtin:".length)

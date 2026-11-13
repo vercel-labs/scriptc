@@ -4016,7 +4016,7 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
+      "n\n" +
         "{ a: 1 }\n" +
         "Error SC2020 colored inspect output of Error values has no lowering\n" +
         "[ 1, ... 1 more item ]\n" +

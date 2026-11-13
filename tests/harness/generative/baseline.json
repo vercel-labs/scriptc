@@ -495,7 +495,6 @@
     "2850-async-generators-protocol.ts/field": "refused",
     "2850-async-generators-protocol.ts/id": "refused",
     "2850-async-generators-protocol.ts/unknown": "refused",
-    "2894-child-stdin-backpressure.ts/unknown": "refused",
     "2917-builtin-callable-widths.ts/array": "silent-diff",
     "2949-url-password.ts/array": "refused",
     "2966-numeric-array-read-fusion.ts/array": "runtime-error",

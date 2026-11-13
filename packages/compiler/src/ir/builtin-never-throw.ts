@@ -12,6 +12,7 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "process.finalization",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   "global.bindingValue",
@@ -99,6 +100,17 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childFlowing",
   // Builds the flags object once from constants and retains it.
   "process.features",
+  // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the
+  // validation already ran, so the read cannot raise.
+  "process.cpuDynField",
+  // The capture-callback flag and the two process flags are plain reads
+  // of thread-local state; no allocation and no program code runs.
+  "process.hasUncaughtCapture",
+  "process.debugPort",
+  "process.sourceMapsEnabled",
+  // Reads the fork channel registry and answers undefined, null or the
+  // retained Control object; a plain process has no channel.
+  "process.channel",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a

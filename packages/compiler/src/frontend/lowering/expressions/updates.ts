@@ -180,6 +180,16 @@ function jsUnaryNegate(lowerer: Lowerer, expr: ts.PrefixUnaryExpression, raw: Ir
   };
 }
 
+/** Whether `expr`'s own value is never consumed: it is the whole of an
+ * expression statement (through parentheses), where the boolean a `!`
+ * computes is thrown away. */
+function discardedNegation(expr: ts.PrefixUnaryExpression): boolean {
+  let outer: ts.Node = expr;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+}
+
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
   // Unary plus and minus convert with ToNumber, whose number hint reads the
@@ -280,7 +290,11 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // OPERAND, and the query names exactly that node: an admitted
       // discarded negation nested inside this one (`!(() => { !voidCall();
       // return false; })()`) must not consume a boolean this negation reads.
-      if (lowerer.opinionAtNode(expr.operand, 1345)) return lowerer.lowerExpr(expr.operand);
+      // A negation whose boolean IS consumed (`!this.route()`) takes the
+      // ordinary path below: the admitted site is the same OPERAND node, so
+      // the record alone cannot tell the two apart.
+      if (discardedNegation(expr) && lowerer.opinionAtNode(expr.operand, 1345))
+        return lowerer.lowerExpr(expr.operand);
       // `!runtimeBuffer` over an alias of the Buffer global: Node always
       // defines Buffer (the condition twin is lowerCondition's).
       if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))

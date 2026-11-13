@@ -218,22 +218,27 @@ function lowerEnvironmentDeleteExpr(
   target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr {
   const loc = locOf(expr);
-  const key = ts.isPropertyAccessExpression(target)
+  // A dynamic key keeps Node's delete trap semantics: a Symbol removes
+  // nothing (and never converts), anything else ToStrings first. A string
+  // key keeps the plain unsetenv.
+  const key: IrExpr = ts.isPropertyAccessExpression(target)
     ? lowerDeleteKey(lowerer, target)
-    : lowerEnvironmentKey(lowerer, target.argumentExpression);
-  if (key.type.kind !== "string")
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      `'delete' of environment keys of '${lowerer.fmt(key.type)}' values (env keys are strings; a Symbol key removes nothing)`,
-    );
+    : lowerer.mapTypeOf(lowerer.typeOf(target.argumentExpression))?.kind === "string"
+      ? lowerEnvironmentKey(lowerer, target.argumentExpression)
+      : lowerer.lowerExprExpecting(target.argumentExpression, DYN);
   refuseDefinedEnvWrite(lowerer, key, target);
   return {
     kind: "seqExpr",
     stmts: [
       {
         kind: "exprStmt",
-        expr: { kind: "libCall", fn: "process.envUnset", args: [key], type: VOID, loc },
+        expr: {
+          kind: "libCall",
+          fn: key.type.kind === "string" ? "process.envUnset" : "process.envUnsetDyn",
+          args: [key],
+          type: VOID,
+          loc,
+        },
         loc,
       },
     ],

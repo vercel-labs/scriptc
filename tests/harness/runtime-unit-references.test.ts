@@ -111,7 +111,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
-  "scr_pki.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
+  // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
+  // that reaches it (the deprecated crypto.fips read) selects the
+  // dyn-async unit as well.
+  "scr_pki.c -> scr_async_dyn.c": [
+    "scr_emit_warning",
+    "scr_warning_emit_deferred",
+    "scr_warning_new",
+  ],
   // readline reading from a stream: creating the interface (rl.create)
   // selects the events units.
   "scr_stream.c -> scr_readline.c": [
@@ -132,7 +139,10 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // The module tables the compiler emits into a program that uses
   // WebAssembly (backend/llvm/wasm-modules.ts).
   "scr_wasm.c -> (the program)": ["scr_wasm_registry", "scr_wasm_untranslated"],
-  "scr_webstreams.c -> scr_inspect.c": ["scr_insp_dyn_format_s"],
+  // scr_webstreams.c's scr_insp_dyn_format_s reference is no longer listed
+  // here: scr_lib.c defines a weak fallback for it (and for crypto's
+  // deferred callback) so a link without those units resolves, which is what
+  // a runtime unit test binary needs on Mach-O.
 };
 
 interface Symbols {

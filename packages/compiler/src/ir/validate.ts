@@ -5484,7 +5484,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd" || e.fn === "cp.execFileOpts") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5799,6 +5799,12 @@ function validateFunction(
           e.loc,
         );
       }
+      return true;
+    }
+    if (e.fn === "child.channel") {
+      // subprocess.channel is a checked-dynamic value: the Control handle,
+      // undefined without an IPC channel, or null after a disconnect.
+      if (e.type.kind !== "dyn") err("libCall child.channel must return dyn", e.loc);
       return true;
     }
     return false;

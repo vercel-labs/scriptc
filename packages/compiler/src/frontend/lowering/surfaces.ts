@@ -1723,12 +1723,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
-      createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
-      createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+      createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
+      createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
       generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
       sign: { fn: "crypto.signOneshot", params: [], result: DYN },
       verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+      publicEncrypt: { fn: "crypto.publicEncrypt", params: [], result: DYN },
+      privateDecrypt: { fn: "crypto.privateDecrypt", params: [], result: DYN },
+      privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
+      publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
@@ -1763,6 +1767,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Checked-dynamic arguments, the result converted to the call site's
       // type (lowerPrimeCall).
       getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
+      // Node's message and error for every engine but "dynamic".
+      setEngine: { fn: "crypto.setEngine", params: [], result: VOID },
       checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
       generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
       generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -2687,6 +2693,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomBytesToString",
       "crypto.randomBytesCb",
       "crypto.randomBytesPromise",
+      // Node's own argument checks for the sizes, callbacks and surplus
+      // arguments the declared overloads do not describe.
+      "crypto.randomBytesAny",
+      "crypto.randomBytesAnyCb",
     ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
@@ -2704,8 +2714,24 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     getRandomValues: ["crypto.getRandomValuesDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
+    randomInt: [
+      "crypto.randomIntMax",
+      "crypto.randomIntCb",
+      "crypto.randomIntPromise",
+      // Node's own checks for the bounds and callback forms the declared
+      // overloads do not describe.
+      "crypto.randomIntAny",
+      "crypto.randomIntAnyCb",
+    ],
     randomUUID: ["crypto.randomUUIDOpts"],
+    // A callback only the dynamic checker can see takes the function gate
+    // before the deferred call.
+    generateKey: ["crypto.checkCallback"],
+    // A sign or verify callback of a type the checker cannot prove is a
+    // function may be undefined at run time, where Node answers
+    // synchronously; a function takes the asynchronous entry point.
+    sign: ["crypto.signOneshotCb", "crypto.signOneshotMaybe"],
+    verify: ["crypto.verifyOneshotCb", "crypto.verifyOneshotMaybe"],
   },
   tty: {
     isatty: ["process.isTTYValue"],
@@ -3833,14 +3859,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
-    ...Object.fromEntries(
-      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
-        m,
-        "RSA encryption has no lowering — the asymmetric crypto surface is " +
-          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
-          "createSign, createVerify, createECDH, and createDiffieHellman",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",

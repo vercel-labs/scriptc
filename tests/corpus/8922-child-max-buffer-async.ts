@@ -63,6 +63,26 @@ async function main(): Promise<void> {
   console.log("infinity:", await run("printf abcdefghij", Infinity));
   console.log("execFile:", await runFile("/bin/sh", ["-c", "printf abcdefghij"], 4));
 
+  // The kill at the limit is the call's killSignal, not SIGTERM: a child
+  // that ignores SIGTERM is still killed when killSignal asks for SIGKILL.
+  await new Promise<void>((resolve) => {
+    const guard = setTimeout(() => {
+      console.log("killSignal: still running");
+      process.exit(3);
+    }, 5000);
+    const child = execFile(
+      "/bin/sh",
+      ["-c", 'trap "" TERM; printf abcdefghij; sleep 20'],
+      { maxBuffer: 4, killSignal: "SIGKILL" },
+      (error) => console.log("killSignal callback:", describe(error)),
+    );
+    child.on("exit", (code, signal) => {
+      clearTimeout(guard);
+      console.log("killSignal exit:", code, signal);
+      resolve();
+    });
+  });
+
   // The child is killed and its pipes are let go, so a grandchild that
   // keeps them open does not delay the callback.
   const started = Date.now();
@@ -128,5 +148,20 @@ async function main(): Promise<void> {
     thrown(() => execFile("/bin/echo", ["ran"], { maxBuffer: NaN }, () => console.log("not called"))),
   );
   console.log("invalid promisified:", thrown(() => void execFileAsync("/bin/echo", ["ran"], { maxBuffer: -1 })));
+
+  // A rejected option check consumes its maxBuffer: the next capture has
+  // the default limit again, not the failed call's.
+  try {
+    execFile("/bin/echo", ["ran"], { maxBuffer: 4, timeout: -5 }, () => console.log("not called"));
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log("bad timeout:", e.name, e.code);
+  }
+  await new Promise<void>((resolve) => {
+    exec("printf abcdefghij", (error, stdout) => {
+      console.log("after bad timeout:", describe(error), JSON.stringify(stdout));
+      resolve();
+    });
+  });
 }
 main();

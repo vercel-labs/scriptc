@@ -3174,8 +3174,13 @@ export type IrExpr =
    * for every program that held its numbers. */
   | { kind: "numLit"; value: number; spelling?: string; type: IrType; loc: SrcLoc }
   | { kind: "strLit"; value: string; type: IrType; loc: SrcLoc }
-  /** The singleton namespace token for one compiled or builtin module. */
-  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc }
+  /** The singleton namespace token for one compiled or builtin module.
+   * `esmNamespace` marks a builtin namespace that the ES module spelling
+   * (`import * as ns`, `await import("node:path")`) answers: the value is a
+   * module namespace OBJECT, while a require()/default-import/named-import
+   * value of the same module is its CommonJS exports object. Node brands
+   * only the former as a module namespace (util.types.isModuleNamespaceObject). */
+  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc; esmNamespace?: true }
   | { kind: "boolLit"; value: boolean; type: IrType; loc: SrcLoc }
   /** An `undefined` or `null` literal; `type` is the matching unit kind.
    * Valid ONLY as the immediate value of a `unionWrap` (the frontend's slot

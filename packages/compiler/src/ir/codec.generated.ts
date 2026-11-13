@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "3e6c9d4d707a1e88";
+export const IR_CODEC_LAYOUT = "c101478e57923355";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -177,7 +177,7 @@ const KEYS149: readonly string[] = ["kind","fn","args","type","loc","prototypeId
 const KEYS150: readonly string[] = ["kind","op","left","right","type","loc"];
 const KEYS151: readonly string[] = ["kind","method","receiver","args","type","loc"];
 const KEYS152: readonly string[] = ["kind","seed","type","loc"];
-const KEYS153: readonly string[] = ["kind","moduleId","type","loc"];
+const KEYS153: readonly string[] = ["kind","moduleId","type","loc","esmNamespace"];
 const KEYS154: readonly string[] = ["kind","className","args","type","loc"];
 const KEYS155: readonly string[] = ["kind","executor","resolves","type","loc"];
 const KEYS156: readonly string[] = ["kind","callee","args","type","loc"];
@@ -3459,6 +3459,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       w.str(v.moduleId);
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
+      if (v.esmNamespace === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.esmNamespace);
+      }
       return;
     }
     case "new": {
@@ -4429,7 +4434,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = r.str();
       const f1 = decIrType(r);
       const f2 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "moduleNsRef" }> = { kind: "moduleNsRef", moduleId: f0, type: f1, loc: f2 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<moduleNsRef>.esmNamespace") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "moduleNsRef" }>["esmNamespace"]>);
+      const o: Extract<IrExpr, { kind: "moduleNsRef" }> = { kind: "moduleNsRef", moduleId: f0, type: f1, loc: f2, ...(f3 !== undefined ? { esmNamespace: f3 } : {}) };
       return o;
     }
     case 51: {

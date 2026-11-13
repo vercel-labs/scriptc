@@ -143,6 +143,8 @@ export interface EarlyExecutableNativeFeatures {
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
+  utilMarkPromiseAsHandled?: boolean;
+  utilTraceSigInt?: boolean;
   dynBuffer?: boolean;
   fsPathValue?: boolean;
   builtinValues?: boolean;

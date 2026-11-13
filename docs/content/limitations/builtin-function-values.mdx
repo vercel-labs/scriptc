@@ -44,8 +44,10 @@ A class can extend `require("events")` directly.
 Other immutable aliases of table-backed Node builtins support direct calls, but cannot be passed elsewhere.
 `util.promisify` supports compile-time conversions of `child_process.execFile`, `child_process.exec`, `setTimeout` and `setImmediate` (to the `timers/promises` functions, as in Node), `stream.finished` and `stream.pipeline` (to the `stream/promises` functions, as in Node), the `zlib` callback one-shots `deflate`, `inflate`, `deflateRaw`, `inflateRaw`, `gzip`, `gunzip`, `unzip`, `brotliCompress`, `brotliDecompress`, `zstdCompress` and `zstdDecompress` (with or without options), the `crypto` callback functions `randomBytes`, `pbkdf2`, `scrypt`, `hkdf`, `randomFill`, `randomInt` and `generateKey`, `dns.lookup` (settling with `{ address, family }`, or the address array with `all: true`) and `dns.lookupService` (settling with `{ hostname, service }`), and the `fs` callback functions that have an `fs/promises` counterpart (`access`, `appendFile`, `chmod`, `chown`, `copyFile`, `lchown`, `link`, `lstat`, `lutimes`, `mkdir`, `mkdtemp`, `readFile`, `readdir`, `readlink`, `realpath`, `rename`, `rm`, `rmdir`, `stat`, `statfs`, `symlink`, `truncate`, `unlink`, `utimes`, and `writeFile`); calls through the converted function lower as the `fs/promises` call.
 
-`util.promisify` over an untyped function (a value typed `any`, a function whose parameters are untyped, or any other target in JavaScript) returns a native wrapper that follows Node's callback rules and carries the original's `name` and `length`, and throws Node's `ERR_INVALID_ARG_TYPE` for values that are not functions.
-Such a function with other own properties, `util.promisify.custom` among them, throws `SC2020` where `util.promisify` runs, and the wrapper does not report Node's DEP0174 warning when the original returns a promise.
+`util.promisify` over an untyped function (a value typed `any`, a function whose parameters are untyped, or any other target in JavaScript) returns a native wrapper that follows Node's callback rules, carries the original's own property descriptors (`name`, `length`, `prototype`, and any members the program added), and throws Node's `ERR_INVALID_ARG_TYPE` for values that are not functions.
+A truthy `util.promisify.custom` function on the original is what `util.promisify` answers, marked with the key, and a truthy value of another type throws Node's `ERR_INVALID_ARG_TYPE`; a falsy value leaves the wrapper.
+The same protocol runs for a function of a statically typed callback-last signature whose arguments and promise result convert through the checked-dynamic layer, and its wrapper carries the original's own descriptors too; a signature that layer cannot carry keeps the wrapper without consulting the property.
+The wrapper does not report Node's DEP0174 warning when the original returns a promise.
 
 `util.styleText` supports standard formats and aliases, `#RGB` and `#RRGGBB` hex colors, arrays of formats, nested ANSI resets, and explicit color enabling with `{ validateStream: false }`.
 Native calls accept standard process streams; custom native streams and mutations to `util.inspect.colors` remain unsupported.
@@ -67,9 +69,11 @@ In TypeScript, a `util.callbackify` result must reach a callback whose error par
 `util.debuglog` reads `NODE_DEBUG` as the process started.
 Its `%s` refuses functions and objects with symbol-keyed members, and object arguments are refused on a color terminal.
 
-`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, and byte views.
+`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, byte views and typed arrays, Dates, RegExps, Maps, Sets, URLs, URLSearchParams, ArrayBuffers and SharedArrayBuffers compared by their bytes, weak-collection identity, class instances, and Errors compared by message, name, `cause` and `errors`.
 Its optional third argument skips prototype and constructor comparisons.
-Structural comparisons of native Maps, Sets, class instances, Errors, proxies, accessor properties, and function-valued own `constructor` properties remain refused.
+An own enumerable accessor property takes part by the value its getter answers, run once with the object as `this`, and a throwing getter's error reaches the caller.
+A detached ArrayBuffer compared with a buffer that also reports length 0 throws a `TypeError`, as Node does.
+Opaque proxies, own enumerable `constructor` values, an accessor `constructor`, and an accessor `Symbol.toStringTag` remain refused.
 
 Synchronous and promise filesystem APIs with trailing arguments that affect behavior remain call-only.
 This includes writers, open, directory creation/removal, metadata readers, and directory readers.

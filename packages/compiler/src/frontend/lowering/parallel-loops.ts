@@ -53,7 +53,11 @@ export const SEQUENTIAL_CODE = "SC6106";
 
 /** The Math members a body may call: pure functions of their arguments that
  * allocate nothing and never throw. `Math.random` is not one of them (it
- * reads thread state), and nothing on this list does I/O or reads a clock. */
+ * reads thread state), and nothing on this list does I/O or reads a clock.
+ * `Math.hypot` is not either: its arguments reach the runtime as one
+ * `number[]`, so every call allocates that array, and a helper thread must
+ * not allocate (see the runtime's scr_parallel.c). A body that calls it
+ * stays sequential. */
 const PURE_MATH = new Set([
   "abs",
   "acos",
@@ -72,7 +76,6 @@ const PURE_MATH = new Set([
   "expm1",
   "floor",
   "fround",
-  "hypot",
   "imul",
   "log",
   "log10",
@@ -442,13 +445,25 @@ function scanBody(
       case ts.SyntaxKind.CallExpression: {
         const call = node as ts.CallExpression;
         const callee = call.expression;
+        // Name AND provenance: a program's own object named `Math` (a local
+        // binding, a parameter, an import) has calls with side effects and
+        // throws of its own, so only the standard-library global's members
+        // are accepted.
         if (
           !ts.isPropertyAccessExpression(callee) ||
           !ts.isIdentifier(callee.expression) ||
-          callee.expression.text !== "Math" ||
-          !PURE_MATH.has(callee.name.text)
+          !lowerer.isStdlibGlobal(callee.expression, "Math")
         ) {
           refuse(node, `a call (\`${textOf(callee)}\`)`);
+          break;
+        }
+        if (!PURE_MATH.has(callee.name.text)) {
+          refuse(
+            node,
+            callee.name.text === "hypot"
+              ? "a call (`Math.hypot`), which allocates its argument array"
+              : `a call (\`${textOf(callee)}\`)`,
+          );
           break;
         }
         for (const arg of call.arguments.nodes) {

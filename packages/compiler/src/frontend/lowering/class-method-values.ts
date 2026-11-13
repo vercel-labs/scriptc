@@ -28,6 +28,7 @@ import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./cal
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { methodJsName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 
@@ -373,6 +374,9 @@ export function classMethodValue(
     };
     lowerer.liftedFns.push(fn);
     lowerer.classMethodValueHelpers.add(name);
+    // The value IS the method, so it prints the method's own text when the
+    // module boxes it into a checked value (function-source-text.ts).
+    if (member !== undefined) noteFunctionSourceNode(lowerer, fn, member);
   }
   return {
     kind: "closure",

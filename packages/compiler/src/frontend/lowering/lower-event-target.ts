@@ -268,11 +268,12 @@ function typedResult(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrEx
 export function lowerEventTargetMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
+  access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
   info: ClassInfo,
   receiverExpr: IrExpr,
+  memberName?: string,
 ): IrExpr {
-  const member = access.name.text;
+  const member = memberName ?? (ts.isPropertyAccessExpression(access) ? access.name.text : "");
   const loc = locOf(call);
   if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${member} with spread arguments`, call);

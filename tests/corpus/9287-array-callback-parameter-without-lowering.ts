@@ -39,4 +39,4 @@ console.log(last);
 // A parameter type no dynamic slot family names: still the callback's own slot.
 const weak: number[] = [4, 5];
 weak.length = 3;
-console.log(weak.find((e: number | WeakRef<object>) => e === 5));
+console.log(weak.find((e: number | BigInt64Array<ArrayBuffer>) => e === 5));

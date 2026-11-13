@@ -217,7 +217,18 @@ double scr_perf_now(void);
  * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
  * 4 count, 5 exceeds. */
 void scr_perf_loop_mark(void);
+/* Marks the loop's end for a program that never runs the loop (synchronous):
+ * the emitted main calls it just before the exit listeners. */
+void scr_perf_loop_end(void);
+/* The loop's event-loop metrics hook (scr_async.c): `turn` runs once per loop
+ * turn, `exit` once when the loop stops. scr_perf_loop_mark installs them in
+ * programs that read the metrics; otherwise both stay NULL and the loop is
+ * byte-identical. */
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void));
 double scr_perf_loop_start(void);
+double scr_perf_node_loop_start(void);
+double scr_perf_loop_exit(void);
+double scr_perf_loop_count(void);
 double scr_perf_idle_time(void);
 double scr_eld_new(double resolution);
 bool scr_eld_enable(double handle);
@@ -233,6 +244,10 @@ double scr_eld_stat(double handle, double which);
  * timeline call. which: 0 getEntries, 1 getEntriesByName, 2
  * getEntriesByType. Accessor results are +1. */
 double scr_perf_mark(ScrDyn *args);
+/* new PerformanceMark(name, options?): Node's constructor — the mark
+ * timings update, the global buffer does not — answers 1 with the new
+ * entry readable through the accessors at index 0 (MAY THROW). */
+double scr_perf_mark_new(ScrDyn *args);
 double scr_perf_measure(ScrDyn *args);
 double scr_perf_entries(ScrDyn *args, double which);
 void scr_perf_clear_marks(ScrDyn *args);
@@ -248,6 +263,37 @@ ScrDyn *scr_perf_entry_detail(double i);
  * mark() and measure() did. */
 void scr_perf_entry_keep(ScrDyn *ref);
 ScrDyn *scr_perf_entry_ref(double i);
+/* perf_hooks PerformanceObserver (scr_perf.c). observer_new(args) is
+ * Node's constructor over the call's checked-dynamic argument vector and
+ * answers the observer handle (MAY THROW Node's callback type error). The
+ * methods take the observer (or entry-list) handle and apply Node's
+ * validation:
+ * observe(obs, args) takes observe's dyn argument vector, take(obs) moves
+ * the observer's buffered entries into the answer view and list_entries
+ * (list, args, which) fills it from an entry list (which: 0 getEntries,
+ * 1 getEntriesByName, 2 getEntriesByType), both answering a count the
+ * scr_perf_entry_* accessors read; disconnect(obs). Buffered entries
+ * reach an observer at the mark or measure that produced them and its
+ * callback runs from an immediate, as Node's. observer_is(value, which)
+ * is `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1). */
+ScrDyn *scr_perf_observer_new(ScrDyn *args);
+void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args);
+void scr_perf_observer_disconnect(ScrDyn *observer);
+double scr_perf_observer_take(ScrDyn *observer);
+double scr_perf_list_entries(ScrDyn *list, ScrDyn *args, double which);
+/* The class tests for values whose static type is not the class (a union or
+ * a checked-dynamic slot). scr_dyn_perf_handle_is(value, which) is
+ * `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1); scr_dyn_perf_entry_is(value, which)
+ * is `instanceof PerformanceEntry` (0), `PerformanceMark` (1) or
+ * `PerformanceMeasure` (2) through the entry prototypes the dyn core
+ * installs, and scr_dyn_perf_entry_finish gives a converted entry row that
+ * prototype. All three live in scr_json.c (the dyn core), which is linked
+ * whether or not a program calls perf_hooks. */
+bool scr_dyn_perf_handle_is(const ScrDyn *value, double which);
+bool scr_dyn_perf_entry_is(const ScrDyn *value, double which);
+void scr_dyn_perf_entry_finish(ScrDyn *object);
 uint64_t scr_hrtime_ns(void);
 ScrDyn *scr_process_hrtime_value(void);
 double scr_cpu_user(void);
@@ -456,6 +502,9 @@ void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 /* The mode the last TTY setRawMode call set (process.stdin.isRaw). */
 bool scr_process_stdin_raw(void);
+/* Put the terminal back in the mode it had before the first raw entry
+ * (libuv's uv_tty_reset_mode): at process exit and on process.exit(). */
+void scr_process_stdin_restore_mode(void);
 
 /* Terminal width for process.stdout/stderr.columns (fd 1/2):
  * ioctl(TIOCGWINSZ), -1 when the fd is not a TTY or the ioctl refuses —

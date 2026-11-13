@@ -576,6 +576,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.createMac",
+      "kind": "node-builtin",
+      "name": "crypto.createMac",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.createPrivateKey",
       "kind": "node-builtin",
       "name": "crypto.createPrivateKey",
@@ -773,6 +779,12 @@
       "id": "node-builtin.crypto.scryptSync",
       "kind": "node-builtin",
       "name": "crypto.scryptSync",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.secureHeapUsed",
+      "kind": "node-builtin",
+      "name": "crypto.secureHeapUsed",
       "status": "static"
     },
     {
@@ -2311,6 +2323,20 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.PerformanceMark",
+      "kind": "node-builtin",
+      "name": "perf_hooks.PerformanceMark",
+      "status": "static",
+      "note": "new PerformanceMark(name, options?) and the PerformanceMark global; the mark updates the mark timings but is not added to the marks buffer"
+    },
+    {
+      "id": "node-builtin.perf_hooks.PerformanceObserver",
+      "kind": "node-builtin",
+      "name": "perf_hooks.PerformanceObserver",
+      "status": "static",
+      "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
@@ -3085,6 +3111,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.markPromiseAsHandled",
+      "kind": "node-builtin",
+      "name": "util.markPromiseAsHandled",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.parseArgs",
       "kind": "node-builtin",
       "name": "util.parseArgs",
@@ -3103,6 +3135,12 @@
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
+    },
+    {
+      "id": "node-builtin.util.setTraceSigInt",
+      "kind": "node-builtin",
+      "name": "util.setTraceSigInt",
+      "status": "static"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -3129,6 +3167,18 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.transferableAbortController",
+      "kind": "node-builtin",
+      "name": "util.transferableAbortController",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.transferableAbortSignal",
+      "kind": "node-builtin",
+      "name": "util.transferableAbortSignal",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types",
       "kind": "node-builtin",
       "name": "util/types",
@@ -3139,6 +3189,12 @@
       "id": "node-builtin.util.types.isAnyArrayBuffer",
       "kind": "node-builtin",
       "name": "util/types.isAnyArrayBuffer",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isArgumentsObject",
+      "kind": "node-builtin",
+      "name": "util/types.isArgumentsObject",
       "status": "static"
     },
     {
@@ -3277,6 +3333,12 @@
       "id": "node-builtin.util.types.isMapIterator",
       "kind": "node-builtin",
       "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isModuleNamespaceObject",
+      "kind": "node-builtin",
+      "name": "util/types.isModuleNamespaceObject",
       "status": "static"
     },
     {

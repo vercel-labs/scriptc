@@ -112,6 +112,35 @@ test("a body that calls something other than Math stays sequential", async () =>
   expect(parallelFlag(logger, "scr_par_into")).toBe("double 0x0000000000000000");
 });
 
+test("a body whose Math is the program's own binding stays sequential", async () => {
+  // Name AND provenance: a local object named Math has calls with side
+  // effects and throws of its own, so its chunks must stay in order.
+  const built = await build(
+    [
+      "const Math = { sqrt: (x: number): number => x + 0.5 };",
+      intoProgram("for (let i = start; i < end; i++) part[i - start] = Math.sqrt(i);"),
+    ].join("\n"),
+  );
+  expect(built.ok).toBe(true);
+  expect(built.warnings).toHaveLength(1);
+  expect(built.warnings[0]).toContain("SC6106");
+  expect(built.warnings[0]).toContain("a call (`Math.sqrt`)");
+  expect(parallelFlag(built, "scr_par_into")).toBe("double 0x0000000000000000");
+});
+
+test("a body that calls Math.hypot stays sequential", async () => {
+  // Math.hypot's arguments reach the runtime as one number[], which every
+  // call allocates; a helper thread may not allocate.
+  const built = await build(
+    intoProgram("for (let i = start; i < end; i++) part[i - start] = Math.hypot(i, 1);"),
+  );
+  expect(built.ok).toBe(true);
+  expect(built.warnings).toHaveLength(1);
+  expect(built.warnings[0]).toContain("SC6106");
+  expect(built.warnings[0]).toContain("a call (`Math.hypot`), which allocates its argument array");
+  expect(parallelFlag(built, "scr_par_into")).toBe("double 0x0000000000000000");
+});
+
 test("a body that throws stays sequential", async () => {
   const built = await build(intoProgram('if (start === 8) throw new Error("stop");'));
   expect(built.warnings[0]).toContain("SC6106");

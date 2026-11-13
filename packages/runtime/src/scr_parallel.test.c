@@ -67,6 +67,27 @@ static ScrBytes *make_f64(size_t len) {
   return bytes;
 }
 
+/* The sequential path gives each chunk's body a real view, built the way
+ * the bytes module builds a subarray: a heap header with one reference,
+ * which the callback owns and releases when it returns. The unit stands in
+ * for that module, so a view the test keeps after the call is a real
+ * allocation with a real reference count. */
+ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
+  ScrBytes *view = calloc(1, sizeof *view);
+  if (view == NULL) abort();
+  view->rc = 1;
+  view->len = (size_t)(end - start);
+  view->elem = b->elem;
+  view->data = b->data + (size_t)start * scr_bytes_elem_size(b->elem);
+  view->shared = b->shared;
+  return view;
+}
+
+void scr_bytes_release(ScrBytes *b) {
+  if (b == NULL || b->rc == SIZE_MAX) return;
+  if (--b->rc == 0) free(b);
+}
+
 static ScrClosure closure(void *fn) {
   ScrClosure c;
   memset(&c, 0, sizeof c);
@@ -109,6 +130,10 @@ static void into_body(ScrClosure *env, ScrBytes *part, double start, double end)
   assert(part->data == into_target->data + (size_t)start * sizeof(double));
   double *elements = (double *)part->data;
   for (size_t k = 0; k < part->len; k++) elements[k] = start + (double)k * 0.5;
+  /* A compiled callback releases its parameters when it returns; on this
+   * path the view is the frame's immortal header, so the release is a
+   * no-op. */
+  scr_bytes_release(part);
 }
 
 static void into_writes_each_element_once(void) {
@@ -173,6 +198,7 @@ static void stride_body(ScrClosure *env, ScrBytes *part, double start, double en
   assert(part->data == stride_target->data + (size_t)start * STRIDE * sizeof(double));
   double *elements = (double *)part->data;
   for (size_t k = 0; k < part->len; k++) elements[k] = (double)index + (double)k / 100.0;
+  scr_bytes_release(part); /* a compiled callback releases its parameters */
 }
 
 static void stride_gives_the_whole_stride(void) {
@@ -293,6 +319,10 @@ static void overlap_body(ScrClosure *env, ScrBytes *part, double start, double e
   for (size_t k = 0; k < part->len; k++) elements[k] = start + (double)k;
   for (size_t i = (size_t)start; i < (size_t)end; i++) assert(elements[i - (size_t)start] >= start);
   spin();
+  /* The job with an overlapping read runs on the calling thread with a real
+   * view of its own; the pooled job's view is the frame's immortal header.
+   * The release is the compiled callback's in both cases. */
+  scr_bytes_release(part);
 }
 
 static void overlapping_read_runs_alone(void) {
@@ -333,12 +363,12 @@ static void nested_body(ScrClosure *env, double start, double end) {
 
 static void outer_body(ScrClosure *env, ScrBytes *part, double start, double end) {
   (void)env;
-  (void)part;
   (void)start;
   (void)end;
   ScrClosure body = closure((void *)nested_body);
   scr_par_for(8, 1.0, 2.0, 1.0, &body);
   assert(!scr_exc_pending());
+  scr_bytes_release(part);
 }
 
 static void nested_calls_run_one_after_another(void) {
@@ -359,10 +389,10 @@ static atomic_int error_chunks;
 
 static void counting_body(ScrClosure *env, ScrBytes *part, double start, double end) {
   (void)env;
-  (void)part;
   (void)start;
   (void)end;
   atomic_fetch_add(&error_chunks, 1);
+  scr_bytes_release(part);
 }
 
 static void range_body(ScrClosure *env, double start, double end) {
@@ -471,6 +501,95 @@ static void sequential_bodies_stop_at_their_throw(void) {
   assert(strcmp(last_message, "stop") == 0);
 }
 
+/* ── a sequential chunk's part is a view the body may keep ──────────── */
+
+enum { KEPT_COUNT = 16, KEPT_GRAIN = 4 };
+
+static ScrBytes *kept_part;
+static int kept_chunks;
+
+static void kept_body(ScrClosure *env, ScrBytes *part, double start, double end) {
+  (void)env;
+  (void)start;
+  (void)end;
+  /* The compiler did not check this body, so it may keep `part`, as a
+   * Node.js body may keep the subarray it is given. The runtime hands it a
+   * heap view of its own, not the frame's header, and the callback owns
+   * that reference: a compiled callback releases its parameters on return,
+   * which this body does too. */
+  assert(part->rc == 1);
+  if (kept_part != NULL) scr_bytes_release(kept_part);
+  kept_part = scr_bytes_retain(part);
+  scr_bytes_release(part);
+  kept_chunks++;
+}
+
+static void into_sequential_view_is_owned(void) {
+  ScrBytes *target = make_f64(KEPT_COUNT);
+  kept_part = NULL;
+  kept_chunks = 0;
+  ScrClosure body = closure((void *)kept_body);
+  clear_exception();
+  scr_par_into(target, 1.0, 1.0, KEPT_GRAIN, 0.0, &body, NULL, 0);
+  assert(!scr_exc_pending());
+  assert(kept_chunks == KEPT_COUNT / KEPT_GRAIN);
+  /* The last chunk's view outlived the callback: the loop released only
+   * its own reference, and the header and its elements are still there. */
+  assert(kept_part != NULL);
+  assert(kept_part->rc == 1);
+  assert(kept_part->len == KEPT_GRAIN);
+  assert(kept_part->data == target->data + (KEPT_COUNT - KEPT_GRAIN) * sizeof(double));
+  scr_bytes_release(kept_part);
+  kept_part = NULL;
+  free(target->data);
+  free(target);
+}
+
+/* ── a sequential reduce is Node's loop: part, then combine, per chunk ─ */
+
+static char reduce_log[32];
+static size_t reduce_log_len;
+
+static void reduce_record(char entry) {
+  assert(reduce_log_len + 1 < sizeof reduce_log);
+  reduce_log[reduce_log_len++] = entry;
+  reduce_log[reduce_log_len] = '\0';
+}
+
+static double logged_part(ScrClosure *env, double start, double end) {
+  (void)env;
+  (void)end;
+  reduce_record('p');
+  if (start == 4.0) {
+    scr_throw_error_msg(SCR_ERR_ERROR, "stop", 4);
+    return 0.0;
+  }
+  return start;
+}
+
+static double logged_combine(ScrClosure *env, double left, double right) {
+  (void)env;
+  reduce_record('c');
+  return left + right;
+}
+
+static void reduce_sequential_interleaves_part_and_combine(void) {
+  ScrClosure part = closure((void *)logged_part);
+  ScrClosure combine = closure((void *)logged_combine);
+  clear_exception();
+  reduce_log_len = 0;
+  reduce_log[0] = '\0';
+  /* parallel is 0: the callbacks may have effects and throws, so each
+   * chunk's part runs and its combine follows before the next chunk —
+   * Node's loop. The chunk that throws has no combine, and the combines
+   * before it already ran. */
+  double total = scr_par_reduce(8, 1.0, 4.0, 0.0, 0.0, &part, &combine);
+  assert(scr_exc_pending());
+  assert(strcmp(last_message, "stop") == 0);
+  assert(strcmp(reduce_log, "pcp") == 0);
+  assert(total == 0.0);
+}
+
 int main(void) {
   into_writes_each_element_once();
   for_visits_every_index_once();
@@ -482,6 +601,8 @@ int main(void) {
   bad_arguments_throw_before_the_first_chunk();
   empty_and_single_chunk_jobs();
   sequential_bodies_stop_at_their_throw();
+  into_sequential_view_is_owned();
+  reduce_sequential_interleaves_part_and_combine();
   puts("parallel loops run every chunk once, in order, on any pool");
   return 0;
 }

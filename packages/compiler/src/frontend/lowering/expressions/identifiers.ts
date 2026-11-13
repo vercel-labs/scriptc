@@ -901,7 +901,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         ? builtinConstantsEsmNamespace(lowerer, loc)
         : builtinConstantsObject(lowerer, loc);
     const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
-    return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
+    // Only the ES module spelling's value is a module namespace OBJECT;
+    // require()/default-import/named-import spellings answer the module's
+    // CommonJS exports object (util.types.isModuleNamespaceObject says so).
+    return {
+      kind: "moduleNsRef",
+      moduleId: type.moduleId,
+      type,
+      loc,
+      ...(builtinShape.flavor === "esm" ? { esmNamespace: true as const } : {}),
+    };
   }
   // A binding of a SINGLE-VALUE module used as a bare value: Node's
   // require answers module.exports, so the read IS that value (the same
@@ -1155,8 +1164,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
-        WeakRef:
-          "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(
@@ -1164,7 +1171,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         expr,
         globalHints[expr.text],
         sym ?? undefined,
-        expr.text === "WeakRef" || expr.text === "FinalizationRegistry"
+        expr.text === "FinalizationRegistry"
           ? "weak-ref"
           : expr.text === "eval"
             ? "code-from-string"

@@ -156,6 +156,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
   lowerWebStreamNew,
@@ -311,6 +312,7 @@ import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./r
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { finalizeFunctionSourceText } from "./function-source-text.js";
 import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
@@ -593,6 +595,7 @@ import {
   lowerDerivedCtorBody,
   superCallStmt,
   lowerSuperMethodCall,
+  lowerSuperComputedMethodCall,
   superThisRef,
   lowerSuperAccessorRead,
   lowerSuperAccessorWrite,
@@ -4246,6 +4249,22 @@ export class Lowerer {
       : null;
   }
 
+  /** A class field the JS collector widened to an undefined-armed union
+   * under trust-but-verify (ClassInfo.runtimeOptionalFields): the declaring
+   * assignment wrote undefined, so a read the checker narrows to the
+   * inferred type must keep the STORED union — Node can hold the undefined
+   * the checker's later-write inference does not name. */
+  runtimeOptionalClassField(className: string, field: string): boolean {
+    for (
+      let info: ClassInfo | null | undefined = this.classes.get(className);
+      info;
+      info = info.base
+    ) {
+      if (info.runtimeOptionalFields?.has(field)) return true;
+    }
+    return false;
+  }
+
   /** A strict property or method receiver over an array-derived optional
    * value. Reuse a plain read directly or stabilize an effectful receiver
    * once, throw Node's member-read TypeError for a unit arm, and extract the
@@ -4704,6 +4723,11 @@ export class Lowerer {
    * a checked-dynamic value may be a Node island value and code the build
    * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
+  /** Whether the program reads util.inspect's function value
+   * (programTouchesInspectTables), so its defaultOptions, colors and styles
+   * tables can change and static inspect renderings route through the
+   * runtime; computed on first use, null until then. */
+  inspectTablesTouched: boolean | null = null;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5111,6 +5135,12 @@ export class Lowerer {
    * constructors held as typed values. Given only in a program that prints
    * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
+  /** The source span the text of each lifted function is printed from, by
+   * function name: the text a boxed function prints as
+   * (function-source-text.ts). A span rather than the node keeps the entry
+   * recordable, and a name rather than the function keeps it the same
+   * function when a record replays the unit. */
+  readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5650,6 +5680,7 @@ export class Lowerer {
       functionTable("implicitFns", this.implicitFns, (fn) =>
         this.implicitFns.some((other) => other.name === fn),
       ),
+      irDataTable("functionSourceLocs", this.functionSourceLocs),
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
@@ -6045,6 +6076,7 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    "inspectTablesTouched",
     // The census of the program's writes on the global object, a pure
     // function of its modules, read again when a unit replays.
     "globalObjectWrites",
@@ -7829,7 +7861,8 @@ export class Lowerer {
    * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
     if (ns.type.moduleId.startsWith("builtin:")) {
-      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
+      const esmNamespace = this.esmNamespaceOfModuleNsValue(ns);
+      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc, esmNamespace);
       // The namespace expression still runs first: an awaited import()
       // suspends the caller until the import settles.
       if (boxed === null || isSafeToRepeat(ns)) return boxed;
@@ -7843,6 +7876,21 @@ export class Lowerer {
     }
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
+  }
+
+  /** Whether a builtin module value is the ES module namespace OBJECT (an
+   * `import * as ns` binding or a dynamic import value), which Node brands
+   * as a module namespace, rather than the CommonJS exports object a
+   * require()/default-import/named-import spelling or a sub-namespace
+   * member (`fs.promises`) answers. A receiver-evaluation wrapper
+   * (`(await import("node:fs")).promises`) keeps its result's own value. */
+  private esmNamespaceOfModuleNsValue(expr: IrExpr): boolean {
+    if (expr.kind === "moduleNsRef") return expr.esmNamespace === true;
+    if (expr.kind === "seqExpr") {
+      const result = expr.result;
+      if (result.type.kind === "moduleNs") return this.esmNamespaceOfModuleNsValue(result);
+    }
+    return true;
   }
 
   /** A `Promise<module namespace>` taken as `Promise<unknown>` (or as
@@ -13316,6 +13364,7 @@ export class Lowerer {
     boxBuiltinValuesChecked(this, functions);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
+    finalizeFunctionSourceText(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -14046,6 +14095,25 @@ export class Lowerer {
           const custom = `%${c.def.name}.${INSPECT_CUSTOM_MEMBER}`;
           if (units.has(custom)) {
             this.onEdge?.(custom);
+            break;
+          }
+        }
+        // That class's conversion method runs the same way, from the
+        // untyped conversion runtime (classToStringRegistrations): the
+        // nearest declaration at or above the constructed class, like the
+        // custom inspect method. Its units exist only for classes whose
+        // plan the untyped conversion can run.
+        const converted = this.classes.get(name.slice(1, -".constructor".length)) ?? null;
+        for (const conversion of ["sym:toPrimitive", "toString"] as const) {
+          let declaredAt: ClassInfo | null = null;
+          for (let c = converted; c; c = c.base) {
+            if (units.has(`%${c.def.name}.${conversion}`)) {
+              declaredAt = c;
+              break;
+            }
+          }
+          if (declaredAt) {
+            this.noteVirtualEdge(declaredAt, conversion);
             break;
           }
         }
@@ -15057,16 +15125,6 @@ export class Lowerer {
       )
     )
       this.deferredRefusalWarnings.push(diag);
-  }
-
-  /** Whether the value of `node`, lowered as `value`, is a function the
-   * runtime holds as a plain function value: a typed function, or a held
-   * built-in constructor in an untyped slot. */
-  isFunctionValue(node: ts.Expression, value: IrExpr): boolean {
-    return (
-      value.type.kind === "func" ||
-      (value.type.kind === "dyn" && this.holdsBuiltinConstructor(node))
-    );
   }
 
   /** Whether every value of `node` is a built-in primitive constructor
@@ -17092,13 +17150,23 @@ export class Lowerer {
         if (object) return object;
       }
       // A node:path family is its module object (pathModuleValue), the
-      // bare module the target platform's family.
+      // bare module the target platform's family. The ES module spelling's
+      // value is the module namespace object instead: the same member
+      // surface, branded as a module namespace like Node's.
       if (
         expr.type.kind === "moduleNs" &&
         (expr.type.moduleId === "builtin:path" ||
           expr.type.moduleId === "builtin:path/posix" ||
           expr.type.moduleId === "builtin:path/win32")
       ) {
+        if (this.esmNamespaceOfModuleNsValue(expr)) {
+          const boxed = this.moduleNamespaceDyn(
+            expr as IrExpr & {
+              type: IrType & { kind: "moduleNs" };
+            },
+          );
+          if (boxed !== null) return boxed;
+        }
         const family =
           expr.type.moduleId !== "builtin:path"
             ? expr.type.moduleId.slice("builtin:".length)
@@ -17930,8 +17998,18 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    strandUnrouted = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(
+      this,
+      fromId,
+      toId,
+      loc,
+      trappable,
+      classRoutes,
+      checked,
+      strandUnrouted,
+    );
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -18419,6 +18497,29 @@ export class Lowerer {
     if (!typeEquals(e.type, expected) && expected.kind === "union") {
       const routed = siteDiscriminantConversion(this, node, e, expected);
       if (routed) e = routed;
+    }
+    // A JavaScript value whose source union the destination cannot hold
+    // whole (`number | Vector3` into `Vector3 | undefined`): the checker
+    // records no narrowing for the guard the program wrote, but the run-time
+    // value is one of the arms. The arms the destination holds convert on
+    // their tag and the others throw the catchable TypeError at the
+    // conversion, the checked boundary every untyped JavaScript flow takes.
+    if (
+      !typeEquals(e.type, expected) &&
+      e.type.kind === "union" &&
+      expected.kind === "union" &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const helper = this.unionRetagHelper(
+        e.type.unionId,
+        expected.unionId,
+        e.loc,
+        undefined,
+        undefined,
+        false,
+        true,
+      );
+      if (helper) e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
     }
     this.requireExactShape(node, e.type, expected);
     return e;
@@ -22497,6 +22598,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
@@ -22537,6 +22639,13 @@ export class Lowerer {
 
   lowerSuperMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr {
     return lowerSuperMethodCall(this, call, access);
+  }
+
+  lowerSuperComputedMethodCall(
+    call: ts.CallExpression,
+    access: ts.ElementAccessExpression,
+  ): IrExpr {
+    return lowerSuperComputedMethodCall(this, call, access);
   }
 
   superThisRef(access: ts.PropertyAccessExpression): { thisRef: IrExpr; base: ClassInfo } {

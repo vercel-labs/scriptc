@@ -186,9 +186,11 @@ static ScrParPool *scr_par_get_pool(void) {
 
 /* ── the chunks ─────────────────────────────────────────────────────── */
 
-/* The 64-byte header of one chunk's view, built in this thread's frame:
- * the target's element kind and shared backing, no owner, and the external
- * flag so nothing frees the target's storage. */
+/* The 64-byte header of one chunk's view on the parallel path, built in the
+ * frame of the thread running the chunk: the target's element kind and
+ * shared backing, no owner, and the external flag so nothing frees the
+ * target's storage. Only bodies the compiler proved cannot keep `part` run
+ * with it (scr_par_chunk's owned_view is false there). */
 static void scr_par_view(ScrBytes *view, const ScrBytes *target, uint64_t start, uint64_t end,
                          uint64_t stride) {
   size_t width = scr_bytes_elem_size(target->elem);
@@ -201,12 +203,35 @@ static void scr_par_view(ScrBytes *view, const ScrBytes *target, uint64_t start,
   view->shared = target->shared;
 }
 
-static void scr_par_chunk(ScrParJob *job, uint64_t index) {
+/* Runs chunk `index`. `owned_view` asks for a real heap view of the chunk:
+ * the sequential path runs the program's own body, which may keep `part`
+ * past the call (Node keeps every subarray), so the callback owns that
+ * reference and the view outlives the loop exactly when the body kept one.
+ * The parallel path builds the header in the frame of the thread running
+ * the chunk instead: a helper may not allocate, and its bodies cannot let
+ * `part` escape. */
+static void scr_par_chunk(ScrParJob *job, uint64_t index, bool owned_view) {
   uint64_t start = index * job->grain;
   uint64_t end = start + job->grain;
   if (end > job->count) end = job->count;
   switch (job->kind) {
     case SCR_PAR_INTO: {
+      if (owned_view) {
+        /* subarray's indices are exact in a double: a typed array's length
+         * is far below 2^53. The callback owns this reference and releases
+         * it when it returns, as a compiled closure releases its
+         * parameters, so the view lives exactly as long as the body keeps a
+         * reference. A detached buffer throws Node's subarray TypeError and
+         * the chunk's body does not run, so that view is released here. */
+        ScrBytes *view = scr_bytes_subarray(job->target, (double)(start * job->stride),
+                                            (double)(end * job->stride));
+        if (scr_exc_pending()) {
+          scr_bytes_release(view);
+          break;
+        }
+        ((ScrParBody)job->body->fn)(job->body, view, (double)start, (double)end);
+        break;
+      }
       ScrBytes view;
       scr_par_view(&view, job->target, start, end, job->stride);
       ((ScrParBody)job->body->fn)(job->body, &view, (double)start, (double)end);
@@ -229,7 +254,7 @@ static void scr_par_run_chunks(ScrParJob *job) {
   for (;;) {
     uint64_t index = atomic_fetch_add_explicit(&job->next, 1, memory_order_relaxed);
     if (index >= job->nchunks) return;
-    scr_par_chunk(job, index);
+    scr_par_chunk(job, index, false);
     ScrParPool *pool = job->pool;
     pthread_mutex_lock(&pool->lock);
     if (--job->remaining == 0) pthread_cond_broadcast(&pool->idle);
@@ -244,22 +269,25 @@ static void scr_par_run_chunks(ScrParJob *job) {
 static void scr_par_run_job(ScrParJob *job, uint64_t skip) {
   ScrParPool *pool = scr_par_get_pool();
   if (pool == NULL || pool->helpers == 0) {
-    for (uint64_t i = skip; i < job->nchunks && !scr_exc_pending(); i++) scr_par_chunk(job, i);
+    for (uint64_t i = skip; i < job->nchunks && !scr_exc_pending(); i++)
+      scr_par_chunk(job, i, false);
     return;
   }
   uint64_t begin = scr_hrtime_ns();
-  scr_par_chunk(job, skip);
+  scr_par_chunk(job, skip, false);
   uint64_t first = scr_hrtime_ns() - begin;
   uint64_t rest = job->nchunks - skip - 1;
   if (scr_exc_pending() || (double)first * (double)rest < 20000.0) {
-    for (uint64_t i = skip + 1; i < job->nchunks && !scr_exc_pending(); i++) scr_par_chunk(job, i);
+    for (uint64_t i = skip + 1; i < job->nchunks && !scr_exc_pending(); i++)
+      scr_par_chunk(job, i, false);
     return;
   }
   pthread_mutex_lock(&pool->lock);
   if (pool->job != NULL) {
     /* Another thread's job owns the pool. */
     pthread_mutex_unlock(&pool->lock);
-    for (uint64_t i = skip + 1; i < job->nchunks && !scr_exc_pending(); i++) scr_par_chunk(job, i);
+    for (uint64_t i = skip + 1; i < job->nchunks && !scr_exc_pending(); i++)
+      scr_par_chunk(job, i, false);
     return;
   }
   job->pool = pool;
@@ -283,7 +311,7 @@ static void scr_par_run_job(ScrParJob *job, uint64_t skip) {
  * exception: a sequential body may throw, allocate and call anything. */
 static bool scr_par_run_sequential(ScrParJob *job, uint64_t skip) {
   for (uint64_t i = skip; i < job->nchunks; i++) {
-    scr_par_chunk(job, i);
+    scr_par_chunk(job, i, true);
     if (scr_exc_pending()) return false;
   }
   return true;
@@ -418,14 +446,33 @@ double scr_par_reduce(double count, double grain_given, double grain, double ini
   job.nchunks = scr_par_chunks(total, chunk);
   double result = initial;
   if (job.nchunks == 0) return result;
+  bool alone = !scr_par_enter();
+  bool parallel_ok = parallel != 0.0 && !alone;
+  if (!parallel_ok) {
+    /* Node's own loop: every chunk's part runs, then its combine, in chunk
+     * order. The compiler refused this call, so its callbacks may have
+     * effects, share state and throw; running the parts first would reorder
+     * them. */
+    for (uint64_t i = 0; i < job.nchunks; i++) {
+      uint64_t start = i * job.grain;
+      uint64_t end = start + job.grain;
+      if (end > job.count) end = job.count;
+      double value = ((ScrParPart)part->fn)(part, (double)start, (double)end);
+      if (scr_exc_pending()) break;
+      result = ((ScrParCombine)combine->fn)(combine, result, value);
+      if (scr_exc_pending()) break;
+    }
+    if (!alone) scr_par_leave();
+    return result;
+  }
   if (job.nchunks > SIZE_MAX / sizeof(double)) scr_trap("scriptc: out of memory\n");
   job.partials = malloc((size_t)job.nchunks * sizeof(double));
   if (job.partials == NULL) scr_trap("scriptc: out of memory\n");
-  bool alone = !scr_par_enter();
-  bool parallel_ok = parallel != 0.0 && !alone;
-  if (scr_par_dispatch(&job, 0, parallel_ok)) {
+  if (scr_par_dispatch(&job, 0, true)) {
     /* The fold runs on the calling thread, left to right in chunk order:
-     * combine has no algebraic requirement and no thread of its own. */
+     * combine has no algebraic requirement and no thread of its own. The
+     * callbacks are effect-free by the compiler's proof, so collecting
+     * every part first is not observable. */
     for (uint64_t i = 0; i < job.nchunks; i++) {
       result = ((ScrParCombine)combine->fn)(combine, result, job.partials[i]);
       if (scr_exc_pending()) break;

@@ -13,7 +13,9 @@
  * boundaries are the ones packages/experimental/index.js computes: a
  * chunk's indices are [i * grain, min((i + 1) * grain, count)), and the
  * fold of parallelReduce runs left to right in chunk order, so the result
- * never depends on the number of threads.
+ * never depends on the number of threads. A call whose chunks run one
+ * after another follows Node's loop exactly: the chunk's part runs, then
+ * its combine, before the next chunk.
  *
  * The callbacks are closures the compiler built in the caller's frame
  * (stack-callbacks.ts); every one of them is called as compiled closures
@@ -22,11 +24,16 @@
  *   parallelReduce: double part(env, start, end), double combine(env, l, r)
  *   parallelFor:   void body(env, start, end)
  *
- * `part` is a 64-byte header built in the frame of the thread running the
- * chunk: it points into the target's storage and carries no owner, so
- * nothing retains or frees the target from several threads at once. The
- * body may not let it escape (the compiler accepts only bodies that write
- * `part`'s elements and reads captured typed arrays).
+ * `part` is a 64-byte header when the chunk runs on a helper: it points
+ * into the target's storage and carries no owner, so nothing retains or
+ * frees the target from several threads at once. A body on that path may
+ * not let it escape (the compiler accepts only bodies that write `part`'s
+ * elements and read captured typed arrays). A chunk the runtime runs one
+ * after another on the calling thread calls a body the compiler did not
+ * check, which may keep `part`; that chunk's `part` is a real heap view
+ * handed to the body as its own reference, and a compiled callback releases
+ * its parameters when it returns, so the view lives for as long as the body
+ * keeps one — Node keeps every subarray the same way.
  *
  * Entry checks run before the first chunk and throw the same RangeError
  * as the Node implementation with `scr_throw_error_msg`: the caller's

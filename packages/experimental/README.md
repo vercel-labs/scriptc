@@ -188,7 +188,7 @@ In scriptc builds the chunks of a `parallelInto` or a `parallelReduce` may run o
 
 - The callback is a function expression written at the call site.
 - It reads numbers, booleans and the elements and `length` of typed arrays, and writes only elements of its `part` (`parallelInto`) and variables it declares itself, which hold numbers or booleans. `parallelReduce`'s `combine` reads only its arguments.
-- It does not allocate, throw, `await`, or call anything except `Math`'s pure functions. A helper thread has no way to allocate or to carry a thrown value.
+- It does not allocate, throw, `await`, or call anything except the global `Math`'s pure functions. A helper thread has no way to allocate or to carry a thrown value, so `Math.hypot` is not among them: its arguments reach the runtime as one array, which every call allocates. Nor is a program's own object named `Math`, which is not the global `Math`.
 
 A captured typed array it reads is compared with the target: when the two overlap, the chunks run one after another, since one chunk's write could race another's read. A call that breaks a rule compiles to the sequential loop, which is exactly the Node.js call, and scriptc reports which rule it broke as a performance warning (SC6106), never as a build failure. `parallelFor` always runs its chunks one after another until scriptc can show that its callbacks write disjoint elements.
 

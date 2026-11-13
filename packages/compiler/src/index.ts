@@ -88,7 +88,7 @@ import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -273,6 +273,7 @@ export {
 } from "./backend/external-c.js";
 export { emitLlvmModule, type LlvmTargetOptions } from "./backend/llvm/emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
+import { warningSourceTexts } from "./diagnostics/build-warnings.js";
 export {
   renderDiagnostics,
   renderDiagnostics as renderAll,
@@ -606,31 +607,6 @@ interface CompileWarningSink {
   stats?: LowerStats;
 }
 
-/** The texts a cache hit's warnings point into, re-read for their code
- * frames: the same files the build read, unchanged since (the entry's
- * frontend snapshot proved it). A file the frontend rewrote before the
- * warnings were located in it (its JSX) keeps the text the entry stores. */
-function cachedWarningSources(
-  warnings: readonly ScrDiagnostic[],
-  stored: Record<string, string> | undefined,
-): Map<string, string> {
-  const texts = new Map<string, string>();
-  for (const w of warnings) {
-    if (texts.has(w.loc.file)) continue;
-    const kept = stored?.[w.loc.file];
-    if (kept !== undefined) {
-      texts.set(w.loc.file, kept);
-      continue;
-    }
-    try {
-      texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
-    } catch {
-      // The frame is omitted; the message stands alone.
-    }
-  }
-  return texts;
-}
-
 /** The Node islands a build ran, stored with its cache entry so a cache hit
  * reports them again (a runner reads them to tell an island pass from a
  * native one). */
@@ -935,6 +911,8 @@ async function compileExecutableNative(
     ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
+    ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
+    ...(features.utilTraceSigInt ? { utilTraceSigInt: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -2291,7 +2269,7 @@ async function compileTracked(
     // lowering must not hide a diagnostic.
     if (warningSink !== undefined && earlyHit.warnings !== undefined) {
       warningSink.warnings = earlyHit.warnings;
-      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings, earlyHit.warningSources);
+      warningSink.sourceTexts = warningSourceTexts(earlyHit.warnings, earlyHit.warningSources);
     }
     if (warningSink !== undefined && earlyHit.islands !== undefined)
       warningSink.islands = earlyHit.islands;

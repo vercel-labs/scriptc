@@ -1357,6 +1357,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_weak_ref_get",
+  "message": "WeakRef method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_native_set_get",
   "message": "Native Set method values have no lowering",
   "code": "SC2020"
@@ -1449,6 +1455,24 @@
   "file": "scr_lib.c",
   "function": "scr_crypto_cshake_param",
   "message": "A digest option with NUL bytes in a view other than a Buffer has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_unsupported",
+  "message": "Mac members other than update() and final() have no lowering on an 'unknown' value; cast the value to Mac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_method_call",
+  "message": "Mac methods called with a receiver other than their own Mac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_new_dyn",
+  "message": "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()",
   "code": "SC2020"
  },
  {
@@ -1552,12 +1576,6 @@
   "function": "nh_receiver",
   "message": "scriptc: %s needs a Node island value",
   "code": "SC8010"
- },
- {
-  "file": "scr_perf.c",
-  "function": "scr_perf_get_mark",
-  "message": "performance.measure with the '%.*s' Node timing milestone is not supported yet",
-  "code": "SC2020"
  },
  {
   "file": "scr_pki.c",
@@ -1782,12 +1800,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_stream.c",
-  "function": "scr_stream_util_is_value",
-  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
@@ -1974,12 +1986,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_util_promisify.c",
-  "function": "scr_util_promisify",
-  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_util_style.c",
   "function": "scr_util_style_text",
   "message": "util.styleText over native custom streams is not supported yet",
@@ -2101,14 +2107,8 @@
  },
  {
   "file": "scr_zlib.c",
-  "function": "scr_zlib_base_options",
-  "message": "a zlib chunkSize above 4294967295 is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_zlib.c",
   "function": "scr_zlib_refuse_info",
-  "message": "the zlib option 'info' is not supported yet (it returns the engine object)",
+  "message": "the zlib option 'info' is not supported through a non-literal value; write info: true in the options object to get { buffer, engine }",
   "code": "SC2020"
  },
  {

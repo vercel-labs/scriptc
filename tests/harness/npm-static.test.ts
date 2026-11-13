@@ -1002,7 +1002,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
     'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',
-    'import { trace } from "node:console"; trace("here");',
+    'import { assert } from "node:console"; declare const message: unknown; assert(false, message);',
   ])("unsupported console members retain a use-site diagnostic: %s", (source) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-console-import-"));
     try {
@@ -1066,6 +1066,42 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         runBinary(result.binaryPath, []),
       ]);
       expect(reference.stdout.toString()).toBe("base:inherited\nbase:own\ntrue\nsecond:detached\n");
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+  );
+
+  test.each(["release", "dev"] as const)(
+    "unchecked JSDoc class fields of a package dependency compile and run (%s)",
+    async (optimization) => {
+      // Package JavaScript is compiled but not type-checked (tsc's
+      // maxNodeModuleJsDepth of 0), so a class field that carries a JSDoc
+      // type and no initializer, as svelte 4's internal/dev.js declares its
+      // $$prop_def family, does not stop the build; the module's values still
+      // answer Node's.
+      const entry = join(pilotRoot, "jsdoc-unchecked-fields-cli.ts");
+      const outDir = join(
+        cacheDir,
+        `jsdoc-unchecked-fields-${optimization}-${sanitize ? "san" : "plain"}`,
+      );
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["jsdoc-unchecked-fields"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.stdout.toString()).toBe(
+        "widget:a\nwidget:a|undefined|true|true|props_def,slot_def,name\n",
+      );
       expect(native.stdout).toEqual(reference.stdout);
       expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
       expect(native.exitCode).toBe(reference.exitCode);

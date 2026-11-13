@@ -3614,7 +3614,12 @@ export function cjsImportedDataSnapshotOf(
     isCjsJsFile(ts.getSourceFileOfNode(binding), lowerer.program)
   )
     return null;
-  return cjsLinkedDataExport(lowerer, lowerer.checker.getAliasedSymbol(raw))?.snapshot ?? null;
+  return (
+    cjsLinkedDataExport(
+      lowerer,
+      lowerer.aliasStorageSymbolOf(raw) ?? lowerer.checker.getAliasedSymbol(raw),
+    )?.snapshot ?? null
+  );
 }
 
 /** Per CommonJS module, the export names ES-module importers bind by name
@@ -3671,7 +3676,9 @@ export function cjsAccessorSnapshotStores(
   for (const exported of exportedSymbols) {
     if (bound !== null && !bound.has(ts.symbolName(exported))) continue;
     const symbol =
-      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+      exported.flags & ts.SymbolFlags.Alias
+        ? (lowerer.aliasStorageSymbolOf(exported) ?? lowerer.checker.getAliasedSymbol(exported))
+        : exported;
     const linked = cjsLinkedDataExport(lowerer, symbol);
     if (linked === null) continue;
     const first = lowerer.cjsLinkedDataModules.get(symbol);

@@ -17,9 +17,3 @@ console.log(pattern.test("http://localhost/books/1"));
 const gzip = new CompressionStream("gzip");
 const gunzip = new DecompressionStream("gzip");
 console.log(typeof gzip.readable, typeof gunzip.writable);
-
-// The performance entry classes as global bindings. The entries that
-// performance.mark() and performance.measure() return are implemented (the
-// perf_hooks rows); the three global classes are not.
-const mark = new PerformanceMark("m");
-console.log(mark instanceof PerformanceEntry, mark instanceof PerformanceMeasure);

@@ -6139,6 +6139,69 @@ static void scr_stream_rl_off(ScrStream *s, const char *name, ScrClosure *cb) {
   scr_str_release(n);
 }
 
+/* A terminal interface's 'resize' listener on a stream output. Node adds
+ * it at construction and removes it at close; the entry here holds the
+ * closure the stream's emitter owns, so close can remove that exact
+ * registration. */
+typedef struct ScrRlResizeHook {
+  ScrStream *s;
+  double id;
+  ScrDyn *cb; /* +1: the interface's refresh listener */
+  struct ScrRlResizeHook *next;
+} ScrRlResizeHook;
+
+static SCR_TL ScrRlResizeHook *scr_rl_resize_hooks = NULL;
+
+static void scr_stream_rl_hooks_free(void);
+
+static void scr_stream_rl_atexit_once(void) {
+  static SCR_TL bool registered = false;
+  if (registered) return;
+  registered = true;
+  scr_atexit(scr_stream_rl_hooks_free);
+}
+
+/* A terminal interface's 'resize' listener: a function value, as Node's
+ * onresize is, so an untyped emit('resize') calls it the way it calls the
+ * program's own listeners. Its body is the caller's — the readline unit's
+ * redraw, handed in through ScrRlIo.watch_resize — so this unit registers
+ * the listener without calling into the readline units, which a program
+ * using streams alone does not link. */
+static void scr_stream_rl_watch_resize(void *sv, double id, bool on,
+                                       ScrDyn *(*refresh)(ScrClosure *cb, ScrDyn *const *args,
+                                                          size_t argc)) {
+  ScrStream *s = (ScrStream *)sv;
+  ScrStr *name = scr_str_new("resize", 6);
+  for (ScrRlResizeHook *h = scr_rl_resize_hooks; h; h = h->next) {
+    if (h->s != s || h->id != id) continue;
+    if (!on) {
+      scr_emitter_release(scr_emitter_off_dyn((ScrEmitter *)s, name, h->cb));
+      for (ScrRlResizeHook **at = &scr_rl_resize_hooks; *at; at = &(*at)->next) {
+        if (*at != h) continue;
+        *at = h->next;
+        break;
+      }
+      scr_dyn_release(h->cb);
+      free(h);
+    }
+    scr_str_release(name);
+    return;
+  }
+  if (on) {
+    scr_stream_rl_atexit_once();
+    ScrRlResizeHook *h = calloc(1, sizeof *h);
+    if (!h) scr_stream_oom();
+    ScrClosure *clo = scr_stream_rl_listener((void *)refresh, id);
+    h->s = s;
+    h->id = id;
+    h->cb = scr_dyn_new_func(clo, refresh, 0, "", "refreshLine");
+    h->next = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h;
+    scr_emitter_release(scr_emitter_on_flex((ScrEmitter *)s, name, h->cb, false, false));
+  }
+  scr_str_release(name);
+}
+
 static void scr_stream_rl_pause(void *s) { scr_stream_release(scr_stream_pause(s)); }
 static void scr_stream_rl_resume(void *s) { scr_stream_release(scr_stream_resume(s)); }
 static void scr_stream_rl_write(void *s, ScrStr *text) { scr_stream_write_str(s, text, NULL); }
@@ -6201,7 +6264,7 @@ static const ScrRlIo scr_stream_rl_io = {
     &scr_stream_rl_write,          &scr_stream_rl_write_cb, &scr_stream_rl_on_event,
     &scr_stream_rl_off_event,      &scr_stream_rl_listener_count,
     &scr_stream_rl_emit2,          &scr_stream_rl_retain,   &scr_stream_rl_drop_data,
-    &scr_stream_rl_release,
+    &scr_stream_rl_release,        &scr_stream_rl_watch_resize,
 };
 
 /* readline.emitKeypressEvents(stream, interface) */
@@ -6213,6 +6276,16 @@ static void scr_stream_rl_hooks_free(void) {
   while (scr_rl_hooks) {
     ScrRlHook *h = scr_rl_hooks;
     scr_rl_hooks = h->next;
+    free(h);
+  }
+  /* An interface left open at exit still owns its 'resize' listener
+   * (+1 here): releasing it lets the last reference go, so the RC audit
+   * sees nothing live. The input hooks above borrow the emitter's
+   * closures, so freeing their nodes is all they need. */
+  while (scr_rl_resize_hooks) {
+    ScrRlResizeHook *h = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h->next;
+    scr_dyn_release(h->cb);
     free(h);
   }
 }
@@ -6250,11 +6323,7 @@ double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double
                           out ? scr_stream_retain(out) : NULL, out_stdout, crlf_delay, prompt,
                           signal, add);
   if (in == NULL) return id;
-  static SCR_TL bool registered = false;
-  if (!registered) {
-    registered = true;
-    scr_atexit(scr_stream_rl_hooks_free);
-  }
+  scr_stream_rl_atexit_once();
   ScrRlHook *h = calloc(1, sizeof *h);
   if (!h) scr_stream_oom();
   h->s = in;
@@ -7997,6 +8066,14 @@ static void scr_stream_do_destroy(ScrStream *s, ScrError *err /*borrowed*/) {
   scr_stream_run_destroy(s, err);
 }
 
+void scr_stream_mark_ended(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  st->r.ended = true;
+  st->r.end_emitted = true;
+  st->w.ending = true;
+  st->w.finished = true;
+}
+
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err) {
   scr_stream_do_destroy(s, err);
   return scr_stream_retain(s);
@@ -9618,14 +9695,401 @@ ScrDyn *scr_stream_util_is(ScrStream *s, double which) {
   }
 }
 
+/* Property reads over a checked-dynamic value that is not a native stream,
+ * Node's duck typing (lib/internal/streams/utils.js). Node guards every
+ * read with `obj &&`, so a falsy value answers before any property is
+ * read, and a primitive boxes for the reads. A read that throws leaves the
+ * exception pending and NULL comes back. */
+
+/* value[key]; +1, or NULL with the exception pending. A member that is a
+ * typed value answers through its materialized view, like the root value
+ * does, so a state object read from a class instance carries the members
+ * Node's duck typing asks it for. */
+static ScrDyn *scr_su_read(const ScrDyn *value, const char *key) {
+  ScrDyn *member = scr_dyn_obj_read(value, key, strlen(key));
+  if (member && member->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(member);
+    scr_dyn_release(member);
+    return view;
+  }
+  return member;
+}
+
+/* typeof value[key] === 'function'. */
+static bool scr_su_prop_is_fn(const ScrDyn *value, const char *key, bool *pending) {
+  ScrDyn *m = scr_su_read(value, key);
+  if (!m) {
+    *pending = true;
+    return false;
+  }
+  bool fn = m->kind == SCR_DYN_FUNC;
+  scr_dyn_release(m);
+  return fn;
+}
+
+/* Boolean(value[key]). */
+static bool scr_su_prop_truthy(const ScrDyn *value, const char *key, bool *pending) {
+  ScrDyn *p = scr_su_read(value, key);
+  if (!p) {
+    *pending = true;
+    return false;
+  }
+  bool answer = scr_dyn_truthy(p);
+  scr_dyn_release(p);
+  return answer;
+}
+
+/* value[key] when it is a boolean: *answer receives it and true comes
+ * back; a non-boolean answers false (Node's typeof checks). */
+static bool scr_su_prop_bool(const ScrDyn *value, const char *key, bool *answer, bool *pending) {
+  ScrDyn *p = scr_su_read(value, key);
+  if (!p) {
+    *pending = true;
+    return false;
+  }
+  bool is_bool = p->kind == SCR_DYN_BOOL;
+  if (is_bool) *answer = scr_dyn_truthy(p);
+  scr_dyn_release(p);
+  return is_bool;
+}
+
+/* obj && (typeof obj.write === 'function' && typeof obj.on === 'function')
+ * — the writable arm of isNodeStream and isWritableNodeStream's opening. */
+static bool scr_su_writable_arm(const ScrDyn *value, bool *pending) {
+  if (!scr_su_prop_is_fn(value, "write", pending)) return false;
+  if (*pending) return false;
+  return scr_su_prop_is_fn(value, "on", pending);
+}
+
+/* Node's isNodeStream: _readableState or _writableState, or a write or pipe
+ * method beside on. */
+static bool scr_su_dyn_is_node_stream(const ScrDyn *value, bool *pending) {
+  *pending = false;
+  if (!scr_dyn_truthy(value)) return false;
+  if (scr_su_prop_truthy(value, "_readableState", pending)) return true;
+  if (*pending) return false;
+  if (scr_su_prop_truthy(value, "_writableState", pending)) return true;
+  if (*pending) return false;
+  if (scr_su_writable_arm(value, pending)) return true;
+  if (*pending) return false;
+  if (!scr_su_prop_is_fn(value, "pipe", pending)) return false;
+  if (*pending) return false;
+  return scr_su_prop_is_fn(value, "on", pending);
+}
+
+/* Node's isReadableNodeStream(obj, false): pipe and on, and a Duplex's
+ * writable side requires a readable state that is not readable: false. */
+static bool scr_su_dyn_is_readable_node_stream(const ScrDyn *value, bool *pending) {
+  *pending = false;
+  if (!scr_dyn_truthy(value)) return false;
+  if (!scr_su_prop_is_fn(value, "pipe", pending) || *pending) return false;
+  if (!scr_su_prop_is_fn(value, "on", pending) || *pending) return false;
+  ScrDyn *w = scr_su_read(value, "_writableState");
+  if (!w) {
+    *pending = true;
+    return false;
+  }
+  bool has_w = scr_dyn_truthy(w);
+  scr_dyn_release(w);
+  if (!has_w) return true;
+  ScrDyn *r = scr_su_read(value, "_readableState");
+  if (!r) {
+    *pending = true;
+    return false;
+  }
+  bool has_r = scr_dyn_truthy(r);
+  bool readable_false = false;
+  if (has_r) {
+    bool readable;
+    if (scr_su_prop_bool(r, "readable", &readable, pending)) readable_false = !readable;
+    if (*pending) {
+      scr_dyn_release(r);
+      return false;
+    }
+  }
+  scr_dyn_release(r);
+  return has_r && !readable_false;
+}
+
+/* Node's isWritableNodeStream: write and on, and a Duplex's readable side
+ * requires a writable state that is not writable: false. */
+static bool scr_su_dyn_is_writable_node_stream(const ScrDyn *value, bool *pending) {
+  *pending = false;
+  if (!scr_dyn_truthy(value)) return false;
+  if (!scr_su_writable_arm(value, pending) || *pending) return false;
+  ScrDyn *r = scr_su_read(value, "_readableState");
+  if (!r) {
+    *pending = true;
+    return false;
+  }
+  bool has_r = scr_dyn_truthy(r);
+  scr_dyn_release(r);
+  if (!has_r) return true;
+  ScrDyn *w = scr_su_read(value, "_writableState");
+  if (!w) {
+    *pending = true;
+    return false;
+  }
+  bool writable_false = false;
+  if (scr_dyn_truthy(w)) {
+    bool writable;
+    if (scr_su_prop_bool(w, "writable", &writable, pending)) writable_false = !writable;
+    if (*pending) {
+      scr_dyn_release(w);
+      return false;
+    }
+  }
+  scr_dyn_release(w);
+  return !writable_false;
+}
+
+/* Node's isReadableFinished(stream): false, true or null (2). */
+static int scr_su_dyn_readable_finished(const ScrDyn *value, bool *pending) {
+  if (!scr_su_dyn_is_readable_node_stream(value, pending)) return 2;
+  if (*pending) return 2;
+  ScrDyn *r = scr_su_read(value, "_readableState");
+  if (!r) {
+    *pending = true;
+    return 2;
+  }
+  if (!scr_dyn_truthy(r)) {
+    scr_dyn_release(r);
+    return 2;
+  }
+  if (scr_su_prop_truthy(r, "errored", pending)) {
+    scr_dyn_release(r);
+    return 0;
+  }
+  if (*pending) {
+    scr_dyn_release(r);
+    return 2;
+  }
+  bool end_emitted;
+  bool has_end = scr_su_prop_bool(r, "endEmitted", &end_emitted, pending);
+  scr_dyn_release(r);
+  if (*pending) return 2;
+  if (!has_end) return 2;
+  return end_emitted ? 1 : 0;
+}
+
+/* Node's isWritableEnded(stream): false, true or null (2). */
+static int scr_su_dyn_writable_ended(const ScrDyn *value, bool *pending) {
+  if (!scr_su_dyn_is_writable_node_stream(value, pending)) return 2;
+  if (*pending) return 2;
+  bool ended_now;
+  if (scr_su_prop_bool(value, "writableEnded", &ended_now, pending)) {
+    if (ended_now) return 1;
+  } else if (*pending) {
+    return 2;
+  }
+  ScrDyn *w = scr_su_read(value, "_writableState");
+  if (!w) {
+    *pending = true;
+    return 2;
+  }
+  if (!scr_dyn_truthy(w)) {
+    scr_dyn_release(w);
+    return 2;
+  }
+  if (scr_su_prop_truthy(w, "errored", pending)) {
+    scr_dyn_release(w);
+    return 0;
+  }
+  if (*pending) {
+    scr_dyn_release(w);
+    return 2;
+  }
+  bool ended;
+  bool has_ended = scr_su_prop_bool(w, "ended", &ended, pending);
+  scr_dyn_release(w);
+  if (*pending) return 2;
+  if (!has_ended) return 2;
+  return ended ? 1 : 0;
+}
+
+/* Node's isDestroyed(stream): null (2) for a value that is not a Node
+ * stream, else `destroyed` or the selected state's own destroyed. */
+static int scr_su_dyn_destroyed(const ScrDyn *value, bool *pending) {
+  if (!scr_su_dyn_is_node_stream(value, pending)) return 2;
+  if (*pending) return 2;
+  ScrDyn *w = scr_su_read(value, "_writableState");
+  if (!w) {
+    *pending = true;
+    return 2;
+  }
+  ScrDyn *r = scr_su_read(value, "_readableState");
+  if (!r) {
+    scr_dyn_release(w);
+    *pending = true;
+    return 2;
+  }
+  bool destroyed = scr_su_prop_truthy(value, "destroyed", pending);
+  if (!destroyed && !*pending) {
+    const ScrDyn *state = scr_dyn_truthy(w) ? w : r;
+    if (scr_dyn_truthy(state)) destroyed = scr_su_prop_truthy(state, "destroyed", pending);
+  }
+  scr_dyn_release(w);
+  scr_dyn_release(r);
+  if (*pending) return 2;
+  return destroyed ? 1 : 0;
+}
+
+/* Node's isErrored(stream): the first of readableErrored, writableErrored,
+ * _readableState.errorEmitted, _writableState.errorEmitted,
+ * _readableState.errored and _writableState.errored that is not nullish.
+ * Node reads each state property only when its turn comes, once for the
+ * errorEmitted test and again for the errored test, so a state getter
+ * that throws is reached only where Node reaches it. */
+static bool scr_su_dyn_errored(const ScrDyn *value, bool *pending) {
+  *pending = false;
+  if (!scr_dyn_truthy(value)) return false;
+  static const char *const flat[] = {"readableErrored", "writableErrored"};
+  for (size_t i = 0; i < 2; i++) {
+    ScrDyn *p = scr_su_read(value, flat[i]);
+    if (!p) {
+      *pending = true;
+      return false;
+    }
+    bool answer = scr_dyn_truthy(p);
+    bool nullish = scr_dyn_is_nullish(p);
+    scr_dyn_release(p);
+    if (!nullish) return answer;
+  }
+  static const char *const states[] = {"_readableState", "_writableState",
+                                       "_readableState", "_writableState"};
+  static const char *const nested[] = {"errorEmitted", "errorEmitted",
+                                       "errored", "errored"};
+  for (size_t i = 0; i < 4; i++) {
+    ScrDyn *state = scr_su_read(value, states[i]);
+    if (!state) {
+      *pending = true;
+      return false;
+    }
+    if (!scr_dyn_truthy(state)) {
+      scr_dyn_release(state);
+      continue;
+    }
+    ScrDyn *p = scr_su_read(state, nested[i]);
+    scr_dyn_release(state);
+    if (!p) {
+      *pending = true;
+      return false;
+    }
+    bool nullish = scr_dyn_is_nullish(p);
+    bool answer = scr_dyn_truthy(p);
+    scr_dyn_release(p);
+    if (!nullish) return answer;
+  }
+  return false;
+}
+
+/* Node's isReadable(stream). *no_side is set when `readable` is not a
+ * boolean, where Node answers null. */
+static ScrDyn *scr_su_dyn_readable(const ScrDyn *value, bool *pending, bool *no_side) {
+  *no_side = false;
+  bool readable;
+  if (!scr_su_prop_bool(value, "readable", &readable, pending)) {
+    if (*pending) return NULL;
+    *no_side = true;
+    return NULL;
+  }
+  (void)readable;
+  bool p = false;
+  int destroyed = scr_su_dyn_destroyed(value, &p);
+  if (p) {
+    *pending = true;
+    return NULL;
+  }
+  if (destroyed == 1) return scr_dyn_new_bool(false);
+  if (!scr_su_dyn_is_readable_node_stream(value, pending)) {
+    return *pending ? NULL : scr_dyn_new_bool(false);
+  }
+  if (!scr_su_prop_truthy(value, "readable", pending)) {
+    return *pending ? NULL : scr_dyn_new_bool(false);
+  }
+  int finished = scr_su_dyn_readable_finished(value, pending);
+  if (*pending) return NULL;
+  return scr_dyn_new_bool(finished != 1);
+}
+
+/* Node's isWritable(stream). *no_side is set when `writable` is not a
+ * boolean, where Node answers null. */
+static ScrDyn *scr_su_dyn_writable(const ScrDyn *value, bool *pending, bool *no_side) {
+  *no_side = false;
+  bool writable;
+  if (!scr_su_prop_bool(value, "writable", &writable, pending)) {
+    if (*pending) return NULL;
+    *no_side = true;
+    return NULL;
+  }
+  (void)writable;
+  bool p = false;
+  int destroyed = scr_su_dyn_destroyed(value, &p);
+  if (p) {
+    *pending = true;
+    return NULL;
+  }
+  if (destroyed == 1) return scr_dyn_new_bool(false);
+  if (!scr_su_dyn_is_writable_node_stream(value, pending)) {
+    return *pending ? NULL : scr_dyn_new_bool(false);
+  }
+  if (!scr_su_prop_truthy(value, "writable", pending)) {
+    return *pending ? NULL : scr_dyn_new_bool(false);
+  }
+  int ended = scr_su_dyn_writable_ended(value, pending);
+  if (*pending) return NULL;
+  return scr_dyn_new_bool(ended != 1);
+}
+
+/* The predicates over any checked-dynamic value that is not a native or
+ * web stream: Node's duck typing reads the properties an untyped value
+ * carries. +1, or NULL with the exception pending. */
+static ScrDyn *scr_su_dyn_is(const ScrDyn *value, int which) {
+  bool pending = false;
+  ScrDyn *answer = NULL;
+  switch (which) {
+    case SCR_SU_IS_DESTROYED: {
+      int destroyed = scr_su_dyn_destroyed(value, &pending);
+      if (destroyed != 2) answer = scr_dyn_new_bool(destroyed == 1);
+      else if (!pending) answer = scr_dyn_new_null();
+      break;
+    }
+    case SCR_SU_IS_ERRORED: {
+      bool errored = scr_su_dyn_errored(value, &pending);
+      if (!pending) answer = scr_dyn_new_bool(errored);
+      break;
+    }
+    case SCR_SU_IS_DISTURBED: {
+      if (!scr_dyn_truthy(value)) {
+        answer = scr_dyn_new_bool(false);
+        break;
+      }
+      bool did_read = scr_su_prop_truthy(value, "readableDidRead", &pending);
+      if (did_read) answer = scr_dyn_new_bool(true);
+      else if (!pending)
+        answer = scr_dyn_new_bool(scr_su_prop_truthy(value, "readableAborted", &pending));
+      break;
+    }
+    default: {
+      bool no_side = false;
+      answer = which == SCR_SU_IS_READABLE ? scr_su_dyn_readable(value, &pending, &no_side)
+                                           : scr_su_dyn_writable(value, &pending, &no_side);
+      if (!answer && !pending && no_side) answer = scr_dyn_new_null();
+      break;
+    }
+  }
+  if (!answer && pending) return NULL;
+  return answer ? answer : scr_dyn_new_null();
+}
+
 /* The same predicates over a checked-dynamic value. A native stream
  * (boxed, a stream handle, or through `native_of` a constructor-function
- * stream) answers as above. A primitive has none of the properties Node's
- * duck typing reads, so it takes the answer Node computes for such a
- * value. Any other value (an object, an array, a function, a handle that
- * is not a native stream) is judged in Node by properties its untyped
- * form does not all carry here, and throws by name. +1, or NULL with the
- * error pending. */
+ * stream) answers as above, and so does a web stream handle, whose owning
+ * unit answers the state Node's symbol getters report through its
+ * stream_predicate hook. Every other value is judged by Node's duck typing
+ * over the properties it carries: a primitive has none, so it answers as
+ * Node's property reads do, and an object, array or function answers by
+ * its state members. +1, or NULL with the error pending. */
 ScrDyn *scr_stream_util_is_value(const ScrDyn *value, double which,
                             ScrStream *(*native_of)(const ScrDyn *value)) {
   ScrStream *s = native_of ? native_of(value) : NULL;
@@ -9635,6 +10099,18 @@ ScrDyn *scr_stream_util_is_value(const ScrDyn *value, double which,
     ScrDyn *answer = scr_stream_util_is(s, which);
     scr_stream_release(s);
     return answer;
+  }
+  /* A web stream handle answers the state Node's symbol getters report
+   * (scr_webstreams.c and scr_fetch.c): it is never a Node stream, so
+   * isDestroyed answers null, and only the class's own side answers a
+   * boolean. */
+  if (value->kind == SCR_DYN_HANDLE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
+    if (ops && ops->stream_predicate) {
+      ScrDyn *answer =
+          ops->stream_predicate(value->v.handle.ptr, value->v.handle.tag, which);
+      if (answer) return answer;
+    }
   }
   switch (value->kind) {
     case SCR_DYN_UNDEF:
@@ -9651,12 +10127,17 @@ ScrDyn *scr_stream_util_is_value(const ScrDyn *value, double which,
     default:
       break;
   }
-  char message[160];
-  int len = snprintf(message, sizeof message,
-                     "%s over a value that is not a native stream or a primitive is not supported yet",
-                     scr_su_is_names[(int)which]);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
-  return NULL;
+  /* A typed value reaches the checked-dynamic predicates as a capsule over
+   * its native layout; the members Node's duck typing reads are the
+   * materialized view's. */
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    if (!view) return NULL;
+    ScrDyn *answer = scr_su_dyn_is(view, (int)which);
+    scr_dyn_release(view);
+    return answer;
+  }
+  return scr_su_dyn_is(value, (int)which);
 }
 
 ScrDyn *scr_stream_util_is_dyn(const ScrDyn *value, double which) {

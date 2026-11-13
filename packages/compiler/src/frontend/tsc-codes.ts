@@ -712,6 +712,21 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     2614,
     CHECKER("the did-you-mean spelling of a member the lowering resolves or fences at the site"),
   ],
+  // A class field declared for its JSDoc type and never initialized (svelte
+  // 4's `internal/dev.js` declares its `$$prop_def` family that way): Node
+  // defines the field as `undefined` when the constructor runs, and the
+  // class model already unions that in for an uninitialized field, so the
+  // checker's strictPropertyInitialization demand has no runtime rule. A
+  // project that asked tsc to check JavaScript keeps it (checkedJs).
+  [
+    2564,
+    inCheckedJs(
+      CHECKER(
+        "an uninitialized class field holds `undefined` from the constructor on, and the class model unions it in",
+        ["tests/corpus/jsdoc-class-field-uninitialized/main.ts"],
+      ),
+    ),
+  ],
   // JavaScript subclasses may widen fields or add method parameters. Class
   // lowering checks native storage and override ABIs at each use.
   [

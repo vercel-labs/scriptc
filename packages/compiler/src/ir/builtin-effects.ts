@@ -161,6 +161,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "weakSet.new",
   // Node's "cleanup must be callable" TypeError.
   "finalizationRegistry.new",
+  // Node's "WeakRef: invalid target" TypeError.
+  "weakRef.new",
   "dyn.fromEntries",
   "bytes.constructor",
   "bytes.instanceOf",
@@ -245,7 +247,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetListenerCountDyn",
   "event.targetGetMax",
   "event.targetSetMax",
+  // events.on validates its options, reads the receiver's protocol and
+  // registers listeners (a throwing 'newListener' listener runs inside).
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   "event.call",
+  // events.once over an EventTarget or a NodeEventTarget: the receiver's own
+  // once()/addEventListener() runs, and a bad receiver or signal throws
+  // Node's ERR_INVALID_ARG_TYPE (the promise's rejection is a value).
+  "event.onceTarget",
+  "event.onceTargetSignal",
   "blob.new",
   "blob.fileNew",
   "blob.slice",
@@ -296,6 +308,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   // A getter the walk invokes renders its result, and that rendering can
   // refuse (SC2020) exactly like the walk's own.
   "insp.accessorValue",
@@ -307,6 +320,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
   "insp.dynS",
+  // %s converts its argument with String(value) or renders it, and both can
+  // throw (a program conversion, an inspect refusal): the NULL answer with
+  // the exception pending must not be read as text.
+  "insp.dynFormatS",
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
@@ -616,6 +633,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entries",
   "perf.clearMarks",
   "perf.clearMeasures",
+  // new PerformanceMark and the observer family: Node's argument,
+  // receiver and observation-mode validation all throw catchably.
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
@@ -746,6 +771,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.promptWith",
   "rl.setPromptDyn",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.cursorPos",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
@@ -781,12 +807,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.extend",
   "util.signalExitCode",
   "util.diff",
+  // Any non-promise argument throws ERR_INVALID_ARG_TYPE.
+  "util.markPromiseAsHandled",
+  // Any non-signal argument throws ERR_INVALID_ARG_TYPE.
+  "util.transferableAbortSignal",
   "util.debounce",
   "util.throttle",
   "mime.typeNew",
   "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
+  // The typed promisify's custom protocol: a truthy non-function throws
+  // ERR_INVALID_ARG_TYPE, and defining the key can throw on a non-extensible
+  // function.
+  "util.promisifyCustom",
+  "util.promisifyMark",
   "util.debuglog",
   // The URI codecs throw the spec's URIError: decoding on bad hex/invalid
   // UTF-8 octets, encoding (and querystring.escape) on a lone surrogate.
@@ -842,6 +877,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objEntryPairs",
   "dyn.hasOwn",
   "dyn.propertyIsEnumerable",
+  // Object.prototype.isPrototypeOf: ToObject throws on a nullish receiver,
+  // and reading the argument's prototype chain can throw.
+  "dyn.isPrototypeOf",
   "dyn.assign",
   "dyn.copyDataProperties",
   "dyn.objectRest",
@@ -1013,6 +1051,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "url.new",
   "url.newBase",
+  // ERR_INVALID_ARG_TYPE when the argument is not a Blob or File.
+  "url.createObjectURL",
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",
@@ -1065,6 +1105,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hmacDigestBuffer",
   "crypto.hashNewOpts",
   "crypto.hmacNewDyn",
+  "crypto.macNewDyn",
+  "crypto.secureHeapUsed",
   "crypto.hashCopyOpts",
   "crypto.hashUpdateEnc",
   "crypto.hmacUpdateEnc",
@@ -1171,6 +1213,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "zlib.cbOpts",
   "zlib.syncOptsDyn",
   "zlib.cbOptsDyn",
+  "zlib.infoSync",
+  "zlib.infoCb",
+  "zlib.infoSyncDyn",
+  "zlib.infoCbDyn",
   "zlib.streamFlush",
   "zlib.streamFlushCb",
   "zlib.streamParams",

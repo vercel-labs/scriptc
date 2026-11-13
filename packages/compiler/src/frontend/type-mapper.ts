@@ -55,7 +55,18 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import {
+  BIGINT_T,
+  KEY_ORDER_FIELD,
+  PERF_ENTRY_MARKER,
+  PERF_NODE_TIMING_JSON_FIELDS,
+  PERF_NODE_TIMING_MARKER,
+} from "../ir/ir.js";
+
+/** Both lists live in ir/ir.ts (the backend's JSON writer and dyn
+ * conversion read them): the nodeTiming marker and the fields
+ * PerformanceNodeTiming.prototype.toJSON answers, in its order. */
+export { PERF_NODE_TIMING_JSON_FIELDS, PERF_NODE_TIMING_MARKER };
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
@@ -180,6 +191,17 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "Pbkdf2Params",
   "HkdfParams",
   "AesDerivedKeyParams",
+  "Argon2Params",
+  "CShakeParams",
+  "ContextParams",
+  "EcdhKeyDeriveParams",
+  "KangarooTwelveParams",
+  "KmacImportParams",
+  "KmacKeyAlgorithm",
+  "KmacKeyGenParams",
+  "KmacParams",
+  "RsaOaepParams",
+  "TurboShakeParams",
 ]);
 
 /** node:crypto's key, signature and X509Certificate check option
@@ -222,6 +244,8 @@ export const FETCH_AMBIENT_TYPES = [
   "CustomEventInit",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
   "Headers",
   "ReadableStream",
   "ReadableStreamDefaultReader",
@@ -1239,8 +1263,10 @@ function esOwnKeyOrder(names: string[]): string[] {
   return indices.length === 0 ? names : [...indices, ...names.filter((n) => !isArrayIndex(n))];
 }
 
-/** The hidden field that marks the perf_hooks entry record shape. */
-export const PERF_ENTRY_MARKER = "%perfEntry";
+/** The hidden field that marks the perf_hooks entry record shape
+ * (ir/ir.ts defines it: the backend's dyn conversion needs it too);
+ * re-exported here so frontend call sites keep their import path. */
+export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
 export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
@@ -1295,7 +1321,107 @@ export function perfEntryJsonShape(shapes: ShapeRegistry): string {
   );
 }
 
-function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
+/** The fields of performance.nodeTiming's uvMetricsInfo object, in Node's
+ * key order. */
+export const UV_METRICS_FIELDS = ["loopCount", "events", "eventsWaiting"];
+
+/** The record behind uv_metrics_info: the three counters Node's
+ * uvMetricsInfo getter reads off libuv. */
+export function uvMetricsShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "events", type: F64 },
+      { name: "eventsWaiting", type: F64 },
+      { name: "loopCount", type: F64 },
+    ],
+    false,
+    undefined,
+    UV_METRICS_FIELDS,
+  );
+}
+
+/** performance.nodeTiming's own properties, in Node's key order. */
+export const PERF_NODE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "bootstrapComplete",
+  "idleTime",
+  "uvMetricsInfo",
+];
+
+/** The record behind performance.nodeTiming (mapType): the timing
+ * milestones as f64 fields in Node's key order, plus the uvMetricsInfo
+ * record. The marker keeps the shape distinct from a structurally equal
+ * user record and gives a dyn conversion the PerformanceNodeTiming
+ * prototype. */
+export function perfNodeTimingShape(shapes: ShapeRegistry, unions: UnionRegistry): string {
+  return shapes.intern(
+    [
+      { name: PERF_NODE_TIMING_MARKER, type: withUndefinedArm(F64, unions)! },
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "uvMetricsInfo", type: { kind: "record", shapeId: uvMetricsShape(shapes) } },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_FIELDS,
+  );
+}
+
+/** toJSON()'s plain object over performance.nodeTiming: its fields without
+ * uvMetricsInfo. */
+export function perfNodeTimingJsonShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_JSON_FIELDS,
+  );
+}
+
+/** performance.eventLoopUtilization()'s record, in Node's key order. */
+export function eventLoopUtilizationShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "active", type: F64 },
+      { name: "idle", type: F64 },
+      { name: "utilization", type: F64 },
+    ],
+    false,
+    undefined,
+    ["idle", "active", "utilization"],
+  );
+}
+
+export function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
   let node: ts.Node | undefined = d.parent;
   while (node) {
     if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -2907,6 +3033,36 @@ function isReceiveMessageResult(
   return found;
 }
 
+/** events.on's iterator result (`{ value, done }`): the fallback
+ * declaration spells next/return/throw's answer as a type literal inside
+ * `Promise<...>` on EventEmitterAsyncIterator, and the runtime builds that
+ * object, so the result is a checked-dynamic value like the iterator
+ * itself (its `value` holds the event's argument array). */
+function isEventsIteratorResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const sym = type.getSymbol();
+  if (sym === undefined) return false;
+  return sym.declarations.some((decl) => {
+    if (!ts.isTypeLiteralNode(decl)) return false;
+    const promise = decl.parent;
+    if (!ts.isTypeReferenceNode(promise)) return false;
+    const method = promise.parent;
+    const cls = method?.parent;
+    return (
+      method !== undefined &&
+      (method.kind === ts.SyntaxKind.MethodDeclaration ||
+        method.kind === ts.SyntaxKind.MethodSignature) &&
+      cls !== undefined &&
+      ts.isClassDeclaration(cls) &&
+      cls.name?.text === "EventEmitterAsyncIterator" &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+      isDeclaredInAmbientModule(cls, "events")
+    );
+  });
+}
+
 /** True for a type built only from worker handles, null/undefined, and
  * arrays of those: values that keep the live DYN representation. */
 export function isWorkerHandleType(
@@ -2960,6 +3116,8 @@ const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
   "Response",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
 ]);
 
 /** The native fetch handles (Headers, Request, Response, AbortController,
@@ -3465,6 +3623,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  // events.on's iterator result: the runtime's { value, done } object.
+  if (isEventsIteratorResult(type, ctx)) return DYN;
   if (isFetchBodyUnion(type, ctx) || isFetchHeadersUnion(type, ctx)) return DYN;
   // Omit/Pick/Partial of a stdlib interface that rides checked-dynamic
   // storage (`Omit<RequestInit, "body" | "headers">`): every member comes
@@ -4339,6 +4499,42 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: RUNTIME_EMITTER_CLASS };
   }
+  // events.on's iterator: a checked-dynamic object the runtime builds
+  // with native next/return/throw methods and its own
+  // [Symbol.asyncIterator], so `for await` over it takes the generic
+  // dynamic path and property reads see the real object (its
+  // `Symbol(nodejs.watermarkData)` included). Both type layers are
+  // covered: @types/node returns `NodeJS.AsyncIterator<any[], undefined,
+  // any>`, whose one class of values this is, and the shipped fallback
+  // declares its own class. Only the `any[]` instantiation maps: the
+  // lib's AsyncIterator protocol and the other NodeJS.AsyncIterator
+  // instantiations (readline's string, fs's Dirent, a stream's any) keep
+  // their own lowerings and fences.
+  if (
+    psym !== undefined &&
+    ((psymName === "EventEmitterAsyncIterator" &&
+      psym.declarations.some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+          isDeclaredInAmbientModule(d, "events"),
+      )) ||
+      (psymName === "AsyncIterator" &&
+        psym.declarations.some(
+          (d) =>
+            ts.isInterfaceDeclaration(d) &&
+            ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+            isDeclaredInAmbientNamespace(d, "NodeJS"),
+        ) &&
+        (() => {
+          const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+          if (arg === undefined) return false;
+          const mapped = mapType(arg, ctx);
+          return mapped?.kind === "array" && mapped.elem.kind === "dyn";
+        })()))
+  ) {
+    return DYN;
+  }
   // readline.Interface and readline/promises.Interface: the interface
   // value is an f64 handle into the runtime's registry (the Timeout-id
   // precedent). The NAME is generic, so the provenance check adds the
@@ -4850,6 +5046,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
   // FinalizationRegistry is a native handle with register and unregister.
   if (isStdlibInterface("FinalizationRegistry")) return DYN;
+  // WeakRef is a native handle with deref.
+  if (isStdlibInterface("WeakRef")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.
@@ -5213,6 +5411,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return psymName === "Hash" ? CRYPTOHASH_T : CRYPTOHMAC_T;
+  }
+  // crypto.Mac (createMac): the HMAC-only native Mac handle (scr_lib.c).
+  // Module-checked like Hash and Hmac, so a user class named Mac keeps its
+  // own representation.
+  if (
+    psym !== undefined &&
+    psymName === "Mac" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
   }
   // fs.FSWatcher: the fs.watch handle (scr_watch.c). Module-checked like
   // net.Server — @types/node declares `interface FSWatcher extends
@@ -5980,6 +6193,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   )
     return DYN;
+  // crypto.secureHeapUsed()'s report: the runtime builds Node's object as a
+  // checked-dynamic value (its utilization is NaN), so the declared interface
+  // reads dynamically.
+  if (
+    isStdlibInterface("SecureHeapUsage") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
   // Filesystem options are data records. Keep their declared optional fields
   // instead of allowing arbitrary standard-library interfaces into records.
   if (
@@ -6370,19 +6593,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // perf_hooks' EventLoopUtilization (performance.eventLoopUtilization's
   // result): a plain data record in Node's key order.
   if (isStdlibInterface("EventLoopUtilization")) {
-    return {
-      kind: "record",
-      shapeId: ctx.shapes.intern(
-        [
-          { name: "active", type: F64 },
-          { name: "idle", type: F64 },
-          { name: "utilization", type: F64 },
-        ],
-        false,
-        undefined,
-        ["idle", "active", "utilization"],
-      ),
-    };
+    return { kind: "record", shapeId: eventLoopUtilizationShape(ctx.shapes) };
+  }
+  // perf_hooks' PerformanceNodeTiming (performance.nodeTiming): the timing
+  // milestones and uvMetricsInfo as one record (see perfNodeTimingShape).
+  // @types/node declares it as a class; the shipped fallback declares the
+  // interface performance.nodeTiming is typed with.
+  if (
+    provenance !== null &&
+    psymName === "PerformanceNodeTiming" &&
+    (provenance.stdlibInterface || provenance.stdlibClass)
+  ) {
+    return { kind: "record", shapeId: perfNodeTimingShape(ctx.shapes, ctx.unions) };
+  }
+  // uv_metrics_info()'s record: the three counters, in Node's key order.
+  if (isStdlibInterface("UVMetrics")) {
+    return { kind: "record", shapeId: uvMetricsShape(ctx.shapes) };
   }
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over

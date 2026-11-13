@@ -29,10 +29,15 @@ import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespac
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty } from "../builtins/performance.js";
+import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
-import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
+import {
+  INSPECT_CUSTOM_DESCRIPTION,
+  PROMISIFY_CUSTOM_DESCRIPTION,
+  isInspectCustomAccess,
+  isPromisifyCustomAccess,
+} from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
 import {
   argumentCountSlot,
@@ -97,7 +102,6 @@ import {
   UNDEFINED_T,
   arrayOf,
   canBoxFuncIntoDyn,
-  funcOf,
   isDynTypedRefType,
   isUnitType,
   typeEquals,
@@ -108,10 +112,11 @@ import {
   BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
-import { lowerX509PublicKey } from "../builtins/x509.js";
+import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
@@ -482,6 +487,18 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  // `l.renderToString` where `l` is a module-local variable whose whole value
+  // is a require() chosen at run time among static export tables
+  // (react-dom/server.node.js): the slot the executed write filled, or Node's
+  // TypeError when the read runs before that write (cjs-inline-require.ts).
+  if (ts.isIdentifier(expr.expression) && expr.questionDotToken === undefined) {
+    const aliasMember = cjsConditionalAliasMemberReadOf(lowerer, expr.expression, expr.name.text);
+    if (aliasMember !== null) {
+      if ("throwMessage" in aliasMember)
+        return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
+      return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
+    }
+  }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
   // TypeScript source; JavaScript reads it from the untyped value). The
@@ -570,6 +587,16 @@ export function lowerPropertyAccessExpr(
       loc,
     };
   }
+  // util.promisify.custom: Symbol.for('nodejs.util.promisify.custom').
+  if (isPromisifyCustomAccess(lowerer, expr)) {
+    return {
+      kind: "libCall",
+      fn: "sym.for",
+      args: [{ kind: "strLit", value: PROMISIFY_CUSTOM_DESCRIPTION, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    };
+  }
   {
     const member =
       lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
@@ -601,6 +628,12 @@ export function lowerPropertyAccessExpr(
     const staticName = staticFunctionNameRead(lowerer, expr);
     if (staticName !== null) return { kind: "strLit", value: staticName, type: STRING, loc };
   }
+  // performance.nodeTiming / timeOrigin and PerformanceObserver's
+  // supportedEntryTypes: the perf_hooks values no call lowering answers.
+  {
+    const perf = lowerPerfHooksProperty(lowerer, expr);
+    if (perf) return perf;
+  }
   // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
   {
     const reading = lowerHistogramProperty(lowerer, expr);
@@ -610,6 +643,12 @@ export function lowerPropertyAccessExpr(
   {
     const publicKey = lowerX509PublicKey(lowerer, expr);
     if (publicKey) return publicKey;
+  }
+  // An X509Certificate's issuerCertificate: certificates carry no issuer
+  // chain, so the getter answers undefined (Node's prototype getter).
+  {
+    const issuer = lowerX509IssuerCertificate(lowerer, expr);
+    if (issuer) return issuer;
   }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.
@@ -1087,6 +1126,19 @@ export function lowerPropertyAccessExpr(
     // their pre-registered export globals).
     const viaClass = lowerStaticFieldRead(lowerer, expr);
     if (viaClass) return viaClass;
+    // A module whose whole export is chosen at run time among static
+    // export tables (react/index.js's `module.exports = require(…)` in an
+    // if/else): the member is that module's own slot, which its executed
+    // branch filled. The checker's synthesized member symbols are shared
+    // between modules that re-export the same tables, so the module decides.
+    if (ts.isIdentifier(expr.name)) {
+      const dep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const slot =
+        dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, expr.name.text);
+      if (slot !== null) return { kind: "varRef", localId: slot.id, type: slot.type, loc };
+    }
     return lowerExpr(lowerer, expr.name);
   }
   // `module.exports` READ in a CommonJS file whose whole export IS a
@@ -2930,33 +2982,12 @@ export function lowerIntrinsicProperty(
   if (isErrorPrototypeValue(lowerer, expr))
     return { kind: "libCall", fn: "dyn.errorPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Function.prototype as a VALUE (a prototype-chain link:
-  // `Object.setPrototypeOf(F.prototype, Function.prototype)`): one
-  // anonymous function answering undefined, length 0 — a zero-capture
-  // closure of a compiler helper, so every read is the same function
-  // (closure identity) and shares its property table. Reads through it
-  // find the function members the checked runtime models for every
-  // function (apply, constructor, name, length). Member forms keep their
-  // own lowerings.
-  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype") {
-    const loc = locOf(expr);
-    const name = "%dyn.functionPrototype";
-    if (lowerer.liftedFnNamed(name) === undefined)
-      lowerer.liftedFns.push({
-        name,
-        params: [],
-        locals: [],
-        returnType: DYN,
-        body: [{ kind: "return", value: dynUndefinedExpr(loc), loc }],
-        loc,
-      });
-    return {
-      kind: "dynFrom",
-      value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
-      fnName: "",
-      type: DYN,
-      loc,
-    };
-  }
+  // `Object.setPrototypeOf(F.prototype, Function.prototype)`, chain walks):
+  // the runtime's one anonymous function answering undefined, with length 0
+  // and an empty name, so every read is that same function and every
+  // function's chain reaches it. Member forms keep their own lowerings.
+  if (lowerer.stdlibGlobalMember(expr, "Function") === "prototype")
+    return { kind: "libCall", fn: "dyn.functionPrototype", args: [], type: DYN, loc: locOf(expr) };
   // Array.isArray, Object.keys, Date.now, Error.captureStackTrace (`if
   // (Error.captureStackTrace) ...`) and the other statics with function
   // values: the same values a read through the constructor's untyped value
@@ -6468,10 +6499,10 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
  * constructor, and dynamic values answer `.constructor` with the same one,
  * so `o.constructor === Object` and `err.constructor === TypeError` are
  * exact identity tests, and `err.constructor.name` is the constructor's
- * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array and
- * Proxy have values with Node's name, length and instanceof answers;
+ * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array, Proxy
+ * and WeakRef have values with Node's name, length and instanceof answers;
  * calling one throws Node's TypeError, and constructing through the value
- * is fenced. */
+ * is fenced, except WeakRef, which builds the reference it builds directly. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -6483,6 +6514,7 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakMap",
   "WeakSet",
   "FinalizationRegistry",
+  "WeakRef",
   "SharedArrayBuffer",
   "DataView",
   "BigInt64Array",

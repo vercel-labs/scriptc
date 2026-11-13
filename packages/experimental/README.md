@@ -148,4 +148,112 @@ function visit(list: NodeList): void {
 - Two reads of the field need not give the same array, so the arrays fields hold are never compared by identity: with `===` or `!==`, as an `indexOf` or `includes` argument, or as a Map key or Set element. Compare the elements instead, or keep a copy made with `slice()` where identity matters.
 - Instances of the class are not constructed through a class value. They may become dynamic values, for example through a conversion to `unknown` or an interface several classes implement, when the dynamic code that sees them uses the class's own members and does not read the field: scriptc follows such values through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, the members of dynamic objects and arrays, calls through function values, and the callbacks of array methods such as `map` and `forEach`, and finds the first that reaches a read or write of the field's name or of a computed key, a checked cast to a record, array or collection type that has a record member of the field's name or holds a dynamic value, a call through a value no compiled function reaches (also as an array method's callback), or a library call other than printing, `JSON.stringify` without a replacer, `publish`, a worker's `workerData`, and class tests and casts. A dynamic view of an inline field would read it as a new array each time, so when such an operation exists the field keeps its elements in an ordinary array, which behaves as under Node.js, and scriptc reports a warning (SC6105).
 
-scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux, the elements stay in an ordinary array object.
+scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux and macOS, the elements stay in an ordinary array object.
+
+## Parallel loops
+
+`parallelInto`, `parallelReduce` and `parallelFor` split a range of indices into chunks and call a function once per chunk. Under Node.js, and in a scriptc build whose chunks do not qualify for several threads, the calls run in chunk order on the calling thread.
+
+```ts
+import { parallelInto, parallelReduce } from "@scriptc/experimental";
+
+const pixels = new Float64Array(width * height);
+parallelInto(
+  pixels,
+  (part, start, end) => {
+    for (let y = start; y < end; y++)
+      for (let x = 0; x < width; x++) part[(y - start) * width + x] = shade(x, y);
+  },
+  { grain: 4 },
+);
+
+const total = parallelReduce(
+  1_000_000,
+  0,
+  (start, end) => {
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += weights[i]!;
+    return sum;
+  },
+  (left, right) => left + right,
+);
+```
+
+- `parallelInto(target, body, options?)` splits the indices `0 .. target.length / stride` into chunks `[start, min(start + grain, count))` and calls `body(part, start, end)` once per chunk, where `part` is `target.subarray(start * stride, end * stride)`. `options.stride` (default 1) is the distance between the indices the body works on, so a matrix row is one index of a flat array.
+- `parallelReduce(count, initial, part, combine, options?)` computes one value per chunk and folds them from left to right in chunk order: `combine(...combine(combine(initial, part(c0)), part(c1))..., part(cn))`. `combine` need not be associative, and the result does not depend on how many threads ran the chunks. The value is a number.
+- `parallelFor(count, body, options?)` calls `body(start, end)` once per chunk.
+- `options.grain` is the number of indices in a chunk. The default is `Math.max(1, Math.ceil(count / 256))`, so a call makes about 256 chunks whatever the count. `grain` and `stride` must be positive integers, and `stride` must divide `target.length`; a call that breaks one of these throws a `RangeError` before any chunk runs, with the same message as under Node.js.
+
+In scriptc builds the chunks of a `parallelInto` or a `parallelReduce` may run on several threads at once when scriptc can show that doing so is not observable:
+
+- The callback is a function expression written at the call site.
+- It reads numbers, booleans and the elements and `length` of typed arrays, and writes only elements of its `part` (`parallelInto`) and variables it declares itself, which hold numbers or booleans. `parallelReduce`'s `combine` reads only its arguments.
+- It does not allocate, throw, `await`, or call anything except the global `Math`'s pure functions. A helper thread has no way to allocate or to carry a thrown value, so `Math.hypot` is not among them: its arguments reach the runtime as one array, which every call allocates. Nor is a program's own object named `Math`, which is not the global `Math`.
+
+A captured typed array it reads is compared with the target: when the two overlap, the chunks run one after another, since one chunk's write could race another's read. A call that breaks a rule compiles to the sequential loop, which is exactly the Node.js call, and scriptc reports which rule it broke as a performance warning (SC6106), never as a build failure. `parallelFor` always runs its chunks one after another until scriptc can show that its callbacks write disjoint elements.
+
+The number of threads is the process's, taken from `SCRIPTC_THREADS` (default: the hardware thread count, capped at 64). Results do not depend on it: chunks are handed out whole and the reduce fold is in chunk order, so a sum of floating-point values is the same on every run and every machine.
+
+## Refusals
+
+`@scriptc/experimental/refusals.json` lists the Node APIs and builtin modules that scriptc refuses, with the access a program uses to reach each one. The Node compatibility generator writes it beside the compatibility ledger, and `pnpm node-compat:check` fails when the committed table is stale. Each release publishes the table for its own compiler version.
+
+```ts
+import refusals from "@scriptc/experimental/refusals.json" with { type: "json" };
+
+for (const refusal of refusals.refusals) {
+  if (refusal.layer === "load") console.log(refusal.binding.module);
+}
+```
+
+- The top level carries `schemaVersion`, the pinned `nodeVersion`, and the `compilerVersion` the table was generated for.
+- `refusals` holds one entry per refusal site. `layer` is `"static"` for an API that scriptc refuses or `"load"` for a builtin module it does not serve.
+- `binding` is the access that reaches the refusal: the `module` (spelled like an import, such as `node:crypto`), the member `path` inside it, and `access`, one of `"call"`, `"get"`, `"construct"`, `"listen"`, or `"import"`. A module import omits `path`, and a row the sources cannot place says `"unknown"` instead.
+- A static entry names its `row` in the compatibility ledger, the compiler surface manifest entry in `manifestId`, and the row's `chapter`, `apiSymbol`, `kind`, and `label`.
+- A load entry carries the `code` and `message` of its `SC1010` diagnostic, the same text `@scriptc/experimental/register` raises; for a module fenced by construction the message names the reason.
+
+## Load hook
+
+`@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.
+
+```console
+node --require @scriptc/experimental/register app.ts
+```
+
+`--import` works the same way. Node.js 24 or newer is required.
+
+The hook applies the refusals in `refusals.json`, the same data the compiler uses:
+
+- Importing a builtin module that scriptc does not support fails with the compiler's code and message (`SC1010`).
+- Loading a native addon (`.node`) fails with the compiler's code and message (`SC2020`).
+- `process.getBuiltinModule` of an unsupported builtin throws the error a compiled program throws for that call.
+
+A program can therefore run under Node.js with the hook, fail where the build fails, and give the same code and message. Running both in CI catches a refusal before a binary is built or deployed.
+
+scriptc refuses code generation from strings, which Node.js does only with `--disallow-code-generation-from-strings`. The hook cannot set the flag for the process it joins, so add it to `NODE_OPTIONS`:
+
+```console
+NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/experimental/register app.ts
+```
+
+The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.
+## Dual-run testing
+
+`@scriptc/experimental/dual-run` runs a test file twice, once under Node.js and once as the executable scriptc builds, and compares the runs: test names, pass and fail results, assertion messages, program output and the exit code, with durations and stack frames normalized away. It is Node.js tooling, so a scriptc-built program cannot call it, and a compiled program never needs to.
+
+```ts
+import { dualRun } from "@scriptc/experimental/dual-run";
+
+const result = await dualRun("test/format.test.ts");
+if (!result.equal) throw new Error(result.diff);
+```
+
+`dualRun(entry, { args, stdin, env, cwd, timeoutMs })` returns `{ node, native, equal, diff }`, where each run has `stdout`, `stderr` and `exitCode`. A program that does not compile rejects with a `DualRunBuildError` whose `stderr` holds the diagnostics.
+
+The `@scriptc/experimental/dual-run/reporter` subpath is a Node.js test reporter that does the same for every file `node --test` runs:
+
+```console
+$ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+```
+
+It prints one line per file, shows a diff when the two runs differ, reports a file whose Node.js output itself varies as flaky, and fails the run on a difference. Both forms build through the `scriptc` command and its executable cache, found from `SCRIPTC_BIN`, `node_modules/.bin` or `PATH`. See [dual-run testing](https://scriptc.dev/docs/dual-run).

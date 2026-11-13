@@ -55,6 +55,7 @@ import {
 } from "./function-returns.js";
 import { bindingNeverReassigned, isValueIdentifier } from "./binding-analysis.js";
 import { declareContextLocal } from "./function-context.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 import {
   extendInstantiationPath,
   MAX_INSTANTIATION_RECURSION,
@@ -2005,6 +2006,8 @@ export function lowerGenericInstance(
     if (isAsync) fn.async = true;
     if (fnCtx.generator)
       fn.generator = bindsAtCall ? { ...fnCtx.generator, bindAtCall: true } : fnCtx.generator;
+    // Every instance prints the declaration's text (function-source-text.ts).
+    noteFunctionSourceNode(lowerer, fn, decl);
     return fn;
   } finally {
     lowerer.fnStack.pop();

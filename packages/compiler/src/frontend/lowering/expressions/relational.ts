@@ -53,6 +53,7 @@ import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
@@ -83,6 +84,7 @@ import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
+import { isX509Type } from "../builtins/x509.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { recordMayKeepSource } from "../record-sources.js";
@@ -315,6 +317,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
   }
+  if (lowerer.isStdlibGlobal(expr.right, "WeakRef")) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "weakRef.is", args: [value], type: BOOL, loc };
+  }
   const rhsBuiltin = ts.isIdentifier(expr.right)
     ? lowerer.builtinImportOf(expr.right)
     : ts.isPropertyAccessExpression(expr.right)
@@ -377,6 +383,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const perfClass = lowerPerfInstanceof(lowerer, expr);
+    if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }
@@ -858,7 +866,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       };
     }
     // A builtin global function value read off the global (`parseInt`,
-    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // `Symbol`, ...) is not a class value: the boxed value has
     // no prototype to test against, so the test is refused.
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
@@ -3185,6 +3193,16 @@ export function lowerInExpression(
   if (shape.fields.some((f) => f.name === `%get:${key}` || f.name === `%set:${key}`)) {
     return staticAnswerAfter(recv, true, loc);
   }
+  // An X509Certificate's record holds the values its fields compute, but
+  // Node's certificate exposes every declared member through the
+  // prototype — the field getters, the issuerCertificate getter and the
+  // methods — so `"checkHost" in cert` and `"issuerCertificate" in cert`
+  // answer true.
+  if (
+    isX509Type(lowerer, recv.type) &&
+    nodeDeclaredMember(lowerer, lowerer.typeOf(expr.right), key)
+  )
+    return staticAnswerAfter(recv, true, loc);
   // Records are ordinary objects: Object.prototype's members are in them.
   const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
   if (shape.indexValue && !inherited) {

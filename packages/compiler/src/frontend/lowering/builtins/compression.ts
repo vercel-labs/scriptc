@@ -143,6 +143,35 @@ function zlibInput(
   );
 }
 
+/** Whether `call` resolves to the `info: true` overload of a zlib
+ * convenience method — the ones that answer Node's { buffer, engine }
+ * object. The checker's own resolution decides, so the lowering and the
+ * static type agree: an options value that does not statically carry
+ * info (an `any` value) resolves to the Buffer overload and keeps the
+ * runtime options ladder, whose refusal still covers it. */
+function zlibInfoCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const options =
+    lowerer.checker.getResolvedSignature(call)?.declaration?.parameters?.nodes[1]?.type;
+  if (options === undefined) return false;
+  const info = lowerer.checker.getPropertyOfType(
+    lowerer.checker.getTypeFromTypeNode(options),
+    "info",
+  );
+  if (!info) return false;
+  /* `boolean` is the union `true | false`, so the info overload is the one
+   * that admits `true` and not `false`: the general overload's `info?:
+   * boolean` holds both and stays the Buffer form. */
+  const declared = lowerer.checker.getTypeOfSymbol(info);
+  const parts = declared.isUnionType() ? ts.constituentTypes(declared) : [declared];
+  let admitsTrue = false;
+  for (const part of parts) {
+    if ((part.flags & ts.TypeFlags.BooleanLiteral) === 0) continue;
+    if ((part as ts.BooleanLiteralType).value !== true) return false;
+    admitsTrue = true;
+  }
+  return admitsTrue;
+}
+
 /** A zlib options argument as the dyn value the runtime ladder reads. */
 function zlibOptionsValue(
   lowerer: Lowerer,
@@ -396,6 +425,20 @@ export function lowerPromisifiedZlibCall(
   }
   const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
   noteCodecMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
+  if (zlibInfoCall(lowerer, expr)) {
+    // `info: true`: the promise settles with Node's { buffer, engine }.
+    return {
+      kind: "libCall",
+      fn: input.dyn ? "zlib.infoPromiseDyn" : "zlib.infoPromise",
+      args: [
+        numLit(ZLIB_ONE_SHOT_MODES[member]!, loc),
+        input.value,
+        zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${member}`, loc),
+      ],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+  }
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
@@ -459,6 +502,20 @@ export function lowerZlibModuleCall(
       lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
     }
     const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
+    if (zlibInfoCall(lowerer, expr)) {
+      // { buffer, engine } in place of the Buffer (Node's `info` option).
+      return {
+        kind: "libCall",
+        fn: input.dyn ? "zlib.infoSyncDyn" : "zlib.infoSync",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     if (input.dyn) {
       return {
         kind: "libCall",
@@ -548,6 +605,21 @@ export function lowerZlibModuleCall(
     }
     const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     const dynData = input.dyn;
+    if (zlibInfoCall(lowerer, expr)) {
+      // The callback receives { buffer, engine } as a checked value.
+      return {
+        kind: "libCall",
+        fn: dynData ? "zlib.infoCbDyn" : "zlib.infoCb",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
+          errorFirstBytesCallback(lowerer, expr.arguments.nodes[2]!, "zlib"),
+        ],
+        type: VOID,
+        loc,
+      };
+    }
     if (expr.arguments.nodes.length === 3 || dynData) {
       // (data, options, callback): Node validates the options before the
       // callback and the input, so the runtime ladder runs first.
@@ -627,6 +699,28 @@ function lowerCodecOneShot(
     ? zlibOptionsValue(lowerer, args[1]!, `zlib.${member}`, loc)
     : dynUndefinedExpr(loc);
   noteCodecMode(lowerer, mode, loc);
+  if (zlibInfoCall(lowerer, expr)) {
+    return sync
+      ? {
+          kind: "libCall",
+          fn: input.dyn ? "zlib.infoSyncDyn" : "zlib.infoSync",
+          args: [numLit(mode, loc), input.value, options],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: input.dyn ? "zlib.infoCbDyn" : "zlib.infoCb",
+          args: [
+            numLit(mode, loc),
+            input.value,
+            options,
+            errorFirstBytesCallback(lowerer, args[2]!, "zlib"),
+          ],
+          type: VOID,
+          loc,
+        };
+  }
   if (sync) {
     return {
       kind: "libCall",

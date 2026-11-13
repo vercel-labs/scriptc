@@ -1673,7 +1673,9 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
   const ic = host.jsIcSite();
   const name = keyString(host, method, e);
   host.declare(`declare ptr @scr_js_load_probe(ptr, ptr, ptr)`);
-  host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
+  const prepare =
+    method === "isPrototypeOf" ? "scr_dyn_prepare_method_inherited" : "scr_dyn_prepare_method";
+  host.declare(`declare ptr @${prepare}(ptr, ptr)`);
   const object = B.newLabel("icm.obj");
   const probe = B.newLabel("icm.probe");
   const slow = B.newLabel("icm.slow");
@@ -1701,9 +1703,7 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
   B.condBr(found, join, slow);
   B.startBlock(slow);
   const prepared = B.tmp();
-  B.line(
-    `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${receiver}, ptr ${host.cstr(method)}) cold`,
-  );
+  B.line(`${prepared} = call ptr @${prepare}(ptr ${receiver}, ptr ${host.cstr(method)}) cold`);
   incoming.push(`[ ${prepared}, %${B.currentLabel()} ]`);
   B.br(join);
   B.startBlock(join);

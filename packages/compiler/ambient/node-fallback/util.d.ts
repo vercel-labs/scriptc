@@ -21,6 +21,17 @@ declare module "util" {
   export function stripVTControlCharacters(str: string): string;
   export function toUSVString(string: string): string;
   export function isDeepStrictEqual(val1: unknown, val2: unknown, skipPrototype?: boolean): boolean;
+  /** Marks a promise as handled: its rejection never reaches
+   * 'unhandledRejection'. Any other value throws ERR_INVALID_ARG_TYPE. */
+  export function markPromiseAsHandled<T>(promise: Promise<T>): void;
+  /** Marks the signal transferable and answers the same signal. Any other
+   * value throws ERR_INVALID_ARG_TYPE. */
+  export function transferableAbortSignal(signal: AbortSignal): AbortSignal;
+  /** Creates an AbortController whose signal is marked transferable. */
+  export function transferableAbortController(): AbortController;
+  /** Toggles SIGINT tracing (the --trace-sigint hook). The argument is
+   * evaluated but never read or coerced; the call answers undefined. */
+  export function setTraceSigInt(enable: boolean): void;
   export function styleText(
     format: string | readonly string[],
     text: string,
@@ -212,13 +223,22 @@ declare module "util" {
     },
   ) => Promise<{ stdout: string; stderr: string }>;
   /* The zlib callback one-shots (deflate, inflate, deflateRaw, inflateRaw,
-   * gzip, gunzip, unzip) share one type. */
-  export function promisify(
-    fn: typeof import("node:zlib").gzip,
-  ): (
-    data: string | ScriptcBufferView | ArrayBufferLike,
-    options?: import("node:zlib").ZlibOptions,
-  ) => Promise<Buffer>;
+   * gzip, gunzip, unzip) share one type; `info: true` settles with Node's
+   * { buffer, engine } object. */
+  export function promisify(fn: typeof import("node:zlib").gzip): {
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options: import("node:zlib").ZlibOptions & { info?: false },
+    ): Promise<Buffer>;
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options: import("node:zlib").ZlibOptions & { info: true },
+    ): Promise<unknown>;
+    (
+      data: string | ScriptcBufferView | ArrayBufferLike,
+      options?: import("node:zlib").ZlibOptions,
+    ): Promise<Buffer>;
+  };
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
@@ -312,6 +332,14 @@ declare module "util" {
       ((arg1: T1, arg2: T2, arg3: T3, callback: (err: any, result: TResult) => void) => void) &
       (F extends (...args: any[]) => infer R ? (R extends void ? unknown : never) : never),
   ): (arg1: T1, arg2: T2, arg3: T3) => Promise<TResult>;
+  export namespace promisify {
+    /* The key of a function's custom promisified variant:
+     * Symbol.for('nodejs.util.promisify.custom'). A truthy value there is
+     * what promisify answers for an untyped function (it must be a
+     * function); the wrapper a plain function gets carries the key too,
+     * with itself as its value. */
+    const custom: unique symbol;
+  }
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). */
@@ -360,6 +388,14 @@ declare module "util" {
     /* The key of an object's custom inspect function:
      * Symbol.for('nodejs.util.inspect.custom'). */
     const custom: unique symbol;
+    /* The SGR pair the colored render applies to each style, and the style
+     * type → color name map it reads: both are writable objects, and the
+     * render reads them per styled leaf. */
+    let colors: Record<string, [number, number]>;
+    let styles: Record<string, string>;
+    /* The options every inspect/format call uses when it does not supply
+     * its own (a sealed object with Node's twelve defaults). */
+    let defaultOptions: InspectOptions;
   }
   export function format(format?: unknown, ...args: unknown[]): string;
   export function formatWithOptions(

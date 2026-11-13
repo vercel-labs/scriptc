@@ -51,9 +51,18 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   const stabilized = stabilizedValue(emitter, e);
   if (stabilized !== null) {
     // The stabilized read runs in place; its stable local keeps the read's
-    // pointer, so the projection of it lends the same owner.
+    // pointer, so the projection of it lends the same owner. The local is a
+    // sequence's, not the enclosing block's: it dies with the statement or
+    // branch arm that created it, so a path that skips the read never
+    // releases a pointer it did not store. The scope is opened here rather
+    // than in a closure: this function compiles with the compiler, and the
+    // closure #3563 passed here lowered it to 4,933 stack slots in the
+    // bootstrapped module instead of 409, which overran the bootstrap stack.
+    emitter.beginSequenceScope();
     for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
-    return emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
+    const lent = emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
+    emitter.endSequenceScope();
+    return lent;
   }
   if (e.kind === "varRef") {
     emitter.materializeSplitLocal(e.localId);
@@ -248,10 +257,12 @@ export function canBorrowCallArgument(emitter: LlEmitter, value: IrExpr): boolea
   if (value.kind === "seqExpr") {
     const guarded = guardedValue(value);
     if (guarded !== null) return emitter.canBorrowCallArgument(guarded);
-    // A stabilized read (`const %propertyRecv = <read>; p!`) lends its
-    // projection: the local holds the read's pointer for the whole scope, so
-    // the projection needs no count of its own.
-    return stabilizedValue(emitter, value) !== null;
+    // A stabilized read's projection is lent only where the consumer reads it
+    // in place (the receiver path, through canBorrowReceiver). Stored into a
+    // stable binding, or another owner that outlives the statement, it must
+    // take its own count: the hidden local is a sequence's, and dies with the
+    // statement that created it.
+    return false;
   }
   // A nullable-union wrap reinterprets its payload pointer; an immortal
   // unit constant needs no owner at all.

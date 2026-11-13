@@ -236,6 +236,21 @@ export const CRYPTO_CIPHERS: readonly string[] = [
   "sm4-xts",
 ];
 
+/** crypto.getMacs() — Node v24.22.1 MAC names. */
+export const CRYPTO_MACS: readonly string[] = [
+  "blake2bmac",
+  "blake2smac",
+  "cmac",
+  "gmac",
+  "hmac",
+  "kmac-128",
+  "kmac-256",
+  "kmac128",
+  "kmac256",
+  "poly1305",
+  "siphash",
+];
+
 /** crypto.getHashes() — Node v24.22.1 digest names. */
 export const CRYPTO_HASHES: readonly string[] = [
   "RSA-MD5",

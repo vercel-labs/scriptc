@@ -404,3 +404,29 @@ Indexing the field, reading its `length` and iterating it with `for...of` read t
 Each element takes 4 bytes in the instance, and the field's own slot holds the count. The constructor copies the elements from the array it is passed, so that array can be released. The elements start at the same offset in every class of the hierarchy, after the largest set of fixed fields. A read that gets an array allocates a small header that refers to the instance's elements, and frees it when the read's value is released.
 
 The elements stay in an ordinary array object, and the field behaves like any other array field, in builds with sanitizers, in programs that use [`LifetimeRegion`](#lifetimeregion), and on platforms other than 64-bit Linux and macOS.
+
+## Load hook
+
+`@scriptc/experimental/register` is a preload that makes Node.js refuse a program the way a scriptc build does, before the program runs. Use it while developing so `node` and `scriptc` agree on what the program may load.
+
+```console
+$ node --require @scriptc/experimental/register app.ts
+```
+
+`--import` works the same way. Node.js 24 or newer is required.
+
+The hook applies the refusals in `@scriptc/experimental/refusals.json`, the same data the compiler uses:
+
+- Importing a builtin module that scriptc does not support fails with the compiler's code and message (`SC1010`).
+- Loading a native addon (`.node`) fails with the compiler's code and message (`SC2020`).
+- `process.getBuiltinModule` of an unsupported builtin throws the error a compiled program throws for that call.
+
+A program can therefore run under Node.js with the hook, fail where the build fails, and give the same code and message. Running both in CI catches a refusal before a binary is built or deployed.
+
+scriptc refuses code generation from strings, which Node.js does only with `--disallow-code-generation-from-strings`. The hook cannot set the flag for the process it joins, so add it to `NODE_OPTIONS`:
+
+```console
+$ NODE_OPTIONS=--disallow-code-generation-from-strings node --require @scriptc/experimental/register app.ts
+```
+
+The hook prints a warning to stderr when the flag is missing, or when the running Node.js version differs from the release the refusal data describes.

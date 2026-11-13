@@ -2627,6 +2627,14 @@ typedef struct ScrDynHandleOps {
   /* A promise rejected with the pending exception (+1), for the rejects
    * methods; the owning unit supplies it, since promises are a gated unit. */
   ScrDyn *(*rejected)(void);
+  /* stream.isDestroyed / isErrored / isDisturbed / isReadable /
+   * isWritable over a handle of this class (Node's duck-typed predicates):
+   * `which` is scr_stream.c's order — 0 destroyed, 1 errored, 2 disturbed,
+   * 3 readable, 4 writable. Answers +1, or NULL when the class is not a
+   * stream whose state the predicates report (the caller keeps its own
+   * answer). The web stream classes answer Node's symbol getters here;
+   * only they set it. */
+  ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),

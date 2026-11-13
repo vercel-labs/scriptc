@@ -11,6 +11,7 @@ import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
+import { emitParallelIntrinsic } from "./parallel-loops.js";
 import {
   CYC_BUF,
   CYC_HDR,
@@ -8586,6 +8587,7 @@ export class LlEmitter {
       return this.emitRegionIntrinsic(e);
     if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
     if (e.name.startsWith("slots.")) return emitThreadSlotsIntrinsic(this, e);
+    if (e.name.startsWith("par.")) return emitParallelIntrinsic(this, e);
     return emitIntrinsicExpr(this, e);
   }
 

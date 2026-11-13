@@ -71,6 +71,9 @@ import {
 } from "./cycle-initialization.js";
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
+  cjsConditionalAliasOf,
+  cjsConditionalWholeExportTargetsOf,
+  cjsExportValueByName,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
   cjsRequireSnapshotBindingsOf,
@@ -82,6 +85,11 @@ import {
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
 } from "./cjs-inline-require.js";
+import {
+  isCjsExportsIdentifier,
+  isCjsModuleExports,
+  isFreshExportsReset,
+} from "./cjs-exports-object.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
 import { collectJsonRequires, isJsonRequireDecl } from "./json-require.js";
 import {
@@ -116,6 +124,7 @@ import {
   boundIdentifiersOf,
   dynFallbackType,
   newFnCtx,
+  runsWhereWritten,
   staticImportNamespaceType,
 } from "./lowerer.js";
 import {
@@ -666,6 +675,9 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     lowerer.collectJsonImports(parts);
     collectJsonRequires(lowerer, parts);
   }
+  // Every module's globals exist now, so a conditional whole export can name
+  // the table globals its writes have to forward to.
+  collectCjsConditionalExportMirrors(lowerer, parts);
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
     const wasCollecting: boolean = lowerer.collecting;
@@ -1840,6 +1852,413 @@ function cjsIdentExportSnapshotType(lowerer: Lowerer, id: ts.Identifier): IrType
   return lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, id, strict);
 }
 
+/** Register the export globals of a module whose whole export is chosen at
+ * run time between statically known tables (react/index.js's conditional
+ * `module.exports = require(...)`): each table member gets one slot here,
+ * typed by the module's own export symbol (the checker's union over the
+ * branches), and the assignment statements fill the slots from whichever
+ * branch ran. Importers then read the slots exactly as they read any
+ * CommonJS export member. */
+function registerCjsConditionalWholeExportGlobals(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  tag: string,
+): void {
+  const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+  if (targets === null) return;
+  const first = targets[0]!;
+  const slots = new Map<string, IrGlobal>();
+  for (const name of first.names) {
+    const diagsBefore = lowerer.diags.length;
+    try {
+      const symbol =
+        lowerer.cjsModuleExportSymbol(sf, name) ??
+        lowerer.cjsModuleExportSymbol(first.req.dep, name);
+      if (symbol === undefined) continue;
+      const strict = lowerer.checker.getTypeOfSymbol(symbol);
+      const t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, first.assign, strict);
+      if (!t || t.kind === "void") {
+        lowerer.badType(first.assign, strict);
+        continue;
+      }
+      // Modules that re-export the same tables share the checker's
+      // synthesized member symbols, so each module's slot is keyed by the
+      // module (and its statements and importers look it up that way). The
+      // symbol keys stay as the fallback for every other resolution path;
+      // the first module to register a shared symbol owns it.
+      const g: IrGlobal = { id: `%g.${tag}%export.${name}`, name, type: t, mutable: false };
+      slots.set(name, g);
+      if (lowerer.globalsBySymbol.has(symbol)) continue;
+      lowerer.globalsBySymbol.set(symbol, g);
+      for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      deferJsCollectionDiags(lowerer, sf, diagsBefore);
+    }
+  }
+  if (slots.size > 0) {
+    lowerer.cjsConditionalWholeExportGlobals.set(sf, slots);
+    // The branch statement stores the 1-based index of the table it took;
+    // 0 means the module has not chosen yet. A table member written later
+    // forwards into these slots when they belong to the chosen table.
+    const select: IrGlobal = {
+      id: `%g.${tag}%exportSelect`,
+      name: "%exportSelect",
+      type: F64,
+      mutable: true,
+    };
+    lowerer.cjsConditionalWholeExportSelectGlobals.set(sf, select);
+    lowerer.globalsList.push(select);
+  }
+  for (const g of slots.values()) lowerer.globalsList.push(g);
+}
+
+/** Register the forwarding edges a conditional whole export needs: Node's
+ * `module.exports = require("./prod.cjs")` makes the conditional module's
+ * export object the table's own exports object, so a member the table
+ * assigns later (through a function it exported, say) is visible to the
+ * conditional module's requirers. Each edge names the table's member global
+ * (the one its writes update), the conditional module's selection global, and
+ * the value that selects this table. Runs after every file's globals exist,
+ * since the edge is keyed by the table's registered global. */
+function collectCjsConditionalExportMirrors(lowerer: Lowerer, parts: FileParts[]): void {
+  for (const fp of parts) {
+    const sf = fp.sf;
+    const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+    if (targets === null) continue;
+    const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(sf);
+    if (select === undefined) continue;
+    targets.forEach((target, index) => {
+      for (const name of target.names) {
+        const slot = lowerer.cjsConditionalWholeExportSlotOf(sf, name);
+        if (slot !== null)
+          addCjsConditionalExportMirror(lowerer, target.req.dep, name, select, index + 1, slot);
+      }
+    });
+  }
+  // A conditional module alias (`l = require("./a")` in one arm, `l =
+  // require("./b")` in the other) holds the table's own exports object in
+  // Node, so a member the table assigns after the write shows through `l`.
+  for (const [symbol, slots] of lowerer.cjsConditionalAliasGlobals) {
+    const alias = cjsConditionalAliasOf(lowerer, symbol);
+    const select = lowerer.cjsConditionalAliasSelectGlobals.get(symbol);
+    if (alias === null || select === undefined) continue;
+    alias.writes.forEach((write, index) => {
+      for (const [name, slot] of slots)
+        addCjsConditionalExportMirror(lowerer, write.req.dep, name, select, index + 1, slot);
+    });
+  }
+}
+
+/** Forward writes of table `dep`'s export member `name` into `slot` while
+ * `select` holds `selectValue`. */
+function addCjsConditionalExportMirror(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  name: string,
+  select: IrGlobal,
+  selectValue: number,
+  slot: IrGlobal,
+): void {
+  const symbol = lowerer.cjsModuleExportSymbol(dep, name);
+  if (symbol === undefined) return;
+  const g = lowerer.globalsBySymbol.get(symbol);
+  if (g === undefined || g.id === slot.id) return;
+  const edges = lowerer.cjsConditionalExportMirrors.get(g.id) ?? [];
+  if (
+    edges.some(
+      (edge) =>
+        edge.select === select.id && edge.selectValue === selectValue && edge.slot.id === slot.id,
+    )
+  )
+    return;
+  edges.push({ select: select.id, selectValue, slot });
+  lowerer.cjsConditionalExportMirrors.set(g.id, edges);
+}
+
+/** How many places in the file write the export member `name`: member
+ * assignments in any position (statement, chain, nested arm) plus table
+ * entries that name it. Sharing an immutable source binding's storage is
+ * only sound while the export is written once, so this answers whether the
+ * export has any other write that would land on the shared binding. */
+function cjsExportMemberWriteCount(lowerer: Lowerer, sf: ts.SourceFile, name: string): number {
+  let count = 0;
+  ts.walkPreorder(sf, (node) => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind < ts.SyntaxKind.FirstAssignment ||
+      node.operatorToken.kind > ts.SyntaxKind.LastAssignment
+    )
+      return undefined;
+    const left = node.left;
+    const target =
+      ts.isPropertyAccessExpression(left) &&
+      !left.questionDotToken &&
+      ts.isIdentifier(left.name) &&
+      left.name.text === name
+        ? left.expression
+        : ts.isElementAccessExpression(left) &&
+            ts.isStringLiteralLike(left.argumentExpression) &&
+            left.argumentExpression.text === name
+          ? left.expression
+          : null;
+    if (
+      target !== null &&
+      (isCjsExportsIdentifier(lowerer, target) || isCjsModuleExports(lowerer, target))
+    )
+      count++;
+    return undefined;
+  });
+  for (const stmt of sf.statements.nodes) {
+    const cjs = cjsExportAssignmentOf(stmt);
+    if (cjs?.kind !== "table") continue;
+    const table = cjs.obj ?? cjsExportTargetLiteral(cjs.expr.right, sf);
+    for (const prop of table?.properties?.nodes ?? []) {
+      const propName = prop.name;
+      if (propName !== undefined && !ts.isComputedPropertyName(propName) && propName.text === name)
+        count++;
+    }
+  }
+  return count;
+}
+
+/** Register the module global that stores one CommonJS export member: keyed
+ * by the checker's export symbol, holding the member's declared type (or the
+ * checked-dynamic fallback a JavaScript member without a mapping takes). One
+ * `exports.<name> = <value>` / `module.exports.<name> = <value>` statement,
+ * table entry or write in the file is enough; the statement lowering assigns
+ * the global where the write runs, so only executed writes leave a value. */
+function registerCjsExportGlobal(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  tag: string,
+  nameNode: ts.Node,
+  name: string,
+  typeNode: ts.Node,
+): void {
+  const diagsBefore = lowerer.diags.length;
+  // The module's own member storage by name: an importer of a module whose
+  // exports are attached where the checker gives the module symbol no
+  // declaration for the member (react.development.js's `exports.x` writes
+  // inside a wrapper) reads the member here.
+  const note = (g: IrGlobal): void => {
+    let byName = lowerer.cjsInFileExportMemberGlobals.get(sf);
+    if (byName === undefined) {
+      byName = new Map<string, IrGlobal>();
+      lowerer.cjsInFileExportMemberGlobals.set(sf, byName);
+    }
+    byName.set(name, g);
+  };
+  try {
+    // tsgo answers no symbol at the attachment site's NAME (no
+    // expando synthesis); the module symbol's exports table still
+    // names the member — the same identity use sites resolve.
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(nameNode) ?? lowerer.cjsModuleExportSymbol(sf, name);
+    if (!symbol || lowerer.globalsBySymbol.has(symbol)) return;
+    // JS exports whose strict type has no mapping take the
+    // checked-dynamic fallback (implicit-any function exports —
+    // common/tls's `exports.check = function (certs) {...}` —
+    // keep func-ness with dyn pieces; everything else is dyn).
+    const strict = lowerer.checker.getTypeOfSymbol(symbol);
+    let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
+    if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
+    // An export typed as the empty object literal (tsc's enum output
+    // `exports.E || (exports.E = {})` after its `exports.E = void 0`
+    // preamble): TS's `{}` admits any later non-nullish value and the
+    // export is undefined until then, so it rides checked-dynamic
+    // storage like the same-shaped var binding (varBindingType).
+    if (t.kind === "record" && isJsSourceFile(sf)) {
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
+    }
+    // An immutable export source shares its live storage and native
+    // callable ABI — while this write is the export's only one. A second
+    // write (another arm of the same conditional, a later statement) would
+    // store through the shared binding and change the source's value, which
+    // Node never does: the export object is a copy. Mutable sources always
+    // need a separate snapshot slot: later writes to the binding do not
+    // change the exported value.
+    {
+      let rhs: ts.Node = typeNode;
+      while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+      if (ts.isIdentifier(rhs)) {
+        const vSym = lowerer.checker.getSymbolAtLocation(rhs);
+        const vG = vSym && lowerer.globalsBySymbol.get(vSym);
+        if (vG) {
+          if (!vG.mutable && cjsExportMemberWriteCount(lowerer, sf, name) === 1) {
+            lowerer.globalsBySymbol.set(symbol, vG);
+            for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
+            note(vG);
+            return;
+          }
+          const g: IrGlobal = {
+            id: `%g.${tag}%export.${name}`,
+            name,
+            type: vG.mutable ? vG.type : t,
+            mutable: false,
+          };
+          lowerer.globalsBySymbol.set(symbol, g);
+          for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
+          lowerer.globalsList.push(g);
+          note(g);
+          return;
+        }
+      }
+    }
+    const g: IrGlobal = { id: `%g.${tag}%export.${name}`, name, type: t, mutable: false };
+    lowerer.globalsBySymbol.set(symbol, g);
+    // Importer aliases resolve to a DISTINCT late-bound symbol with
+    // the same declaration — key the node too (globalOf's fallback).
+    for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
+    lowerer.globalsList.push(g);
+    note(g);
+  } catch (e) {
+    if (!(e instanceof PoisonError)) throw e;
+    // diagnostic recorded; the statement lowering poisons too —
+    // both defer to the statement's runtime fence in JS files.
+    deferJsCollectionDiags(lowerer, sf, diagsBefore);
+  }
+}
+
+/** Register the member slots of a module-local variable whose value is a
+ * require() chosen at run time among statically known export tables
+ * (react-dom/server.node.js's `var l, s; if (…) l = require('./legacy') …`).
+ * Each write assigns every slot from the table it required; `l.member` reads
+ * the slot, so the member answers whichever table the executed branch named.
+ * A slot's type is the module's own export member type (the checker's type
+ * over the branches), which is exactly what an importer of this module reads
+ * from the export global the statement assigns. */
+function registerCjsConditionalAliasGlobals(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  tag: string,
+): void {
+  for (const stmt of sf.statements.nodes) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const decl of stmt.declarationList.declarations.nodes) {
+      if (decl.initializer !== undefined || !ts.isIdentifier(decl.name)) continue;
+      const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+      if (symbol === undefined) continue;
+      const alias = cjsConditionalAliasOf(lowerer, symbol);
+      if (alias === null) continue;
+      const slots = new Map<string, IrGlobal>();
+      let complete = true;
+      for (const name of alias.names) {
+        const diagsBefore = lowerer.diags.length;
+        try {
+          // The member's type is the module's own export member type (the
+          // checker's type over the branches). A shape the checker does not
+          // synthesize an export symbol for keeps the first table's member
+          // type; anything unmappable rides checked-dynamic storage.
+          const exportSymbol = lowerer.cjsModuleExportSymbol(sf, name);
+          const t =
+            (exportSymbol === undefined
+              ? null
+              : lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(exportSymbol))) ??
+            cjsExportValueByName(lowerer, alias.writes[0]!.req.dep, name, decl)?.type ??
+            DYN;
+          const g: IrGlobal = {
+            id: `%g.${tag}%alias.${decl.name.text}.${name}`,
+            name: `${decl.name.text}.${name}`,
+            type: t,
+            mutable: false,
+          };
+          slots.set(name, g);
+          lowerer.globalsList.push(g);
+        } catch (e) {
+          if (!(e instanceof PoisonError)) throw e;
+          deferJsCollectionDiags(lowerer, sf, diagsBefore);
+          complete = false;
+        }
+      }
+      // A partial registration would leave reads of the missing member
+      // unresolvable; keep the whole alias on its ordinary treatment.
+      if (complete && slots.size === alias.names.length) {
+        lowerer.cjsConditionalAliasGlobals.set(symbol, slots);
+        // The write that ran stores the 1-based index of the table it
+        // required; 0 means no write has run. A member that table assigns
+        // later forwards into the slots while they are its own.
+        const select: IrGlobal = {
+          id: `%g.${tag}%alias.${decl.name.text}%select`,
+          name: `${decl.name.text}%select`,
+          type: F64,
+          mutable: true,
+        };
+        lowerer.cjsConditionalAliasSelectGlobals.set(symbol, select);
+        lowerer.globalsList.push(select);
+      }
+    }
+  }
+}
+
+/** Register the export member globals of writes that are not top-level
+ * export statements: `if (cond) { exports.now = … } else { exports.now = … }`
+ * (scheduler's shape), writes inside functions, and loops. Node's exports
+ * object takes a member write in any position, and a module that never
+ * replaces `module.exports` and never rebinds `exports` keeps the object
+ * every requirer reads, so each name the file writes gets the storage its
+ * write already looks for (cjsExportMemberWriteGlobalOf). The write itself
+ * assigns the global where it runs, so only the branch that executed leaves
+ * a value — Node's answer, not a merge of every path. */
+function registerNestedCjsExportMembers(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  tag: string,
+  topStmts: ts.Statement[],
+): void {
+  // A module that replaces its export object has no static table: its
+  // importers read whichever object the path produced. Those writes keep
+  // their existing treatment.
+  if (!cjsModuleKeepsOriginalExports(lowerer, sf)) return;
+  // Statements the top-level machinery owns: their members register there
+  // (with the discard rules that follow a later `module.exports =`), and a
+  // second pass here would resurrect a member Node discards.
+  const owned = new Set<ts.Node>(topStmts.filter((stmt) => cjsExportAssignmentOf(stmt) !== null));
+  ts.walkPreorder(sf, (node) => {
+    if (
+      !ts.isBinaryExpression(node) ||
+      node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isPropertyAccessExpression(node.left) ||
+      node.left.questionDotToken !== undefined ||
+      !ts.isIdentifier(node.left.name)
+    )
+      return undefined;
+    for (let p: ts.Node | undefined = node; p !== undefined && p !== sf; p = p.parent)
+      if (owned.has(p)) return undefined;
+    const recv = node.left.expression;
+    if (!isCjsExportsIdentifier(lowerer, recv) && !isCjsModuleExports(lowerer, recv))
+      return undefined;
+    registerCjsExportGlobal(lowerer, sf, tag, node.left.name, node.left.name.text, node.right);
+    return undefined;
+  });
+}
+
+/** Whether the module keeps the exports object Node hands it: nothing
+ * rebinds `exports`, and nothing replaces `module.exports` except the
+ * `exports = module.exports = {}` reset, which leaves a static table. */
+function cjsModuleKeepsOriginalExports(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  let keeps = true;
+  ts.walkPreorder(sf, (node) => {
+    if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return undefined;
+    let left = node.left;
+    while (ts.isParenthesizedExpression(left)) left = left.expression;
+    if (isCjsExportsIdentifier(lowerer, left)) {
+      keeps = false;
+      return "stop";
+    }
+    if (isCjsModuleExports(lowerer, left)) {
+      if (ts.isExpressionStatement(node.parent) && isFreshExportsReset(lowerer, node.parent))
+        return undefined;
+      keeps = false;
+      return "stop";
+    }
+    return undefined;
+  });
+  return keeps;
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -2002,73 +2421,8 @@ export function collectGlobals(
       // ordinary declaration storage registered below. Reassigning `x`
       // therefore leaves the exported value alone, as in Node.
       const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
-      const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void => {
-        const diagsBefore = lowerer.diags.length;
-        try {
-          // tsgo answers no symbol at the attachment site's NAME (no
-          // expando synthesis); the module symbol's exports table still
-          // names the member — the same identity use sites resolve.
-          const symbol =
-            lowerer.checker.getSymbolAtLocation(nameNode) ??
-            lowerer.cjsModuleExportSymbol(sf, name);
-          if (!symbol || lowerer.globalsBySymbol.has(symbol)) return;
-          // JS exports whose strict type has no mapping take the
-          // checked-dynamic fallback (implicit-any function exports —
-          // common/tls's `exports.check = function (certs) {...}` —
-          // keep func-ness with dyn pieces; everything else is dyn).
-          const strict = lowerer.checker.getTypeOfSymbol(symbol);
-          let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
-          if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
-          // An export typed as the empty object literal (tsc's enum output
-          // `exports.E || (exports.E = {})` after its `exports.E = void 0`
-          // preamble): TS's `{}` admits any later non-nullish value and the
-          // export is undefined until then, so it rides checked-dynamic
-          // storage like the same-shaped var binding (varBindingType).
-          if (t.kind === "record" && isJsSourceFile(sf)) {
-            const shape = lowerer.shapes.get(t.shapeId);
-            if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
-          }
-          // An immutable export source shares its live storage and native
-          // callable ABI. Mutable sources need a separate snapshot slot:
-          // later writes to the binding do not change the exported value.
-          {
-            let rhs: ts.Node = typeNode;
-            while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
-            if (ts.isIdentifier(rhs)) {
-              const vSym = lowerer.checker.getSymbolAtLocation(rhs);
-              const vG = vSym && lowerer.globalsBySymbol.get(vSym);
-              if (vG) {
-                if (!vG.mutable) {
-                  lowerer.globalsBySymbol.set(symbol, vG);
-                  for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
-                  return;
-                }
-                const g: IrGlobal = {
-                  id: `%g.${tag}%export.${name}`,
-                  name,
-                  type: vG.type,
-                  mutable: false,
-                };
-                lowerer.globalsBySymbol.set(symbol, g);
-                for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
-                lowerer.globalsList.push(g);
-                return;
-              }
-            }
-          }
-          const g: IrGlobal = { id: `%g.${tag}%export.${name}`, name, type: t, mutable: false };
-          lowerer.globalsBySymbol.set(symbol, g);
-          // Importer aliases resolve to a DISTINCT late-bound symbol with
-          // the same declaration — key the node too (globalOf's fallback).
-          for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
-          lowerer.globalsList.push(g);
-        } catch (e) {
-          if (!(e instanceof PoisonError)) throw e;
-          // diagnostic recorded; the statement lowering poisons too —
-          // both defer to the statement's runtime fence in JS files.
-          deferJsCollectionDiags(lowerer, sf, diagsBefore);
-        }
-      };
+      const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void =>
+        registerCjsExportGlobal(lowerer, sf, tag, nameNode, name, typeNode);
       // Export members assigned in VALUE position at the module's top
       // level (`const src = exports.src = []`) are exports too.
       for (const nested of nestedCjsExportAssignmentsOf(stmt, cjs?.expr)) {
@@ -3422,6 +3776,11 @@ export function collectGlobals(
       }
     }
   }
+  if (isJsSourceFile(sf)) {
+    registerCjsConditionalWholeExportGlobals(lowerer, sf, tag);
+    registerCjsConditionalAliasGlobals(lowerer, sf, tag);
+    registerNestedCjsExportMembers(lowerer, sf, tag, topStmts);
+  }
 }
 
 /** Localized failure's commit point for module globals (design §3.3):
@@ -3700,19 +4059,21 @@ export function lowerDefaultExport(lowerer: Lowerer, stmt: ts.ExportAssignment):
 function markModuleInitFences(lowerer: Lowerer, sf: ts.SourceFile, fencesBefore: number): void {
   for (let i = fencesBefore; i < lowerer.runtimeFences.length; i++) {
     const fence = lowerer.runtimeFences[i]!;
-    if (fence.loc.file !== sf.fileName || runsAfterModuleInit(sf, fence.loc.start)) continue;
+    if (fence.loc.file !== sf.fileName || runsAfterModuleInit(lowerer, sf, fence.loc.start))
+      continue;
     lowerer.runtimeFences[i] = { ...fence, startup: true };
   }
 }
 
 /** Whether the code at `pos` sits in a function or a later-running class
- * member body. */
-function runsAfterModuleInit(sf: ts.SourceFile, pos: number): boolean {
+ * member body. A function that runs where it is written (an IIFE, an array
+ * iteration callback) is module-init code. */
+function runsAfterModuleInit(lowerer: Lowerer, sf: ts.SourceFile, pos: number): boolean {
   let later = false;
   ts.walkPreorder(sf, (node) => {
     if (node.pos > pos || node.end <= pos) return "skip";
     if (
-      ts.isFunctionLike(node) ||
+      (ts.isFunctionLike(node) && !runsWhereWritten(lowerer, node)) ||
       (ts.isPropertyDeclaration(node) &&
         !node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
     ) {

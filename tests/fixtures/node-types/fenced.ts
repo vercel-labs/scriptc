@@ -2,7 +2,7 @@
  * typechecks (that is @types/node's job) and must FAIL COMPILATION with
  * the SC2020-family fence naming @types/node instead of a raw TS error
  * or a binary that runs with the wrong behavior. */
-console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
+console.log(process.config); // the process introspection statics and the capture-callback probe lower now; the build configuration does not
 /* setInterval lowers, and under @types/node its Timeout RETURN now maps
  * to the numeric handle — holding one, unref(), ref(), hasRef(), refresh()
  * and close() all compile. No Timeout member is left to fence here: the

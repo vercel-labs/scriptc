@@ -304,6 +304,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "void-method-written",
+    file: `${SRC}/frontend/tsc-codes.ts`,
+    symbol: "methodNameWritten",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "in any implementation file, a write or `delete` of a member with a class method's name (by property access or string key, on any receiver), a call argument that is that name, or an object literal argument with a member of that name",
+    gates:
+      "in an unchecked JavaScript source, a truthiness test of a call of that method, when the checker types it `void` because the method's body returns no value, keeps its SC1090 refusal instead of testing `undefined`",
+    narrower:
+      "the receiver's class, for a write through a typed receiver; a write through an untyped receiver can reach any class",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "builtin-member-native-readers",
     file: `${SRC}/frontend/lowering/builtin-member-readers.ts`,
     symbol: "refuseUnseenBuiltinMemberWrites",
@@ -642,6 +657,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
   ),
   scan(
+    "frontend/import-type-indexed-access.ts#importTypeIndexedAccessSources",
+    2,
+    "discovery",
+    "the files that carry a type-position `import('spec')['name']`, each rewritten on its own for the lowering world (the file's text changes, no other file does), behind the prefilter that the file's text spells `import(`",
+  ),
+  scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
     1,
     "closed-world",
@@ -698,6 +719,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
+    1,
+    "prefilter",
+    "a conditional alias needs a `require()` write in the file; the walk behind it decides each write from the symbol and the required tables",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
@@ -958,6 +985,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
+  decides("frontend/tsc-codes.ts#methodNameWritten", 2, "void-method-written"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

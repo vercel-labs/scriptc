@@ -548,6 +548,30 @@ function isArrayBufferViewFieldRead(lowerer: Lowerer, node: ts.Node): boolean {
   );
 }
 
+/** Whether the constructor of `decl`'s class assigns `decl`'s field
+ * unconditionally at its top level, which is what makes the field's
+ * declared type the type of every read (once construction returns). */
+function assignedAtConstructorTopLevel(decl: ts.PropertyDeclaration): boolean {
+  const name = decl.name;
+  if (!ts.isIdentifier(name)) return false;
+  const cls = decl.parent;
+  if (cls === undefined || (!ts.isClassDeclaration(cls) && !ts.isClassExpression(cls)))
+    return false;
+  const constructor = cls.members.nodes.find(
+    (member): member is ts.ConstructorDeclaration =>
+      ts.isConstructorDeclaration(member) && member.body !== undefined,
+  );
+  return (constructor?.body?.statements?.nodes ?? []).some(
+    (statement) =>
+      ts.isExpressionStatement(statement) &&
+      ts.isBinaryExpression(statement.expression) &&
+      statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(statement.expression.left) &&
+      statement.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      statement.expression.left.name.text === name.text,
+  );
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -580,6 +604,27 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       return expr.type.kind === "dyn"
         ? expr
         : { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc };
+    }
+    // A JSDoc annotation on an initializer-less JavaScript field is the same
+    // claim about later writes: the constructor may never assign it, and
+    // Node reads undefined. The slot keeps the undefined arm; a read the
+    // checker types as the annotation alone must validate it like the
+    // unannotated case above instead of trusting the arm is present.
+    if (
+      expr.type.kind === "union" &&
+      lowerer.armTag(expr.type.unionId, UNDEFINED_T) >= 0 &&
+      (lowerer.typeOf(node).flags & ts.TypeFlags.Undefined) === 0 &&
+      symbol &&
+      symbol.declarations.some(
+        (decl) =>
+          ts.isPropertyDeclaration(decl) &&
+          !decl.initializer &&
+          decl.type !== undefined &&
+          isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+          !assignedAtConstructorTopLevel(decl),
+      )
+    ) {
+      return { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc };
     }
   }
   // A JS class field the collector widened to an undefined-armed union

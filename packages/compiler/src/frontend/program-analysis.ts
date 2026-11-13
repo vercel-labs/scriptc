@@ -55,6 +55,9 @@ export class ProgramAnalysis {
     SourceFile,
     ReadonlyMap<string, readonly { order: number; node: Identifier }[]>
   >();
+  /** Per member name: whether some implementation file can replace it on
+   * any receiver (methodNameWritten). */
+  readonly methodNameWrites = new Map<string, boolean>();
 
   clear(): void {
     this.createRequireReasons.clear();
@@ -71,5 +74,6 @@ export class ProgramAnalysis {
     this.requireFirstRunnable.clear();
     this.splitRequireBindings.clear();
     this.fileIdentifiers.clear();
+    this.methodNameWrites.clear();
   }
 }

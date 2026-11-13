@@ -4131,6 +4131,65 @@ function validateFunction(
       } else if (e.type.kind !== "bool") err(`${e.name} has type bool`, e.loc);
       return;
     }
+    if (e.name === "par.into" || e.name === "par.reduce" || e.name === "par.for") {
+      for (const a of e.args) checkExpr(a);
+      // The runtime's function pointers: a closure with these exact
+      // parameters, called with the closure as its environment.
+      const callback = (index: number, params: IrType[], ret: IrType): void => {
+        const arg = e.args[index];
+        if (arg === undefined) return;
+        const type = arg.type;
+        if (
+          type.kind !== "func" ||
+          type.rest === true ||
+          type.params.length !== params.length ||
+          !type.params.every((p, i) => typeEquals(p, params[i]!)) ||
+          !typeEquals(type.ret, ret)
+        )
+          err(
+            `${e.name} argument ${index} must be ${typeKey({ kind: "func", params, ret })}`,
+            e.loc,
+          );
+      };
+      const number = (index: number): void => {
+        const arg = e.args[index];
+        if (arg !== undefined && arg.type.kind !== "f64")
+          err(`${e.name} argument ${index} must be f64`, e.loc);
+      };
+      const bytes = (index: number): void => {
+        const arg = e.args[index];
+        if (arg !== undefined && arg.type.kind !== "bytes")
+          err(`${e.name} argument ${index} must be a typed array`, e.loc);
+      };
+      if (e.name === "par.into") {
+        if (e.args.length < 6) err("par.into takes a target, four numbers and a body", e.loc);
+        else {
+          bytes(0);
+          for (const index of [1, 2, 3, 4]) number(index);
+          callback(5, [e.args[0]!.type, F64, F64], VOID);
+          for (let index = 6; index < e.args.length; index++) bytes(index);
+        }
+        if (e.type.kind !== "void") err("par.into has type void", e.loc);
+      } else if (e.name === "par.reduce") {
+        if (e.args.length !== 7)
+          err("par.reduce takes a count, three numbers, an initial value and two callbacks", e.loc);
+        else {
+          for (const index of [0, 1, 2, 3, 4]) number(index);
+          if (e.args[3]!.type.kind !== "f64") err("par.reduce initial value must be f64", e.loc);
+          callback(5, [F64, F64], F64);
+          callback(6, [F64, F64], F64);
+        }
+        if (e.type.kind !== "f64") err("par.reduce has type f64", e.loc);
+      } else {
+        if (e.args.length !== 5) err("par.for takes a count, three numbers and a body", e.loc);
+        else {
+          for (const index of [0, 1, 2, 3]) number(index);
+          callback(4, [F64, F64], VOID);
+        }
+        if (e.type.kind !== "void") err("par.for has type void", e.loc);
+      }
+      return;
+    }
     if (e.name === "threads.publish") {
       if (e.args.length !== 1) err("threads.publish takes exactly one argument", e.loc);
       for (const a of e.args) {
@@ -4631,7 +4690,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "process.envGet") {
+    if (e.fn === "process.envGet" || e.fn === "process.envGetDyn") {
       // Result is the module's interned `string | undefined` union.
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
@@ -5496,6 +5555,8 @@ function validateFunction(
     if (
       e.fn === "process.onExit" ||
       e.fn === "process.offExit" ||
+      e.fn === "process.onBeforeExit" ||
+      e.fn === "process.offBeforeExit" ||
       e.fn === "stdin.onData" ||
       e.fn === "stdin.onError" ||
       e.fn === "stdin.onReadable"

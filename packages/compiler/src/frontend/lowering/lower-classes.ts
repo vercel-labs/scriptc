@@ -12561,6 +12561,42 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return x509RecordCall(lowerer, data, t, loc);
     }
   }
+  // `new crypto.Certificate()` — the SPKAC class. Its instance holds no
+  // state (Node's methods read their argument), so the value is the empty
+  // record that mapType interns for the class; builtins/certificate.ts
+  // lowers the three methods against the argument alone.
+  {
+    const callee = expr.expression;
+    const isCertificate =
+      (ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "Certificate" &&
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
+      (ts.isIdentifier(callee) &&
+        (() => {
+          const bi = lowerer.builtinImportOf(callee);
+          return bi?.module === "crypto" && bi.member === "Certificate";
+        })());
+    if (isCertificate) {
+      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
+      const value = { kind: "recordLit" as const, fields: [], type: t, loc };
+      if (args.length === 0) return value;
+      // Node's constructor ignores its arguments, but still evaluates
+      // them; keep that so a throwing argument throws here too.
+      return {
+        kind: "seqExpr",
+        stmts: args.map((a) => ({
+          kind: "exprStmt" as const,
+          expr: lowerer.lowerExpr(a),
+          loc: locOf(a),
+        })),
+        result: value,
+        type: t,
+        loc,
+      };
+    }
+  }
   if (
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&
@@ -14092,6 +14128,7 @@ function x509RecordHelper(
     subject: () => call("crypto.x509Subject", STRING),
     subjectAltName: (type) => optionalText("san", "crypto.x509SubjectAltName", type),
     infoAccess: (type) => optionalText("access", "crypto.x509InfoAccess", type),
+    keyUsage: (type) => optionalArray("keyusage", "crypto.x509KeyUsage", type),
     issuer: () => call("crypto.x509Issuer", STRING),
     raw: () => raw,
     serialNumber: () => call("crypto.x509SerialNumber", STRING),
@@ -14142,6 +14179,44 @@ function x509RecordHelper(
         loc,
       },
       else_: { kind: "unionWrap", unionId: type.unionId, tag: stringTag, value: text, type, loc },
+      type,
+      loc,
+    };
+  }
+  /** A string[] | undefined field: the runtime's dynamic array, or undefined
+   * when the extension is absent. */
+  function optionalArray(local: string, fn: IrLibFn, type: IrType): IrExpr {
+    if (type.kind !== "union")
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field type");
+    const def = lowerer.unions.get(type.unionId);
+    const arrayTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
+    const undefinedTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+    if (arrayTag < 0 || undefinedTag < 0)
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field arms");
+    const arrayType = def!.arms[arrayTag] as IrType & { kind: "array" };
+    const id = `${local}.0`;
+    locals.push({ id, name: local, type: DYN, mutable: false });
+    decls.push({ kind: "varDecl", localId: id, init: call(fn, DYN), loc });
+    const value: IrExpr = { kind: "varRef", localId: id, type: DYN, loc };
+    return {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "array", value, type: BOOL, loc },
+      then: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: arrayTag,
+        value: { kind: "dynCheck", value, type: arrayType, loc },
+        type,
+        loc,
+      },
+      else_: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: undefinedTag,
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+        loc,
+      },
       type,
       loc,
     };

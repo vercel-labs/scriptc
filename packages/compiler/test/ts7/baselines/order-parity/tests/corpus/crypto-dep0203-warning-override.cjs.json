@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-dep0203-warning-override.cjs"
+ ],
+ "diags": []
+}

@@ -586,6 +586,11 @@ typedef struct ScrDnsqQuery {
   size_t want;      /* TCP: the frame's payload length, valid once have_len */
   bool have_len;    /* TCP: the two-byte length prefix has been read */
   int attempt;
+  /* Whether the LAST failed attempt was a UDP port-unreachable. c-ares
+   * requeues to the next server after one, and the error a query ends with
+   * is the one its last failed attempt recorded: ECONNREFUSED after a
+   * port-unreachable, ETIMEOUT after an expired attempt. */
+  bool last_refused;
   bool done;
 } ScrDnsqQuery;
 
@@ -1363,7 +1368,7 @@ static void scr_dnsq_start_attempt(ScrDnsqQuery *q) {
     return;
   }
   if (q->attempt >= r->tries * (int)nservers) {
-    scr_dnsq_finish(q, "ETIMEOUT", NULL);
+    scr_dnsq_finish(q, q->last_refused ? "ECONNREFUSED" : "ETIMEOUT", NULL);
     return;
   }
   const ScrDnsServer *server = &r->servers.items[(size_t)q->attempt % nservers];
@@ -1482,7 +1487,15 @@ static void scr_dnsq_udp_ready(ScrDnsqQuery *q) {
 #else
       if (errno == ECONNREFUSED) {
 #endif
-        scr_dnsq_finish(q, "ECONNREFUSED", NULL);
+        /* c-ares treats a port-unreachable as that server failing and
+         * requeues the query for the next configured server. The query
+         * records this attempt's error, which is the one it answers with
+         * when its tries run out. */
+        scr_dnsq_close_fd(q->fd);
+        q->fd = -1;
+        q->last_refused = true;
+        q->attempt++;
+        scr_dnsq_start_attempt(q);
         return;
       }
       return; /* EAGAIN and friends: wait for the next readiness */
@@ -1598,6 +1611,7 @@ static void scr_dnsq_event(void *udata, unsigned events) {
     q->rlen = 0;
     q->want = 0;
     q->have_len = false;
+    q->last_refused = false;
     q->attempt++;
     scr_dnsq_start_attempt(q);
     return;
@@ -1694,8 +1708,15 @@ static int scr_dnsq_start(ScrDnsResolver *r, const ScrStr *binding, const ScrDyn
   q->qtype = type;
   q->fd = -1;
   (void)options;
+  /* The question name, encoded before the packet is sized: ada's ToASCII
+   * can make the wire name longer than the UTF-8 the caller passed
+   * (ü.test is 6 bytes and xn--tda.test is 12), so sizing from the input
+   * would cut a valid name into EBADNAME. */
+  bool bad = false;
+  unsigned char qname[512];
+  size_t n = scr_dnsq_encode_name(q->host, qname, sizeof qname, &bad);
   /* The question packet. */
-  size_t cap = 12 + q->host->len + 8;
+  size_t cap = 12 + n + 4;
   q->pkt = malloc(cap);
   if (q->pkt == NULL) scr_trap("scriptc: out of memory\n");
   scr_dnsq_next_id = (scr_dnsq_next_id + 1) & 0xffff;
@@ -1707,8 +1728,7 @@ static int scr_dnsq_start(ScrDnsResolver *r, const ScrStr *binding, const ScrDyn
   q->pkt[2] = 0x01; /* RD */
   q->pkt[4] = 0x00;
   q->pkt[5] = 0x01; /* QDCOUNT */
-  bool bad = false;
-  size_t n = scr_dnsq_encode_name(q->host, q->pkt + 12, cap - 12 - 4, &bad);
+  if (!bad) memcpy(q->pkt + 12, qname, n);
   /* link */
   q->prev = NULL;
   q->next = scr_dnsq_live;

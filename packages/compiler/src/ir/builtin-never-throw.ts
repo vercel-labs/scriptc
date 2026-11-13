@@ -85,6 +85,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childResume",
   "stream.childIsPaused",
   "stream.childFlowing",
+  // subprocess.channel answers the child's IPC state: undefined when it
+  // never had a channel, null once it closed, else a handle over the
+  // child. The island path reads the island ChildProcess's `channel`
+  // data property, which Node assigns as a field; neither path runs an
+  // accessor, a coercion or a callback.
+  "child.channel",
   // Builds the flags object once from constants and retains it.
   "process.features",
   // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the
@@ -154,6 +160,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // scr_crypto_x509_key_usage reads the certificate's extended key usage
+  // extension: a certificate without one answers undefined and a malformed
+  // extension is skipped, so no program-visible error is raised.
+  "crypto.x509KeyUsage",
   // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
   // timer the handle names: the loop's clear, or the mock's own entry
   // removal when the program mocks timers. Neither throws nor runs a

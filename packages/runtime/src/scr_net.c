@@ -7081,15 +7081,35 @@ ScrDyn *scr_net_bound_socket_new(const ScrDyn *args) {
   const ScrDyn *options =
       args->kind == SCR_DYN_ARR && args->v.arr.len > 0 && scr_dyn_arr_has_index(args, 0) ? args->v.arr.items[0] : NULL;
   if (options != NULL && options->kind == SCR_DYN_UNDEF) options = NULL;
+  /* A named typed record crosses as a capsule, whose properties only its
+   * materialized view carries: the constructor reads that view, and the
+   * rendering in an error names the fields. */
+  ScrDyn *view = NULL;
+  if (options != NULL && options->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(options);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    options = view;
+  }
   if (options != NULL && options->kind != SCR_DYN_OBJ) {
+    scr_dyn_release(view);
     scr_dyn_arg_type_fail("options", "of type object", options);
     return NULL;
   }
+  ScrDyn *out = NULL;
   if (options != NULL) {
     const ScrDyn *path = scr_dyn_obj_get(options, "path", 4);
-    if (path != NULL && path->kind != SCR_DYN_UNDEF) return scr_net_bound_new_pipe(options, path);
+    if (path != NULL && path->kind != SCR_DYN_UNDEF) {
+      out = scr_net_bound_new_pipe(options, path);
+      scr_dyn_release(view);
+      return out;
+    }
   }
-  return scr_net_bound_new_tcp(options);
+  out = scr_net_bound_new_tcp(options);
+  scr_dyn_release(view);
+  return out;
 }
 
 /* The [Symbol.dispose] method as a function value (+1), cached per
@@ -8511,10 +8531,17 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   }
   sock->close_emitted = true;
   sock->emit_close = false;
-  /* connect({ signal }): Node disposes the abort registration at 'close' */
+  /* connect({ signal }): Node disposes the abort registration at 'close'.
+   * The disposable must be CALLED — releasing it only drops the closure's
+   * own references, while the signal keeps the listener (and through it
+   * this socket) registered for the signal's lifetime, a cycle the audit
+   * reports when the signal outlives the socket. */
   if (sock->abort_dispose != NULL) {
-    scr_dyn_release(sock->abort_dispose);
+    ScrDyn *dispose = sock->abort_dispose;
     sock->abort_dispose = NULL;
+    ScrDyn *r = scr_dyn_call(dispose, NULL, 0, "dispose");
+    if (r) scr_dyn_release(r);
+    scr_dyn_release(dispose);
   }
   /* The owning server's count drains FIRST, and a now-drained closing
    * server settles before this socket's own 'close' fires — Node's

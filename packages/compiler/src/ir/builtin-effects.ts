@@ -59,6 +59,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.dhGroupNew",
   // Node's nameOrNid and options errors.
   "crypto.getCipherInfo",
+  // Reading the deprecated crypto.fips reports DEP0093 through
+  // process.emitWarning, whose replacement may throw.
+  "crypto.fipsGet",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
@@ -752,14 +755,25 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
+  // child.dispose sends SIGTERM through the same kill path; a Node-island
+  // child's kill may emit the synchronous 'error' that path can raise.
+  "child.dispose",
   // The caller's lookup runs synchronously inside the connect call — a
   // throw there propagates like Node's.
   "net.connectLookup",
   "net.connectLookupDyn",
   "cp.execSync",
+  // The unencoded form throws the same spawn, maxBuffer and command errors.
+  "cp.execSyncBytes",
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
+  // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
+  // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
+  "cp.execFileOpts",
+  // spawn's own: the same validateTimeout and sanitizeKillSignal, plus
+  // validateAbortSignal's ERR_INVALID_ARG_TYPE, before the child starts.
+  "cp.spawnArmed",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).
@@ -1168,6 +1182,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestDyn",
   "crypto.hmacDigestDyn",
   "crypto.hashOneshot",
+  // The checked-dynamic constructors and the callback pbkdf2 run Node's
+  // argument validation and can raise catchable TypeErrors; the callback
+  // form also runs program code.
+  "crypto.hashNewAny",
+  "crypto.hmacNewAny",
+  "crypto.hashOneshotAny",
+  "crypto.pbkdf2Any",
+  "crypto.pbkdf2AnyCb",
+  "crypto.hkdfAny",
+  "crypto.hkdfAnyCb",
+  "crypto.scryptAny",
+  "crypto.scryptAnyCb",
   "crypto.timingSafeEqual",
   "crypto.timingSafeEqualDyn",
   "crypto.randomFill",
@@ -1186,10 +1212,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createSecretKey",
   "crypto.generateKeySync",
   "crypto.generateKeyCb",
+  "crypto.checkCallback",
   "crypto.keyObjectInput",
   "crypto.randomUUIDv7",
   "crypto.pbkdf2",
   "crypto.randomBytesCb",
+  "crypto.randomBytesAny",
+  "crypto.randomBytesAnyCb",
+  "crypto.randomIntAny",
+  "crypto.randomIntAnyCb",
   "crypto.pbkdf2Cb",
   "crypto.hkdf",
   "crypto.hkdfCb",
@@ -1515,7 +1546,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
+  "crypto.signOneshotMaybe",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.verifyOneshotMaybe",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.setEngine",
   "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
@@ -1529,6 +1569,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // Certificate's SPKAC argument errors, and the key parse behind
+  // verifySpkac and exportPublicKey.
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",

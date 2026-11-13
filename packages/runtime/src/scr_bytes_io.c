@@ -1294,25 +1294,6 @@ ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args) {
   return scr_fs_cb_invoke(member, args->v.arr.items, args->v.arr.len);
 }
 
-/* ── crypto.randomBytes → a real Buffer ────────────────────────────────── */
-
-ScrBytes *scr_crypto_random_bytes(double n) {
-  if (!(n >= 0 && n <= 2147483647)) {
-    char num[32];
-    size_t numlen = scr_f64_to_str(n, num);
-    char msg[128];
-    int mlen = snprintf(
-        msg, sizeof msg,
-        "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
-        (int)numlen, num);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return NULL;
-  }
-  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, n);
-  if (b->len > 0) arc4random_buf(b->data, b->len);
-  return b;
-}
-
 /* ── process.stdout/stderr.write(buf) ──────────────────────────────────── */
 
 /* Where another thread can write shared bytes (where SCR_BYTES_SNAPSHOT

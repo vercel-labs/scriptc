@@ -3201,11 +3201,38 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
   return reachable;
 }
 
+/** Whether the object literal `arg` carries a `handle` member that may be a
+ * net.BoundSocket: an inline `{ handle: boundSocket }` (the lowering adopts
+ * it through net.listenBound) or a `handle` naming an untyped value, which
+ * the runtime adopts when it is one. */
+function listenHandleReachable(lowerer: Lowerer, arg: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(arg)) return false;
+  for (const prop of arg.properties.nodes) {
+    let value: ts.Expression | null = null;
+    if (ts.isShorthandPropertyAssignment(prop)) {
+      if (prop.name.text === "handle") value = prop.name as ts.Expression;
+    } else if (
+      ts.isPropertyAssignment(prop) &&
+      (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+      prop.name.text === "handle"
+    ) {
+      value = prop.initializer;
+    }
+    if (value === null) continue;
+    if (netBoundSocketValue(lowerer, value)) return true;
+    const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(value))?.kind;
+    if (kind === undefined || kind === "dyn") return true;
+  }
+  return false;
+}
+
 /** Whether some server in the program may listen on a Unix socket: a
  * `.listen(x, ...)` call on a server (or an untyped value) whose first
- * argument is string-typed or a net.BoundSocket (which may have been
- * bound to a path). Only then does address() check for the socket path,
- * so other programs keep the record-only lowering. */
+ * argument is string-typed, is a net.BoundSocket (which may have been
+ * bound to a path), is a `{ handle }` bag that names one, or is a shape the
+ * lowering hands to the runtime ladder (untyped, a union, a record
+ * variable). Only then does address() check for the socket path, so other
+ * programs keep the record-only lowering. */
 function unixListenReachable(lowerer: Lowerer): boolean {
   if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
   let reachable = false;
@@ -3221,8 +3248,21 @@ function unixListenReachable(lowerer: Lowerer): boolean {
       const first = node.arguments.nodes[0]!;
       const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(first));
       // Only a string-typed argument lowers to listen(path) (an untyped
-      // one checks into a port); a BoundSocket may carry a path.
-      if (arg?.kind === "string" || netBoundSocketValue(lowerer, first)) reachable = true;
+      // one checks into a port); a BoundSocket may carry a path, and so may
+      // a `{ handle }` object literal that names one. An argument whose
+      // shape the lowering does not know — an untyped value, a union, or a
+      // type the mapper does not carry — takes the runtime ladder, which
+      // adopts a BoundSocket or a path when the value is one, and a record
+      // variable that carries a `handle` is only expressible through one.
+      if (
+        arg == null ||
+        arg.kind === "string" ||
+        arg.kind === "dyn" ||
+        arg.kind === "union" ||
+        netBoundSocketValue(lowerer, first) ||
+        listenHandleReachable(lowerer, first)
+      )
+        reachable = true;
       return undefined;
     });
     if (reachable) break;

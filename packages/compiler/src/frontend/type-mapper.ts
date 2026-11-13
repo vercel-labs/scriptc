@@ -1,6 +1,7 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
+import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -5360,6 +5361,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "child" };
   }
+  // child_process.Control (@types/node's interface, or the fallback
+  // declarations' copy): subprocess.channel's object. It is a checked-dynamic
+  // value — a stable-identity handle whose ref()/unref() reach the channel's
+  // keep-alive state — so `Control | null | undefined` collapses to DYN.
+  if (
+    psym !== undefined &&
+    psymName === "Control" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "child_process"),
+    )
+  ) {
+    return DYN;
+  }
   // net.Server / net.Socket: @types/node's classes or the fallback
   // declarations' interfaces. The NAME is ambiguous across builtin
   // modules (http.Server, tls.Socket share it), so the provenance check
@@ -6197,6 +6214,53 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
   }
+  // crypto.CryptoConstants (the crypto.constants object): the zlib stance
+  // over a table whose values are numbers and the two cipher-list strings.
+  // Node builds the object from this list, so the declaration's order is
+  // its runtime insertion order; cryptoConstantsValue interns the same
+  // fields for the value, so the shapes are one.
+  if (isStdlibInterface("CryptoConstants")) {
+    const fields: IrRecordField[] = [];
+    for (const property of checker.getPropertiesOfType(widened)) {
+      const memberType = mapType(checker.getTypeOfSymbol(property), ctx);
+      if (!memberType || (memberType.kind !== "f64" && memberType.kind !== "string")) return null;
+      fields.push({ name: ts.symbolName(property), type: memberType });
+    }
+    const order = fields.map((field) => field.name);
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
+  }
+  // @types/node declares crypto.constants as a namespace of number
+  // constants, so the object's type there is the namespace itself
+  // (`typeof constants`), not an interface. Node builds that object from
+  // the full table (the pinned @types omits the four TLS1_* names), so the
+  // shape comes from the table cryptoConstantsValue builds the value from.
+  if (
+    psym !== undefined &&
+    psymName === "constants" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isModuleDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const keys = Object.keys(CRYPTO_CONSTANTS);
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        keys
+          .map((name) => ({
+            name,
+            type: (typeof CRYPTO_CONSTANTS[name] === "string" ? STRING : F64) as IrType,
+          }))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        keys,
+      ),
+    };
+  }
   // net's 'drop' payload: the record the runtime's address object checks
   // into, each optional field with its declared type.
   if (isStdlibInterface("DropArgument")) {
@@ -6591,10 +6655,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     const optionalString = withUndefinedArm(STRING, ctx.unions);
-    if (!optionalString) return null;
+    const optionalStrings = withUndefinedArm(arrayOf(STRING), ctx.unions);
+    if (!optionalString || !optionalStrings) return null;
     const fields = X509_FIELDS.map(([name, type]) => ({
       name,
-      type: type === "string?" ? optionalString : type,
+      type: type === "string?" ? optionalString : type === "string[]?" ? optionalStrings : type,
     }));
     return {
       kind: "record",
@@ -6605,6 +6670,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         fields.map((f) => f.name),
       ),
     };
+  }
+  // crypto.Certificate — the SPKAC class. Node's instance holds no state
+  // (every method reads its argument and ignores the receiver), so the
+  // class lowers to the empty record: String(), typeof, Object.keys(),
+  // spread and JSON.stringify see what Node's object shows (Node's
+  // inspect prints "Certificate {}", which an empty record does not).
+  // Module-checked like X509Certificate.
+  if (
+    psym !== undefined &&
+    psymName === "Certificate" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return { kind: "record", shapeId: ctx.shapes.intern([], false, undefined, []) };
   }
   // perf_hooks' PerformanceEntry, PerformanceMark and PerformanceMeasure
   // (performance.mark/measure and the getEntries family): ONE record shape
@@ -9610,7 +9693,7 @@ export const X509_DER_FIELD = "%der";
 /** The X509Certificate record's fields in @types/node's declaration order
  * ("string?" is string | undefined), then the hidden publicKey and DER
  * slots. */
-export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
+export const X509_FIELDS: readonly (readonly [string, IrType | "string?" | "string[]?"])[] = [
   ["ca", BOOL],
   ["fingerprint", STRING],
   ["fingerprint256", STRING],
@@ -9618,6 +9701,7 @@ export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
   ["subject", STRING],
   ["subjectAltName", "string?"],
   ["infoAccess", "string?"],
+  ["keyUsage", "string[]?"],
   ["issuer", STRING],
   ["raw", { kind: "bytes", elem: "u8" }],
   ["serialNumber", STRING],

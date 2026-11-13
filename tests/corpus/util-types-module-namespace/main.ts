@@ -4,12 +4,16 @@
 // escaped into an untyped slot; false for the builtin sub-module members
 // (util.types is Node's CommonJS exports object), plain objects, arrays and
 // class instances, and the other brands answer false for a namespace. Asked
-// through util.types, the named import and node:util/types alike.
+// through util.types, the named import and node:util/types alike. A
+// namespace with a constant export set and a live one (a mutable export)
+// both carry the brand.
 import * as util from "node:util";
 import { types } from "node:util";
 import * as direct from "node:util/types";
 import * as path from "node:path";
 import * as mod from "./mod.ts";
+import * as fixed from "./fixed.ts";
+import * as mutable from "./mutable.ts";
 
 console.log(
   "bindings",
@@ -32,6 +36,10 @@ console.log(
 );
 
 console.log("submodule member", types.isModuleNamespaceObject(util.types));
+
+console.log("copy namespace", types.isModuleNamespaceObject(fixed), fixed.answer, fixed.double(21));
+mutable.bump();
+console.log("live namespace", types.isModuleNamespaceObject(mutable), mutable.counter);
 
 const escaped: unknown = mod;
 const escapedDynamic: unknown = await import("./mod.ts");

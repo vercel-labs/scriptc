@@ -736,9 +736,22 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "process.onExit" || e.fn === "process.prependExit") {
+  if (
+    e.fn === "process.onExit" ||
+    e.fn === "process.prependExit" ||
+    e.fn === "process.onBeforeExit" ||
+    e.fn === "process.prependBeforeExit"
+  ) {
     // Runtime adapters cover both shapes (the code is a plain double);
-    // the registry owns the callback.
+    // the registry owns the callback. 'beforeExit' rides the same
+    // adapters into its own registry (scr_events.c).
+    const beforeExit = e.fn === "process.onBeforeExit" || e.fn === "process.prependBeforeExit";
+    // A beforeExit listener is only reachable through the event loop: Node
+    // emits the event each time the loop runs out of ref'd work, so a
+    // program whose only asynchrony is the listener still runs the loop
+    // (otherwise the emitted main would exit straight after the body and
+    // never call the hook). 'exit' listeners run at termination instead.
+    if (beforeExit) host.usesTimers = true;
     const cbT = e.args[0]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
@@ -746,18 +759,21 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
     host.declare(`declare void @${adapter}(ptr, double)`);
-    if (e.fn === "process.prependExit") {
-      host.declare(`declare void @scr_process_prepend_exit(ptr, ptr)`);
-      B.line(`call void @scr_process_prepend_exit(ptr ${cb.name}, ptr @${adapter})`);
+    if (e.fn === "process.prependExit" || e.fn === "process.prependBeforeExit") {
+      const fn = beforeExit ? "scr_process_prepend_before_exit" : "scr_process_prepend_exit";
+      host.declare(`declare void @${fn}(ptr, ptr)`);
+      B.line(`call void @${fn}(ptr ${cb.name}, ptr @${adapter})`);
       return { name: "", type: e.type };
     }
     const once = host.emitExpr(e.args[1]!);
-    host.declare(`declare void @scr_process_on_exit(ptr, ptr, i1 zeroext)`);
-    B.line(`call void @scr_process_on_exit(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
+    const fn = beforeExit ? "scr_process_on_before_exit" : "scr_process_on_exit";
+    host.declare(`declare void @${fn}(ptr, ptr, i1 zeroext)`);
+    B.line(`call void @${fn}(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
   }
   if (
     e.fn === "process.envGet" ||
+    e.fn === "process.envGetDyn" ||
     e.fn === "process.columns" ||
     e.fn === "process.rows" ||
     e.fn === "process.stdinIsRaw"
@@ -771,7 +787,8 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
     const undefTag = undefinedArmTag(e.type, host.unionsById);
-    const isEnv = e.fn === "process.envGet";
+    const isEnv = e.fn === "process.envGet" || e.fn === "process.envGetDyn";
+    const isEnvDyn = e.fn === "process.envGetDyn";
     const isRaw = e.fn === "process.stdinIsRaw";
     const valTag = def
       ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : isRaw ? "bool" : "f64"))
@@ -787,8 +804,12 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const raw = B.tmp();
     const present = B.tmp();
     if (isEnv) {
-      host.declare(`declare ptr @scr_env_get(ptr)`);
-      B.line(`${raw} = call ptr @scr_env_get(ptr ${args[0]!.name})`);
+      const getter = isEnvDyn ? "scr_env_get_dyn" : "scr_env_get";
+      host.declare(`declare ptr @${getter}(ptr)`);
+      B.line(`${raw} = call ptr @${getter}(ptr ${args[0]!.name})`);
+      // The dynamic key's ToString (or a key object's toString) can throw;
+      // the generic path's post-call check cannot see this hand-emitted call.
+      if (isEnvDyn) host.emitPendingCheck();
       B.line(`${present} = icmp ne ptr ${raw}, null`);
     } else if (isRaw) {
       host.declare(`declare double @scr_process_stdin_is_raw()`);

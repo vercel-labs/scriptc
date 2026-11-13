@@ -230,7 +230,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
-import { fenceX509KeyWalk } from "./builtins/x509.js";
+import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -1879,7 +1879,21 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    // A conditional whole export answers below through a slot; the receiver
+    // check comes first so that path cannot invoke a receiver-dependent
+    // export with no `this`.
     refuseModuleMemberThis(lowerer, expr, nameId);
+    // A module whose whole export is chosen at run time among static export
+    // tables (react/index.js): the callee is that module's own slot, which
+    // its executed branch filled (conditionalExportMemberCall).
+    const conditional = conditionalExportMemberCall(
+      lowerer,
+      expr,
+      expr.expression.expression,
+      nameId.text,
+      loc,
+    );
+    if (conditional) return conditional;
     const generic = lowerer.genericFnOf(nameId);
     if (generic) return lowerer.lowerGenericCall(expr, generic);
     const sig = lowerer.fnSigOf(nameId);
@@ -2277,6 +2291,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const iterator = lowerStringIteratorCall(lowerer, expr, expr.expression);
     if (iterator) return iterator;
+    const spIterator = lowerSearchParamsIteratorElementCall(lowerer, expr, expr.expression);
+    if (spIterator) return spIterator;
   }
 
   // The element spelling of an unsupported native Web method must fence
@@ -2725,6 +2741,29 @@ function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
  * calls). tsc guarantees the callee is callable; anything that lowers to
  * a non-func IR type was already rejected while lowering the callee.
  * HYBRID (function-with-properties) values call through their %call slot. */
+/** The call of a member of a module whose whole export is chosen at run time
+ * among static export tables (`react/index.js`'s `module.exports = require(…)`
+ * in an if/else): the callee is the slot the executed branch filled, which the
+ * member read takes too (lowerPropertyAccessExpr). The checker's synthesized
+ * member symbols are shared between modules that re-export the same tables, so
+ * the module decides. Null for every other member call. */
+function conditionalExportMemberCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  recv: ts.Expression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const dep = ts.isIdentifier(recv)
+    ? lowerer.cjsModuleBindingDepOf(recv)
+    : lowerer.cjsModuleRefDepOf(recv);
+  const slot = dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, member);
+  if (slot === null) return null;
+  let callee: IrExpr = { kind: "varRef", localId: slot.id, type: slot.type, loc };
+  if (callee.type.kind === "object") callee = lowerer.hybridCallUnwrap(callee);
+  return lowerCallThroughValue(lowerer, expr, callee, loc);
+}
+
 /** A call of a namespace member (`N.f(1)`, `ns.f(1)`): the member resolves
  * like a bare identifier. `receiverEvaluated` says the caller evaluates the
  * receiver itself before the call (`(await import("./m")).f(1)`): the
@@ -2746,6 +2785,17 @@ function lowerNsMemberCall(
   // members answer null there and resolve below.
   const facadeServed = lowerer.lowerNamespaceBuiltinCall(expr, access);
   if (facadeServed) return facadeServed;
+  // A member of a module whose whole export is chosen at run time among
+  // static export tables (react/index.js): the callee is that module's own
+  // slot, which its executed branch filled (conditionalExportMemberCall).
+  const conditional = conditionalExportMemberCall(
+    lowerer,
+    expr,
+    access.expression,
+    nsMember.text,
+    loc,
+  );
+  if (conditional) return conditional;
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   refuseModuleMemberThis(lowerer, expr, nsMember);
@@ -4663,6 +4713,38 @@ function lowerStringIteratorCall(
   const value = lowerStringIteratorValue(lowerer, receiver, type, locOf(call));
   if (!value) lowerer.unsupported("SC1090", call, "this string iterator type");
   return value;
+}
+
+/** `sp[Symbol.iterator]()` on a URLSearchParams receiver: Node makes
+ * URLSearchParams.prototype[Symbol.iterator] the same function as
+ * entries(), so the call answers the live pair iterator the checked-
+ * dynamic view's entries() does (appends made after it was created are
+ * visited). Null for other element calls. */
+function lowerSearchParamsIteratorElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
+  )
+    return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "searchParams") return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
+    method: "entries",
+    calleeName: v8CalleeText(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }
 
 /** Iterator types with checked runtime receivers, whose helper calls lower
@@ -9649,6 +9731,27 @@ function defineReceiverAsDyn(
   return target;
 }
 
+/** Whether a key expression's ToPropertyKey runs no program code: a
+ * primitive (or a union of primitives) converts without calling user
+ * methods, so a static own-key answer may skip the conversion. */
+function primitiveKey(lowerer: Lowerer, node: ts.Node): boolean {
+  const allowed = (t: IrType | null | undefined): boolean => {
+    if (!t) return false;
+    if (t.kind === "union") {
+      const def = lowerer.unions.get(t.unionId);
+      return !!def && def.arms.every(allowed);
+    }
+    return (
+      t.kind === "string" ||
+      t.kind === "f64" ||
+      t.kind === "bool" ||
+      t.kind === "symbol" ||
+      isUnitType(t)
+    );
+  };
+  return allowed(lowerer.mapTypeOf(lowerer.typeOf(node)));
+}
+
 function lowerObjectStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10716,6 +10819,23 @@ function lowerObjectStaticCall(
     const recvNode = call.arguments.nodes[0]!;
     const keyNode = call.arguments.nodes[1]!;
     const probed = tryLowerExpression(lowerer, recvNode);
+    // A certificate has no own properties at all: Node keeps every field,
+    // getter and method on the prototype, so Object.hasOwn answers false
+    // for every key (symbols included). Both arguments still evaluate; a
+    // key whose ToPropertyKey could run the program's own code (an object
+    // key) keeps the general path below.
+    if (probed && isX509Type(lowerer, probed.type) && primitiveKey(lowerer, keyNode)) {
+      const loc = locOf(call);
+      const stmts: IrStmt[] = [];
+      const receiver = lowerer.lowerExpr(recvNode);
+      if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+      const keyExpr = lowerer.lowerExpr(keyNode);
+      if (!isSafeToDiscard(keyExpr)) stmts.push({ kind: "exprStmt", expr: keyExpr, loc });
+      const answer: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      return stmts.length === 0
+        ? answer
+        : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
+    }
     const arrayKey = probed?.type.kind === "array" ? lowerer.lowerExpr(keyNode) : null;
     if (probed?.type.kind === "array" && arrayKey?.type.kind === "f64") {
       // Numeric own keys use the array's slot/property presence directly.
@@ -12163,13 +12283,16 @@ export function lowerRecordFieldCall(
  * every call whose member is generic-callable — lowering it or fencing
  * with a named message. */
 /** The URL factories use the constructor's conversion order and parser.
- * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
- * throws before the registry lookup, so the zero-argument contract is
- * exact without any blob machinery. The one-argument form coerces the
- * id to a string (a Symbol throws) and finds nothing registered — a
- * compiled program cannot create a blob URL, so the lookup always
- * misses and the call is its own coercion. createObjectURL keeps its
- * fence: there is no blob registry to register into. */
+ * URL.createObjectURL(blob) hands the argument to the runtime registry,
+ * which validates it (a non-Blob throws Node's ERR_INVALID_ARG_TYPE) and
+ * registers it under a fresh "blob:nodedata:<uuid>" id; surplus arguments
+ * are evaluated and dropped, like every Node call. URL.revokeObjectURL()
+ * with NO argument: Node's ERR_MISSING_ARGS throws before the registry
+ * lookup. The one-argument form coerces the id to a string (a Symbol
+ * throws); the runtime parses the string as a URL and drops the
+ * registration whose id sits between the first and second colon of its
+ * pathname, so a query or fragment still revokes the registration the
+ * bare id names, and ids that were never registered miss. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -12181,6 +12304,44 @@ function lowerUrlStaticCall(
   if (!sym || !lowerer.isStdlibSymbol(sym) || ts.symbolName(sym) !== "URL") return null;
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
+  }
+  if (callee.name.text === "createObjectURL") {
+    if (call.arguments.nodes.some(ts.isSpreadElement))
+      lowerer.noLowering("URL.createObjectURL with spread arguments", call);
+    const args = call.arguments.nodes;
+    const input: IrExpr = args[0]
+      ? lowerer.lowerExprExpecting(args[0], DYN)
+      : dynUndefinedExpr(locOf(call));
+    const result: IrExpr = {
+      kind: "libCall",
+      fn: "url.createObjectURL",
+      args: [input],
+      type: STRING,
+      loc: locOf(call),
+    };
+    if (args.length <= 1) return result;
+    // Node ignores surplus arguments; they are still evaluated.
+    const saved = lowerer.declareHiddenLocal("%objectUrlInput", DYN);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: saved.id, init: input, loc: locOf(call) },
+        ...args.slice(1).map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ],
+      result: {
+        kind: "libCall",
+        fn: "url.createObjectURL",
+        args: [varRef(saved.id, DYN, locOf(call))],
+        type: STRING,
+        loc: locOf(call),
+      },
+      type: STRING,
+      loc: locOf(call),
+    };
   }
   if (callee.name.text !== "revokeObjectURL") return null;
   const args = call.arguments.nodes;

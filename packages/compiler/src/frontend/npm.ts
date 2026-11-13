@@ -11,9 +11,12 @@ import {
 import { isUnloadedPackage } from "./package-shims.js";
 import { resolveExports, resolvePackageImports } from "./resolve.js";
 
-const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+// Node's conditions plus scriptc's own: the package's scriptc branch is
+// the code scriptc compiles, so the graph must follow the same branch
+// resolveExports selects before node and default.
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default", "scriptc"]);
 
-const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default", "scriptc"]);
 
 function nodeExportConditions(mode: "import" | "require"): ReadonlySet<string> {
   return mode === "import" ? NODE_IMPORT_CONDITIONS : NODE_REQUIRE_CONDITIONS;

@@ -132,6 +132,14 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* The checked-dynamic env accessors (process.env[key], process.env[KEY] =
+ * value, delete process.env[key]): Node's env object converts a string
+ * key with ToString (symbol keys are ignored by get/delete and throw from
+ * set) and every stored value with ToString. */
+ScrStr *scr_env_get_dyn(const ScrDyn *key);
+void scr_env_set_dyn(const ScrStr *name, const ScrDyn *value);
+void scr_env_set_key_dyn(const ScrDyn *key, const ScrDyn *value);
+void scr_env_unset_dyn(const ScrDyn *key);
 /* The process environment's value for one UTF-8, NUL-terminated name, copied:
  * +1 for the caller to free, NULL when the variable is absent. The Win32
  * environment on Windows, getenv(3) elsewhere, so a worker that shares the
@@ -172,9 +180,21 @@ ScrDyn *scr_process_versions(void);
  * borrowed. */
 bool scr_process_kill(double pid, double signum);
 bool scr_process_kill_named(double pid, const ScrStr *signal);
+/* The checked-dynamic argument forms: Node's `pid != (pid | 0)` loose gate
+ * and `sig === (sig | 0)` / `constants[sig]` signal resolution. */
+bool scr_process_kill_sig_dyn(double pid, const ScrDyn *signal);
+bool scr_process_kill_dyn(const ScrDyn *pid, const ScrDyn *signal);
 /* fflush stdout, then _Exit((int)code): no atexit handlers run — the RC
  * audit is deliberately skipped (exiting mid-program leaves live values). */
 void scr_process_exit(double code);
+/* process.abort(): flush the program's output, then terminate by SIGABRT.
+ * Node's stack-trace dump is not reproduced (it names Node's addresses). */
+void scr_process_abort(void);
+/* process.exit(value): the exitCode setter's conversion first (null and
+ * undefined clear the code, a numeric string is Number()'d, anything else
+ * that is not an integer number throws its validation error), then the
+ * same exit sequence. */
+void scr_process_exit_dyn(const ScrDyn *code);
 /* Nonzero hands the address-space teardown after scr_process_exit to a
  * helper process (Linux, `--detached-exit`). scr_lib.c defines a weak 0;
  * the program object of such an executable defines it as 1. */
@@ -189,6 +209,11 @@ double scr_process_exit_code_or_zero(void);
  * the code reads undefined until an assignment (or a nonzero exit status
  * the runtime chose, such as an uncaught exception's 1). */
 void scr_process_set_exit_code_tracked(double code);
+/* The checked-dynamic exitCode write (Node's setter conversion:
+ * null/undefined clear, a numeric string is Number()'d, everything else
+ * must be an integer number in the safe range). */
+void scr_process_set_exit_code_dyn(const ScrDyn *code);
+void scr_process_set_exit_code_dyn_tracked(const ScrDyn *code);
 bool scr_process_has_exit_code(void);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
@@ -197,6 +222,11 @@ bool scr_process_exiting(void);
 /* umask(2): mask < 0 reads without setting; otherwise sets and answers
  * the previous mask. Never throws. */
 double scr_process_umask(double mask);
+/* process.umask(mask)'s parseFileMode gate (validateUint32, with Node's
+ * ERR_OUT_OF_RANGE texts), and its checked-dynamic form (undefined reads;
+ * null is rejected as undefined; an octal string is parseInt(., 8)). */
+double scr_process_umask_chk(double mask);
+double scr_process_umask_dyn(const ScrDyn *mask);
 /* The process introspection statics (scr_lib.c; Node's units). uptime:
  * fractional seconds since the binary's load-time anchor. The CPU clocks
  * answer microseconds; the *_diff forms subtract a prior sample, and
@@ -217,7 +247,18 @@ double scr_perf_now(void);
  * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
  * 4 count, 5 exceeds. */
 void scr_perf_loop_mark(void);
+/* Marks the loop's end for a program that never runs the loop (synchronous):
+ * the emitted main calls it just before the exit listeners. */
+void scr_perf_loop_end(void);
+/* The loop's event-loop metrics hook (scr_async.c): `turn` runs once per loop
+ * turn, `exit` once when the loop stops. scr_perf_loop_mark installs them in
+ * programs that read the metrics; otherwise both stay NULL and the loop is
+ * byte-identical. */
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void));
 double scr_perf_loop_start(void);
+double scr_perf_node_loop_start(void);
+double scr_perf_loop_exit(void);
+double scr_perf_loop_count(void);
 double scr_perf_idle_time(void);
 double scr_eld_new(double resolution);
 bool scr_eld_enable(double handle);
@@ -294,6 +335,12 @@ double scr_thread_cpu_system(void);
 double scr_thread_cpu_user_diff(double prev);
 double scr_thread_cpu_system_diff(double prev);
 void scr_cpu_prev_validate(double user, double system);
+/* The checked-dynamic prev argument: Node validates only a truthy
+ * prevValue (reading .user then .system), samples the clock once after,
+ * and both field diffs subtract from that sample. `thread` selects the
+ * per-thread clock. */
+void scr_cpu_prev_prepare_dyn(const ScrDyn *prev, double thread);
+double scr_cpu_usage_field(double which);
 double scr_process_rusage(double idx);
 double scr_available_memory(void);
 double scr_constrained_memory(void);
@@ -320,6 +367,9 @@ double scr_process_ppid(void);
  * (library sessions). +1 / borrowed. */
 ScrStr *scr_process_title(void);
 void scr_process_set_title(const ScrStr *title);
+/* process.title = value: Node's ToString conversion first (a symbol
+ * throws its conversion TypeError). */
+void scr_process_set_title_dyn(const ScrDyn *title);
 /* process.argv0: the original argv[0] the binary was started with. +1. */
 ScrStr *scr_process_argv0(void);
 /* process.release: the stable { name, lts, sourceUrl, headersUrl[,
@@ -334,9 +384,34 @@ ScrDyn *scr_process_features(void);
 double scr_process_geteuid(void);
 double scr_process_getegid(void);
 ScrArr *scr_process_getgroups(void);
+/* The credential setters node:internal/process/per_thread wraps
+ * (setuid/seteuid/setgid/setegid/setgroups/initgroups): the checks are
+ * Node's, a number is the id itself, a string is looked up by name, and a
+ * failure throws Node's ERR_UNKNOWN_CREDENTIAL or ErrnoException. All
+ * borrow the checked-dynamic argument. Windows/WASI have none of the
+ * members, so the calls throw Node's missing-member TypeError. */
+void scr_process_setuid(ScrDyn *id);
+void scr_process_seteuid(ScrDyn *id);
+void scr_process_setgid(ScrDyn *id);
+void scr_process_setegid(ScrDyn *id);
+void scr_process_setgroups(ScrDyn *groups);
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group);
+/* process.debugPort: the inspector port (9229 until written); the write
+ * converts like Int32Value and throws Node's ERR_OUT_OF_RANGE outside
+ * {0} ∪ [1024, 65535], keeping the old value. */
+double scr_process_debug_port(void);
+void scr_process_set_debug_port(ScrDyn *port);
+/* process.sourceMapsEnabled: getter-only flag (false until
+ * setSourceMapsEnabled(boolean) writes it; any other type throws Node's
+ * ERR_INVALID_ARG_TYPE). */
+bool scr_process_source_maps_enabled(void);
+void scr_process_set_source_maps_enabled(ScrDyn *enabled);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);
+/* process.chdir(value): validateString first (Node's ERR_INVALID_ARG_TYPE
+ * for a non-string), then the chdir above. */
+void scr_process_chdir_dyn(const ScrDyn *dir);
 /* net's process-wide happy-eyeballs attempt budget (default 250ms) — in
  * the core unit so the knob never links scr_net.c. Never throw. */
 double scr_net_get_autosel_timeout(void);

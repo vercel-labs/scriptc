@@ -318,6 +318,31 @@ void scr_process_off_unhandled_rejection(ScrDyn *fn);
  * the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
+/* process.setUncaughtExceptionCaptureCallback/…hasUncaughtExceptionCapture-
+ * Callback: the capture callback replaces the 'uncaughtException'
+ * listeners for every uncaught exception (monitors still run first), and
+ * has… reports whether one is set. The setter validates like Node
+ * (ERR_INVALID_ARG_TYPE for a non-function, …ALREADY_SET when one is
+ * active, null clears). */
+bool scr_process_has_uncaught_capture(void);
+void scr_process_set_uncaught_capture(ScrDyn *fn);
+/* process.on/once/off('multipleResolves', fn): the third rejection-event
+ * registry (scr_async_dyn.c). A resolution or rejection that arrives at a
+ * promise which already resolved is reported as ('resolve' | 'reject',
+ * promise, value) — delivered on a nextTick queued at that settle, exactly
+ * Node's resolveErrorResolve/resolveErrorReject — and the first delivery
+ * that reaches a listener emits DEP0160 once per process. Throws Node's
+ * ERR_INVALID_ARG_TYPE for a non-function listener. */
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once);
+void scr_process_off_multiple_resolves(ScrDyn *fn);
+/* The settle-time hook the registration above installs (NULL while no
+ * listener is registered): `type` 0 = resolve / 1 = reject names the settle
+ * that lost, `value` is what it passed, +1 and owned by the hook.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value);
+/* Reports the value an exception cell carries as a losing settle (the
+ * executor-throw-after-settle path). Runtime-internal. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell);
 /* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */
@@ -336,6 +361,17 @@ void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for
  * dyn payloads and %Error instances). +1. */
 ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
+/* Reads a boxed promise for the inspect renderer: whether it is pending,
+ * whether it is rejected, and a settled promise's outcome as a dyn value
+ * (+1: the rejection reason, the fulfillment value otherwise). The box
+ * itself comes from scr_async_dyn.c, which installs this with the box hooks
+ * — the only way an inspector meets a SCR_DYN_PROMISE — so a program
+ * without that unit keeps the pointer NULL. The hook lives in scr_lib.c
+ * (always linked, including the library flavors that omit scr_async.c), so
+ * the inspect unit never references the async unit directly.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pending,
+                                                 bool *rejected, ScrDyn **value);
 /* process warnings (scr_lib.c — always linked so any unit can emit a
  * deprecation): dyn listeners plus Node's default stderr report
  * ("(node:pid) [CODE] Name: message" and a detail second line).
@@ -378,9 +414,10 @@ extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */
 extern SCR_TL bool scr_warning_trace_hint_shown;
-/* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
- * the stored value (+1; undefined until assigned), the assignment
- * (borrowed), and the truthiness the warning paths test. */
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3): the
+ * stored value (+1; undefined until assigned), the assignment (borrowed),
+ * and the truthiness the warning paths test. */
 ScrDyn *scr_process_deprecation_flag(double which);
 void scr_process_set_deprecation_flag(double which, ScrDyn *value);
 bool scr_process_deprecation_flag_on(int which);

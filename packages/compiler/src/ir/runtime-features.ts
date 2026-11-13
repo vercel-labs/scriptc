@@ -122,12 +122,17 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackGlob",
   "fs.callbackValue",
   "process.deprecationFlag",
+  // process.finalization reports its ExperimentalWarnings through this
+  // unit's deferred warning queue.
+  "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.offMultipleResolves",
   "process.offRejectionHandled",
   "process.offUncaughtException",
   "process.offUnhandledRejection",
   "process.offWarning",
+  "process.onMultipleResolves",
   "process.onRejectionHandled",
   "process.onUncaughtException",
   "process.prependUncaughtException",
@@ -135,6 +140,10 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onWarning",
   "process.setDeprecationFlag",
   "process.setEmitWarning",
+  // The uncaught-exception capture callback rides the same dispatch and
+  // teardown machinery as the uncaughtException listeners.
+  "process.hasUncaughtCapture",
+  "process.setUncaughtCapture",
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
@@ -143,6 +152,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.aborted",
   "util.debounce",
   "util.throttle",
+  // util.markPromiseAsHandled reads the checked-dynamic promise box.
+  "util.markPromiseAsHandled",
   "timers.immediatePromise",
   // A timer callback bound to its handle as `this`.
   "timers.thisCallback",
@@ -504,6 +515,7 @@ export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.channel",
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
@@ -560,6 +572,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
+  // process.ref/unref read the nodejs.ref / nodejs.unref symbols.
+  "process.ref",
+  "process.unref",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -831,10 +846,14 @@ function mentionsTextDecoder(t: IrType, tables: TypeTables): boolean {
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
  * process signal/exit listeners and the piped-stdin surface. */
 const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.offBeforeExit",
   "process.offExit",
   "process.offSignal",
+  "process.finalization",
+  "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",
+  "process.prependBeforeExit",
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
@@ -1931,6 +1950,11 @@ const RUNTIME_FEATURE_RULES = {
    * Symbol.for for scr_bytes_dyn.c, which registers
    * Symbol(nodejs.util.inspect.custom) as one of its keys. */
   bufferPrototypeObject: rule({ fns: ["buffer.prototypeObject"] }),
+  /** util.inspect read as a value (insp.inspectFunction): the function
+   * object the runtime builds carries
+   * Symbol.for('nodejs.util.inspect.custom') as `custom`, so the program
+   * installs the symbol unit's Symbol.for for it. */
+  inspectFunctionValue: rule({ fns: ["insp.inspectFunction"] }),
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
@@ -2020,10 +2044,22 @@ const RUNTIME_FEATURE_RULES = {
    * byte for byte. */
   webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
-   * A WritableStream controller's signal is one (scr_webstreams.c). */
-  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
+   * A WritableStream controller's signal is one (scr_webstreams.c), and
+   * util.transferableAbortSignal/Controller are the util face of the same
+   * handles. */
+  abortSignal: rule({
+    prefixes: ["abort.", "webstream."],
+    fns: ["util.transferableAbortSignal", "util.transferableAbortController"],
+  }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
+  /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
+   * argument check through the checked-dynamic description, so the
+   * dyn-async unit comes with it. */
+  utilMarkPromiseAsHandled: rule({ fns: ["util.markPromiseAsHandled"] }),
+  /** util.setTraceSigInt (scr_util_trace_sigint.c): a no-op for compiled
+   * programs, kept behind its own unit so nothing else links it. */
+  utilTraceSigInt: rule({ fns: ["util.setTraceSigInt"] }),
   /** events.once(emitter, name, options), and events.once over a name the
    * program does not resolve to a typed tuple (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
@@ -2285,10 +2321,13 @@ const RUNTIME_FEATURE_RULES = {
   }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
-  /** util.promisify over an untyped function (scr_util_promisify.c): its
-   * promises go through the dyn-async unit and its calls through the
-   * dyn-invoke unit. */
-  utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
+  /** util.promisify's custom protocol (scr_util_promisify_custom.c), in both
+   * lowerings: the untyped one (scr_util_promisify.c) reads it through the
+   * dyn-async and dyn-invoke units, and the typed one runs it over the
+   * boxed function before it builds its static wrapper. */
+  utilPromisify: rule({
+    fns: ["util.promisifyDyn", "util.promisifyCustom", "util.promisifyMark"],
+  }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
@@ -2364,7 +2403,7 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
-  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn", "module.namespaceCopy"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c), which also own
    * Number.prototype and Boolean.prototype: the value a JavaScript source
    * reads through dyn.builtinPrototype, and the compiled constructor's
@@ -2583,6 +2622,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webStreams: false,
     abortSignal: false,
     utilTiming: false,
+    utilMarkPromiseAsHandled: false,
+    utilTraceSigInt: false,
     mockTimers: false,
     net: false,
     netLookup: false,
@@ -2634,6 +2675,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBufferMembers: false,
     genReceiver: false,
     bufferPrototypeObject: false,
+    inspectFunctionValue: false,
     fsPathValue: false,
     builtinValues: false,
     computedRequire: false,

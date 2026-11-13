@@ -46,6 +46,7 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_zlib.c",
         "scr_inspect.c",
         "scr_console_native.c",
+        "scr_util_style.c",
         "scr_copying.c",
         "scr_js_buffers.c",
       ])

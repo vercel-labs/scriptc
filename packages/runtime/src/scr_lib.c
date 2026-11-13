@@ -144,6 +144,7 @@ static WCHAR *scr_win_wide_utf8(const char *text, size_t length) {
 #include <net/if.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <grp.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -1412,6 +1413,54 @@ void scr_env_unset(const ScrStr *name) {
   scr_env_tz_changed(name);
 }
 
+/* The checked-dynamic process.env accessors. Node's env object converts a
+ * string key with ToString (a symbol key is ignored by get/delete and
+ * throws from set) and every stored value with ToString (a symbol value
+ * throws "Cannot convert a Symbol value to a string"). */
+
+/* process.env[key] with a non-string key: symbol → undefined; anything
+ * else → String(key), which may throw (a bad toString does). */
+ScrStr *scr_env_get_dyn(const ScrDyn *key) {
+  if (key->kind == SCR_DYN_SYMBOL) return NULL;
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return NULL;
+  ScrStr *value = scr_env_get(name);
+  scr_str_release(name);
+  return value;
+}
+
+/* process.env.NAME = value for a checked-dynamic value. */
+void scr_env_set_dyn(const ScrStr *name, const ScrDyn *value) {
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text == NULL) return;
+  scr_env_set(name, text);
+  scr_str_release(text);
+}
+
+/* process.env[key] = value for a checked-dynamic key and value: the key's
+ * ToString runs first (Node's set trap converts the property), then the
+ * value's. */
+void scr_env_set_key_dyn(const ScrDyn *key, const ScrDyn *value) {
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return;
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text != NULL) {
+    scr_env_set(name, text);
+    scr_str_release(text);
+  }
+  scr_str_release(name);
+}
+
+/* `delete process.env[key]`: a symbol key deletes nothing (Node's trap
+ * returns true); other keys go through ToString first. */
+void scr_env_unset_dyn(const ScrDyn *key) {
+  if (key->kind == SCR_DYN_SYMBOL) return;
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return;
+  scr_env_unset(name);
+  scr_str_release(name);
+}
+
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
 
 /* Node's dotenv parser trims ASCII space/tab/newline and removes every CR,
@@ -1860,7 +1909,7 @@ static bool scr_kill_pid_check(double pid) {
                      "The \"pid\" argument must be of type number. "
                      "Received type number (%s)",
                      num);
-  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
   return false;
 }
 
@@ -1924,27 +1973,165 @@ static bool scr_kill_send(int pid, int sig) {
   return false;
 }
 
+/* Node's ERR_UNKNOWN_SIGNAL TypeError: "Unknown signal: <text>". */
+static void scr_kill_unknown_signal_text(const char *text, size_t len) {
+  size_t cap = 16 + len + 1;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int n = snprintf(msg, cap, "Unknown signal: %.*s", (int)len, text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_UNKNOWN_SIGNAL");
+  free(msg);
+}
+
+/* A library archive has no such symbol: its program may not have selected
+ * the inspect unit, and the localization pass keeps every undefined
+ * reference global, so an optional runtime unit's symbol must not reach the
+ * archive's link surface (the embedder's link would carry a dangling
+ * scr_ prefix). The archive renders the plain String() form instead, the
+ * same narrowing the census reference above takes. */
+#if !defined(SCR_LIB)
+/* The %s rendering Node's message formatter gives the offending signal:
+ * util.format's %s, which inspects an object without a custom toString.
+ * The inspect unit renders it exactly when the program links that unit
+ * (any program that prints does); a program without it keeps the plain
+ * String() form. NULL with an exception pending when a hook throws. */
+extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
+static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
+#if !defined(SCR_LIB)
+  /* util.format's %s inspects an object only when its toString is a
+   * built-in one; a value carrying its own toString is converted through it
+   * (Node prints what that method answers). The dynamic object model keeps
+   * built-in prototype members invisible to own-property tests, so an own
+   * toString marks the custom case. */
+  bool custom = false;
+  if (scr_dyn_is_object(signal)) {
+    ScrStr *key = scr_str_new("toString", 8);
+    custom = scr_dyn_has_own(signal, key);
+    scr_str_release(key);
+  }
+  if (!custom && scr_insp_dyn_format_s != NULL) {
+    ScrStr *text = scr_insp_dyn_format_s((ScrDyn *)signal, 0);
+    if (text != NULL || scr_exc_pending()) return text;
+  }
+#endif
+  return scr_dyn_string_coerce_js(signal);
+}
+
+/* The numeric signal arm: `sig === (sig | 0)` passes the int32 straight to
+ * kill(2) (signal 0 probes), otherwise only NaN is falsy (and takes the
+ * SIGTERM default) — every other number must name a signal, so it throws
+ * ERR_UNKNOWN_SIGNAL with the number's rendering. */
+static bool scr_kill_sig_num(double sig, int *out) {
+  double i32 = (double)(int32_t)scr_to_uint32(sig);
+  if (sig == i32) {
+    *out = (int)i32;
+    return true;
+  }
+  if (isnan(sig)) {
+    *out = SIGTERM;
+    return true;
+  }
+  char num[32];
+  size_t n = scr_f64_to_str(sig, num);
+  scr_kill_unknown_signal_text(num, n);
+  return false;
+}
+
+/* process.kill's signal argument over a checked-dynamic value. The strict
+ * test still evaluates `sig | 0` first (ToNumber: a bigint throws Node's
+ * mixing message, a symbol its conversion message); a non-number is never
+ * strictly equal to the int32, so it falls to `sig ||= 'SIGTERM'` and the
+ * constants lookup, whose key goes through ToString. */
+static bool scr_kill_sig_dyn(const ScrDyn *sig, int *out) {
+  if (sig->kind == SCR_DYN_BIGINT) {
+    static const char message[] = "Cannot mix BigInt and other types, use explicit conversions";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(sig, &number)) return false;
+  if (sig->kind == SCR_DYN_NUM) return scr_kill_sig_num(number, out);
+  if (!scr_dyn_truthy(sig)) {
+    *out = SIGTERM;
+    return true;
+  }
+  ScrStr *name = scr_dyn_string_coerce_js(sig);
+  if (name == NULL) return false;
+  int signo = scr_signal_by_name(name->data);
+  scr_str_release(name);
+  if (signo < 0) {
+    ScrStr *text = scr_kill_signal_text(sig);
+    if (text != NULL) {
+      scr_kill_unknown_signal_text(text->data, text->len);
+      scr_str_release(text);
+    }
+    return false;
+  }
+  *out = signo;
+  return true;
+}
+
+/* process.kill's pid gate over a checked-dynamic value: `pid != (pid | 0)`
+ * with JS abstract equality. `pid | 0` runs ToNumber (symbol/bigint keep
+ * Node's messages), the comparison reads the original value, and the pid
+ * handed to kill(2) is that int32. */
+static bool scr_kill_pid_dyn(const ScrDyn *pid, int *out) {
+  if (pid->kind == SCR_DYN_BIGINT) {
+    static const char message[] = "Cannot mix BigInt and other types, use explicit conversions";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(pid, &number)) return false;
+  int32_t i32 = (int32_t)scr_to_uint32(number);
+  ScrDyn *boxed = scr_dyn_new_num((double)i32);
+  bool equal = scr_dyn_abstract_eq(pid, boxed);
+  scr_dyn_release(boxed);
+  if (scr_exc_pending()) return false;
+  if (!equal) {
+    scr_dyn_arg_type_fail("pid", "of type number", pid);
+    return false;
+  }
+  *out = i32;
+  return true;
+}
+
 bool scr_process_kill(double pid, double signum) {
   if (!scr_kill_pid_check(pid)) return false;
-  return scr_kill_send((int)pid, (int)signum);
+  int sig;
+  if (!scr_kill_sig_num(signum, &sig)) return false;
+  return scr_kill_send((int)pid, sig);
 }
 
 bool scr_process_kill_named(double pid, const ScrStr *signal) {
   if (!scr_kill_pid_check(pid)) return false;
-  int sig = scr_signal_by_name(signal->data);
-  if (sig < 0) {
-    /* Node's ERR_UNKNOWN_SIGNAL TypeError. */
-    size_t cap = 16 + signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) {
-      scr_trap("scriptc: out of memory\n");
+  int sig;
+  if (signal->len == 0) {
+    sig = SIGTERM;
+  } else {
+    sig = scr_signal_by_name(signal->data);
+    if (sig < 0) {
+      scr_kill_unknown_signal_text(signal->data, signal->len);
+      return false;
     }
-    int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
-    free(msg);
-    return false;
   }
   return scr_kill_send((int)pid, sig);
+}
+
+bool scr_process_kill_sig_dyn(double pid, const ScrDyn *signal) {
+  if (!scr_kill_pid_check(pid)) return false;
+  int sig;
+  if (!scr_kill_sig_dyn(signal, &sig)) return false;
+  return scr_kill_send((int)pid, sig);
+}
+
+bool scr_process_kill_dyn(const ScrDyn *pid, const ScrDyn *signal) {
+  int target;
+  if (!scr_kill_pid_dyn(pid, &target)) return false;
+  int sig;
+  if (!scr_kill_sig_dyn(signal, &sig)) return false;
+  return scr_kill_send(target, sig);
 }
 
 ScrStr *scr_process_cwd(void) {
@@ -2719,6 +2906,13 @@ SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
+/* The promise inspect reader (scr_async_dyn.c installs it when it boxes a
+ * promise; NULL in a program without that unit, which has no promise box for
+ * the inspector to meet). Defined here because scr_lib.c is always linked,
+ * while the async unit is not part of the library flavors. */
+SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pending, bool *rejected,
+                                          ScrDyn **value) = NULL;
+
 /* process.exitCode's validation: a safe integer, or a RangeError
  * (ERR_OUT_OF_RANGE). Node converts valid codes to signed int32 for
  * exitCode and exit listeners; the OS observes the low eight bits. */
@@ -2747,6 +2941,41 @@ static bool scr_process_exit_code_of(double code, int *out) {
   return true;
 }
 
+/* Node's exitCode setter over a checked-dynamic value:
+ *   if (code !== null && code !== undefined) {
+ *     let value = code;
+ *     if (typeof code === 'string' && code !== '' && NumberIsNaN((value = Number(code)))) value = code;
+ *     validateInteger(value, 'code');
+ *     set(value);
+ *   } else clear();
+ * A string that Number() reads as NaN keeps its string shape, so the
+ * integer validator throws ERR_INVALID_ARG_TYPE (not a range error).
+ * Answers false with the exception pending when validation fails. */
+static bool scr_process_exit_code_dyn_of(const ScrDyn *code, int *out, bool *clear) {
+  *clear = false;
+  if (code->kind == SCR_DYN_UNDEF || code->kind == SCR_DYN_NULL) {
+    *clear = true;
+    *out = 0;
+    return true;
+  }
+  if (code->kind == SCR_DYN_NUM) return scr_process_exit_code_of(code->v.num, out);
+  if (code->kind == SCR_DYN_STR && code->v.str->len != 0) {
+    double number = scr_string_to_number(code->v.str);
+    if (!isnan(number)) return scr_process_exit_code_of(number, out);
+  }
+  /* validateInteger's type gate, with Node's Received tail for the
+   * original value (the uncoercible string, object, bigint, symbol...). */
+  scr_dyn_arg_type_fail("code", "of type number", code);
+  return false;
+}
+
+void scr_process_set_exit_code_dyn(const ScrDyn *code) {
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  scr_exit_code_note(converted);
+}
+
 void scr_process_set_exit_code(double code) {
   int converted;
   if (scr_process_exit_code_of(code, &converted)) scr_exit_code_note(converted);
@@ -2763,6 +2992,15 @@ void scr_process_set_exit_code_tracked(double code) {
   if (!scr_process_exit_code_of(code, &converted)) return;
   scr_exit_code_note(converted);
   scr_exit_code_assigned = true;
+}
+
+void scr_process_set_exit_code_dyn_tracked(const ScrDyn *code) {
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  /* null/undefined clear kHasExitCode as well as the stored code. */
+  scr_exit_code_assigned = !clear;
+  scr_exit_code_note(converted);
 }
 
 bool scr_process_has_exit_code(void) {
@@ -2869,17 +3107,21 @@ static void scr_detach_teardown(void) {
 extern int __llvm_profile_write_file(void) __attribute__((weak));
 #endif
 
-void scr_process_exit(double code) {
-  /* process.exit(code) assigns process.exitCode first, so a code that is
-   * not a safe integer throws its RangeError and the program continues. */
-  int converted;
-  if (!scr_process_exit_code_of(code, &converted)) return;
-  code = converted;
+/* The shared exit sequence, after the code's exitCode-setter validation:
+ * 'exit' listeners, the worker stop, and the teardown-free _Exit. */
+static void scr_process_exit_finish(int code) {
   /* Node runs 'exit' listeners on explicit process.exit() too — they run
    * HERE, synchronously, before the teardown-free exit below. The hook is
    * non-NULL only when the events unit is linked (scr_events.c). */
   scr_process_in_exit = true;
+  /* process.exit assigns process.exitCode before the listeners run, so they
+   * read the status being left with. */
+  scr_exit_code_note(code);
   if (scr_process_exit_hook != NULL) scr_process_exit_hook(code);
+  /* Node reads process.exitCode after the 'exit' listeners have run, so a
+   * listener that assigns it selects the status the process leaves with
+   * (the common "set the final status in an exit hook" shape). */
+  code = (double)scr_exit_code_hint_get();
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
     /* A nested exit or a failing exit listener already selected its code. */
@@ -2903,6 +3145,47 @@ void scr_process_exit(double code) {
   scr_detach_teardown();
 #endif
   _Exit((int)code);
+}
+
+/* process.abort(): flush the program's output and terminate by SIGABRT,
+ * the signal a parent observes (Node's own abort). Node also dumps a
+ * native and a JavaScript stack trace before the signal; those name Node's
+ * addresses and internal frames, so a compiled binary raises the signal
+ * without the dump. A worker's abort throws Node's catchable
+ * ERR_WORKER_UNSUPPORTED_OPERATION instead: the signal would kill every
+ * thread, not just the one that asked. */
+void scr_process_abort(void) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    static const char message[] = "process.abort() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                             "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return;
+  }
+#endif
+  scr_stdout_settle();
+  fflush(stdout);
+  fflush(stderr);
+  /* abort() raises SIGABRT with the default disposition and terminates
+   * even when the program installed a handler, like Node's ABORT(). */
+  abort();
+}
+
+void scr_process_exit(double code) {
+  /* process.exit(code) assigns process.exitCode first, so a code that is
+   * not a safe integer throws its RangeError and the program continues. */
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  scr_process_exit_finish(converted);
+}
+
+void scr_process_exit_dyn(const ScrDyn *code) {
+  /* Node's process.exit forwards the argument to the exitCode setter;
+   * a null or undefined argument clears the code (status 0). */
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  scr_process_exit_finish(converted);
 }
 
 /* ── the process introspection statics ────────────────────────────────
@@ -3114,10 +3397,11 @@ double scr_thread_cpu_system(void) { return scr_cpu_system(); }
 
 /* The prev-argument validation: Node checks prevValue.user then
  * prevValue.system and throws the ERR_INVALID_ARG_VALUE RangeError with
- * the received number, catchably. (The frontend guarantees numbers —
- * non-number shapes keep compile fences.) */
+ * the received number, catchably. previousValueIsValid is a number that is
+ * also a non-negative safe integer bound (NumberIsFinite plus
+ * NumberMAX_SAFE_INTEGER). */
 static void scr_cpu_prev_check_field(const char *name, double v) {
-  if (v >= 0 && v <= 1.7976931348623157e308 && v == v) return; /* finite, non-negative */
+  if (v >= 0 && v <= 9007199254740991.0 && v == v) return; /* finite, non-negative safe integer */
   char num[32];
   size_t nlen = scr_f64_to_str(v, num);
   num[nlen] = 0;
@@ -3130,6 +3414,90 @@ void scr_cpu_prev_validate(double user, double system) {
   scr_cpu_prev_check_field("user", user);
   if (scr_exc_pending()) return;
   scr_cpu_prev_check_field("system", system);
+}
+
+/* The checked-dynamic cpuUsage(prev)/threadCpuUsage(prev) forms. Node's
+ * wrappers validate only a TRUTHY prevValue (`if (prevValue) { ... }`), so
+ * null, undefined, 0, '' and NaN all read as "no previous value". A truthy
+ * prevValue reads .user and .system (in that order, accessors included):
+ * an invalid field on a non-object throws the ERR_INVALID_ARG_TYPE
+ * "prevValue" argument error, a non-number field throws the dotted-property
+ * form, and a number outside the safe range throws the RangeError. The
+ * clock sample is taken ONCE, after validation, and both field diffs
+ * subtract from it. `thread` selects the per-thread clock (1) or the
+ * process clock (0). */
+static SCR_TL double scr_cpu_dyn_prev_user, scr_cpu_dyn_prev_system;
+static SCR_TL double scr_cpu_dyn_sample_user, scr_cpu_dyn_sample_system;
+
+static bool scr_cpu_prev_dyn_field(const char *name, const ScrDyn *prev, double *out) {
+  ScrDyn *value = scr_dyn_obj_read(prev, name, strlen(name));
+  if (value == NULL) {
+    if (scr_exc_pending()) return false; /* an accessor threw */
+    value = scr_dyn_undefined();
+  }
+  bool valid = value->kind == SCR_DYN_NUM && value->v.num >= 0 &&
+               value->v.num <= 9007199254740991.0;
+  if (!valid) {
+    /* Node's validateObject accepts an object and rejects null and arrays;
+     * a function with both fields number-valued never reaches it. */
+    bool object = prev->kind != SCR_DYN_ARR && scr_dyn_is_object(prev) &&
+                  !(prev->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(prev));
+    if (!object) {
+      scr_dyn_arg_type_fail("prevValue", "of type object", prev);
+    } else if (value->kind != SCR_DYN_NUM) {
+      char prop[32];
+      snprintf(prop, sizeof prop, "prevValue.%s", name);
+      scr_dyn_prop_type_fail(prop, "of type number", value);
+    } else {
+      scr_cpu_prev_check_field(name, value->v.num);
+    }
+    scr_dyn_release(value);
+    return false;
+  }
+  *out = value->v.num;
+  scr_dyn_release(value);
+  return true;
+}
+
+/* The subtraction in Node's returned object literal reads a validated
+ * previous field AGAIN, after the clock sample, so an accessor runs twice and
+ * its second answer converts with the subtraction's ToNumber. */
+static bool scr_cpu_prev_dyn_raw(const char *name, const ScrDyn *prev, double *out) {
+  ScrDyn *value = scr_dyn_obj_read(prev, name, strlen(name));
+  if (value == NULL) {
+    if (scr_exc_pending()) return false;
+    value = scr_dyn_undefined();
+  }
+  if (value->kind == SCR_DYN_NUM) {
+    *out = value->v.num;
+    scr_dyn_release(value);
+    return true;
+  }
+  bool ok = scr_dyn_number_coerce_js(value, out);
+  scr_dyn_release(value);
+  return ok;
+}
+
+void scr_cpu_prev_prepare_dyn(const ScrDyn *prev, double thread) {
+  double user = 0, system = 0;
+  bool diff = prev != NULL && scr_dyn_truthy(prev);
+  if (diff) {
+    if (!scr_cpu_prev_dyn_field("user", prev, &user)) return;
+    if (!scr_cpu_prev_dyn_field("system", prev, &system)) return;
+  }
+  scr_cpu_dyn_sample_user = thread != 0 ? scr_thread_cpu_user() : scr_cpu_user();
+  scr_cpu_dyn_sample_system = thread != 0 ? scr_thread_cpu_system() : scr_cpu_system();
+  if (diff) {
+    if (!scr_cpu_prev_dyn_raw("user", prev, &user)) return;
+    if (!scr_cpu_prev_dyn_raw("system", prev, &system)) return;
+  }
+  scr_cpu_dyn_prev_user = user;
+  scr_cpu_dyn_prev_system = system;
+}
+
+double scr_cpu_usage_field(double which) {
+  return which != 0 ? scr_cpu_dyn_sample_system - scr_cpu_dyn_prev_system
+                    : scr_cpu_dyn_sample_user - scr_cpu_dyn_prev_user;
 }
 
 double scr_cpu_user_diff(double prev) { return scr_cpu_user() - prev; }
@@ -3565,6 +3933,16 @@ void scr_process_set_title(const ScrStr *title) {
   scr_str_release(text);
 }
 
+/* process.title = value over a checked-dynamic value: Node's setter
+ * converts the value with ToString (a symbol throws its conversion
+ * TypeError; arrays join, objects call their own toString). */
+void scr_process_set_title_dyn(const ScrDyn *title) {
+  ScrStr *text = scr_dyn_string_coerce_js(title);
+  if (text == NULL) return;
+  scr_process_set_title(text);
+  scr_str_release(text);
+}
+
 ScrStr *scr_process_argv0(void) {
   if (scr_lib_arg_count() < 1) return scr_str_new("", 0);
   const char *a = scr_lib_arg(0);
@@ -3660,6 +4038,297 @@ ScrArr *scr_process_getgroups(void) {
 }
 #endif
 
+/* ── the credential setters (node_credentials.cc + node:internal/process/
+ * per_thread's wrapPosixCredentialSetters) ───────────────────────────────
+ * The argument checks are Node's JS layer: validateId accepts a number or a
+ * string (a number goes through validateUint32's ladder), then a numeric id
+ * is used AS the uid/gid while a string id is looked up through
+ * getpwnam_r/getgrnam_r. The C++ sentinel for a failed lookup is
+ * (uid_t)-1, which is also the number 4294967295 — the one observable
+ * edge, where a numeric id reports ERR_UNKNOWN_CREDENTIAL instead of
+ * calling the syscall. A syscall failure is Node's ErrnoException. */
+#if defined(_WIN32) || defined(__wasi__)
+static void scr_cred_absent(const char *name) {
+  char msg[64];
+  int n = snprintf(msg, sizeof msg, "process.%s is not a function", name);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+}
+
+void scr_process_setuid(ScrDyn *id) { (void)id; scr_cred_absent("setuid"); }
+void scr_process_seteuid(ScrDyn *id) { (void)id; scr_cred_absent("seteuid"); }
+void scr_process_setgid(ScrDyn *id) { (void)id; scr_cred_absent("setgid"); }
+void scr_process_setegid(ScrDyn *id) { (void)id; scr_cred_absent("setegid"); }
+void scr_process_setgroups(ScrDyn *groups) { (void)groups; scr_cred_absent("setgroups"); }
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group) {
+  (void)user;
+  (void)extra_group;
+  scr_cred_absent("initgroups");
+}
+#else
+/* validateUint32(id, name): NumberIsInteger first, then the uint32 range. */
+static bool scr_cred_validate_uint32(const ScrDyn *id, const char *name) {
+  double n = id->v.num;
+  char recv[48];
+  char msg[224];
+  int m;
+  if (!isfinite(n) || floor(n) != n) {
+    scr_num_received(n, recv);
+    m = snprintf(msg, sizeof msg,
+                 "The value of \"%s\" is out of range. It must be an integer. Received %s", name, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)m, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (n < 0 || n > 4294967295.0) {
+    scr_num_received(n, recv);
+    m = snprintf(msg, sizeof msg,
+                 "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                 name, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)m, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
+/* validateId: number (validateUint32) or string, and node:internal/errors'
+ * ERR_INVALID_ARG_TYPE for anything else. */
+static bool scr_cred_validate_id(const ScrDyn *id, const char *name) {
+  if (id->kind == SCR_DYN_NUM) return scr_cred_validate_uint32(id, name);
+  if (id->kind == SCR_DYN_STR) return true;
+  scr_dyn_arg_type_fail(name, "one of type number or string", id);
+  return false;
+}
+
+/* ERR_UNKNOWN_CREDENTIAL: "<User|Group> identifier does not exist: <id>",
+ * the identifier rendered as a template string would render it. */
+static void scr_cred_unknown(const char *type, const ScrDyn *id) {
+  ScrStr *text;
+  if (id->kind == SCR_DYN_STR) {
+    text = scr_str_retain(id->v.str);
+  } else {
+    char num[48];
+    size_t n = scr_f64_to_str(id->v.num, num);
+    text = scr_str_new(num, n);
+  }
+  ScrStr *parts[3] = {
+    scr_str_new(type, strlen(type)),
+    scr_str_new(" identifier does not exist: ", 28),
+    text,
+  };
+  ScrStr *msg = scr_str_concat_parts(parts, 3);
+  for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg->data, msg->len, "ERR_UNKNOWN_CREDENTIAL");
+  scr_str_release(msg);
+}
+
+/* A string id as a UTF-8 C string (lone surrogates become U+FFFD, as V8's
+ * Utf8Value writes them). Always a fresh allocation. */
+static char *scr_cred_name(const ScrStr *name) {
+  char *owned = NULL;
+  const char *utf8 = scr_str_utf8(name, &owned);
+  char *out = malloc(name->len + 1);
+  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  memcpy(out, utf8, name->len);
+  out[name->len] = '\0';
+  scr_str_utf8_end(owned);
+  return out;
+}
+
+/* uid_by_name/gid_by_name: a numeric id IS the uid/gid (no lookup); a
+ * string goes through getpwnam_r/getgrnam_r, with the (uid_t)-1 sentinel on
+ * failure. */
+static uid_t scr_cred_uid_for(const ScrDyn *id) {
+  if (id->kind == SCR_DYN_NUM) return (uid_t)(uint32_t)id->v.num;
+  struct passwd pwd;
+  struct passwd *pp = NULL;
+  char buf[8192];
+  char *name = scr_cred_name(id->v.str);
+  errno = 0;
+  bool found = getpwnam_r(name, &pwd, buf, sizeof buf, &pp) == 0 && pp != NULL;
+  free(name);
+  return found ? pp->pw_uid : (uid_t)-1;
+}
+
+static gid_t scr_cred_gid_for(const ScrDyn *id) {
+  if (id->kind == SCR_DYN_NUM) return (gid_t)(uint32_t)id->v.num;
+  struct group grp;
+  struct group *gp = NULL;
+  char buf[8192];
+  char *name = scr_cred_name(id->v.str);
+  errno = 0;
+  bool found = getgrnam_r(name, &grp, buf, sizeof buf, &gp) == 0 && gp != NULL;
+  free(name);
+  return found ? gp->gr_gid : (gid_t)-1;
+}
+
+/* name_by_uid (initgroups' numeric-user path). */
+static char *scr_cred_name_by_uid(uid_t uid) {
+  struct passwd pwd;
+  struct passwd *pp = NULL;
+  char buf[8192];
+  errno = 0;
+  if (getpwuid_r(uid, &pwd, buf, sizeof buf, &pp) != 0 || pp == NULL) return NULL;
+  size_t len = strlen(pp->pw_name);
+  char *out = malloc(len + 1);
+  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  memcpy(out, pp->pw_name, len + 1);
+  return out;
+}
+
+/* wrapIdSetter: validate, then the lookup, then the syscall — an unknown
+ * string id answers the sentinel, which the JS layer turns into
+ * ERR_UNKNOWN_CREDENTIAL. */
+static void scr_cred_set_uid(ScrDyn *id, const char *type, const char *syscall, int which) {
+  if (!scr_cred_validate_id(id, "id")) return;
+  uid_t uid = scr_cred_uid_for(id);
+  if (uid == (uid_t)-1) {
+    scr_cred_unknown(type, id);
+    return;
+  }
+  int rc = which == 0 ? setuid(uid) : seteuid(uid);
+  if (rc != 0) scr_fs_throw_errno_exception(errno, syscall, NULL);
+}
+
+static void scr_cred_set_gid(ScrDyn *id, const char *type, const char *syscall, int which) {
+  if (!scr_cred_validate_id(id, "id")) return;
+  gid_t gid = scr_cred_gid_for(id);
+  if (gid == (gid_t)-1) {
+    scr_cred_unknown(type, id);
+    return;
+  }
+  int rc = which == 0 ? setgid(gid) : setegid(gid);
+  if (rc != 0) scr_fs_throw_errno_exception(errno, syscall, NULL);
+}
+
+void scr_process_setuid(ScrDyn *id) { scr_cred_set_uid(id, "User", "setuid", 0); }
+void scr_process_seteuid(ScrDyn *id) { scr_cred_set_uid(id, "User", "seteuid", 1); }
+void scr_process_setgid(ScrDyn *id) { scr_cred_set_gid(id, "Group", "setgid", 0); }
+void scr_process_setegid(ScrDyn *id) { scr_cred_set_gid(id, "Group", "setegid", 1); }
+
+/* setgroups: an Array, then every element through validateId; a failed
+ * lookup names the element that failed, exactly the index the C++ layer
+ * reports (i + 1) and the JS layer reads back. */
+void scr_process_setgroups(ScrDyn *groups) {
+  /* A stored TypeScript array crossing an untyped slot arrives as a
+   * typed-reference capsule: materialize it so the Array test and the
+   * element reads see the array itself. A capsule that is not an array
+   * (a class instance, a record) still fails the Array test below, as
+   * Node's Array.isArray would. */
+  ScrDyn *materialized = NULL;
+  if (groups->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(groups) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(groups);
+    if (scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    groups = materialized;
+  }
+  if (groups->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("groups", "an instance of Array", groups);
+    scr_dyn_release(materialized);
+    return;
+  }
+  size_t n = groups->v.arr.len;
+  for (size_t i = 0; i < n; i++) {
+    char name[32];
+    int m = snprintf(name, sizeof name, "groups[%zu]", i);
+    if (m < 0) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    if (!scr_cred_validate_id(groups->v.arr.items[i], name)) {
+      scr_dyn_release(materialized);
+      return;
+    }
+  }
+  gid_t *list = n > 0 ? malloc(n * sizeof *list) : NULL;
+  if (n > 0 && list == NULL) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++) {
+    list[i] = scr_cred_gid_for(groups->v.arr.items[i]);
+    if (list[i] == (gid_t)-1) {
+      free(list);
+      scr_cred_unknown("Group", groups->v.arr.items[i]);
+      scr_dyn_release(materialized);
+      return;
+    }
+  }
+  int rc = setgroups(n, list);
+  int e = errno;
+  free(list);
+  scr_dyn_release(materialized);
+  if (rc != 0) scr_fs_throw_errno_exception(e, "setgroups", NULL);
+}
+
+/* initgroups: a numeric user is resolved to its name first (failure is
+ * result 1, "User"), the extra group is looked up (failure is result 2,
+ * "Group"), and only then does the syscall run. */
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group) {
+  if (!scr_cred_validate_id(user, "user")) return;
+  if (!scr_cred_validate_id(extra_group, "extraGroup")) return;
+  char *name;
+  if (user->kind == SCR_DYN_NUM) {
+    name = scr_cred_name_by_uid((uid_t)(uint32_t)user->v.num);
+    if (name == NULL) {
+      scr_cred_unknown("User", user);
+      return;
+    }
+  } else {
+    name = scr_cred_name(user->v.str);
+  }
+  gid_t gid = scr_cred_gid_for(extra_group);
+  if (gid == (gid_t)-1) {
+    free(name);
+    scr_cred_unknown("Group", extra_group);
+    return;
+  }
+  int rc = initgroups(name, gid);
+  int e = errno;
+  free(name);
+  if (rc != 0) scr_fs_throw_errno_exception(e, "initgroups", NULL);
+}
+#endif
+
+/* process.debugPort — the inspector port, 9229 until written. The write is
+ * node_process_object.cc's setter: Int32Value (ToNumber, then the 32-bit
+ * wrap) and the ERR_OUT_OF_RANGE gate that admits 0 and 1024..65535 only; a
+ * refused write leaves the previous port in place. */
+static SCR_TL double scr_debug_port = 9229;
+
+double scr_process_debug_port(void) { return scr_debug_port; }
+
+void scr_process_set_debug_port(ScrDyn *port) {
+  double n = scr_dyn_number_coerce(port);
+  if (scr_exc_pending()) {
+    /* V8's Int32Value answers 0 when its conversion throws, and Node's setter
+     * stores that before the exception propagates: a Symbol, a BigInt or a
+     * valueOf that throws leaves the port at 0. */
+    scr_debug_port = 0;
+    return;
+  }
+  double converted = (double)(int32_t)scr_to_uint32(n);
+  if (converted != 0 && (converted < 1024 || converted > 65535)) {
+    static const char msg[] = "process.debugPort must be 0 or in range 1024 to 65535";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  scr_debug_port = converted;
+}
+
+/* process.sourceMapsEnabled — node:internal/source_map/source_map_cache's
+ * flag, read through the getter-only accessor and written through
+ * setSourceMapsEnabled(validateBoolean). */
+static SCR_TL bool scr_source_maps_enabled = false;
+
+bool scr_process_source_maps_enabled(void) { return scr_source_maps_enabled; }
+
+void scr_process_set_source_maps_enabled(ScrDyn *value) {
+  if (value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("enabled", "of type boolean", value);
+    return;
+  }
+  scr_source_maps_enabled = value->v.b;
+}
+
+
 /* process._exiting — true once the exit sequence began (set above and by
  * scr_run_exit_listeners in scr_events.c; the flag lives HERE so reading
  * it never forces the events unit into the link). */
@@ -3723,6 +4392,66 @@ double scr_process_umask(double mask) {
 #endif
 }
 
+/* validateUint32(value, 'mask') from Node's validators: a number, an
+ * integer, then 0..2^32-1; each failure its own ERR_OUT_OF_RANGE. -0
+ * coerces to +0, as parseFileMode's `value + 0` does. */
+static bool scr_process_mask_validate(double mask, double *out) {
+  char recv[48], msg[192];
+  if (!(isfinite(mask) && trunc(mask) == mask)) {
+    scr_num_received(mask, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mask\" is out of range. It must be an integer. Received %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (mask < 0 || mask > 4294967295.0) {
+    scr_num_received(mask, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mask\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  *out = mask + 0.0;
+  return true;
+}
+
+/* process.umask(mask) — the one-argument form's parseFileMode gate. */
+double scr_process_umask_chk(double mask) {
+  double value;
+  if (!scr_process_mask_validate(mask, &value)) return 0;
+  return scr_process_umask(value);
+}
+
+/* process.umask(mask) for a checked-dynamic argument. Node skips the gate
+ * only for `undefined` (the no-argument read); null is `??=`-ed to
+ * undefined and rejected as such. An octal string is parseInt(value, 8)
+ * and then the uint32 gate; any other type keeps validateUint32's type
+ * error. */
+double scr_process_umask_dyn(const ScrDyn *mask) {
+  if (mask == NULL || mask->kind == SCR_DYN_UNDEF) return scr_process_umask(-1);
+  if (mask->kind == SCR_DYN_NULL) {
+    scr_dyn_arg_type_fail("mask", "of type number", scr_dyn_undefined());
+    return 0;
+  }
+  if (mask->kind == SCR_DYN_STR) {
+    const ScrStr *text = mask->v.str;
+    bool octal = text->len != 0;
+    for (size_t i = 0; i < text->len && octal; i++)
+      octal = text->data[i] >= '0' && text->data[i] <= '7';
+    if (!octal) {
+      scr_dyn_arg_value_fail("mask", "must be a 32-bit unsigned integer or an octal string", mask);
+      return 0;
+    }
+    double value = 0;
+    for (size_t i = 0; i < text->len; i++) value = value * 8 + (double)(text->data[i] - '0');
+    return scr_process_umask_chk(value);
+  }
+  if (mask->kind == SCR_DYN_NUM) return scr_process_umask_chk(mask->v.num);
+  scr_dyn_arg_type_fail("mask", "of type number", mask);
+  return 0;
+}
+
 /* Node's chdir failure: the uv exception carries the working directory
  * as path and the target, as given, as dest ("ENOENT: no such file or
  * directory, chdir '<cwd>' -> '<target>'"). */
@@ -3767,6 +4496,16 @@ void scr_process_chdir(ScrStr *dir) {
 #else
   if (chdir(dir->data) != 0) scr_process_chdir_throw(errno, dir);
 #endif
+}
+
+/* process.chdir(directory) over a checked-dynamic argument: validateString
+ * (typeof, so a String object is rejected too) then the chdir above. */
+void scr_process_chdir_dyn(const ScrDyn *dir) {
+  if (dir->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("directory", "of type string", dir);
+    return;
+  }
+  scr_process_chdir(dir->v.str);
 }
 
 /* net's process-wide happy-eyeballs attempt budget (Node's

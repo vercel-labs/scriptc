@@ -643,6 +643,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
   ),
   scan(
+    "frontend/import-type-indexed-access.ts#importTypeIndexedAccessSources",
+    2,
+    "discovery",
+    "the files that carry a type-position `import('spec')['name']`, each rewritten on its own for the lowering world (the file's text changes, no other file does), behind the prefilter that the file's text spells `import(`",
+  ),
+  scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
     1,
     "closed-world",
@@ -699,6 +705,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
+    1,
+    "prefilter",
+    "a conditional alias needs a `require()` write in the file; the walk behind it decides each write from the symbol and the required tables",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",

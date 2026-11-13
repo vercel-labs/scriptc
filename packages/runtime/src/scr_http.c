@@ -3372,6 +3372,7 @@ static SCR_TL size_t scr_http_emits_head = 0, scr_http_emits_len = 0, scr_http_e
 static void scr_http_client_release_internal(struct ScrHttpClientReq *c);
 static void scr_http_res_client_error_fire(const ScrHttpResClientError *p);
 static void scr_http_client_settle(struct ScrHttpClientReq *c);
+static void scr_http_client_drain_disarm(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_destroy_error(struct ScrHttpClientReq *c);
@@ -6081,6 +6082,11 @@ struct ScrHttpClientReq {
   bool need_drain;      /* Node's kNeedDrain, set by a false write */
   bool drain_queued;
   bool drain_armed;     /* the one-shot socket-drain listener is registered */
+  /* The closure registered on the socket's 'drain' list while armed (+1).
+   * Its other reference belongs to the socket; this one lets a settle
+   * unregister it, so a request that needed no socket drain does not stay
+   * alive on a pooled connection. */
+  ScrClosure *sock_drain_cb;
   ScrNetLs wcb_ls;      /* write(chunk, cb) — fires from the queue */
   bool wcb_queued;
   ScrNetLs continue_ls; /* 'continue': a 100 Continue response arrived */
@@ -6149,6 +6155,7 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     free(c->cork_buf);
     free(c->held_head);
     if (c->res) scr_http_req_release(c->res);
+    scr_http_client_drain_disarm(c);
     if (c->sock) scr_net_sock_release(c->sock);
     if (c->destroy_error) scr_error_release(c->destroy_error);
     scr_str_release(c->pool_key);
@@ -6246,6 +6253,9 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
    * before the request's 'close', as Node's agent removes it at the
    * socket's 'close' (c->sock keeps c->conn alive) */
   if (c->sock != NULL && !c->sock_pooled) scr_http_conn_uncount(c->conn);
+  /* a pooled exchange that never needed a socket drain keeps no bridge on
+   * the socket: the closure would hold this request */
+  scr_http_client_drain_disarm(c);
   scr_net_fire0(&c->close_ls);
   scr_net_ls_drop(&c->resp_ls);
   scr_net_ls_drop(&c->err_ls);
@@ -6876,18 +6886,37 @@ bool scr_http_client_writable_need_drain_get(ScrHttpClientReq *c) {
 static void scr_http_client_drain_listener(ScrClosure *cb) {
   struct ScrHttpClientReq *c = scr_box_get_ref(cb->caps[0]);
   c->drain_armed = false;
+  if (c->sock_drain_cb == cb) {
+    /* fired: the socket dropped its own reference, ours goes too */
+    ScrClosure *held = c->sock_drain_cb;
+    c->sock_drain_cb = NULL;
+    scr_closure_release(held);
+  }
   scr_http_client_queue_drain(c);
   scr_http_client_release(c);
 }
 
+/* The request settled before the socket's 'drain' arrived: the bridge
+ * leaves the socket's list, so the closure (and through it the request)
+ * does not outlive the exchange on a pooled connection. */
+static void scr_http_client_drain_disarm(struct ScrHttpClientReq *c) {
+  ScrClosure *cb = c->sock_drain_cb;
+  if (cb == NULL) return;
+  c->sock_drain_cb = NULL;
+  c->drain_armed = false;
+  if (c->sock != NULL) scr_net_sock_off_drain(c->sock, cb);
+  scr_closure_release(cb);
+}
+
 /* The one-shot socket-drain listener that answers the message's 'drain'
  * once the socket's buffer empties (Node's socket ondrain). */
-static void scr_http_client_drain_arm(ScrHttpClientReq *c) {
+static void scr_http_client_drain_arm(struct ScrHttpClientReq *c) {
   if (c->drain_armed || c->sock == NULL || c->destroyed || c->ended) return;
   c->drain_armed = true;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_client_drain_listener, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_http_client_retain(c));
+  c->sock_drain_cb = scr_closure_retain(cb);
   scr_net_sock_on_drain(c->sock, cb, true);
 }
 

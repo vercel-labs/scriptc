@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-client-keepalive-large-upload-drain.ts"
+ ],
+ "diags": []
+}

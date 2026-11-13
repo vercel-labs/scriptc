@@ -81,6 +81,7 @@ import {
 import type { ConstructorReturnPlan } from "./constructor-returns.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
 import { lowerThreadSlotsCall, lowerThreadSlotsNew, threadSlotsType } from "./thread-slots.js";
+import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
@@ -530,6 +531,7 @@ import {
 import {
   accessorRequirerAssign,
   accessorRequirerSlot,
+  type CjsConditionalAlias,
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
@@ -893,6 +895,7 @@ import {
   lowerFieldCompound,
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
+  isArrayIterationCallback,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -1584,7 +1587,6 @@ export function lowerToIr(
     // something on the way out answered for the error.
     const overLimit = typeWalkOverLimit();
     if (overLimit !== null) return typeWalkBudgetFailure(overLimit, entry);
-    markModuleInitFences(program, result.runtimeFences);
     return result;
   } catch (e) {
     if (!(e instanceof TypeWalkBudgetError)) throw e;
@@ -1638,19 +1640,34 @@ export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
   );
 }
 
+/** Whether `fn` is a function whose body runs when the expression it is
+ * written in evaluates: the callee of that expression's call (an IIFE, a UMD
+ * wrapper) or the callback of an array iteration method
+ * (`parts.map((p) => load(p))`, which calls its callback with each element
+ * before returning). An async or generator body does not: it stops at its
+ * first await, or never starts. A function written anywhere else may run
+ * later. */
+export function runsWhereWritten(lowerer: Lowerer, fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return false;
+  if (ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined) return false;
+  if (fn.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return false;
+  if (isImmediatelyInvokedFunction(fn)) return true;
+  return isArrayIterationCallback(lowerer, fn);
+}
+
 /** Marks the runtime fences in npm package code whose site is module-init
  * code: top-level module code outside every function body, or the body of a
- * function that is called where it is written, at such a place (a UMD
- * wrapper's body runs when its module evaluates). They throw when the module
- * evaluates (ScrDiagnostic.moduleInit). */
-function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
+ * function that runs where it is written, at such a place (a UMD wrapper's
+ * body, or an array iteration callback's, runs when its module evaluates).
+ * They throw when the module evaluates (ScrDiagnostic.moduleInit). */
+function markModuleInitFences(lowerer: Lowerer, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
     if (!isInstalledPackagePath(d.loc.file)) continue;
     // A fence without a source position belongs to synthesized code, such
     // as the global object's lookup (global-values.ts), which runs when the
     // program calls it, not when the module evaluates.
     if (d.loc.start < 0) continue;
-    const sf = program.getSourceFile(d.loc.file);
+    const sf = lowerer.program.getSourceFile(d.loc.file);
     if (sf === undefined) continue;
     let inFunction = false;
     let node: ts.Node | undefined = sf;
@@ -1667,7 +1684,7 @@ function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnosti
       });
       if (next === undefined) break;
       if (
-        (ts.isFunctionLike(next) && !isImmediatelyInvokedFunction(next)) ||
+        (ts.isFunctionLike(next) && !runsWhereWritten(lowerer, next)) ||
         (ts.isPropertyDeclaration(next) &&
           !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
       )
@@ -2192,6 +2209,13 @@ function lowerToIrWithIslands(
   }
   if (resultLowerer.typeClaimSites.length > 0)
     result = { ...result, typeClaims: resultLowerer.typeClaimSites };
+  // Parallel calls that stay sequential (SC6106): performance notes that
+  // name the expression which kept the chunks on one thread.
+  if (resultLowerer.parallelWarnings.length > 0)
+    result = {
+      ...result,
+      performance: [...(result.performance ?? []), ...resultLowerer.parallelWarnings],
+    };
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
   // Acyclic object types name the IR unit the program lowered them to; a
@@ -2269,6 +2293,10 @@ function lowerToIrWithIslands(
     if (resultLowerer.usesWasmCustomSections) result.module.wasmCustomSections = true;
     timing("wasm-discovery", { modules: wasmModules.length });
   }
+  // The pass whose result stands holds every fence the build can see: mark
+  // the ones its package's module-init code reaches (the island growth's
+  // sure rule reads them). `covered` below keeps this same fence list.
+  markModuleInitFences(resultLowerer, result.runtimeFences);
   if (options.coverage !== true) return result;
   const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
@@ -3141,6 +3169,15 @@ export interface AbsentSlot {
   optional?: true;
 }
 
+/** One live forwarding edge of a module whose whole export is chosen at run
+ * time: while `select` holds `selectValue`, a write to the export global keeps
+ * `slot` equal to it. */
+export interface CjsConditionalExportMirror {
+  select: string;
+  selectValue: number;
+  slot: IrGlobal;
+}
+
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
@@ -3693,6 +3730,37 @@ export class Lowerer {
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Module-local variables whose whole value is a require() chosen at run
+   * time among static export tables, by symbol; null when the variable keeps
+   * its ordinary treatment (cjs-inline-require.ts). */
+  readonly cjsConditionalAliases = new Map<ts.Symbol, CjsConditionalAlias | null>();
+  /** The member slots of those aliases, registered by collectGlobals. */
+  readonly cjsConditionalAliasGlobals = new Map<ts.Symbol, Map<string, IrGlobal>>();
+  /** The selection global of each of those aliases: the write that ran
+   * stores the index (+ 1) of the table it required, so a member that table
+   * assigns later forwards to the alias slots (cjsConditionalExportMirrors). */
+  readonly cjsConditionalAliasSelectGlobals = new Map<ts.Symbol, IrGlobal>();
+  /** Export member slots of a module whose whole export is chosen at run
+   * time between static tables (react/index.js), by module. The checker's
+   * synthesized property symbols are shared between modules that re-export
+   * the same tables, so the slot a module's statements fill and its
+   * importers read is keyed by module, never by symbol. */
+  readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** The selection global of each module whose whole export is chosen at run
+   * time between static tables: every branch statement stores the index
+   * (+ 1) of the table it selected. */
+  readonly cjsConditionalWholeExportSelectGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Live forwarding edges of those modules: by the written export global's
+   * id, the slots that must follow the write while the module's selection
+   * global names that table. Node's `module.exports` IS the table's exports
+   * object, so a member the table assigns through a function it exports
+   * still shows through the conditional module. */
+  readonly cjsConditionalExportMirrors = new Map<string, CjsConditionalExportMirror[]>();
+  /** Each module's own export member globals by member name, registered
+   * where the write or table registered them. A name lookup that the
+   * checker's export symbols cannot answer (a member attached inside a
+   * wrapper function) reads the member here. */
+  readonly cjsInFileExportMemberGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
   /** Terminal export table, or null for whole values and pure re-export cycles. */
   readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
   /** Receiver proofs depend only on a module's source and stable bindings. */
@@ -5995,6 +6063,7 @@ export class Lowerer {
       checkedTable("rejectedGroups", () => this.rejectedGroups.size),
       checkedTable("lenientPieces", () => this.lenientPieces.size),
       checkedTable("dynamicSlots", () => this.dynamicSlots.length),
+      checkedTable("parallelWarnings", () => this.parallelWarnings.length),
       checkedTable("retriedSymbols", () => this.retriedSymbols.size),
       checkedTable("skippedBodies", () => this.skippedBodies.size),
       checkedTable("retriedDeclarations", () => this.retriedDeclarations.length),
@@ -6137,6 +6206,13 @@ export class Lowerer {
     "assertedClaims",
     "boundaryClaims",
     "cjsSplitRequireBindings",
+    "cjsConditionalAliases",
+    "cjsConditionalAliasGlobals",
+    "cjsConditionalAliasSelectGlobals",
+    "cjsConditionalWholeExportGlobals",
+    "cjsConditionalWholeExportSelectGlobals",
+    "cjsConditionalExportMirrors",
+    "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
     "cjsNamespaceTargets",
@@ -6561,6 +6637,9 @@ export class Lowerer {
   readonly partialHits: Set<number>[] = [];
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
+  /** Parallel calls whose chunks run one after another: one SC6106 each
+   * (lowering/parallel-loops.ts). */
+  readonly parallelWarnings: ScrDiagnostic[] = [];
   /** Declarations retryDeferred registered. */
   readonly retriedSymbols = new Set<ts.Symbol>();
   /** LowererMode.retriedSymbols. */
@@ -8138,6 +8217,16 @@ export class Lowerer {
         this.flushDeferred(symbol);
         return symbol;
       }
+      // A named import of a module whose whole export is chosen at run time
+      // between static export tables (react/index.js): the imported name is
+      // that module's member slot, and the IMPORT's own alias symbol keys it
+      // — the checker's synthesized member symbols are shared between
+      // modules re-exporting the same tables.
+      const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
+      if (conditionalSlot !== null) {
+        this.globalsBySymbol.set(symbol, conditionalSlot);
+        return symbol;
+      }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
       // symbol (`export default someLet` — collectGlobals registers the
       // Node-semantics snapshot there). getAliasedSymbol would resolve
@@ -8147,6 +8236,18 @@ export class Lowerer {
       if (snap) {
         this.flushDeferred(snap);
         return snap;
+      }
+      // A re-export chain STOPS at the first hop that owns storage. A
+      // CommonJS module's export member is assigned where its own module
+      // ran, and the chain's onward alias names the expression the exporter
+      // read — which may be a value chosen at run time among branches
+      // (`exports.x = l.x` over conditional requires, react-dom/server's
+      // legacy/renderTo stream tables) or a live binding a later statement
+      // changes. Node's importer reads what the exporter stored.
+      const storedHop = this.aliasStorageSymbolOf(symbol);
+      if (storedHop) {
+        this.flushDeferred(storedHop);
+        return storedHop;
       }
       const aliased = this.checker.getAliasedSymbol(symbol);
       // `const { member } = require("./x")` of a module that builds its
@@ -8176,6 +8277,29 @@ export class Lowerer {
     if (splitAlias) symbol = splitAlias;
     this.flushDeferred(symbol);
     return symbol;
+  }
+
+  /** The first immediate alias hop that owns module storage (an export
+   * member global), or null. Alias chains through CommonJS re-exports keep
+   * the exporter's stored value at every hop; see resolveValueSymbol. */
+  aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    let hop = symbol;
+    const seen = new Set<ts.Symbol>();
+    for (let depth = 0; depth < 32; depth++) {
+      if (seen.has(hop)) return null;
+      seen.add(hop);
+      // The checker's immediate-target query is an alias-only operation.
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      const next = this.checker.getImmediateAliasedSymbol(hop);
+      if (!next || seen.has(next)) return null;
+      if (
+        this.globalsBySymbol.has(next) ||
+        next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
+      )
+        return next;
+      hop = next;
+    }
+    return null;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native
@@ -8427,6 +8551,33 @@ export class Lowerer {
     return null;
   }
 
+  /** The export member slot a named import or re-export names when its
+   * source module chooses its whole export at run time between static
+   * tables, or null. */
+  private cjsConditionalWholeExportAliasSlotOf(alias: ts.Symbol): IrGlobal | null {
+    for (const decl of alias.declarations) {
+      let spec: ts.Expression | undefined;
+      let name: string;
+      if (ts.isImportSpecifier(decl)) {
+        const importDecl: ts.Node | undefined = decl.parent?.parent?.parent;
+        if (ts.isImportDeclaration(importDecl)) spec = importDecl.moduleSpecifier;
+        name = (decl.propertyName ?? decl.name).text;
+      } else if (ts.isExportSpecifier(decl)) {
+        const exportDecl: ts.Node | undefined = decl.parent?.parent;
+        if (ts.isExportDeclaration(exportDecl)) spec = exportDecl.moduleSpecifier;
+        name = (decl.propertyName ?? decl.name).text;
+      } else {
+        continue;
+      }
+      if (spec === undefined || !ts.isStringLiteral(spec)) continue;
+      const dep = this.moduleSourceFileOf(ts.getSourceFileOfNode(decl), spec);
+      if (dep === null) continue;
+      const slot = this.cjsConditionalWholeExportSlotOf(dep, name);
+      if (slot !== null) return slot;
+    }
+    return null;
+  }
+
   /** A module's CJS export-table member symbol by NAME (the checker's
    * module-symbol exports map — present in tsgo even where no expando
    * property symbol exists at the attachment/use sites). */
@@ -8554,6 +8705,61 @@ export class Lowerer {
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
     const dep = this.localModuleBindingDepOf(expr);
     return dep === null ? null : (cjsNamespaceTargetOf(this, dep) ?? dep);
+  }
+
+  /** The member slot a module's conditional whole-export statements fill, or
+   * null when the module's whole export is not chosen at run time. Keyed by
+   * module: the checker's synthesized property symbols are shared between
+   * modules that re-export the same tables. */
+  cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
+    return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
+  }
+
+  /** Whether a write of export global `globalId` also has to reach the slots
+   * of modules whose conditional whole export selected its table. */
+  hasCjsConditionalExportMirrors(globalId: string): boolean {
+    return (this.cjsConditionalExportMirrors.get(globalId)?.length ?? 0) !== 0;
+  }
+
+  /** Statements that forward a write of export global `globalId` to the
+   * slots of every module whose conditional whole export selected the table
+   * that owns it. Node hands out that table's exports object itself, so a
+   * member the table assigns after the conditional module ran is visible
+   * through it; copying the member once at selection time is not. `value`
+   * must be side-effect free (a temporary the caller already stored). */
+  cjsConditionalExportMirrorStmts(
+    globalId: string,
+    value: IrExpr,
+    blame: ts.Node,
+    loc: SrcLoc,
+  ): IrStmt[] {
+    const mirrors = this.cjsConditionalExportMirrors.get(globalId);
+    if (mirrors === undefined || mirrors.length === 0) return [];
+    const stmts: IrStmt[] = [];
+    for (const mirror of mirrors) {
+      stmts.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: mirror.select, type: F64, loc },
+          right: { kind: "numLit", value: mirror.selectValue, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "assign",
+            localId: mirror.slot.id,
+            value: this.coerceInto(blame, value, mirror.slot.type),
+            loc,
+          },
+        ],
+        else_: [],
+        loc,
+      });
+    }
+    return stmts;
   }
 
   /** The compiled module behind a require-like namespace binding: an
@@ -22330,6 +22536,7 @@ export class Lowerer {
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
       lowerThreadSlotsCall(this, expr) ??
+      lowerParallelCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??

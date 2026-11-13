@@ -352,17 +352,124 @@ const constInitializerOf = (node: ts.Node): boolean => {
   );
 };
 
+/** The symbol a callee names: the binding of an identifier, or the member
+ * a property access or a string-keyed element access reads, through import
+ * aliases. */
+const calleeSymbolOf = (callee: ts.Node, checker: ts.TypeChecker): ts.Symbol | undefined => {
+  let site: ts.Node | undefined = callee;
+  if (ts.isPropertyAccessExpression(callee)) site = callee.name;
+  else if (ts.isElementAccessExpression(callee))
+    site = ts.isStringLiteralLike(callee.argumentExpression)
+      ? callee.argumentExpression
+      : undefined;
+  else if (!ts.isIdentifier(callee)) site = undefined;
+  let symbol = site === undefined ? undefined : checker.getSymbolAtLocation(site);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = checker.getAliasedSymbol(symbol);
+  return symbol;
+};
+
+/** Whether `node`, a member access, is written: an assignment or compound
+ * assignment target (directly or inside a destructuring pattern), a
+ * `++`/`--` operand, a for-in/of head, or a `delete` operand. */
+const memberWriteTarget = (node: ts.Node): boolean => {
+  let current = node;
+  for (;;) {
+    const parent: ts.Node | undefined = current.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === current)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === current &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return (
+        parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    if (ts.isForInStatement(parent) || ts.isForOfStatement(parent))
+      return parent.initializer === current;
+    return ts.isDeleteExpression(parent);
+  }
+};
+
+const methodNameWrites = new WeakMap<ts.Program, Map<string, boolean>>();
+
+/** Whether some implementation file can replace the member named `name`
+ * on any receiver: a write or `delete` of a property access or a
+ * string-keyed element access of that name, a call argument naming it (a
+ * reflective definition such as `Object.defineProperty(o, name, …)` or
+ * `Reflect.set(o, name, v)`), or an object literal argument with a member
+ * of that name (`Object.assign(C.prototype, { name() {} })`). A write
+ * through a computed key the source does not spell is not seen. */
+const methodNameWritten = (program: ts.Program, name: string): boolean => {
+  let names = methodNameWrites.get(program);
+  if (names === undefined) {
+    names = new Map();
+    methodNameWrites.set(program, names);
+  }
+  const known = names.get(name);
+  if (known !== undefined) return known;
+  let written = false;
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (written) break;
+    if (!ts.sourceTextIncludes(sf, name)) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (written) return "skip";
+      if (
+        (ts.isPropertyAccessExpression(node) && node.name.text === name) ||
+        (ts.isElementAccessExpression(node) &&
+          ts.isStringLiteralLike(node.argumentExpression) &&
+          node.argumentExpression.text === name)
+      )
+        written = memberWriteTarget(node);
+      else if (ts.isCallExpression(node))
+        written = node.arguments.nodes.some(
+          (argument) =>
+            (ts.isStringLiteralLike(argument) && argument.text === name) ||
+            (ts.isObjectLiteralExpression(argument) &&
+              argument.properties.nodes.some(
+                (member) =>
+                  member.name !== undefined &&
+                  (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name)) &&
+                  member.name.text === name,
+              )),
+        );
+      return undefined;
+    });
+  }
+  names.set(name, written);
+  return written;
+};
+
 /** Whether the void-typed `node` is `undefined` whenever it runs: a call
  * whose callee is a JavaScript function that answers undefined
- * (answersUndefined) and that a write cannot replace while the type stays
- * `void` (a function declaration, whose reassignment SC1090 refuses; a
- * class method, which an override answers through the class's dispatch; a
- * function a `const` holds; a function called where it is written), or a
- * `const` holding such a call. A function typed `() => void` by an
- * annotation or a declaration file can answer any value, and so can a
- * reassignable binding, so their calls are not. */
-const undefinedAtRunTime = (node: ts.Node, checker: ts.TypeChecker, depth = 0): boolean => {
+ * (answersUndefined) and that names that function in a way no write can
+ * replace while the type stays `void`, or a `const` holding such a call.
+ * The callee qualifies when it is the function itself (called where it is
+ * written), a function declaration's own name or an import of it (SC1090
+ * refuses reassigning it), a `const` the function initializes, or a member
+ * access that reads a class method whose name no code writes
+ * (methodNameWritten; an override answers through the class's dispatch).
+ * A function typed `() => void` by an annotation or a declaration file can
+ * answer any value, and so can a reassignable binding, a property holding
+ * the function, or a class method the program writes, so their calls are
+ * not. */
+const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): boolean => {
   if (depth > 8) return false;
+  const checker = program.getTypeChecker();
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if (ts.isIdentifier(expr)) {
@@ -372,7 +479,7 @@ const undefinedAtRunTime = (node: ts.Node, checker: ts.TypeChecker, depth = 0): 
       ts.isVariableDeclaration(decl) &&
       decl.initializer !== undefined &&
       constInitializerOf(decl.initializer) &&
-      undefinedAtRunTime(decl.initializer, checker, depth + 1)
+      undefinedAtRunTime(decl.initializer, program, depth + 1)
     );
   }
   if (!ts.isCallExpression(expr) || expr.questionDotToken) return false;
@@ -383,15 +490,25 @@ const undefinedAtRunTime = (node: ts.Node, checker: ts.TypeChecker, depth = 0): 
     !answersUndefined(decl)
   )
     return false;
-  if (ts.isFunctionDeclaration(decl)) return true;
-  if (ts.isMethodDeclaration(decl))
-    return decl.parent !== undefined && ts.isClassLikeDeclaration(decl.parent);
   let callee: ts.Node = expr.expression;
   while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
   if (callee === decl) return true;
+  const named = calleeSymbolOf(callee, checker)?.valueDeclaration;
+  if (named === undefined) return false;
+  if (ts.isFunctionDeclaration(decl)) return named === decl && ts.isIdentifier(callee);
+  if (ts.isMethodDeclaration(decl)) {
+    if (named !== decl || ts.isIdentifier(callee)) return false;
+    if (decl.parent === undefined || !ts.isClassLikeDeclaration(decl.parent)) return false;
+    const name = decl.name;
+    return (
+      (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isPrivateIdentifier(name)) &&
+      !methodNameWritten(program, name.text)
+    );
+  }
+  if (!ts.isIdentifier(callee) || !ts.isVariableDeclaration(named)) return false;
   let held: ts.Node = decl;
   while (held.parent !== undefined && ts.isParenthesizedExpression(held.parent)) held = held.parent;
-  return constInitializerOf(held);
+  return named.initializer === held && constInitializerOf(held);
 };
 
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
@@ -399,7 +516,7 @@ const undefinedAtRunTime = (node: ts.Node, checker: ts.TypeChecker, depth = 0): 
  * `undefined` tests false. Any other void-typed operand keeps the triage
  * row, because the lowering has no runtime value for it. */
 const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
-  discardedVoidNegation(node) || undefinedAtRunTime(node, program.getTypeChecker());
+  discardedVoidNegation(node) || undefinedAtRunTime(node, program);
 
 /* ---- family reasons ---- */
 

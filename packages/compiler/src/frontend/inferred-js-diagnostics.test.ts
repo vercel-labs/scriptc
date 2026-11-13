@@ -364,6 +364,19 @@ test.for([
   // A binding or property a write can replace holds the replacement.
   "let g = function () {};\ng = () => 's';\nexport const ok = g() ? 'yes' : 'no';",
   "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
+  // A reassignable alias or a property holds whatever was stored last, even
+  // when it first held a function that answers undefined.
+  "function noop() {}\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
+  "const noop = () => {};\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
+  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
+  "class A { m() {} }\nlet f = new A().m;\nf = () => 1;\nexport const ok = f() ? 'yes' : 'no';",
+  // A write, by name, by string key or by reflection, can replace a class
+  // method on an instance or on the prototype.
+  "class A { m() {} }\nconst a = new A();\na.m = () => 1;\nexport const ok = a.m() ? 'yes' : 'no';",
+  "class A { m() {} }\nA.prototype.m = () => 1;\nexport const ok = new A().m() ? 'yes' : 'no';",
+  "class A { m() {} }\nconst a = new A();\na['m'] = () => 1;\nexport const ok = !a.m();",
+  "class A { m() {} }\nconst a = new A();\nObject.defineProperty(a, 'm', { value: () => 1 });\nexport const ok = a.m() ? 'yes' : 'no';",
+  "class A { m() {} }\nObject.assign(A.prototype, { m() { return 1; } });\nexport const ok = new A().m() ? 'yes' : 'no';",
   // A body that returns a value: the checker's `void` comes from the
   // documented result, not from the body.
   "/** @returns {void} */\nfunction lie() { return 5; }\nexport const ok = lie() ? 'yes' : 'no';",

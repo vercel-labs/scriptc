@@ -304,6 +304,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "void-method-written",
+    file: `${SRC}/frontend/tsc-codes.ts`,
+    symbol: "methodNameWritten",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "in any implementation file, a write or `delete` of a member with a class method's name (by property access or string key, on any receiver), a call argument that is that name, or an object literal argument with a member of that name",
+    gates:
+      "in an unchecked JavaScript source, a truthiness test of a call of that method, when the checker types it `void` because the method's body returns no value, keeps its SC1090 refusal instead of testing `undefined`",
+    narrower:
+      "the receiver's class, for a write through a typed receiver; a write through an untyped receiver can reach any class",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "builtin-member-native-readers",
     file: `${SRC}/frontend/lowering/builtin-member-readers.ts`,
     symbol: "refuseUnseenBuiltinMemberWrites",
@@ -942,6 +957,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
+  decides("frontend/tsc-codes.ts#methodNameWritten", 2, "void-method-written"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

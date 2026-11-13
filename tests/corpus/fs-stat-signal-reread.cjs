@@ -61,12 +61,13 @@ const steps = [
     next();
   },
   (next) => {
-    let called = 'not called';
-    const answered = fs.stat(file, stateful({ aborted: false }), (err, stats) => {
-      called = `${err}|${typeof stats.size}`;
+    // The stat runs (the reread object is not aborted), so the callback is
+    // the step's last event: finish from it, before the directory goes away.
+    let answered;
+    answered = fs.stat(file, stateful({ aborted: false }), (err, stats) => {
+      console.log('false aborted continues', `${err}|${typeof stats.size}`, answered);
+      next();
     });
-    console.log('false aborted continues', called, answered);
-    next();
   },
 ];
 

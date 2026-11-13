@@ -3636,6 +3636,9 @@ typedef struct {
   const ScrDyn *value;
 } ScrNetInspectElem;
 
+/* The array's own element at `index`: the dense prefix, the spill table a
+ * far index write or a defined accessor lives in, or a hole. Never reads
+ * the prototype and never runs a getter. */
 static ScrNetInspectElem scr_net_inspect_elem(const ScrDyn *v, size_t index) {
   ScrNetInspectElem e;
   memset(&e, 0, sizeof e);
@@ -3662,44 +3665,132 @@ static ScrNetInspectElem scr_net_inspect_elem(const ScrDyn *v, size_t index) {
   return e;
 }
 
-/* The inside of a container — "k: v, k2: v2" or "1, 2" — with `sep`
- * between entries, so one-line and broken layouts share the entry code.
- * Array elements are read from the array's own storage only: a hole
- * renders as Node's "<N empty item(s)>" and an own accessor as
- * "[Getter]"-shaped text, so formatting a validation error never runs a
- * program's getter (and never touches memory the getter's owner may
- * release). */
-static void scr_net_inspect_body(const ScrDyn *v, bool arr, ScrDyn *keys, double n, ScrJsonBuf *b,
-                                 int depth, int max_depth, const char *sep) {
-  for (double i = 0; i < n; i++) {
-    if (i > 0) scr_jb_puts(b, sep);
-    if (arr) {
-      ScrNetInspectElem e = scr_net_inspect_elem(v, (size_t)i);
+/* The array's logical length, which a sparse array's far writes and length
+ * assignments push past its dense prefix. Read through the checked-dynamic
+ * property read rather than the scr_dyn_arr_length macro: that macro answers
+ * a different field under SCR_JS_OBJECT_MODEL, a build this unit never gets,
+ * and the read answers the right field for the build the program links. */
+static double scr_net_inspect_array_length(const ScrDyn *v) {
+  ScrDyn *length = scr_dyn_obj_read(v, "length", 6);
+  double n = length != NULL && length->kind == SCR_DYN_NUM ? length->v.num : 0;
+  scr_dyn_release(length);
+  return n;
+}
+
+static int scr_net_inspect_index_cmp(const void *a, const void *b) {
+  size_t x = *(const size_t *)a, y = *(const size_t *)b;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* The canonical array index `key` spells (0…2^32-2, no leading zero), the
+ * rule an index write applies. */
+static bool scr_net_inspect_index_key(const char *key, size_t len, size_t *out) {
+  if (len == 0 || len > 10) return false;
+  if (len > 1 && key[0] == '0') return false;
+  unsigned long long value = 0;
+  for (size_t i = 0; i < len; i++) {
+    if (key[i] < '0' || key[i] > '9') return false;
+    value = value * 10 + (unsigned long long)(key[i] - '0');
+  }
+  if (value > 4294967294ull) return false; /* 2^32 - 2 */
+  *out = (size_t)value;
+  return true;
+}
+
+/* The array's own indices above its dense prefix (a far write or a defined
+ * accessor stores them in the spill table), ascending. malloc'd; released
+ * by the caller. Walking these instead of every index keeps a sparse array's
+ * hole runs one entry each: an array whose length was assigned near the
+ * 2^32 limit has billions of holes and a handful of own elements. */
+static size_t *scr_net_inspect_sparse_indexes(const ScrDyn *v, size_t *count) {
+  *count = 0;
+  const ScrDyn *props = v->v.arr.properties;
+  if (props == NULL) return NULL;
+  size_t entries = scr_dyn_obj_count(props);
+  size_t *out = NULL, cap = 0;
+  for (size_t i = 0; i < entries; i++) {
+    size_t key_len;
+    const char *key = scr_dyn_obj_key_at(props, i, &key_len);
+    size_t index;
+    if (!scr_net_inspect_index_key(key, key_len, &index)) continue;
+    if (index < v->v.arr.len) continue; /* the dense prefix answers it */
+    if (*count == cap) {
+      cap = cap != 0 ? cap * 2 : 8;
+      size_t *grown = realloc(out, cap * sizeof *out);
+      if (grown == NULL) {
+        free(out);
+        scr_trap("scriptc: out of memory\n");
+      }
+      out = grown;
+    }
+    out[(*count)++] = index;
+  }
+  if (*count > 1) qsort(out, *count, sizeof *out, scr_net_inspect_index_cmp);
+  return out;
+}
+
+/* The array's entries, "1, 2" and "<N empty items>" for its holes. Elements
+ * come from the array's own storage only (see scr_net_inspect_elem), so
+ * rendering a validation error never runs a program's getter and never
+ * touches memory a getter's owner may release. */
+static void scr_net_inspect_array(const ScrDyn *v, double n, ScrJsonBuf *b, int depth,
+                                  int max_depth, const char *sep) {
+  size_t sparse_n = 0;
+  size_t *sparse = scr_net_inspect_sparse_indexes(v, &sparse_n);
+  size_t sparse_at = 0;
+  size_t dense = v->v.arr.len;
+  size_t length = n > 0 ? (size_t)n : 0;
+  size_t at = 0;
+  bool first = true;
+  while (at < length) {
+    if (!first) scr_jb_puts(b, sep);
+    first = false;
+    if (at < dense && scr_dyn_arr_has_index(v, at)) {
+      scr_net_inspect_into(v->v.arr.items[at], b, depth + 1, max_depth);
+      at++;
+      continue;
+    }
+    while (sparse_at < sparse_n && sparse[sparse_at] < at) sparse_at++;
+    if (sparse_at < sparse_n && sparse[sparse_at] == at) {
+      ScrNetInspectElem e = scr_net_inspect_elem(v, at);
       if (e.accessor) {
         scr_jb_puts(b, e.getter && e.setter ? "[Getter/Setter]"
                           : e.getter        ? "[Getter]"
                           : e.setter        ? "[Setter]"
                                             : "undefined");
-        continue;
+      } else {
+        scr_net_inspect_into(e.present ? e.value : scr_dyn_undefined(), b, depth + 1, max_depth);
       }
-      if (!e.present) {
-        /* one entry per run of holes, as util.inspect counts them */
-        double run = 1;
-        while (i + run < n) {
-          ScrNetInspectElem next = scr_net_inspect_elem(v, (size_t)(i + run));
-          if (next.present || next.accessor) break;
-          run++;
-        }
-        char text[48];
-        int len = run == 1 ? snprintf(text, sizeof text, "<1 empty item>")
-                           : snprintf(text, sizeof text, "<%.0f empty items>", run);
-        scr_jb_write(b, text, len < 0 ? 0 : (size_t)len);
-        i += run - 1;
-        continue;
-      }
-      scr_net_inspect_into(e.value, b, depth + 1, max_depth);
+      sparse_at++;
+      at++;
       continue;
     }
+    /* a run of holes: to the next own index, or to the array's end */
+    size_t next = sparse_at < sparse_n ? sparse[sparse_at] : length;
+    for (size_t scan = at + 1; scan < dense && scan < next; scan++) {
+      if (scr_dyn_arr_has_index(v, scan)) {
+        next = scan;
+        break;
+      }
+    }
+    if (next > length) next = length;
+    size_t run = next > at ? next - at : 1;
+    char text[48];
+    int len = run == 1 ? snprintf(text, sizeof text, "<1 empty item>")
+                       : snprintf(text, sizeof text, "<%zu empty items>", run);
+    scr_jb_write(b, text, len < 0 ? 0 : (size_t)len);
+    at += run;
+  }
+  free(sparse);
+}
+
+/* A container's entries — "k: v, k2: v2" — with `sep` between them, so
+ * one-line and broken layouts share the entry code. Arrays render through
+ * scr_net_inspect_array. */
+static void scr_net_inspect_body(const ScrDyn *v, ScrDyn *keys, double n, ScrJsonBuf *b,
+                                 int depth, int max_depth, const char *sep) {
+  for (double i = 0; i < n; i++) {
+    if (i > 0) scr_jb_puts(b, sep);
     ScrDyn *key = scr_dyn_arr_at(keys, i);
     if (key->kind == SCR_DYN_STR) {
       bool ident = key->v.str->len > 0;
@@ -3753,7 +3844,7 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
      * rendering step can leave this frame with a released container. */
     scr_dyn_retain((ScrDyn *)v);
     ScrDyn *keys = arr ? NULL : scr_dyn_obj_keys(v);
-    double n = arr ? (double)scr_dyn_arr_length(v) : (keys ? scr_dyn_arr_len(keys) : 0);
+    double n = arr ? scr_net_inspect_array_length(v) : (keys ? scr_dyn_arr_len(keys) : 0);
     if (!arr && depth == 0 && n > 0) {
       /* util.inspect keeps a container on one line while that line fits
        * breakLength (80 by default, less the room it reserves), and an
@@ -3763,12 +3854,12 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
       ScrJsonBuf line;
       scr_jb_init(&line);
       scr_jb_puts(&line, "{ ");
-      scr_net_inspect_body(v, arr, keys, n, &line, depth, max_depth, ", ");
+      scr_net_inspect_body(v, keys, n, &line, depth, max_depth, ", ");
       scr_jb_puts(&line, " }");
       ScrStr *flat = scr_jb_finish(&line);
       if (scr_net_display_len(flat->data, flat->len) >= 72) {
         scr_jb_puts(b, "{\n  ");
-        scr_net_inspect_body(v, arr, keys, n, b, depth, max_depth, ",\n  ");
+        scr_net_inspect_body(v, keys, n, b, depth, max_depth, ",\n  ");
         scr_jb_puts(b, "\n}");
       } else {
         scr_jb_write(b, flat->data, flat->len);
@@ -3780,7 +3871,11 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
     }
     scr_jb_putc(b, arr ? '[' : '{');
     if (n > 0) scr_jb_putc(b, ' ');
-    scr_net_inspect_body(v, arr, keys, n, b, depth, max_depth, ", ");
+    if (arr) {
+      scr_net_inspect_array(v, n, b, depth, max_depth, ", ");
+    } else {
+      scr_net_inspect_body(v, keys, n, b, depth, max_depth, ", ");
+    }
     if (n > 0) scr_jb_putc(b, ' ');
     scr_jb_putc(b, arr ? ']' : '}');
     scr_dyn_release(keys);

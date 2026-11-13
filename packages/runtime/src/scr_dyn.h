@@ -1395,6 +1395,11 @@ ScrDyn *scr_dyn_inspect_custom_symbol(void);
  * as a value (RuntimeFeatures bufferPrototypeObject). Borrows key; +1. */
 extern ScrSym *(*scr_sym_for_fn)(ScrStr *key);
 void scr_sym_for_install(void);
+/* Makes the well-known symbol `name` (Symbol.<name>), installing it as a
+ * program's own read does; set by the symbol unit's constructor, NULL in a
+ * program without the unit. A Proxy conversion makes Symbol.toPrimitive and
+ * Symbol.toStringTag through it. */
+extern void (*scr_sym_well_known_make_hook)(const char *name, size_t len);
 /* Installs ToNumber's Symbol.toPrimitive step (scr_dyn_number_coerce_js).
  * The program calls it before its entry when it reads Symbol.toPrimitive
  * (RuntimeFeatures toPrimitiveNumber). */

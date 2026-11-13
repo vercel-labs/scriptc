@@ -313,6 +313,21 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
 }
 const ScrDyn *scr_dyn_to_string_tag_symbol(void) { return scr_to_string_tag_symbol; }
 
+/* Set by scr_symbol.c's constructor (scr_dyn.h): makes the well-known
+ * symbol `name`, which installs it like a program's own read does. */
+void (*scr_sym_well_known_make_hook)(const char *name, size_t len) = NULL;
+
+/* ToPrimitive and Object.prototype.toString read Symbol.toPrimitive and
+ * Symbol.toStringTag through a Proxy's get trap whether or not the program
+ * names them, so a Proxy conversion makes both symbols first. Every program
+ * that creates a Proxy links the symbol unit; after the first conversion
+ * this is two pointer tests. */
+static void scr_dyn_proxy_conversion_symbols(void) {
+  if (!scr_sym_well_known_make_hook) return;
+  if (!scr_to_primitive_symbol) scr_sym_well_known_make_hook("toPrimitive", 11);
+  if (!scr_to_string_tag_symbol) scr_sym_well_known_make_hook("toStringTag", 11);
+}
+
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
@@ -11212,11 +11227,14 @@ static const char *scr_dyn_fn_kind_tag(const ScrDyn *value) {
   return tags[scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_CALL_MASK];
 }
 
-/* Get(O, key) on a Proxy for a symbol key: the handler's get trap answers
- * when it has one, and the target answers when it has none. A trap's result
- * must agree with an own non-configurable, non-writable symbol property of
- * the target, the same invariant the string-key path checks. */
-static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional) {
+/* Get(O, key, receiver) on a Proxy for a symbol key: the handler's get
+ * trap answers when it has one, and the target answers when it has none.
+ * A trap's result must agree with an own non-configurable, non-writable
+ * symbol property of the target, the same invariant the string-key path
+ * checks. `receiver` is the Proxy for an ordinary read, and Reflect.get's
+ * third argument for that call. */
+static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional,
+                                        const ScrDyn *receiver) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
   if (scr_exc_pending()) return NULL;
   if (!trap) {
@@ -11224,11 +11242,11 @@ static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, 
     ScrDyn *view = target->kind == SCR_DYN_TYPED_REF
       ? scr_dyn_typed_ref_materialize(target) : scr_dyn_retain(target);
     ScrDyn *result = scr_exc_pending() ? NULL
-      : scr_dyn_symbol_key_get_receiver(view, key, optional, proxy);
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
     scr_dyn_release(view);
     return result;
   }
-  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)proxy };
+  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)receiver };
   ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
   ScrDynEntry *entry = scr_dyn_symbol_entry(proxy->v.proxy.target, key, true);
   if (result && entry && !entry->configurable &&
@@ -11254,7 +11272,7 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
                                                bool optional, const ScrDyn *receiver) {
   if (scr_dyn_generator(value)) return scr_dyn_generator_symbol(value, key)
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
-  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional);
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional, receiver);
   if (value->kind == SCR_DYN_TYPED_REF) {
     /* A live record's snapshot has no symbol properties and no prototype. */
     if (scr_typed_ref_plain_record(value)) return scr_dyn_retain(scr_dyn_undefined());
@@ -12197,6 +12215,7 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
      * the Proxy (IsArray and IsCallable see through it): a Proxy over an
      * array answers "[object Array]", over a function "[object Function]",
      * and over any other object "[object Object]". */
+    scr_dyn_proxy_conversion_symbols();
     ScrStr *tag = scr_dyn_string_tag(d);
     if (tag || scr_exc_pending()) return tag;
     const ScrDyn *target = d;
@@ -13900,13 +13919,14 @@ static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint
 }
 
 /* ToPrimitive of a native Proxy with `hint` ("string", "number" or
- * "default"): the Proxy's own traps run, as Node's do. A @@toPrimitive
- * member, when the program has read the symbol, is looked up first (the get
- * trap runs); otherwise OrdinaryToPrimitive reads the hint's method order
- * through the get trap and calls each with the Proxy as `this`. An object
+ * "default"): the Proxy's own traps run, as Node's do. The @@toPrimitive
+ * member is looked up first (the get trap runs with the symbol); without
+ * one, OrdinaryToPrimitive reads the hint's method order through the get
+ * trap and calls each with the Proxy as `this`. An object
  * answer passes to the next method; exhaustion throws Node's "Cannot
  * convert object to primitive value" TypeError. Returns the primitive, +1. */
 static ScrDyn *scr_dyn_proxy_to_primitive(const ScrDyn *proxy, const char *hint) {
+  scr_dyn_proxy_conversion_symbols();
   bool handled = false;
   ScrDyn *primitive = scr_dyn_exotic_to_primitive(proxy, hint, &handled);
   if (scr_exc_pending()) {
@@ -19583,27 +19603,12 @@ void scr_dyn_bag_set(ScrDyn *bag, ScrStr *key, ScrDyn *value, ScrDyn *receiver) 
 /* Reflect uses OrdinaryGet/OrdinarySet with an independently supplied
  * receiver. Failed descriptor writes return false; user callbacks still
  * propagate their exceptions. Keys are converted once before dispatch. */
-static ScrDyn *scr_dyn_symbol_read(ScrDyn *value, ScrDyn *symbol, ScrDyn *receiver);
-
-/* A SYMBOL-keyed Get through a native Proxy's traps, for the well-known
- * symbol reads ToPrimitive performs. The get trap receives the symbol
- * itself, so a handler that forwards `t[k]` reaches the target's symbol
- * table; without a get trap the read forwards to the target, whose
- * prototype chain answers it. */
-static ScrDyn *scr_dyn_proxy_get_symbol(const ScrDyn *proxy, ScrDyn *symbol, ScrDyn *receiver) {
-  ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
-  if (scr_exc_pending()) return NULL;
-  if (!trap) return scr_dyn_symbol_read(proxy->v.proxy.target, symbol, receiver);
-  ScrDyn *args[] = { proxy->v.proxy.target, scr_dyn_retain(symbol), receiver };
-  ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
-  scr_dyn_release(args[1]);
-  return result;
-}
-
 /* Get of a symbol-keyed property: the ordinary symbol table read, through a
- * Proxy's get trap, and through a typed reference's materialized view. */
+ * Proxy's get trap (with the target invariant check; the well-known symbol
+ * reads ToPrimitive performs arrive here), and through a typed reference's
+ * materialized view. */
 static ScrDyn *scr_dyn_symbol_read(ScrDyn *value, ScrDyn *symbol, ScrDyn *receiver) {
-  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_get_symbol(value, symbol, receiver);
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, symbol, false, receiver);
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *read = scr_exc_pending() ? NULL : scr_dyn_symbol_read(view, symbol, receiver);
@@ -24255,6 +24260,34 @@ ScrMap *scr_dyn_native_collection_check(const ScrDyn *value, int map, const char
  * chain defines. */
 static ScrStr *scr_dyn_to_string_method_args(const ScrDyn *d, const ScrStr *enc, const ScrStr *what,
     ScrDyn *const *args, size_t argc) {
+  /* `proxy.toString(...)` is a method call: the get trap answers the
+   * member, which runs with the Proxy as `this` and receives the arguments.
+   * @@toPrimitive belongs to String(proxy) (scr_dyn_to_string), not to an
+   * explicit call. */
+  if (d->kind == SCR_DYN_PROXY) {
+    ScrStr *key = scr_str_new("toString", 8);
+    ScrDyn *member = scr_dyn_proxy_get(d, key);
+    scr_str_release(key);
+    if (!member) return NULL;
+    if (!scr_dyn_is_callable(member)) {
+      scr_dyn_release(member);
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_write(&b, what->data, what->len);
+      scr_jb_puts(&b, " is not a function");
+      scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+      return NULL;
+    }
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *value = scr_dyn_call(member, args, argc, what->data);
+    scr_dyn_this_pop();
+    scr_dyn_release(member);
+    if (!value) return NULL;
+    ScrStr *result = value->kind == SCR_DYN_STR ? scr_str_retain(value->v.str) : NULL;
+    if (!result) scr_dyn_check_fail(NULL, "string", value);
+    scr_dyn_release(value);
+    return result;
+  }
   /* Object.create receivers must run their inherited formatter before the
    * default object tag; Effect shard keys use it to produce distinct hashes. */
   const bool object_method = d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "toString", 8);

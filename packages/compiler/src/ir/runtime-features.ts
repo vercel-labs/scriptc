@@ -2266,10 +2266,12 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
    * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
-   * builds its Dirent there. */
+   * builds its Dirent there. A native Proxy's conversion reads
+   * Symbol.toPrimitive and Symbol.toStringTag through its get trap, which
+   * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program

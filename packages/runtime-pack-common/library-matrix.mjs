@@ -8,6 +8,9 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_assert.c",
     "scr_inspect.c",
     "scr_console_native.c",
+    // The inspect unit reads inspect.colors from the style unit's table, so
+    // a library whose program renders a colored value carries it too.
+    "scr_util_style.c",
     "scr_symbol.c",
     "scr_bigint_assert.c",
     "scr_url_params.c",

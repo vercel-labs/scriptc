@@ -8,9 +8,6 @@ import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
 
-// url: object URLs.
-console.log(URL.createObjectURL(new Blob(["x"])));
-
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
 timer.close();

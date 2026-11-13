@@ -19,6 +19,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_dyn_register_class_to_string copies the type key and retains the
+  // function in a thread-local table; no program code runs.
+  "dyn.registerClassToString",
   // scr_weak_ref_is compares the value's kind and handle tag.
   "weakRef.is",
   // scr_dyn_adoptable compares the value's kind.
@@ -116,6 +119,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // scr_module_namespace_copy_value retains the module's namespace object,
+  // marks it as one and records it: no program code runs, and allocation
+  // failure ends the process.
+  "module.namespaceCopy",
   // scr_http_server_off drops the last entry of the event's listener list
   // that stands for the function; a function that is not in the list, or a
   // closed server, leaves the list as it is. No 'removeListener' event runs.
@@ -151,6 +158,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_util_transferable_abort_controller allocates a controller and its
+  // signal state; running out of memory ends the process, and no argument
+  // is read (surplus arguments are evaluated by the call site).
+  "util.transferableAbortController",
+  // scr_util_set_trace_sig_int reads no argument and answers undefined; it
+  // has no observable effect in a compiled program (the hook it toggles
+  // feeds Node's --trace-sigint diagnostics).
+  "util.setTraceSigInt",
   // scr_zlib_codec_promise_info and its dyn twin answer a promise: a
   // refused option or input is moved into it as a rejection, and running
   // out of memory ends the process, so no error escapes the call.

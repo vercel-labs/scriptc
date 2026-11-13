@@ -1850,8 +1850,12 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
-  /* The id is coerced to a string before the registry lookup; a
-   * compiled program registers no blob URLs, so every id misses. */
+  /* Registers a Blob (or File) under a fresh "blob:nodedata:<uuid>" and
+   * answers that id; any other value throws ERR_INVALID_ARG_TYPE. fetch()
+   * of the id resolves the registered bytes. */
+  createObjectURL(blob: Blob): string;
+  /* The id is coerced to a string and looked up; ids that were never
+   * registered (or were revoked) miss. */
   revokeObjectURL(url: string | URL): void;
 };
 

@@ -91,6 +91,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // data property, which Node assigns as a field; neither path runs an
   // accessor, a coercion or a callback.
   "child.channel",
+  // child.stdio's length is the child's fixed stdio slot count: a plain
+  // read of the handle's field, with no allocation and no program code.
+  "child.stdioLen",
+  // The child's cached stdio array: a flag read, a retain of the array the
+  // first read built, and a store of that array (a retain); no program code.
+  "child.stdioCached",
+  "child.stdioArray",
+  "child.stdioStore",
   // Builds the flags object once from constants and retains it.
   "process.features",
   // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the

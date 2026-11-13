@@ -174,9 +174,12 @@ declare module "child_process" {
     once(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
     once(event: "close", listener: (code: number | null, signal: string | null) => void): this;
     once(event: "error", listener: (err: Error) => void): this;
-    on(event: "message", listener: (message: any) => void): this;
+    /* The message listener takes Node's second parameter, the handle sent
+     * with the message: always undefined here, because handle transfer has
+     * no lowering. */
+    on(event: "message", listener: (message: any, sendHandle?: any) => void): this;
     on(event: "disconnect", listener: () => void): this;
-    once(event: "message", listener: (message: any) => void): this;
+    once(event: "message", listener: (message: any, sendHandle?: any) => void): this;
     once(event: "disconnect", listener: () => void): this;
     /* off/removeListener remove by FUNCTION IDENTITY — pass the same
      * function value (a const binding) that was registered. */
@@ -221,7 +224,20 @@ declare module "child_process" {
      * the Control object with a fork, and null once it disconnects. */
     readonly channel?: Control | null;
     readonly connected: boolean;
-    send(message: object, callback?: (error: Error | null) => void): boolean;
+    /* send(message[, sendHandle[, options]][, callback]). A sendHandle
+     * (a net.Socket, net.Server or dgram.Socket transferred over the
+     * channel) has no lowering, so the sendHandle slot takes only null
+     * (Node treats null and undefined alike); a non-nullish one is refused
+     * where it is written. A function in the sendHandle or options slot is
+     * the callback, as Node's own argument shuffling decides. The options
+     * slot takes a record; keepOpen only matters with a transferred handle,
+     * so the record is accepted and has no effect. */
+    send(
+      message: object,
+      sendHandleOrCallback?: null | ((error: Error | null) => void),
+      optionsOrCallback?: object | null | ((error: Error | null) => void),
+      callback?: (error: Error | null) => void,
+    ): boolean;
     disconnect(): void;
     [Symbol.dispose](): void;
     /* The piped streams — non-null exactly when the matching stdio slot
@@ -230,6 +246,13 @@ declare module "child_process" {
     readonly stdin: ChildStdin | null;
     readonly stdout: ChildStdout | null;
     readonly stderr: ChildStdout | null;
+    /* Node's stdio array: the piped handles at their slots — the same
+     * objects as stdin/stdout/stderr, so `child.stdio[1] === child.stdout`
+     * — and null for every slot that is not a pipe. A forked child has a
+     * fourth, IPC slot, which Node reports as null too, so the array's
+     * length is the child's stdio slot count: 3 for spawn and the
+     * exec/execFile children, 4 for a fork. */
+    readonly stdio: (ChildStdin | ChildStdout | null)[];
   }
   export interface SpawnOptions {
     /* The 3-tuple form admits number fds in the stdout/stderr slots —

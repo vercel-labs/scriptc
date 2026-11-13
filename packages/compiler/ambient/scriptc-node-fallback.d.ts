@@ -630,11 +630,16 @@ declare var process: {
    * open (an explicit call overrides the listener-driven ref state);
    * both return undefined. */
   channel?: ProcessChannel;
-  send?(message: object, callback?: (error: Error | null) => void): boolean;
+  send?(
+    message: object,
+    sendHandleOrCallback?: null | ((error: Error | null) => void),
+    optionsOrCallback?: object | null | ((error: Error | null) => void),
+    callback?: (error: Error | null) => void,
+  ): boolean;
   disconnect(): void;
-  on(event: "message", listener: (message: any) => void): void;
+  on(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   on(event: "disconnect", listener: () => void): void;
-  once(event: "message", listener: (message: any) => void): void;
+  once(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   once(event: "disconnect", listener: () => void): void;
 };
 

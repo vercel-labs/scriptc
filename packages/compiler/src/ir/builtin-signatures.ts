@@ -3629,6 +3629,15 @@ function buildLibFnSignatures() {
       result: CHILD_T,
     },
     "child.connected": { argTypes: [CHILD_T], result: BOOL },
+    /** child.stdio's length: the child's stdio slot count (3, or 4 for a
+     * fork's IPC slot). A plain read of the child's fixed slot count. */
+    "child.stdioLen": { argTypes: [CHILD_T], result: F64 },
+    /** child.stdio's one array per child: the first read stores the built
+     * array (stdioStore) and every read answers it (stdioCached /
+     * stdioArray, whose result is the call site's array type). */
+    "child.stdioCached": { argTypes: [CHILD_T], result: BOOL },
+    "child.stdioArray": { argTypes: [CHILD_T], result: VOID },
+    "child.stdioStore": { argTypes: [CHILD_T, null], result: VOID },
     "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
     "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },

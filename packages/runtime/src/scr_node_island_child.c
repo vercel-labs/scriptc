@@ -732,6 +732,15 @@ static void nc_stdio(ScrChild *child) {
   if (err != NULL) child->err_stream = scr_child_stream_island_new(err);
 }
 
+/* ChildProcess.stdio's length on the island's own object: Node's array, one
+ * entry per slot (3, or 4 for a fork's IPC slot). */
+static double nc_stdio_len(void *island) {
+  ScrDyn *stdio = nc_get(island, "stdio");
+  double len = stdio != NULL ? scr_dyn_arr_len(stdio) : 3;
+  scr_dyn_release(stdio);
+  return len;
+}
+
 static void nc_drop(void *island) {
   NcHandle *h = island;
   if (h->kind == NC_CHILD) {
@@ -750,6 +759,7 @@ static const ScrChildIslandOps nc_ops = {
     nc_drop,      nc_stdio,    nc_on,           nc_off,         nc_on_dyn, nc_number,
     nc_boolean,   nc_string,   nc_channel,      nc_spawnargs,   nc_kill,   nc_call,
     nc_send,      nc_set_encoding, nc_write,    nc_bridge_write, nc_bridge_final,
+    nc_stdio_len,
 };
 
 /* ── the conversions (dyn.ts, ISLAND_ADOPTED_KINDS) ─────────────────────── */

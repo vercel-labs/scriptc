@@ -177,3 +177,24 @@ function narrowed(label: string, cert: crypto.X509Certificate): void {
 
 narrowed("narrowed-pem", leafPem);
 narrowed("narrowed-ca", ca);
+
+// An array element's receiver is not discardable — its bounds check runs —
+// and the narrowed read still answers the undefined the getter gives.
+const certs = [leafPem, ca, new crypto.X509Certificate(CA)];
+function narrowedElement(i: number): void {
+  if (certs[i].issuerCertificate === undefined) {
+    console.log(
+      "narrowed-element",
+      i,
+      certs[i].issuerCertificate,
+      certs[i].issuerCertificate === undefined,
+      typeof certs[i].issuerCertificate,
+    );
+    const held: crypto.X509Certificate | undefined = certs[i].issuerCertificate;
+    console.log("narrowed-element-held", held === undefined, describe(held));
+  }
+}
+
+narrowedElement(0);
+narrowedElement(1);
+narrowedElement(2);

@@ -299,24 +299,24 @@ export function lowerX509IssuerCertificate(
      * the getter's answer there is that undefined, so the read lowers as the
      * undefined itself. No certificate arm remains, so every use of it in the
      * branch — equality, `typeof`, argument coercions and `console.log` —
-     * sees an undefined value. A receiver that must still evaluate rides the
-     * declared union's undefined arm, the one boxed undefined the IR holds. */
+     * sees an undefined value. A receiver that must still evaluate (an array
+     * element's bounds check, say) runs first, and the result is the boxed
+     * undefined itself: keeping the declared union would leave the
+     * certificate arm for an `any`/`unknown` consumer to box, which the
+     * certificate-in-a-dyn-slot refusal fences. */
     const receiver = lowerer.lowerExpr(access.expression);
     if (isSafeToDiscard(receiver))
       return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
-    const value: IrExpr = {
-      kind: "unionWrap",
-      unionId: declared.unionId,
-      tag: undefinedTag,
-      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-      type: declared,
-      loc,
-    };
     return {
       kind: "seqExpr",
       stmts: [{ kind: "exprStmt", expr: receiver, loc }],
-      result: value,
-      type: declared,
+      result: {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type: DYN,
+        loc,
+      },
+      type: DYN,
       loc,
     };
   }

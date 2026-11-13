@@ -1,9 +1,10 @@
 /* node:crypto introspection tables — Node v24.22.1 answers, generated with
  *   node -p "require('crypto').constants"   (and getCiphers/getHashes/getCurves)
  * crypto.constants bakes as literals at every access site (the http2.constants
- * precedent — the object itself never materializes at runtime); the three name
- * lists bake as fresh string[] literals at their call sites. defaultCipherList
- * and defaultCoreCipherList are strings; every other member is a number. */
+ * precedent; a program that reads the object whole gets the singleton record
+ * cryptoConstantsValue builds from this table); the three name lists bake as
+ * fresh string[] literals at their call sites. defaultCipherList and
+ * defaultCoreCipherList are strings; every other member is a number. */
 
 export const CRYPTO_CONSTANTS: Record<string, number | string> = {
   "OPENSSL_VERSION_NUMBER": 810549392,

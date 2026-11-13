@@ -482,6 +482,7 @@ const BUILTIN_NAMESPACE_MEMBERS: Record<string, readonly string[]> = {
  * instead of undefined. Reading one of these through the box gets the live
  * reference to the singleton, so identity holds across both forms. */
 const BUILTIN_VALUE_MEMBERS: Record<string, readonly string[]> = {
+  crypto: ["constants"],
   fs: ["constants"],
   os: ["constants"],
   zlib: ["constants"],

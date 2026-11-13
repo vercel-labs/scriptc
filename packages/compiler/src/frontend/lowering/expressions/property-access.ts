@@ -110,12 +110,14 @@ import {
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
+  DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
-import { lowerX509PublicKey } from "../builtins/x509.js";
+import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
@@ -486,6 +488,18 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  // `l.renderToString` where `l` is a module-local variable whose whole value
+  // is a require() chosen at run time among static export tables
+  // (react-dom/server.node.js): the slot the executed write filled, or Node's
+  // TypeError when the read runs before that write (cjs-inline-require.ts).
+  if (ts.isIdentifier(expr.expression) && expr.questionDotToken === undefined) {
+    const aliasMember = cjsConditionalAliasMemberReadOf(lowerer, expr.expression, expr.name.text);
+    if (aliasMember !== null) {
+      if ("throwMessage" in aliasMember)
+        return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
+      return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
+    }
+  }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
   // TypeScript source; JavaScript reads it from the untyped value). The
@@ -630,6 +644,12 @@ export function lowerPropertyAccessExpr(
   {
     const publicKey = lowerX509PublicKey(lowerer, expr);
     if (publicKey) return publicKey;
+  }
+  // An X509Certificate's issuerCertificate: certificates carry no issuer
+  // chain, so the getter answers undefined (Node's prototype getter).
+  {
+    const issuer = lowerX509IssuerCertificate(lowerer, expr);
+    if (issuer) return issuer;
   }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.
@@ -1107,6 +1127,19 @@ export function lowerPropertyAccessExpr(
     // their pre-registered export globals).
     const viaClass = lowerStaticFieldRead(lowerer, expr);
     if (viaClass) return viaClass;
+    // A module whose whole export is chosen at run time among static
+    // export tables (react/index.js's `module.exports = require(…)` in an
+    // if/else): the member is that module's own slot, which its executed
+    // branch filled. The checker's synthesized member symbols are shared
+    // between modules that re-export the same tables, so the module decides.
+    if (ts.isIdentifier(expr.name)) {
+      const dep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const slot =
+        dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, expr.name.text);
+      if (slot !== null) return { kind: "varRef", localId: slot.id, type: slot.type, loc };
+    }
     return lowerExpr(lowerer, expr.name);
   }
   // `module.exports` READ in a CommonJS file whose whole export IS a
@@ -2238,6 +2271,26 @@ export function lowerPropertyAccessExpr(
       expr,
     );
   }
+  // A checker-`any` receiver whose value is a typed HANDLE (`const ds: any
+  // = sock` adopts the socket's static kind): JavaScript's [[Get]] on the
+  // value, which the handle's checked-dynamic table answers — Node's own
+  // member read (a socket's `server`, a connection's `bufferSize`). The
+  // box shares the handle, so it needs no fresh-result restriction.
+  if (
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    DYN_HANDLE_KINDS.has(recvLowered.type.kind)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
   // TypeError at the read (only an optional chain, lowered elsewhere,
   // answers undefined). A primitive receiver that is not nullish never
@@ -3181,13 +3234,21 @@ export function lowerIntrinsicProperty(
       };
       return { kind: "libCall", fn: "child.signalCode", args: [receiver], type, loc };
     }
+    // channel: the IPC channel's Control object — undefined for a spawn,
+    // the fork's stable-identity handle, null once the channel disconnected
+    // or the child exited. It is a checked-dynamic value; its ref()/unref()
+    // reach the runtime handle rather than the ChildProcess' own switch.
+    if (name === "channel") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "child.channel", args: [receiver], type: DYN, loc };
+    }
     if (name === "on" || name === "once" || name === "kill" || name === "unref") {
       lowerer.unsupported("SC1090", expr, `child methods as values (call '${name}' directly)`);
     }
     lowerer.noLowering(
       `ChildProcess.${name}`,
       expr,
-      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, kill(signal?), ref(), and unref() are the supported ChildProcess members',
+      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, channel, kill(signal?), ref(), and unref() are the supported ChildProcess members',
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -3251,8 +3312,21 @@ export function lowerIntrinsicProperty(
   }
   if (kind === "stats" || kind === "bigintStats") {
     const bigintStats = kind === "bigintStats";
+    const receiver = lowerer.lowerExpr(expr.expression);
+    if (receiver.type.kind === "dyn") {
+      // A Stats/BigIntStats spelling over a checked-dynamic value (a stat
+      // call lowered to the run-time options ladder, which picks the member
+      // table at the call): the member reads off the object at run time.
+      return {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: name, type: STRING, loc: locOf(expr) },
+        ...(expr.questionDotToken ? { optional: true as const } : {}),
+        value: receiver,
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     if (name === "size") {
-      const receiver = lowerer.lowerExpr(expr.expression);
       return {
         kind: "libCall",
         fn: bigintStats ? "bigstats.size" : "stats.size",

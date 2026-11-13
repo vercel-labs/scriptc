@@ -122,12 +122,17 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackGlob",
   "fs.callbackValue",
   "process.deprecationFlag",
+  // process.finalization reports its ExperimentalWarnings through this
+  // unit's deferred warning queue.
+  "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.offMultipleResolves",
   "process.offRejectionHandled",
   "process.offUncaughtException",
   "process.offUnhandledRejection",
   "process.offWarning",
+  "process.onMultipleResolves",
   "process.onRejectionHandled",
   "process.onUncaughtException",
   "process.prependUncaughtException",
@@ -135,6 +140,10 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onWarning",
   "process.setDeprecationFlag",
   "process.setEmitWarning",
+  // The uncaught-exception capture callback rides the same dispatch and
+  // teardown machinery as the uncaughtException listeners.
+  "process.hasUncaughtCapture",
+  "process.setUncaughtCapture",
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
@@ -275,6 +284,12 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.createReadStreamSignal",
   "fs.createWriteStreamSignal",
   "http.clientSignal",
+  // The net entries that read a signal option at run time (the socket and
+  // server close on abort through events.addAbortListener).
+  "net.connectDyn",
+  "net.connectDynCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "http.requestDyn",
   "http.requestDynCb",
   "https.requestDyn",
@@ -526,6 +541,7 @@ export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.channel",
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
@@ -582,6 +598,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
+  // process.ref/unref read the nodejs.ref / nodejs.unref symbols.
+  "process.ref",
+  "process.unref",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -853,10 +872,14 @@ function mentionsTextDecoder(t: IrType, tables: TypeTables): boolean {
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
  * process signal/exit listeners and the piped-stdin surface. */
 const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.offBeforeExit",
   "process.offExit",
   "process.offSignal",
+  "process.finalization",
+  "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",
+  "process.prependBeforeExit",
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
@@ -1026,10 +1049,22 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.secureHeapUsed",
+  "crypto.setEngine",
+  "crypto.fipsGet",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   "crypto.diffieHellman",
 ]);
 
@@ -1656,7 +1691,13 @@ const RUNTIME_FEATURE_RULES = {
    * own, so a program that never passes those options keeps the default
    * object, byte for byte. */
   childOptionExt: rule({
-    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+    fns: [
+      "cp.spawnSyncExt",
+      "cp.spawnSyncExtEnv",
+      "cp.execFileCwd",
+      "cp.execFileOpts",
+      "cp.spawnArmed",
+    ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
@@ -1733,6 +1774,22 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
+  /** dns.Resolver and the resolve/reverse/setServers forms (the stub
+   * resolver): scr_dns_resolve.c over the dgram unit, so programs that
+   * only look up names keep their exact link line. */
+  dnsResolve: rule({
+    fns: [
+      "dns.resolveChk",
+      "dns.resolvePromise",
+      "dns.resolveRrChk",
+      "dns.resolveRrPromise",
+      "dns.resolverNew",
+      "dns.resolverIs",
+      "dns.setServers",
+      "dns.promisesSetServers",
+      "dns.promisesGetServers",
+    ],
+  }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -1742,21 +1799,29 @@ const RUNTIME_FEATURE_RULES = {
     // The legacy url functions, crypto.createCipheriv,
     // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
-    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
-    // handles and promises through it.
+    // encrypt and decrypt link scr_cipher.c too), as do the
+    // checked-dynamic Hmac constructors when their key is a CryptoKey
+    // (DEP0203, scr_lib.c); scr_wasm.c boxes its handles and promises
+    // through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...STREAM_WEB_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.hmacNewDyn",
+      "crypto.hmacNewAny",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      // crypto.fips reports DEP0093 once per process on its first read.
+      "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      "crypto.signOneshotCb",
+      "crypto.verifyOneshotCb",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",
@@ -1827,6 +1892,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      // A native Proxy converts and forwards Get through the invoke unit's
+      // Object.prototype table (scr_dyn_inherited_member_hook).
+      "dyn.proxyNew",
       "buffer.prototypeMember",
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
@@ -2051,6 +2119,11 @@ const RUNTIME_FEATURE_RULES = {
       ...STREAM_WEB_LIB_FNS,
     ],
     prefixes: ["event."],
+    // spawn's `signal` option registers through addAbortListener. A call
+    // keeps the slot (the lowering always passes fifteen arguments); an IR
+    // fixture may spell fewer, and an absent one means no signal.
+    libCall: (node) =>
+      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
@@ -2329,13 +2402,15 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
    * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
-   * builds its Dirent there. */
+   * builds its Dirent there. A native Proxy's conversion reads
+   * Symbol.toPrimitive and Symbol.toStringTag through its get trap, which
+   * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
     // The web streams unit installs Symbol.asyncIterator and the
     // well-known symbols its classes answer with, so the stream/web
     // adapters link it rather than their call sites naming one.
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", ...STREAM_WEB_LIB_FNS],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", ...STREAM_WEB_LIB_FNS, "dyn.proxyNew"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2473,6 +2548,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Fingerprint256",
       "crypto.x509Fingerprint512",
       "crypto.x509InfoAccess",
+      "crypto.x509KeyUsage",
       "crypto.x509Issuer",
       "crypto.x509Raw",
       "crypto.x509RawDer",
@@ -2516,10 +2592,16 @@ const RUNTIME_FEATURE_RULES = {
       "fs.appendFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.appendFileBytesOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
       "fs.writeFileSyncDataFlags",
       "fsp.writeFileDataFlags",
       "fs.writeFileDataOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.writeFileDataOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
@@ -2550,6 +2632,8 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileDataFlags",
       "fs.writeFileDataOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.writeFileDataOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
       "fs.writeFileSyncFdData",
     ],
   }),
@@ -2606,6 +2690,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgramDyn: false,
     textCodecDyn: false,
     dnsPromises: false,
+    dnsResolve: false,
     dynAsync: false,
     promiseGeneric: false,
     dynBuiltinClass: false,

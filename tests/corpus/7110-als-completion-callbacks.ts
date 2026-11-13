@@ -45,6 +45,36 @@ await step("crypto.generateKey", (done) =>
   crypto.generateKey("hmac", { length: 64 }, () => done()),
 );
 
+// The same operations with a callback the checker sees only as a
+// checked-dynamic value: they take the crypto defer queue's dynamic
+// entries, whose callbacks keep the call-site store too.
+const dyn = (done: () => void) => ((err: any, value: any) => done()) as any;
+await step("crypto.randomBytes dyn", (done) => crypto.randomBytes(4, dyn(done)));
+await step("crypto.randomInt dyn", (done) => crypto.randomInt(1, dyn(done)));
+await step("crypto.randomInt range dyn", (done) => crypto.randomInt(0, 1, dyn(done)));
+await step("crypto.randomFill dyn", (done) => crypto.randomFill(Buffer.alloc(4), dyn(done)));
+await step("crypto.pbkdf2 dyn", (done) =>
+  crypto.pbkdf2("p", "s", 1, 8, "sha256", dyn(done)),
+);
+await step("crypto.hkdf dyn", (done) => crypto.hkdf("sha256", "k", "s", "i", 8, dyn(done)));
+await step("crypto.scrypt dyn", (done) => crypto.scrypt("p", "s", 8, dyn(done)));
+await step("crypto.scrypt options dyn", (done) =>
+  crypto.scrypt("p", "s", 8, { N: 16 }, dyn(done)),
+);
+await step("crypto.generateKey dyn", (done) =>
+  crypto.generateKey("hmac", { length: 64 }, dyn(done)),
+);
+
+// A signature and a verification take the asymmetric entry's optional
+// callback, which keeps the call-site store like the other completions.
+const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+const payload = Buffer.from("als");
+await step("crypto.sign", (done) => crypto.sign("sha256", payload, privateKey, () => done()));
+const signature = crypto.sign("sha256", payload, privateKey);
+await step("crypto.verify", (done) =>
+  crypto.verify("sha256", payload, publicKey, signature, () => done()),
+);
+
 await step("zlib.gzip", (done) => zlib.gzip(Buffer.from("hello"), () => done()));
 await step("zlib.deflate options", (done) =>
   zlib.deflate(Buffer.from("hello"), { level: 1 }, () => done()),

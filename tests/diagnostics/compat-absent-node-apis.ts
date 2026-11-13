@@ -3,7 +3,6 @@
 // for marking the rows a verified absence instead of an unverified
 // registry gap.
 import { AsyncResource } from "node:async_hooks";
-import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
@@ -12,13 +11,6 @@ import { findPackageJSON, register } from "node:module";
 const timer = setTimeout(() => {}, 1);
 timer.close();
 
-// process: source maps, the capture callback, finalization and ref counting.
-process.setSourceMapsEnabled(true);
-console.log(process.hasUncaughtExceptionCaptureCallback());
-process.setUncaughtExceptionCaptureCallback(() => {});
-process.finalization.register({ n: 1 }, () => {});
-process.ref(timer);
-process.unref(timer);
 
 // module: loader hooks and package lookup.
 register("./hooks.mjs", import.meta.url);
@@ -33,6 +25,7 @@ emitter.emit("x");
 // fs: Blob-backed opens.
 console.log(await openAsBlob("/tmp/x"));
 
-// dns: a resolver instance.
-const resolver = new Resolver();
-resolver.cancel();
+// process: the worker events and the execve entry point.
+process.on("worker", () => {});
+process.on("workerMessage", () => {});
+process.execve("/bin/true", []);

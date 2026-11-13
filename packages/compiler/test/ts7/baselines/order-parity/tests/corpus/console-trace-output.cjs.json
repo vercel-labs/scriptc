@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/console-trace-output.cjs"
+ ],
+ "diags": []
+}

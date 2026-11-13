@@ -107,7 +107,9 @@ declare namespace NodeJS {
     reportOnFatalError: boolean;
     reportOnSignal: boolean;
     reportOnUncaughtException: boolean;
+    excludeEnv: boolean;
     getReport(error?: Error): object;
+    writeReport(filename?: string, error?: Error): string;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -282,6 +284,22 @@ declare module "console" {
  * default, signal 0 as an existence probe, and Node's error shapes
  * (`kill ESRCH`/`kill EPERM` Errors, TypeErrors for unknown signals and
  * non-int32 pids). */
+/* The IPC channel of a forked child — an owned runtime handle, so a
+ * binding or parameter carrying one stays a checked-dynamic value and its
+ * ref()/unref() dispatch at run time (type-mapper's channel mapping). */
+interface ProcessChannel {
+  ref(): void;
+  unref(): void;
+}
+
+/* Node's permission model queries (--permission), which a compiled binary
+ * cannot enable: process.permission is undefined, the same as Node's
+ * without the flag. */
+interface ProcessPermission {
+  has(scope: string, reference?: string): boolean;
+  drop(scope: string, reference?: string): void;
+}
+
 declare var process: {
   getBuiltinModule(id: string): unknown;
   hrtime: {
@@ -313,6 +331,11 @@ declare var process: {
   /* Node's feature flags with the values that hold for a compiled binary
    * (see NodeJS.ProcessFeatures). */
   readonly features: NodeJS.ProcessFeatures;
+  /* The permission model's object. Node defines it only under
+   * --permission, a Node command-line mode a compiled binary cannot run
+   * with, so the member is undefined exactly as in Node without the flag;
+   * a member read on it throws Node's TypeError. */
+  readonly permission: ProcessPermission | undefined;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -341,6 +364,35 @@ declare var process: {
   geteuid?(): number;
   getegid?(): number;
   getgroups?(): number[];
+  /* The POSIX credential setters: a numeric id (validated as Node's
+   * uint32) or a user/group NAME resolved through getpwnam(3)/getgrnam(3);
+   * an unknown id throws Node's ERR_UNKNOWN_CREDENTIAL, an unusable one is
+   * the getpwnam-side error. Like the getters they are optional members
+   * (absent on Windows), so POSIX programs probe before calling. */
+  setuid?(id: number | string): void;
+  seteuid?(id: number | string): void;
+  setgid?(id: number | string): void;
+  setegid?(id: number | string): void;
+  setgroups?(groups: ReadonlyArray<string | number>): void;
+  /* initgroups(3): the user's base groups plus the extra group.
+   * @types/node does not declare this member; the runtime implements it. */
+  initgroups?(user: number | string, extraGroup: number | string): void;
+  /* The capture-callback pair: a function receives every uncaught
+   * exception (the 'uncaughtException' event then does not fire), null
+   * unsets it, and a second function while one is set throws. */
+  hasUncaughtExceptionCaptureCallback(): boolean;
+  setUncaughtExceptionCaptureCallback(cb: ((err: Error) => void) | null): void;
+  /* The inspector port, 9229 until a write; a write keeps the previous
+   * value unless it is 0 or 1024..65535 (Node's ERR_OUT_OF_RANGE). */
+  debugPort: number;
+  /* Source-map support for stack traces: false until enabled. */
+  readonly sourceMapsEnabled: boolean;
+  setSourceMapsEnabled(value: boolean): void;
+  /* The "Refable protocol": call the value's Symbol.for("nodejs.ref") /
+   * Symbol.for("nodejs.unref") method (or its ref/unref member) with the
+   * value as the receiver; null and undefined are no-ops. */
+  ref(maybeRefable: any): void;
+  unref(maybeRefable: any): void;
   readonly ppid: number;
   /* libuv's process title: argv[0] until set; a write is truncated to
    * the original argument area on POSIX and sets the console title on
@@ -350,6 +402,17 @@ declare var process: {
   readonly release: NodeJS.ProcessRelease;
   /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
   readonly report: NodeJS.ProcessReport;
+  /* Exit and beforeExit callbacks for objects the program registers. The
+   * callback receives the object and the event name. */
+  readonly finalization: {
+    register(ref: object, callback: (ref: object, event: "exit") => void): void;
+    registerBeforeExit(ref: object, callback: (ref: object, event: "beforeExit") => void): void;
+    unregister(ref: object): void;
+  };
+  /* Terminate the process with SIGABRT after its output is flushed
+   * (Node's diagnostics dump names its own addresses and is not
+   * reproduced; the signal and the flush are). */
+  abort(): never;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -360,6 +423,11 @@ declare var process: {
    * process.emitWarning); undefined until assigned. */
   noDeprecation?: boolean;
   throwDeprecation?: boolean;
+  /* Show the stack trace of a warning in place of its one-line report
+   * (Node's --trace-deprecation and --trace-warnings): undefined until
+   * assigned, since no command-line flag reaches a compiled binary. */
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The
@@ -455,19 +523,25 @@ declare var process: {
   /* Process events, the CLI slice: SIGINT/SIGTERM handlers (watching a
    * signal replaces its default disposition; removing the last listener
    * restores it; signal listeners never keep the loop alive — all Node's
-   * rules) and the 'exit' hook (runs synchronously at termination with
-   * the exit code; scheduling anything from it is too late, like Node).
-   * `once` auto-removes after the first delivery; `off` removes by
-   * listener identity — bind the listener to a const so registration and
-   * removal see the same value. */
+   * rules), the 'exit' hook (runs synchronously at termination with the
+   * exit code; scheduling anything from it is too late, like Node) and
+   * the 'beforeExit' hook (runs each time the loop runs out of ref'd work,
+   * with process.exitCode; work it schedules runs, and Node emits it again
+   * at the next exhaustion while listeners remain — scheduling only
+   * nextTicks or microtasks does not re-emit it). `once` auto-removes
+   * after the first delivery; `off` removes by listener identity — bind
+   * the listener to a const so registration and removal see the same
+   * value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  on(event: "beforeExit", listener: (code: number) => void): void;
   /* prependListener — the same registration at the FRONT of the event's
    * listener list (Node's EventEmitter order), for the registries that
    * own a prepend entry ('exit' and the signal family). prependOnceListener
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(event: "beforeExit", listener: (code: number) => void): void;
   prependListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -483,6 +557,13 @@ declare var process: {
    * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  /* 'multipleResolves' — a resolution or rejection that reached a promise
+   * which already resolved: (type, promise, value), delivered on the tick
+   * queued at that settle, with Node's one-time DEP0160 warning. */
+  on(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
    * error channel: the monitor listener observes a thrown error before the
    * default report, the handler listener replaces it, and origin names the
@@ -493,17 +574,27 @@ declare var process: {
   ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
+  once(event: "beforeExit", listener: (code: number) => void): void;
   once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   once(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
   ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
+  off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   off(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -511,12 +602,17 @@ declare var process: {
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
+  removeListener(event: "beforeExit", listener: (code: number) => void): void;
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
     listener: (reason: unknown, promise: unknown) => void,
   ): void;
   removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   removeListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -526,6 +622,14 @@ declare var process: {
   emitWarning(warning: string | Error, ...args: any[]): void;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
+  /* The IPC channel of a forked child — Node's Control: `undefined` in a
+   * process that never had a channel, null once the channel is gone
+   * (local or remote disconnect), and otherwise the channel object.
+   * `ref()` keeps the channel's messages feeding the loop alive even
+   * without a listener, `unref()` lets the process exit with the channel
+   * open (an explicit call overrides the listener-driven ref state);
+   * both return undefined. */
+  channel?: ProcessChannel;
   send?(message: object, callback?: (error: Error | null) => void): boolean;
   disconnect(): void;
   on(event: "message", listener: (message: any) => void): void;

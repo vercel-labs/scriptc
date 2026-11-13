@@ -942,6 +942,7 @@ async function compileExecutableNative(
     http2: features.http2,
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
+    dnsResolve: features.dnsResolve,
     dgramDyn: features.dgramDyn,
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,

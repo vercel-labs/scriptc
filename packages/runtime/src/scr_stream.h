@@ -78,10 +78,16 @@ double scr_stream_get_default_hwm_dyn(struct ScrDyn *object_mode);
 void scr_stream_set_default_hwm(bool object_mode, double value);
 void scr_stream_set_default_hwm_dyn(struct ScrDyn *object_mode, struct ScrDyn *value);
 
+/* A constructor's object-mode default request: the sides do not know their
+ * mode before the constructor runs, so the caller passes this and the
+ * constructor resolves it against setDefaultHighWaterMark's current value.
+ * (-2 is the option ladders' "validation failed" marker, not a default.) */
+#define SCR_STREAM_HWM_OBJECT_DEFAULT (-3.0)
+
 /* Constructors (+1 result; option callbacks MOVE; NULL = absent). hwm < 0
  * means a default resolved at construction time: -1 the byte-mode one
- * (65536, 16384 on win32) and -3 the object-mode one (16), whichever
- * setDefaultHighWaterMark last set. */
+ * (65536, 16384 on win32) and -3 (SCR_STREAM_HWM_OBJECT_DEFAULT) the
+ * object-mode one (16), whichever setDefaultHighWaterMark last set. */
 ScrStream *scr_stream_new_readable(double hwm, bool auto_destroy, bool emit_close,
     ScrClosure *read, ScrStreamReadInv read_inv,
     ScrClosure *destroy, ScrStreamErrInv destroy_inv);

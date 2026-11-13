@@ -1,8 +1,8 @@
-fenced.ts:5:13 - error SC2020: 'process.hasUncaughtExceptionCaptureCallback' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:5:13 - error SC2020: 'process.config' is typed by @types/node but has no scriptc lowering yet
 
   4 |  * or a binary that runs with the wrong behavior. */
-  5 | console.log(process.hasUncaughtExceptionCaptureCallback()); // the process introspection statics lower now; the capture-callback probe does not
-    |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | console.log(process.config); // the process introspection statics and the capture-callback probe lower now; the build configuration does not
+    |             ^~~~~~~~~~~~~~
   6 | /* setInterval lowers, and under @types/node its Timeout RETURN now maps
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
@@ -70,128 +70,119 @@ fenced.ts:65:71 - error SC2020: 'createSecureServer option 'streamResetBurst' wi
 
   hint: h2 session-tuning options are accepted with literal values but are not applied yet
 
-fenced.ts:72:1 - error SC2020: 'crypto.publicEncrypt' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:72:16 - error SC2020: 'crypto.createCipheriv with cipher 'aes-128-ocb'' is part of the standard library types but has no scriptc lowering yet
 
-  71 | import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
-  72 | publicEncrypt("key", Buffer.alloc(1));
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  73 | createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
-
-  hint: RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman
-
-fenced.ts:73:16 - error SC2020: 'crypto.createCipheriv with cipher 'aes-128-ocb'' is part of the standard library types but has no scriptc lowering yet
-
-  72 | publicEncrypt("key", Buffer.alloc(1));
-  73 | createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
+  71 | import { createCipheriv, secureHeapUsed, setFips } from "node:crypto";
+  72 | createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
      |                ^~~~~~~~~~~~~
-  74 | secureHeapUsed();
+  73 | secureHeapUsed();
 
   hint: the supported ciphers are aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1 and ofb modes and their wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20, and chacha20-poly1305
 
-fenced.ts:75:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:74:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has no scriptc lowering yet
 
-  74 | secureHeapUsed();
-  75 | setFips(false);
+  73 | secureHeapUsed();
+  74 | setFips(false);
      | ^~~~~~~~~~~~~~
-  76 | fetch("https://example.invalid/", {
+  75 | fetch("https://example.invalid/", {
 
   hint: a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here
 
-fenced.ts:77:3 - error SC2020: 'RequestInit option 'integrity' in a static build' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:76:3 - error SC2020: 'RequestInit option 'integrity' in a static build' is typed by @types/node but has no scriptc lowering yet
 
-  76 | fetch("https://example.invalid/", {
-  77 |   integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  75 | fetch("https://example.invalid/", {
+  76 |   integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  78 | });
+  77 | });
 
   hint: the compiler does not preserve this RequestInit member's conversion or transport behavior
 
-fenced.ts:82:15 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:81:15 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
-  81 |   body.tee();
-  82 |   const tee = body.tee;
+  80 |   body.tee();
+  81 |   const tee = body.tee;
      |               ^~~~~~~~
-  83 |   body["tee"]();
+  82 |   body["tee"]();
 
   hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
-fenced.ts:84:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:83:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
-  83 |   body["tee"]();
-  84 |   const bracketTee = body["tee"];
+  82 |   body["tee"]();
+  83 |   const bracketTee = body["tee"];
      |                      ^~~~~~~~~~~
-  85 | }
+  84 | }
 
   hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
 
-fenced.ts:90:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:89:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
 
-  89 | import { callbackify } from "node:util";
-  90 | const callbackified = callbackify(async (n: number) => n);
+  88 | import { callbackify } from "node:util";
+  89 | const callbackified = callbackify(async (n: number) => n);
      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  91 | void callbackified;
+  90 | void callbackified;
 
   hint: Node calls back with a null error on success; type the binding's callback as (err: NodeJS.ErrnoException | null, ...) => void
 
-fenced.ts:96:12 - error SC2020: 'crypto.createECDH with curve 'sect163k1'' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:95:12 - error SC2020: 'crypto.createECDH with curve 'sect163k1'' is part of the standard library types but has no scriptc lowering yet
 
-  95 | import { createECDH } from "node:crypto";
-  96 | createECDH("sect163k1");
+  94 | import { createECDH } from "node:crypto";
+  95 | createECDH("sect163k1");
      |            ^~~~~~~~~~~
-  97 | createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
+  96 | createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
 
   hint: the supported curves are prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1, and brainpoolP512r1
 
-fenced.ts:97:1 - error SC2020: 'ECDH.computeSecret(key, encoding) with a Buffer or view key' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:96:1 - error SC2020: 'ECDH.computeSecret(key, encoding) with a Buffer or view key' is part of the standard library types but has no scriptc lowering yet
 
-  96 | createECDH("sect163k1");
-  97 | createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
+  95 | createECDH("sect163k1");
+  96 | createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  98 | /* DiffieHellman's Object.prototype members. */
+  97 | /* DiffieHellman's Object.prototype members. */
 
   hint: Node reads the second argument as the key's input encoding and answers a Buffer; pass the output encoding third: computeSecret(key, undefined, encoding)
 
-fenced.ts:100:1 - error SC2020: 'DiffieHellman.toString' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:99:1 - error SC2020: 'DiffieHellman.toString' is part of the standard library types but has no scriptc lowering yet
 
-   99 | import { createDiffieHellman } from "node:crypto";
-  100 | createDiffieHellman(Buffer.from([23])).toString();
+   98 | import { createDiffieHellman } from "node:crypto";
+   99 | createDiffieHellman(Buffer.from([23])).toString();
       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  101 | /* WebCrypto beyond the secret-key slice: @types/node declares the whole
+  100 | /* WebCrypto beyond the secret-key slice: @types/node declares the whole
 
   hint: generateKeys(), computeSecret(), getPrime(), getGenerator(), getPublicKey(), getPrivateKey(), setPublicKey(), setPrivateKey() and verifyError are supported
 
-fenced.ts:105:9 - error SC2020: 'crypto.subtle.getPublicKey' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:104:9 - error SC2020: 'crypto.subtle.getPublicKey' is part of the standard library types but has no scriptc lowering yet
 
-  104 | async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  105 |   await crypto.subtle.getPublicKey(key, ["verify"]);
+  103 | async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  104 |   await crypto.subtle.getPublicKey(key, ["verify"]);
       |         ^~~~~~~~~~~~~~~~~~~~~~~~~~
-  106 | }
+  105 | }
 
   hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
-fenced.ts:110:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:109:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
 
-  109 |  * by name. */
-  110 | const locks = navigator.locks;
+  108 |  * by name. */
+  109 | const locks = navigator.locks;
       |       ^~~~~
-  111 | void locks;
+  110 | void locks;
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:110:15 - error SC2020: 'navigator.locks' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:109:15 - error SC2020: 'navigator.locks' is typed by @types/node but has no scriptc lowering yet
 
-  109 |  * by name. */
-  110 | const locks = navigator.locks;
+  108 |  * by name. */
+  109 | const locks = navigator.locks;
       |               ^~~~~~~~~~~~~~~
-  111 | void locks;
+  110 | void locks;
 
   hint: navigator.locks (the Web Locks API) has no lowering
 
-fenced.ts:111:6 - error SC2004: uses of 'locks' inherit the blocker on its declaration
+fenced.ts:110:6 - error SC2004: uses of 'locks' inherit the blocker on its declaration
 
-  110 | const locks = navigator.locks;
-  111 | void locks;
+  109 | const locks = navigator.locks;
+  110 | void locks;
       |      ^~~~~
-  112 | // End of the declared-but-not-lowered surface.
+  111 | // End of the declared-but-not-lowered surface.
 
   hint: the declaration of 'locks' did not compile — fix the diagnostic reported there and these sites clear with it

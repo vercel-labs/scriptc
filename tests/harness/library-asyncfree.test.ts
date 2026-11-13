@@ -141,4 +141,87 @@ describe("async_free detection over the IR", () => {
       ),
     ).toBeNull();
   });
+
+  /* crypto's callback forms run their callback from the defer queue,
+   * which library links exclude; the checked-dynamic spellings are the
+   * same surface (a program that reaches one must refuse, not derive and
+   * discard its result). The synchronous entries stay async_free. */
+  test("crypto's callback forms refuse as the async crypto surface", async () => {
+    const cases: readonly [string, string, string][] = [
+      [
+        "crypto-pbkdf2-cb",
+        `import { pbkdf2 } from "node:crypto";\npbkdf2("p", "s", 8, 16, "sha256", (e, k) => console.log(k.length));\n`,
+        "pbkdf2",
+      ],
+      [
+        "crypto-pbkdf2-anycb",
+        `import { pbkdf2 } from "node:crypto";\npbkdf2("p", "s", 8, 16, "sha256", (e: any, k: any) => console.log(k));\n`,
+        "pbkdf2",
+      ],
+      [
+        "crypto-hkdf-cb",
+        `import { hkdf } from "node:crypto";\nhkdf("sha256", "p", "s", "info", 8, (e, k) => console.log(Buffer.from(k).length));\n`,
+        "hkdf",
+      ],
+      [
+        "crypto-hkdf-anycb",
+        `import { hkdf } from "node:crypto";\nhkdf("sha256", "p", "s", "info", 8, (e: any, k: any) => console.log(k));\n`,
+        "hkdf",
+      ],
+      [
+        "crypto-scrypt-cb",
+        `import { scrypt } from "node:crypto";\nscrypt("p", "s", 8, (e, k) => console.log(k.length));\n`,
+        "scrypt",
+      ],
+      [
+        "crypto-scrypt-anycb",
+        `import { scrypt } from "node:crypto";\nscrypt("p", "s", 8, (e: any, k: any) => console.log(k));\n`,
+        "scrypt",
+      ],
+      [
+        "crypto-random-bytes-cb",
+        `import { randomBytes } from "node:crypto";\nrandomBytes(4, (e, b) => console.log(b.length));\n`,
+        "randomBytes",
+      ],
+      [
+        "crypto-random-int-cb",
+        `import { randomInt } from "node:crypto";\nrandomInt(1, (e, n) => console.log(n));\n`,
+        "randomInt",
+      ],
+      [
+        "crypto-random-fill-cb",
+        `import { randomFill } from "node:crypto";\nconst b = Buffer.alloc(4);\nrandomFill(b, (e, v) => console.log(v.length));\n`,
+        "randomFill",
+      ],
+      [
+        "crypto-generate-key-cb",
+        `import { generateKey } from "node:crypto";\ngenerateKey("hmac", { length: 64 }, (e, k) => console.log(k));\n`,
+        "generateKey",
+      ],
+      [
+        "crypto-generate-key-anycb",
+        `import { generateKey } from "node:crypto";\nconst cb: any = (e: any, k: any) => console.log(k);\ngenerateKey("hmac", { length: 64 }, cb);\n`,
+        "generateKey",
+      ],
+    ];
+    for (const [name, source, surface] of cases) {
+      const hit = await surfaceOf(name, source);
+      expect(`${name}: ${hit}`).toContain(`the async crypto callback surface (${surface})`);
+    }
+  });
+
+  test("crypto's synchronous spellings remain async_free", async () => {
+    expect(
+      await surfaceOf(
+        "crypto-sync-dyn-random",
+        `import { randomBytes, randomInt } from "node:crypto";\nconst size: any = 4;\nconsole.log(randomBytes(size).length, String(randomInt(size)).length);\n`,
+      ),
+    ).toBeNull();
+    expect(
+      await surfaceOf(
+        "crypto-sync-kdfs",
+        `import { pbkdf2Sync, scryptSync, hkdfSync } from "node:crypto";\nconsole.log(pbkdf2Sync("p", "s", 8, 16, "sha256").length, scryptSync("p", "s", 8).length, hkdfSync("sha256", "p", "s", "info", 8).byteLength);\n`,
+      ),
+    ).toBeNull();
+  });
 });

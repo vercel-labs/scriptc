@@ -466,7 +466,9 @@ export function effectiveRuntimeFeatures(
       features.fileHandle ||
       nativeFetch ||
       features.nodeIsland === true ||
-      features.nodeTest,
+      features.nodeTest ||
+      // The stub resolver settles its promise results through the unit.
+      features.dnsResolve,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
     abortSignalOnly: abortSignal && !nativeFetch,

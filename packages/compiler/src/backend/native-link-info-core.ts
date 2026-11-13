@@ -287,6 +287,9 @@ export interface NativeLinkFeatures {
   dgram: boolean;
   /** node:dns/promises: scr_dns_promises.c. */
   dnsPromises: boolean;
+  /** The stub resolver's queries, dns.Resolver and dns/promises'
+   * Resolver: scr_dns_resolve.c. */
+  dnsResolve: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
   /** TextEncoder and TextDecoder records as untyped values:
@@ -383,6 +386,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   http2: false,
   dgram: false,
   dnsPromises: false,
+  dnsResolve: false,
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
@@ -450,6 +454,10 @@ interface LinkFeatureRequirement {
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "http2", requires: ["http", "net"] },
+  // scr_dns_resolve.c encodes query names with scr_idna.c's ToASCII (the
+  // unit that rides the regex engine), and its queries ride the dgram
+  // unit's poller.
+  { feature: "dnsResolve", requires: ["dgram", "regex"] },
   // scr_event_target.c holds the events-module helpers over an EventTarget
   // or a NodeEventTarget and the `events.on`/`events.once` target paths;
   // they answer NodeEventTarget receivers through the emitter unit's

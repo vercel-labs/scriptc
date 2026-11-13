@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
+import { icuAvailable } from "./icu.js";
 import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
@@ -185,6 +187,58 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // The scriptc export condition points the compiled program at the code
+  // the package ships for it. Node.js has no such condition, so the same
+  // program loads the node branch there: the divergence is the point, and
+  // the native answer is asserted against the package's map directly.
+  test("the scriptc export condition selects its branch before node and default", async () => {
+    const dir = mkdtempSync("/tmp/scriptc-export-condition-");
+    try {
+      const pkg = join(dir, "node_modules", "platform-choice");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "platform-choice",
+          version: "1.0.0",
+          type: "module",
+          // scriptc sits after node and default: it is still selected.
+          exports: {
+            ".": {
+              types: "./index.d.ts",
+              node: "./node.js",
+              default: "./default.js",
+              scriptc: "./scriptc.js",
+            },
+          },
+        }),
+      );
+      writeFileSync(join(pkg, "index.d.ts"), "export declare const value: string;\n");
+      for (const flavor of ["node", "default", "scriptc"])
+        writeFileSync(join(pkg, `${flavor}.js`), `export const value = "${flavor}";\n`);
+      const entry = join(dir, "main.mjs");
+      writeFileSync(entry, 'import { value } from "platform-choice";\nconsole.log(value);\n');
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["platform-choice"],
+        sanitize,
+        outDir: join(dir, "out"),
+        outPath: join(dir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.stdout.toString("utf8")).toBe("node\n");
+      expect(native.stdout.toString("utf8")).toBe("scriptc\n");
+      expect(native.exitCode).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // A tsconfig path that maps a name onto an opted-in package's JavaScript
   // is a project edge of whichever program file spells it. The package
   // ships no declarations, so only its JavaScript types the import, and
@@ -193,7 +247,9 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each(["direct", "through a helper module"])(
     "a path alias into an opted-in package compiles (%s)",
     async (shape) => {
-      const dir = mkdtempSync(join(tmpdir(), "scriptc-alias-root-"));
+      // macOS's /var is a link to /private/var: the compiler resolves the
+      // config's directory, so the fixture starts from its real path.
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "scriptc-alias-root-")));
       try {
         const pkg = join(dir, "node_modules", "rawpad");
         mkdirSync(pkg, { recursive: true });
@@ -1002,6 +1058,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
     'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',
+    'import { Console } from "node:console"; new Console({ stdout: process.stdout }).table([1, 2]);',
     'import { assert } from "node:console"; declare const message: unknown; assert(false, message);',
   ])("unsupported console members retain a use-site diagnostic: %s", (source) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-console-import-"));
@@ -1066,6 +1123,42 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         runBinary(result.binaryPath, []),
       ]);
       expect(reference.stdout.toString()).toBe("base:inherited\nbase:own\ntrue\nsecond:detached\n");
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+  );
+
+  test.each(["release", "dev"] as const)(
+    "unchecked JSDoc class fields of a package dependency compile and run (%s)",
+    async (optimization) => {
+      // Package JavaScript is compiled but not type-checked (tsc's
+      // maxNodeModuleJsDepth of 0), so a class field that carries a JSDoc
+      // type and no initializer, as svelte 4's internal/dev.js declares its
+      // $$prop_def family, does not stop the build; the module's values still
+      // answer Node's.
+      const entry = join(pilotRoot, "jsdoc-unchecked-fields-cli.ts");
+      const outDir = join(
+        cacheDir,
+        `jsdoc-unchecked-fields-${optimization}-${sanitize ? "san" : "plain"}`,
+      );
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["jsdoc-unchecked-fields"],
+        sanitize,
+        optimization,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.stdout.toString()).toBe(
+        "widget:a\nwidget:a|undefined|true|true|props_def,slot_def,name\n",
+      );
       expect(native.stdout).toEqual(reference.stdout);
       expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
       expect(native.exitCode).toBe(reference.exitCode);
@@ -1670,7 +1763,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test(
+  // The published Effect's module graph carries a reachable
+  // Intl.DateTimeFormat (its DateTime module), so the pilot links ICU: a
+  // pack target without ICU refuses the build with SC3002 (see icu.ts).
+  test.skipIf(!icuAvailable())(
     "the published Effect generator logs and completes statically",
     async () => {
       const entry = join(pilotRoot, "effect-gen-cli.ts");
@@ -1690,7 +1786,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     effectBuildTimeout,
   );
 
-  test(
+  test.skipIf(!icuAvailable())(
     "the published Effect generator has deterministic native results",
     async () => {
       const entry = join(pilotRoot, "effect-gen-result-cli.ts");

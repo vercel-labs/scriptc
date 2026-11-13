@@ -127,9 +127,32 @@ function describeMembers(object, names, platformDependent = []) {
 // macOS and undefined elsewhere.
 const PLATFORM_DEPENDENT = { fs: ["lchmod", "lchmodSync"] };
 
+// Namespaces whose own MEMBERS are the platform's, not Node's: node:constants
+// merges the platform's dlopen, errno, priority and signal tables with
+// fs.constants and crypto.constants, and the names themselves differ by
+// operating system (Darwin has O_SYMLINK and RTLD_FIRST, Linux has O_NOATIME,
+// O_DIRECT and RTLD_DEEPBIND). No census taken on one machine can answer for
+// the others, so the table records an empty row for them and
+// builtin-module-members.ts answers every question with null (the lowering
+// keeps its runtime test). Without this the freshness check fails on any
+// machine whose constants differ from the one that generated the table.
+const PLATFORM_DEPENDENT_NAMESPACES = new Set(["constants"]);
+
 const census = [];
 for (const module of SUPPORTED_BUILTIN_MODULES) {
   const exportsObject = require(`node:${module}`);
+  if (PLATFORM_DEPENDENT_NAMESPACES.has(module)) {
+    census.push({
+      module,
+      callable: false,
+      keys: [],
+      ownNames: [],
+      inherited: [],
+      functions: "",
+      values: "",
+    });
+    continue;
+  }
   const ownNames = Object.getOwnPropertyNames(exportsObject);
   census.push({
     module,
@@ -220,15 +243,11 @@ try {
 
 const literal = (names) => `[${names.map((name) => JSON.stringify(name)).join(", ")}]`;
 const entries = census.map(
-  ({
-    module,
-    callable,
-    keys,
-    ownNames,
-    inherited,
-    functions,
-    values,
-  }) => `  ${JSON.stringify(module)}: {
+  ({ module, callable, keys, ownNames, inherited, functions, values }) => `${
+    PLATFORM_DEPENDENT_NAMESPACES.has(module)
+      ? `  // ${module}: its members are the platform's (see PLATFORM_DEPENDENT_NAMESPACES\n  // above and builtin-module-members.ts), so the row is empty everywhere.\n`
+      : ""
+  }  ${JSON.stringify(module)}: {
     callable: ${callable},
     keys: ${literal(keys)},
     ownNames: ${literal(ownNames)},

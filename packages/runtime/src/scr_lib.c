@@ -144,6 +144,7 @@ static WCHAR *scr_win_wide_utf8(const char *text, size_t length) {
 #include <net/if.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <grp.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -1412,6 +1413,54 @@ void scr_env_unset(const ScrStr *name) {
   scr_env_tz_changed(name);
 }
 
+/* The checked-dynamic process.env accessors. Node's env object converts a
+ * string key with ToString (a symbol key is ignored by get/delete and
+ * throws from set) and every stored value with ToString (a symbol value
+ * throws "Cannot convert a Symbol value to a string"). */
+
+/* process.env[key] with a non-string key: symbol → undefined; anything
+ * else → String(key), which may throw (a bad toString does). */
+ScrStr *scr_env_get_dyn(const ScrDyn *key) {
+  if (key->kind == SCR_DYN_SYMBOL) return NULL;
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return NULL;
+  ScrStr *value = scr_env_get(name);
+  scr_str_release(name);
+  return value;
+}
+
+/* process.env.NAME = value for a checked-dynamic value. */
+void scr_env_set_dyn(const ScrStr *name, const ScrDyn *value) {
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text == NULL) return;
+  scr_env_set(name, text);
+  scr_str_release(text);
+}
+
+/* process.env[key] = value for a checked-dynamic key and value: the key's
+ * ToString runs first (Node's set trap converts the property), then the
+ * value's. */
+void scr_env_set_key_dyn(const ScrDyn *key, const ScrDyn *value) {
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return;
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text != NULL) {
+    scr_env_set(name, text);
+    scr_str_release(text);
+  }
+  scr_str_release(name);
+}
+
+/* `delete process.env[key]`: a symbol key deletes nothing (Node's trap
+ * returns true); other keys go through ToString first. */
+void scr_env_unset_dyn(const ScrDyn *key) {
+  if (key->kind == SCR_DYN_SYMBOL) return;
+  ScrStr *name = scr_dyn_string_coerce_js(key);
+  if (name == NULL) return;
+  scr_env_unset(name);
+  scr_str_release(name);
+}
+
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
 
 /* Node's dotenv parser trims ASCII space/tab/newline and removes every CR,
@@ -1773,8 +1822,17 @@ static int scr_signal_by_name(const char *name) {
 #ifdef SIGBREAK
       {"SIGBREAK", SIGBREAK},
 #endif
+#ifdef SIGSTKFLT
+      {"SIGSTKFLT", SIGSTKFLT},
+#endif
+#ifdef SIGPWR
+      {"SIGPWR", SIGPWR},
+#endif
 #ifdef SIGIO
       {"SIGIO", SIGIO},
+#endif
+#ifdef SIGPOLL
+      {"SIGPOLL", SIGPOLL},
 #endif
 #ifdef SIGINFO
       {"SIGINFO", SIGINFO},
@@ -1790,6 +1848,24 @@ static int scr_signal_by_name(const char *name) {
  * one signal-name story): the resolved number, or -1 for unknown names. */
 int scr_signal_from_name(const ScrStr *signal) {
   return strlen(signal->data) == signal->len ? scr_signal_by_name(signal->data) : -1;
+}
+
+/* The same table for the places Node matches a signal name
+ * case-insensitively: convertToValidSignal (internal/util) uppercases the
+ * string before the lookup, so child.kill("sigkill") and a killSignal of
+ * "SigTerm" resolve like the uppercase spelling. process.on's event names
+ * are matched as written, so they keep scr_signal_from_name. Signal names
+ * are a handful of bytes, so the uppercase copy lives on the stack; -1 for
+ * an unknown name or one longer than the table's longest. */
+int scr_signal_from_name_ci(const ScrStr *signal) {
+  char buf[16];
+  if (signal->len >= sizeof buf) return -1;
+  for (size_t i = 0; i < signal->len; i++) {
+    char ch = signal->data[i];
+    buf[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
+  }
+  buf[signal->len] = '\0';
+  return scr_signal_by_name(buf);
 }
 
 /* The reverse walk, for spawnSync's result.signal: the FIRST name with
@@ -1821,6 +1897,9 @@ const char *scr_signal_name(int sig) {
       {"SIGALRM", SIGALRM},
 #endif
       {"SIGTERM", SIGTERM},
+#ifdef SIGSTKFLT
+      {"SIGSTKFLT", SIGSTKFLT},
+#endif
 #ifdef SIGCHLD
       {"SIGCHLD", SIGCHLD}, {"SIGCONT", SIGCONT},     {"SIGSTOP", SIGSTOP},
       {"SIGTSTP", SIGTSTP}, {"SIGTTIN", SIGTTIN},     {"SIGTTOU", SIGTTOU},
@@ -1828,6 +1907,9 @@ const char *scr_signal_name(int sig) {
       {"SIGVTALRM", SIGVTALRM}, {"SIGPROF", SIGPROF},
 #endif
       {"SIGWINCH", SIGWINCH},
+#ifdef SIGPWR
+      {"SIGPWR", SIGPWR},
+#endif
 #ifdef SIGSYS
       {"SIGSYS", SIGSYS},
 #endif
@@ -1836,6 +1918,9 @@ const char *scr_signal_name(int sig) {
 #endif
 #ifdef SIGIO
       {"SIGIO", SIGIO},
+#endif
+#ifdef SIGPOLL
+      {"SIGPOLL", SIGPOLL},
 #endif
 #ifdef SIGINFO
       {"SIGINFO", SIGINFO},
@@ -1860,7 +1945,7 @@ static bool scr_kill_pid_check(double pid) {
                      "The \"pid\" argument must be of type number. "
                      "Received type number (%s)",
                      num);
-  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
   return false;
 }
 
@@ -1924,27 +2009,179 @@ static bool scr_kill_send(int pid, int sig) {
   return false;
 }
 
+/* Node's ERR_UNKNOWN_SIGNAL TypeError: "Unknown signal: <text>". */
+static void scr_kill_unknown_signal_text(const char *text, size_t len) {
+  size_t cap = 16 + len + 1;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int n = snprintf(msg, cap, "Unknown signal: %.*s", (int)len, text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_UNKNOWN_SIGNAL");
+  free(msg);
+}
+
+/* A library archive has no such symbol: its program may not have selected
+ * the inspect unit, and the localization pass keeps every undefined
+ * reference global, so an optional runtime unit's symbol must not reach the
+ * archive's link surface (the embedder's link would carry a dangling
+ * scr_ prefix). The archive renders the plain String() form instead, the
+ * same narrowing the census reference above takes. */
+#if !defined(SCR_LIB)
+/* The %s rendering Node's message formatter gives the offending signal:
+ * util.format's %s, which inspects an object without a custom toString.
+ * The inspect unit renders it exactly when the program links that unit
+ * (any program that prints does); a program without it keeps the plain
+ * String() form. NULL with an exception pending when a hook throws. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak *reference* in an executable, and the
+ * runtime C tests link scr_lib.c without the inspect unit. A weak
+ * DEFINITION satisfies that link: the inspect unit's strong definition
+ * replaces it in every program that links the unit, and the NULL answer
+ * selects the plain String() form otherwise, exactly as the absent symbol
+ * does elsewhere. */
+__attribute__((weak)) ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
+  (void)d;
+  (void)depth;
+  return NULL;
+}
+#else
+extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
+#endif
+static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
+#if !defined(SCR_LIB)
+  /* util.format's %s inspects an object only when its toString is a
+   * built-in one; a value carrying its own toString is converted through it
+   * (Node prints what that method answers). The dynamic object model keeps
+   * built-in prototype members invisible to own-property tests, so an own
+   * toString marks the custom case. */
+  bool custom = false;
+  if (scr_dyn_is_object(signal)) {
+    ScrStr *key = scr_str_new("toString", 8);
+    custom = scr_dyn_has_own(signal, key);
+    scr_str_release(key);
+  }
+  if (!custom && scr_insp_dyn_format_s != NULL) {
+    ScrStr *text = scr_insp_dyn_format_s((ScrDyn *)signal, 0);
+    if (text != NULL || scr_exc_pending()) return text;
+  }
+#endif
+  return scr_dyn_string_coerce_js(signal);
+}
+
+/* The numeric signal arm: `sig === (sig | 0)` passes the int32 straight to
+ * kill(2) (signal 0 probes), otherwise only NaN is falsy (and takes the
+ * SIGTERM default) — every other number must name a signal, so it throws
+ * ERR_UNKNOWN_SIGNAL with the number's rendering. */
+static bool scr_kill_sig_num(double sig, int *out) {
+  double i32 = (double)(int32_t)scr_to_uint32(sig);
+  if (sig == i32) {
+    *out = (int)i32;
+    return true;
+  }
+  if (isnan(sig)) {
+    *out = SIGTERM;
+    return true;
+  }
+  char num[32];
+  size_t n = scr_f64_to_str(sig, num);
+  scr_kill_unknown_signal_text(num, n);
+  return false;
+}
+
+/* process.kill's signal argument over a checked-dynamic value. The strict
+ * test still evaluates `sig | 0` first (ToNumber: a bigint throws Node's
+ * mixing message, a symbol its conversion message); a non-number is never
+ * strictly equal to the int32, so it falls to `sig ||= 'SIGTERM'` and the
+ * constants lookup, whose key goes through ToString. */
+static bool scr_kill_sig_dyn(const ScrDyn *sig, int *out) {
+  if (sig->kind == SCR_DYN_BIGINT) {
+    static const char message[] = "Cannot mix BigInt and other types, use explicit conversions";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(sig, &number)) return false;
+  if (sig->kind == SCR_DYN_NUM) return scr_kill_sig_num(number, out);
+  if (!scr_dyn_truthy(sig)) {
+    *out = SIGTERM;
+    return true;
+  }
+  ScrStr *name = scr_dyn_string_coerce_js(sig);
+  if (name == NULL) return false;
+  int signo = scr_signal_by_name(name->data);
+  scr_str_release(name);
+  if (signo < 0) {
+    ScrStr *text = scr_kill_signal_text(sig);
+    if (text != NULL) {
+      scr_kill_unknown_signal_text(text->data, text->len);
+      scr_str_release(text);
+    }
+    return false;
+  }
+  *out = signo;
+  return true;
+}
+
+/* process.kill's pid gate over a checked-dynamic value: `pid != (pid | 0)`
+ * with JS abstract equality. `pid | 0` runs ToNumber (symbol/bigint keep
+ * Node's messages), the comparison reads the original value, and the pid
+ * handed to kill(2) is that int32. */
+static bool scr_kill_pid_dyn(const ScrDyn *pid, int *out) {
+  if (pid->kind == SCR_DYN_BIGINT) {
+    static const char message[] = "Cannot mix BigInt and other types, use explicit conversions";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  double number;
+  if (!scr_dyn_number_coerce_js(pid, &number)) return false;
+  int32_t i32 = (int32_t)scr_to_uint32(number);
+  ScrDyn *boxed = scr_dyn_new_num((double)i32);
+  bool equal = scr_dyn_abstract_eq(pid, boxed);
+  scr_dyn_release(boxed);
+  if (scr_exc_pending()) return false;
+  if (!equal) {
+    scr_dyn_arg_type_fail("pid", "of type number", pid);
+    return false;
+  }
+  *out = i32;
+  return true;
+}
+
 bool scr_process_kill(double pid, double signum) {
   if (!scr_kill_pid_check(pid)) return false;
-  return scr_kill_send((int)pid, (int)signum);
+  int sig;
+  if (!scr_kill_sig_num(signum, &sig)) return false;
+  return scr_kill_send((int)pid, sig);
 }
 
 bool scr_process_kill_named(double pid, const ScrStr *signal) {
   if (!scr_kill_pid_check(pid)) return false;
-  int sig = scr_signal_by_name(signal->data);
-  if (sig < 0) {
-    /* Node's ERR_UNKNOWN_SIGNAL TypeError. */
-    size_t cap = 16 + signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) {
-      scr_trap("scriptc: out of memory\n");
+  int sig;
+  if (signal->len == 0) {
+    sig = SIGTERM;
+  } else {
+    sig = scr_signal_by_name(signal->data);
+    if (sig < 0) {
+      scr_kill_unknown_signal_text(signal->data, signal->len);
+      return false;
     }
-    int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
-    free(msg);
-    return false;
   }
   return scr_kill_send((int)pid, sig);
+}
+
+bool scr_process_kill_sig_dyn(double pid, const ScrDyn *signal) {
+  if (!scr_kill_pid_check(pid)) return false;
+  int sig;
+  if (!scr_kill_sig_dyn(signal, &sig)) return false;
+  return scr_kill_send((int)pid, sig);
+}
+
+bool scr_process_kill_dyn(const ScrDyn *pid, const ScrDyn *signal) {
+  int target;
+  if (!scr_kill_pid_dyn(pid, &target)) return false;
+  int sig;
+  if (!scr_kill_sig_dyn(signal, &sig)) return false;
+  return scr_kill_send(target, sig);
 }
 
 ScrStr *scr_process_cwd(void) {
@@ -2754,6 +2991,41 @@ static bool scr_process_exit_code_of(double code, int *out) {
   return true;
 }
 
+/* Node's exitCode setter over a checked-dynamic value:
+ *   if (code !== null && code !== undefined) {
+ *     let value = code;
+ *     if (typeof code === 'string' && code !== '' && NumberIsNaN((value = Number(code)))) value = code;
+ *     validateInteger(value, 'code');
+ *     set(value);
+ *   } else clear();
+ * A string that Number() reads as NaN keeps its string shape, so the
+ * integer validator throws ERR_INVALID_ARG_TYPE (not a range error).
+ * Answers false with the exception pending when validation fails. */
+static bool scr_process_exit_code_dyn_of(const ScrDyn *code, int *out, bool *clear) {
+  *clear = false;
+  if (code->kind == SCR_DYN_UNDEF || code->kind == SCR_DYN_NULL) {
+    *clear = true;
+    *out = 0;
+    return true;
+  }
+  if (code->kind == SCR_DYN_NUM) return scr_process_exit_code_of(code->v.num, out);
+  if (code->kind == SCR_DYN_STR && code->v.str->len != 0) {
+    double number = scr_string_to_number(code->v.str);
+    if (!isnan(number)) return scr_process_exit_code_of(number, out);
+  }
+  /* validateInteger's type gate, with Node's Received tail for the
+   * original value (the uncoercible string, object, bigint, symbol...). */
+  scr_dyn_arg_type_fail("code", "of type number", code);
+  return false;
+}
+
+void scr_process_set_exit_code_dyn(const ScrDyn *code) {
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  scr_exit_code_note(converted);
+}
+
 void scr_process_set_exit_code(double code) {
   int converted;
   if (scr_process_exit_code_of(code, &converted)) scr_exit_code_note(converted);
@@ -2770,6 +3042,15 @@ void scr_process_set_exit_code_tracked(double code) {
   if (!scr_process_exit_code_of(code, &converted)) return;
   scr_exit_code_note(converted);
   scr_exit_code_assigned = true;
+}
+
+void scr_process_set_exit_code_dyn_tracked(const ScrDyn *code) {
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  /* null/undefined clear kHasExitCode as well as the stored code. */
+  scr_exit_code_assigned = !clear;
+  scr_exit_code_note(converted);
 }
 
 bool scr_process_has_exit_code(void) {
@@ -2876,17 +3157,21 @@ static void scr_detach_teardown(void) {
 extern int __llvm_profile_write_file(void) __attribute__((weak));
 #endif
 
-void scr_process_exit(double code) {
-  /* process.exit(code) assigns process.exitCode first, so a code that is
-   * not a safe integer throws its RangeError and the program continues. */
-  int converted;
-  if (!scr_process_exit_code_of(code, &converted)) return;
-  code = converted;
+/* The shared exit sequence, after the code's exitCode-setter validation:
+ * 'exit' listeners, the worker stop, and the teardown-free _Exit. */
+static void scr_process_exit_finish(int code) {
   /* Node runs 'exit' listeners on explicit process.exit() too — they run
    * HERE, synchronously, before the teardown-free exit below. The hook is
    * non-NULL only when the events unit is linked (scr_events.c). */
   scr_process_in_exit = true;
+  /* process.exit assigns process.exitCode before the listeners run, so they
+   * read the status being left with. */
+  scr_exit_code_note(code);
   if (scr_process_exit_hook != NULL) scr_process_exit_hook(code);
+  /* Node reads process.exitCode after the 'exit' listeners have run, so a
+   * listener that assigns it selects the status the process leaves with
+   * (the common "set the final status in an exit hook" shape). */
+  code = (double)scr_exit_code_hint_get();
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
     /* A nested exit or a failing exit listener already selected its code. */
@@ -2910,6 +3195,47 @@ void scr_process_exit(double code) {
   scr_detach_teardown();
 #endif
   _Exit((int)code);
+}
+
+/* process.abort(): flush the program's output and terminate by SIGABRT,
+ * the signal a parent observes (Node's own abort). Node also dumps a
+ * native and a JavaScript stack trace before the signal; those name Node's
+ * addresses and internal frames, so a compiled binary raises the signal
+ * without the dump. A worker's abort throws Node's catchable
+ * ERR_WORKER_UNSUPPORTED_OPERATION instead: the signal would kill every
+ * thread, not just the one that asked. */
+void scr_process_abort(void) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    static const char message[] = "process.abort() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                             "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return;
+  }
+#endif
+  scr_stdout_settle();
+  fflush(stdout);
+  fflush(stderr);
+  /* abort() raises SIGABRT with the default disposition and terminates
+   * even when the program installed a handler, like Node's ABORT(). */
+  abort();
+}
+
+void scr_process_exit(double code) {
+  /* process.exit(code) assigns process.exitCode first, so a code that is
+   * not a safe integer throws its RangeError and the program continues. */
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  scr_process_exit_finish(converted);
+}
+
+void scr_process_exit_dyn(const ScrDyn *code) {
+  /* Node's process.exit forwards the argument to the exitCode setter;
+   * a null or undefined argument clears the code (status 0). */
+  int converted;
+  bool clear;
+  if (!scr_process_exit_code_dyn_of(code, &converted, &clear)) return;
+  scr_process_exit_finish(converted);
 }
 
 /* ── the process introspection statics ────────────────────────────────
@@ -3121,10 +3447,11 @@ double scr_thread_cpu_system(void) { return scr_cpu_system(); }
 
 /* The prev-argument validation: Node checks prevValue.user then
  * prevValue.system and throws the ERR_INVALID_ARG_VALUE RangeError with
- * the received number, catchably. (The frontend guarantees numbers —
- * non-number shapes keep compile fences.) */
+ * the received number, catchably. previousValueIsValid is a number that is
+ * also a non-negative safe integer bound (NumberIsFinite plus
+ * NumberMAX_SAFE_INTEGER). */
 static void scr_cpu_prev_check_field(const char *name, double v) {
-  if (v >= 0 && v <= 1.7976931348623157e308 && v == v) return; /* finite, non-negative */
+  if (v >= 0 && v <= 9007199254740991.0 && v == v) return; /* finite, non-negative safe integer */
   char num[32];
   size_t nlen = scr_f64_to_str(v, num);
   num[nlen] = 0;
@@ -3137,6 +3464,90 @@ void scr_cpu_prev_validate(double user, double system) {
   scr_cpu_prev_check_field("user", user);
   if (scr_exc_pending()) return;
   scr_cpu_prev_check_field("system", system);
+}
+
+/* The checked-dynamic cpuUsage(prev)/threadCpuUsage(prev) forms. Node's
+ * wrappers validate only a TRUTHY prevValue (`if (prevValue) { ... }`), so
+ * null, undefined, 0, '' and NaN all read as "no previous value". A truthy
+ * prevValue reads .user and .system (in that order, accessors included):
+ * an invalid field on a non-object throws the ERR_INVALID_ARG_TYPE
+ * "prevValue" argument error, a non-number field throws the dotted-property
+ * form, and a number outside the safe range throws the RangeError. The
+ * clock sample is taken ONCE, after validation, and both field diffs
+ * subtract from it. `thread` selects the per-thread clock (1) or the
+ * process clock (0). */
+static SCR_TL double scr_cpu_dyn_prev_user, scr_cpu_dyn_prev_system;
+static SCR_TL double scr_cpu_dyn_sample_user, scr_cpu_dyn_sample_system;
+
+static bool scr_cpu_prev_dyn_field(const char *name, const ScrDyn *prev, double *out) {
+  ScrDyn *value = scr_dyn_obj_read(prev, name, strlen(name));
+  if (value == NULL) {
+    if (scr_exc_pending()) return false; /* an accessor threw */
+    value = scr_dyn_undefined();
+  }
+  bool valid = value->kind == SCR_DYN_NUM && value->v.num >= 0 &&
+               value->v.num <= 9007199254740991.0;
+  if (!valid) {
+    /* Node's validateObject accepts an object and rejects null and arrays;
+     * a function with both fields number-valued never reaches it. */
+    bool object = prev->kind != SCR_DYN_ARR && scr_dyn_is_object(prev) &&
+                  !(prev->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(prev));
+    if (!object) {
+      scr_dyn_arg_type_fail("prevValue", "of type object", prev);
+    } else if (value->kind != SCR_DYN_NUM) {
+      char prop[32];
+      snprintf(prop, sizeof prop, "prevValue.%s", name);
+      scr_dyn_prop_type_fail(prop, "of type number", value);
+    } else {
+      scr_cpu_prev_check_field(name, value->v.num);
+    }
+    scr_dyn_release(value);
+    return false;
+  }
+  *out = value->v.num;
+  scr_dyn_release(value);
+  return true;
+}
+
+/* The subtraction in Node's returned object literal reads a validated
+ * previous field AGAIN, after the clock sample, so an accessor runs twice and
+ * its second answer converts with the subtraction's ToNumber. */
+static bool scr_cpu_prev_dyn_raw(const char *name, const ScrDyn *prev, double *out) {
+  ScrDyn *value = scr_dyn_obj_read(prev, name, strlen(name));
+  if (value == NULL) {
+    if (scr_exc_pending()) return false;
+    value = scr_dyn_undefined();
+  }
+  if (value->kind == SCR_DYN_NUM) {
+    *out = value->v.num;
+    scr_dyn_release(value);
+    return true;
+  }
+  bool ok = scr_dyn_number_coerce_js(value, out);
+  scr_dyn_release(value);
+  return ok;
+}
+
+void scr_cpu_prev_prepare_dyn(const ScrDyn *prev, double thread) {
+  double user = 0, system = 0;
+  bool diff = prev != NULL && scr_dyn_truthy(prev);
+  if (diff) {
+    if (!scr_cpu_prev_dyn_field("user", prev, &user)) return;
+    if (!scr_cpu_prev_dyn_field("system", prev, &system)) return;
+  }
+  scr_cpu_dyn_sample_user = thread != 0 ? scr_thread_cpu_user() : scr_cpu_user();
+  scr_cpu_dyn_sample_system = thread != 0 ? scr_thread_cpu_system() : scr_cpu_system();
+  if (diff) {
+    if (!scr_cpu_prev_dyn_raw("user", prev, &user)) return;
+    if (!scr_cpu_prev_dyn_raw("system", prev, &system)) return;
+  }
+  scr_cpu_dyn_prev_user = user;
+  scr_cpu_dyn_prev_system = system;
+}
+
+double scr_cpu_usage_field(double which) {
+  return which != 0 ? scr_cpu_dyn_sample_system - scr_cpu_dyn_prev_system
+                    : scr_cpu_dyn_sample_user - scr_cpu_dyn_prev_user;
 }
 
 double scr_cpu_user_diff(double prev) { return scr_cpu_user() - prev; }
@@ -3572,6 +3983,16 @@ void scr_process_set_title(const ScrStr *title) {
   scr_str_release(text);
 }
 
+/* process.title = value over a checked-dynamic value: Node's setter
+ * converts the value with ToString (a symbol throws its conversion
+ * TypeError; arrays join, objects call their own toString). */
+void scr_process_set_title_dyn(const ScrDyn *title) {
+  ScrStr *text = scr_dyn_string_coerce_js(title);
+  if (text == NULL) return;
+  scr_process_set_title(text);
+  scr_str_release(text);
+}
+
 ScrStr *scr_process_argv0(void) {
   if (scr_lib_arg_count() < 1) return scr_str_new("", 0);
   const char *a = scr_lib_arg(0);
@@ -3667,6 +4088,297 @@ ScrArr *scr_process_getgroups(void) {
 }
 #endif
 
+/* ── the credential setters (node_credentials.cc + node:internal/process/
+ * per_thread's wrapPosixCredentialSetters) ───────────────────────────────
+ * The argument checks are Node's JS layer: validateId accepts a number or a
+ * string (a number goes through validateUint32's ladder), then a numeric id
+ * is used AS the uid/gid while a string id is looked up through
+ * getpwnam_r/getgrnam_r. The C++ sentinel for a failed lookup is
+ * (uid_t)-1, which is also the number 4294967295 — the one observable
+ * edge, where a numeric id reports ERR_UNKNOWN_CREDENTIAL instead of
+ * calling the syscall. A syscall failure is Node's ErrnoException. */
+#if defined(_WIN32) || defined(__wasi__)
+static void scr_cred_absent(const char *name) {
+  char msg[64];
+  int n = snprintf(msg, sizeof msg, "process.%s is not a function", name);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+}
+
+void scr_process_setuid(ScrDyn *id) { (void)id; scr_cred_absent("setuid"); }
+void scr_process_seteuid(ScrDyn *id) { (void)id; scr_cred_absent("seteuid"); }
+void scr_process_setgid(ScrDyn *id) { (void)id; scr_cred_absent("setgid"); }
+void scr_process_setegid(ScrDyn *id) { (void)id; scr_cred_absent("setegid"); }
+void scr_process_setgroups(ScrDyn *groups) { (void)groups; scr_cred_absent("setgroups"); }
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group) {
+  (void)user;
+  (void)extra_group;
+  scr_cred_absent("initgroups");
+}
+#else
+/* validateUint32(id, name): NumberIsInteger first, then the uint32 range. */
+static bool scr_cred_validate_uint32(const ScrDyn *id, const char *name) {
+  double n = id->v.num;
+  char recv[48];
+  char msg[224];
+  int m;
+  if (!isfinite(n) || floor(n) != n) {
+    scr_num_received(n, recv);
+    m = snprintf(msg, sizeof msg,
+                 "The value of \"%s\" is out of range. It must be an integer. Received %s", name, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)m, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (n < 0 || n > 4294967295.0) {
+    scr_num_received(n, recv);
+    m = snprintf(msg, sizeof msg,
+                 "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                 name, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)m, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
+/* validateId: number (validateUint32) or string, and node:internal/errors'
+ * ERR_INVALID_ARG_TYPE for anything else. */
+static bool scr_cred_validate_id(const ScrDyn *id, const char *name) {
+  if (id->kind == SCR_DYN_NUM) return scr_cred_validate_uint32(id, name);
+  if (id->kind == SCR_DYN_STR) return true;
+  scr_dyn_arg_type_fail(name, "one of type number or string", id);
+  return false;
+}
+
+/* ERR_UNKNOWN_CREDENTIAL: "<User|Group> identifier does not exist: <id>",
+ * the identifier rendered as a template string would render it. */
+static void scr_cred_unknown(const char *type, const ScrDyn *id) {
+  ScrStr *text;
+  if (id->kind == SCR_DYN_STR) {
+    text = scr_str_retain(id->v.str);
+  } else {
+    char num[48];
+    size_t n = scr_f64_to_str(id->v.num, num);
+    text = scr_str_new(num, n);
+  }
+  ScrStr *parts[3] = {
+    scr_str_new(type, strlen(type)),
+    scr_str_new(" identifier does not exist: ", 28),
+    text,
+  };
+  ScrStr *msg = scr_str_concat_parts(parts, 3);
+  for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg->data, msg->len, "ERR_UNKNOWN_CREDENTIAL");
+  scr_str_release(msg);
+}
+
+/* A string id as a UTF-8 C string (lone surrogates become U+FFFD, as V8's
+ * Utf8Value writes them). Always a fresh allocation. */
+static char *scr_cred_name(const ScrStr *name) {
+  char *owned = NULL;
+  const char *utf8 = scr_str_utf8(name, &owned);
+  char *out = malloc(name->len + 1);
+  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  memcpy(out, utf8, name->len);
+  out[name->len] = '\0';
+  scr_str_utf8_end(owned);
+  return out;
+}
+
+/* uid_by_name/gid_by_name: a numeric id IS the uid/gid (no lookup); a
+ * string goes through getpwnam_r/getgrnam_r, with the (uid_t)-1 sentinel on
+ * failure. */
+static uid_t scr_cred_uid_for(const ScrDyn *id) {
+  if (id->kind == SCR_DYN_NUM) return (uid_t)(uint32_t)id->v.num;
+  struct passwd pwd;
+  struct passwd *pp = NULL;
+  char buf[8192];
+  char *name = scr_cred_name(id->v.str);
+  errno = 0;
+  bool found = getpwnam_r(name, &pwd, buf, sizeof buf, &pp) == 0 && pp != NULL;
+  free(name);
+  return found ? pp->pw_uid : (uid_t)-1;
+}
+
+static gid_t scr_cred_gid_for(const ScrDyn *id) {
+  if (id->kind == SCR_DYN_NUM) return (gid_t)(uint32_t)id->v.num;
+  struct group grp;
+  struct group *gp = NULL;
+  char buf[8192];
+  char *name = scr_cred_name(id->v.str);
+  errno = 0;
+  bool found = getgrnam_r(name, &grp, buf, sizeof buf, &gp) == 0 && gp != NULL;
+  free(name);
+  return found ? gp->gr_gid : (gid_t)-1;
+}
+
+/* name_by_uid (initgroups' numeric-user path). */
+static char *scr_cred_name_by_uid(uid_t uid) {
+  struct passwd pwd;
+  struct passwd *pp = NULL;
+  char buf[8192];
+  errno = 0;
+  if (getpwuid_r(uid, &pwd, buf, sizeof buf, &pp) != 0 || pp == NULL) return NULL;
+  size_t len = strlen(pp->pw_name);
+  char *out = malloc(len + 1);
+  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  memcpy(out, pp->pw_name, len + 1);
+  return out;
+}
+
+/* wrapIdSetter: validate, then the lookup, then the syscall — an unknown
+ * string id answers the sentinel, which the JS layer turns into
+ * ERR_UNKNOWN_CREDENTIAL. */
+static void scr_cred_set_uid(ScrDyn *id, const char *type, const char *syscall, int which) {
+  if (!scr_cred_validate_id(id, "id")) return;
+  uid_t uid = scr_cred_uid_for(id);
+  if (uid == (uid_t)-1) {
+    scr_cred_unknown(type, id);
+    return;
+  }
+  int rc = which == 0 ? setuid(uid) : seteuid(uid);
+  if (rc != 0) scr_fs_throw_errno_exception(errno, syscall, NULL);
+}
+
+static void scr_cred_set_gid(ScrDyn *id, const char *type, const char *syscall, int which) {
+  if (!scr_cred_validate_id(id, "id")) return;
+  gid_t gid = scr_cred_gid_for(id);
+  if (gid == (gid_t)-1) {
+    scr_cred_unknown(type, id);
+    return;
+  }
+  int rc = which == 0 ? setgid(gid) : setegid(gid);
+  if (rc != 0) scr_fs_throw_errno_exception(errno, syscall, NULL);
+}
+
+void scr_process_setuid(ScrDyn *id) { scr_cred_set_uid(id, "User", "setuid", 0); }
+void scr_process_seteuid(ScrDyn *id) { scr_cred_set_uid(id, "User", "seteuid", 1); }
+void scr_process_setgid(ScrDyn *id) { scr_cred_set_gid(id, "Group", "setgid", 0); }
+void scr_process_setegid(ScrDyn *id) { scr_cred_set_gid(id, "Group", "setegid", 1); }
+
+/* setgroups: an Array, then every element through validateId; a failed
+ * lookup names the element that failed, exactly the index the C++ layer
+ * reports (i + 1) and the JS layer reads back. */
+void scr_process_setgroups(ScrDyn *groups) {
+  /* A stored TypeScript array crossing an untyped slot arrives as a
+   * typed-reference capsule: materialize it so the Array test and the
+   * element reads see the array itself. A capsule that is not an array
+   * (a class instance, a record) still fails the Array test below, as
+   * Node's Array.isArray would. */
+  ScrDyn *materialized = NULL;
+  if (groups->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(groups) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(groups);
+    if (scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    groups = materialized;
+  }
+  if (groups->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("groups", "an instance of Array", groups);
+    scr_dyn_release(materialized);
+    return;
+  }
+  size_t n = groups->v.arr.len;
+  for (size_t i = 0; i < n; i++) {
+    char name[32];
+    int m = snprintf(name, sizeof name, "groups[%zu]", i);
+    if (m < 0) {
+      scr_dyn_release(materialized);
+      return;
+    }
+    if (!scr_cred_validate_id(groups->v.arr.items[i], name)) {
+      scr_dyn_release(materialized);
+      return;
+    }
+  }
+  gid_t *list = n > 0 ? malloc(n * sizeof *list) : NULL;
+  if (n > 0 && list == NULL) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++) {
+    list[i] = scr_cred_gid_for(groups->v.arr.items[i]);
+    if (list[i] == (gid_t)-1) {
+      free(list);
+      scr_cred_unknown("Group", groups->v.arr.items[i]);
+      scr_dyn_release(materialized);
+      return;
+    }
+  }
+  int rc = setgroups(n, list);
+  int e = errno;
+  free(list);
+  scr_dyn_release(materialized);
+  if (rc != 0) scr_fs_throw_errno_exception(e, "setgroups", NULL);
+}
+
+/* initgroups: a numeric user is resolved to its name first (failure is
+ * result 1, "User"), the extra group is looked up (failure is result 2,
+ * "Group"), and only then does the syscall run. */
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group) {
+  if (!scr_cred_validate_id(user, "user")) return;
+  if (!scr_cred_validate_id(extra_group, "extraGroup")) return;
+  char *name;
+  if (user->kind == SCR_DYN_NUM) {
+    name = scr_cred_name_by_uid((uid_t)(uint32_t)user->v.num);
+    if (name == NULL) {
+      scr_cred_unknown("User", user);
+      return;
+    }
+  } else {
+    name = scr_cred_name(user->v.str);
+  }
+  gid_t gid = scr_cred_gid_for(extra_group);
+  if (gid == (gid_t)-1) {
+    free(name);
+    scr_cred_unknown("Group", extra_group);
+    return;
+  }
+  int rc = initgroups(name, gid);
+  int e = errno;
+  free(name);
+  if (rc != 0) scr_fs_throw_errno_exception(e, "initgroups", NULL);
+}
+#endif
+
+/* process.debugPort — the inspector port, 9229 until written. The write is
+ * node_process_object.cc's setter: Int32Value (ToNumber, then the 32-bit
+ * wrap) and the ERR_OUT_OF_RANGE gate that admits 0 and 1024..65535 only; a
+ * refused write leaves the previous port in place. */
+static SCR_TL double scr_debug_port = 9229;
+
+double scr_process_debug_port(void) { return scr_debug_port; }
+
+void scr_process_set_debug_port(ScrDyn *port) {
+  double n = scr_dyn_number_coerce(port);
+  if (scr_exc_pending()) {
+    /* V8's Int32Value answers 0 when its conversion throws, and Node's setter
+     * stores that before the exception propagates: a Symbol, a BigInt or a
+     * valueOf that throws leaves the port at 0. */
+    scr_debug_port = 0;
+    return;
+  }
+  double converted = (double)(int32_t)scr_to_uint32(n);
+  if (converted != 0 && (converted < 1024 || converted > 65535)) {
+    static const char msg[] = "process.debugPort must be 0 or in range 1024 to 65535";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  scr_debug_port = converted;
+}
+
+/* process.sourceMapsEnabled — node:internal/source_map/source_map_cache's
+ * flag, read through the getter-only accessor and written through
+ * setSourceMapsEnabled(validateBoolean). */
+static SCR_TL bool scr_source_maps_enabled = false;
+
+bool scr_process_source_maps_enabled(void) { return scr_source_maps_enabled; }
+
+void scr_process_set_source_maps_enabled(ScrDyn *value) {
+  if (value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("enabled", "of type boolean", value);
+    return;
+  }
+  scr_source_maps_enabled = value->v.b;
+}
+
+
 /* process._exiting — true once the exit sequence began (set above and by
  * scr_run_exit_listeners in scr_events.c; the flag lives HERE so reading
  * it never forces the events unit into the link). */
@@ -3730,6 +4442,66 @@ double scr_process_umask(double mask) {
 #endif
 }
 
+/* validateUint32(value, 'mask') from Node's validators: a number, an
+ * integer, then 0..2^32-1; each failure its own ERR_OUT_OF_RANGE. -0
+ * coerces to +0, as parseFileMode's `value + 0` does. */
+static bool scr_process_mask_validate(double mask, double *out) {
+  char recv[48], msg[192];
+  if (!(isfinite(mask) && trunc(mask) == mask)) {
+    scr_num_received(mask, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mask\" is out of range. It must be an integer. Received %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (mask < 0 || mask > 4294967295.0) {
+    scr_num_received(mask, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"mask\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  *out = mask + 0.0;
+  return true;
+}
+
+/* process.umask(mask) — the one-argument form's parseFileMode gate. */
+double scr_process_umask_chk(double mask) {
+  double value;
+  if (!scr_process_mask_validate(mask, &value)) return 0;
+  return scr_process_umask(value);
+}
+
+/* process.umask(mask) for a checked-dynamic argument. Node skips the gate
+ * only for `undefined` (the no-argument read); null is `??=`-ed to
+ * undefined and rejected as such. An octal string is parseInt(value, 8)
+ * and then the uint32 gate; any other type keeps validateUint32's type
+ * error. */
+double scr_process_umask_dyn(const ScrDyn *mask) {
+  if (mask == NULL || mask->kind == SCR_DYN_UNDEF) return scr_process_umask(-1);
+  if (mask->kind == SCR_DYN_NULL) {
+    scr_dyn_arg_type_fail("mask", "of type number", scr_dyn_undefined());
+    return 0;
+  }
+  if (mask->kind == SCR_DYN_STR) {
+    const ScrStr *text = mask->v.str;
+    bool octal = text->len != 0;
+    for (size_t i = 0; i < text->len && octal; i++)
+      octal = text->data[i] >= '0' && text->data[i] <= '7';
+    if (!octal) {
+      scr_dyn_arg_value_fail("mask", "must be a 32-bit unsigned integer or an octal string", mask);
+      return 0;
+    }
+    double value = 0;
+    for (size_t i = 0; i < text->len; i++) value = value * 8 + (double)(text->data[i] - '0');
+    return scr_process_umask_chk(value);
+  }
+  if (mask->kind == SCR_DYN_NUM) return scr_process_umask_chk(mask->v.num);
+  scr_dyn_arg_type_fail("mask", "of type number", mask);
+  return 0;
+}
+
 /* Node's chdir failure: the uv exception carries the working directory
  * as path and the target, as given, as dest ("ENOENT: no such file or
  * directory, chdir '<cwd>' -> '<target>'"). */
@@ -3776,12 +4548,39 @@ void scr_process_chdir(ScrStr *dir) {
 #endif
 }
 
+/* process.chdir(directory) over a checked-dynamic argument: validateString
+ * (typeof, so a String object is rejected too) then the chdir above. */
+void scr_process_chdir_dyn(const ScrDyn *dir) {
+  if (dir->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("directory", "of type string", dir);
+    return;
+  }
+  scr_process_chdir(dir->v.str);
+}
+
 /* net's process-wide happy-eyeballs attempt budget (Node's
  * getDefaultAutoSelectFamilyAttemptTimeout pair, default 250ms). Lives in
  * the core unit so the knob never forces scr_net.c into the link. */
 static SCR_TL double scr_net_autosel_timeout_ms = 250;
 
 double scr_net_get_autosel_timeout(void) { return scr_net_autosel_timeout_ms; }
+
+/* net's process-wide autoSelectFamily default (Node's
+ * getDefaultAutoSelectFamily pair, true like Node's). The connect paths
+ * read it when a dial resolves more than one address; the setter runs
+ * Node's validateBoolean over the checked-dynamic argument. */
+static SCR_TL bool scr_net_default_autosel = true;
+
+bool scr_net_get_default_autosel(void) { return scr_net_default_autosel; }
+
+void scr_net_set_default_autosel(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("value", "of type boolean",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_default_autosel = value->v.b;
+}
 
 /* Node's setDefaultAutoSelectFamilyAttemptTimeout: validateInt32(value,
  * 'value', 1), then the sub-10ms floor (Node clamps small budgets to
@@ -3803,6 +4602,19 @@ void scr_net_set_autosel_timeout(double ms) {
     return;
   }
   scr_net_autosel_timeout_ms = ms < 10 ? 10 : ms;
+}
+
+/* The checked-dynamic entry: Node's validateNumber first (a non-number
+ * throws ERR_INVALID_ARG_TYPE; NaN passes the type gate and lands in the
+ * integer rendering the double form gives it), then the same validateInt32
+ * ladder. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("value", "of type number",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_set_autosel_timeout(value->v.num);
 }
 
 /* ── fs error formatting ─────────────────────────────────────────────
@@ -4313,27 +5125,66 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_common(path, data, "wb");
 }
 
-/* Node's parseFileMode for a numeric mode: a number that is an integer in
+/* Node's validateUint32 for a file mode: a number that is an integer in
  * 0..0xFFFFFFFF. Anything else throws Node's ERR_OUT_OF_RANGE and answers
- * false. */
-static bool scr_fs_file_mode_valid(double mode) {
-  char recv[48], msg[176];
-  scr_num_received(mode, recv);
+ * false; a passing value is handed back additively zeroed, like Node's
+ * `return value + 0;`. */
+bool scr_fs_mode_number_valid(double mode, const char *name, double *out) {
+  char recv[48], msg[208];
   if (!(isfinite(mode) && trunc(mode) == mode)) {
+    scr_num_received(mode, recv);
     int len = snprintf(msg, sizeof msg,
-                       "The value of \"mode\" is out of range. It must be an integer. Received %s",
-                       recv);
+                       "The value of \"%s\" is out of range. It must be an integer. Received %s",
+                       name, recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return false;
   }
   if (mode < 0 || mode > 4294967295.0) {
+    scr_num_received(mode, recv);
     int len = snprintf(msg, sizeof msg,
-                       "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
-                       recv);
+                       "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       name, recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return false;
   }
+  *out = mode + 0;
   return true;
+}
+
+/* parseFileMode's string arm: the whole string must be octal digits (the
+ * empty string is not), and it parses base 8. Anything else throws Node's
+ * ERR_INVALID_ARG_VALUE naming the received string. */
+bool scr_fs_mode_octal(const ScrStr *text, const char *name, double *out) {
+  bool octal = text->len > 0;
+  for (size_t i = 0; octal && i < text->len; i++) {
+    if (text->data[i] < '0' || text->data[i] > '7') octal = false;
+  }
+  if (!octal) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "The ");
+    scr_jb_puts(&b, strchr(name, '.') != NULL ? "property '" : "argument '");
+    scr_jb_puts(&b, name);
+    scr_jb_puts(&b, "' must be a 32-bit unsigned integer or an octal string. Received '");
+    scr_jb_puts(&b, text->data);
+    scr_jb_puts(&b, "'");
+    ScrStr *msg = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(msg);
+    return false;
+  }
+  /* parseInt(value, 8), then validateUint32: a string that parses past
+   * 0xffffffff throws the same ERR_OUT_OF_RANGE a number does. */
+  double parsed = 0;
+  for (size_t i = 0; i < text->len; i++) parsed = parsed * 8 + (double)(text->data[i] - '0');
+  return scr_fs_mode_number_valid(parsed, name, out);
+}
+
+/* The numeric-mode wrapper the write and open paths already validate
+ * through. */
+static bool scr_fs_file_mode_valid(double mode) {
+  double parsed;
+  return scr_fs_mode_number_valid(mode, "mode", &parsed);
 }
 
 /* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
@@ -4391,6 +5242,70 @@ bool scr_fs_exists_bytes(ScrBytes *bytes) {
   return found;
 }
 
+/* mkdirSync with the option ladder already resolved: Node validates the
+ * path, then parses the mode (its `name` is "mode" for a bare mode option
+ * and "options.mode" for the object member), then calls mkdir(2) — or,
+ * recursively, the first-created-directory walk. Answers the first created
+ * directory in the recursive form and NULL otherwise (the plain form's
+ * result is discarded, the existing directory's is undefined). */
+/* The plain mkdir(2) behind every non-recursive form: it creates one
+ * directory and answers what Node's binding answers for it, undefined. */
+static ScrStr *scr_fs_mkdir_plain(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
+  return NULL;
+}
+
+static ScrStr *scr_fs_mkdir_resolved(ScrStr *path, double mode, const char *name, bool recursive) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, name, &parsed)) return NULL;
+  if (!recursive) return scr_fs_mkdir_plain(path, parsed);
+  return scr_fs_mkdir_recursive_first(path, parsed);
+}
+
+/* The same with an octal-string mode. */
+static ScrStr *scr_fs_mkdir_octal(ScrStr *path, ScrStr *mode, const char *name, bool recursive) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, name, &parsed)) return NULL;
+  if (!recursive) return scr_fs_mkdir_plain(path, parsed);
+  return scr_fs_mkdir_recursive_first(path, parsed);
+}
+
+ScrStr *scr_fs_mkdir_obj_number(ScrStr *path, double mode, bool recursive) {
+  return scr_fs_mkdir_resolved(path, mode, "options.mode", recursive);
+}
+
+ScrStr *scr_fs_mkdir_obj_octal(ScrStr *path, ScrStr *mode, bool recursive) {
+  return scr_fs_mkdir_octal(path, mode, "options.mode", recursive);
+}
+
+/* The statement forms answer nothing, so the walk's first created
+ * directory is released here rather than by the caller. */
+void scr_fs_mkdir_obj_number_void(ScrStr *path, double mode, bool recursive) {
+  scr_str_release(scr_fs_mkdir_obj_number(path, mode, recursive));
+}
+
+void scr_fs_mkdir_obj_octal_void(ScrStr *path, ScrStr *mode, bool recursive) {
+  scr_str_release(scr_fs_mkdir_obj_octal(path, mode, recursive));
+}
+
+/* mkdirSync's top-level mode forms are never recursive: they create one
+ * directory and answer undefined, the value the call site keeps. */
+ScrStr *scr_fs_mkdir_mode_value(ScrStr *path, double mode) {
+  return scr_fs_mkdir_resolved(path, mode, "mode", false);
+}
+
+ScrStr *scr_fs_mkdir_str_value(ScrStr *path, ScrStr *mode) {
+  return scr_fs_mkdir_octal(path, mode, "mode", false);
+}
+
+/* mkdirSync(p, "700") — the bare string option is parseFileMode's "mode". */
+void scr_fs_mkdir_mode_octal(ScrStr *path, ScrStr *mode) {
+  (void)scr_fs_mkdir_str_value(path, mode);
+}
+
 void scr_fs_mkdir(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return;
   if (scr_sys_mkdir(path->data, 0777) != 0) scr_fs_throw(errno, "mkdir", path);
@@ -4400,8 +5315,7 @@ void scr_fs_mkdir(ScrStr *path) {
  * (umask applies, exactly as in Node — mode is the syscall argument;
  * Windows has no directory modes and drops it, like Node there). */
 void scr_fs_mkdir_mode(ScrStr *path, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
+  (void)scr_fs_mkdir_resolved(path, mode, "mode", false);
 }
 
 #ifdef _WIN32
@@ -4448,12 +5362,22 @@ void scr_fs_unlink(ScrStr *path) {
 }
 
 void scr_fs_chmod(ScrStr *path, double mode) {
+  /* Node validates the path, then parseFileMode's numeric arm. */
   if (!scr_fs_path_ok(path, "path")) return;
-  if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return;
+  if (chmod(path->data, (mode_t)parsed) != 0) scr_fs_throw(errno, "chmod", path);
+}
+
+void scr_fs_chmod_str_mode(ScrStr *path, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return;
+  if (chmod(path->data, (mode_t)parsed) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
+bool scr_fs_fd_valid(double fd);
 
 /* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
  * with the RangeError thrown. */
@@ -4476,7 +5400,7 @@ bool scr_fs_owner_id_valid(double id, const char *name) {
 static void scr_fs_chown_op(ScrStr *path, double fd, bool no_follow, double uid, double gid) {
   if (!scr_fs_owner_id_valid(uid, "uid") || !scr_fs_owner_id_valid(gid, "gid")) return;
   /* The binding checks fchown's fd after the ids. */
-  if (!path && !scr_fs_write_fd_valid(fd)) return;
+  if (!path && !scr_fs_fd_valid(fd)) return;
 #if defined(_WIN32) || defined(__wasi__)
   (void)path; (void)fd; (void)no_follow;
 #else
@@ -4509,31 +5433,75 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
  * the compiler with Node's 0o666 default; it is checked like
  * parseFileMode before the open, and open(2) ignores it unless the flags
  * create the file. */
-double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return 0;
-  const char *f = flags->data;
-  int of;
-  if (strcmp(f, "r") == 0) of = O_RDONLY;
-  else if (strcmp(f, "rs") == 0 || strcmp(f, "sr") == 0) of = O_RDONLY | O_SYNC;
-  else if (strcmp(f, "r+") == 0) of = O_RDWR;
-  else if (strcmp(f, "rs+") == 0 || strcmp(f, "sr+") == 0) of = O_RDWR | O_SYNC;
-  else if (strcmp(f, "w") == 0) of = O_TRUNC | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "wx") == 0 || strcmp(f, "xw") == 0) of = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "w+") == 0) of = O_TRUNC | O_CREAT | O_RDWR;
-  else if (strcmp(f, "wx+") == 0 || strcmp(f, "xw+") == 0) of = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "a") == 0) of = O_APPEND | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "ax") == 0 || strcmp(f, "xa") == 0) of = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "as") == 0 || strcmp(f, "sa") == 0) of = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
-  else if (strcmp(f, "a+") == 0) of = O_APPEND | O_CREAT | O_RDWR;
-  else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
+/* Whether a flag string is one of stringToFlags' spellings. The comparison
+ * is by the string's length, so an embedded NUL is a character of the flag
+ * rather than a terminator, as Node's string equality reads it. */
+static bool scr_fs_flag_name_is(const ScrStr *flags, const char *want) {
+  size_t len = strlen(want);
+  return flags->len == len && memcmp(flags->data, want, len) == 0;
+}
+
+/* Node's stringToFlags for the documented flag strings (and nullish →
+ * O_RDONLY); anything else throws ERR_INVALID_ARG_VALUE naming the flags.
+ * The name is rendered by util.inspect and truncated as errors.js does, so
+ * no flag length can copy past the message it is printed in. */
+bool scr_fs_flag_string(const ScrStr *flags, int *out) {
+  if (scr_fs_flag_name_is(flags, "r")) *out = O_RDONLY;
+  else if (scr_fs_flag_name_is(flags, "rs") || scr_fs_flag_name_is(flags, "sr")) *out = O_RDONLY | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "r+")) *out = O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "rs+") || scr_fs_flag_name_is(flags, "sr+")) *out = O_RDWR | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "w")) *out = O_TRUNC | O_CREAT | O_WRONLY;
+  else if (scr_fs_flag_name_is(flags, "wx") || scr_fs_flag_name_is(flags, "xw")) *out = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "w+")) *out = O_TRUNC | O_CREAT | O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "wx+") || scr_fs_flag_name_is(flags, "xw+")) *out = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "a")) *out = O_APPEND | O_CREAT | O_WRONLY;
+  else if (scr_fs_flag_name_is(flags, "ax") || scr_fs_flag_name_is(flags, "xa")) *out = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "as") || scr_fs_flag_name_is(flags, "sa")) *out = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "a+")) *out = O_APPEND | O_CREAT | O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "ax+") || scr_fs_flag_name_is(flags, "xa+")) *out = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "as+") || scr_fs_flag_name_is(flags, "sa+")) *out = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
   else {
-    char msg[128];
-    int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
-    return 0;
+    ScrStr *shown = scr_str_inspect_quoted(flags, true);
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "The argument 'flags' is invalid. Received ");
+    scr_jb_put_str(&message, shown);
+    scr_str_release(shown);
+    ScrStr *text = scr_jb_finish(&message);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(text);
+    return false;
   }
-  if (!scr_fs_file_mode_valid(mode)) return 0;
+  return true;
+}
+
+/* Node's validateInt32 for the numeric flags argument (stringToFlags'
+ * number arm). False with Node's RangeError thrown. */
+bool scr_fs_flags_number_valid(double flags, double *out) {
+  char recv[48], msg[208];
+  if (!(isfinite(flags) && trunc(flags) == flags)) {
+    scr_num_received(flags, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (flags < -2147483648.0 || flags > 2147483647.0) {
+    scr_num_received(flags, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  *out = flags + 0;
+  return true;
+}
+
+/* The open(2) the three flag forms share (BINARY: zero on POSIX, CRLF
+ * translation off on Windows). */
+double scr_fs_open_flags(ScrStr *path, int of, double mode) {
   int fd = open(path->data, of | O_BINARY, (mode_t)mode);
   if (fd < 0) {
     scr_fs_throw(errno, "open", path);
@@ -4542,14 +5510,37 @@ double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   return (double)fd;
 }
 
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (!scr_fs_flag_string(flags, &of)) return 0;
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return 0;
+  return scr_fs_open_flags(path, of, parsed);
+}
+
+/* openSync with an octal-string mode: the string parses like Node's
+ * parseFileMode. */
+double scr_fs_open_str_mode(ScrStr *path, ScrStr *flags, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (!scr_fs_flag_string(flags, &of)) return 0;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return 0;
+  return scr_fs_open_flags(path, of, parsed);
+}
+
 /* fs.openSync(path, fs.constants.O_* [, mode]). The compiler passes a
  * platform-independent mask for inline flag expressions; native flags are
- * chosen here so cross-compiled programs retain the target's values. */
-double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
+ * chosen here so cross-compiled programs retain the target's values.
+ *
+ * The mode is already parsed: Node validates the path, then stringToFlags
+ * (which the compiler resolved), then parseFileMode. */
+double scr_fs_open_mask(ScrStr *path, double flags, double mode) {
   if (!scr_fs_path_ok(path, "path")) return 0;
   int bits = (int)flags;
   int access = bits & 3;
-  if (access == 3 || !(isfinite(mode) && trunc(mode) == mode && mode >= 0 && mode <= 4294967295.0)) {
+  if (access == 3) {
     scr_throw_error_msg(SCR_ERR_RANGE, "Invalid open flags or mode", 26);
     return 0;
   }
@@ -4577,11 +5568,28 @@ double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
   return (double)fd;
 }
 
+/* The same with a numeric creation mode. */
+double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed_mode)) return 0;
+  return scr_fs_open_mask(path, flags, parsed_mode);
+}
+
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
+bool scr_fs_fd_valid(double fd);
 
 double scr_fs_open_native(ScrStr *path, double flags, double mode) {
+  /* Node validates the path, then stringToFlags' numeric arm, then the
+   * creation mode; the flags reach open(2) as the raw bits the program
+   * computed from fs.constants. */
   if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_flags;
+  if (!scr_fs_flags_number_valid(flags, &parsed_flags)) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed_mode)) return 0;
+  flags = parsed_flags;
+  mode = parsed_mode;
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
   if (!wide) { scr_fs_throw(scr_fs_win_errno(GetLastError()), "open", path); return 0; }
@@ -4594,10 +5602,19 @@ double scr_fs_open_native(ScrStr *path, double flags, double mode) {
   return (double)fd;
 }
 
+/* fchmodSync validates the mode before the descriptor (its arguments
+ * evaluate in that order), then binding.fchmod checks the fd. */
+static bool scr_fs_fchmod_args(double fd, double mode) {
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return false;
+  if (!scr_fs_fd_valid(fd)) return false;
+  return true;
+}
+
 void scr_fs_fchmod(double fd, double mode) {
+  if (!scr_fs_fchmod_args(fd, mode)) return;
 #ifdef _WIN32
   (void)fd;
-  (void)mode;
   /* The CRT cannot enforce Unix permission bits through a descriptor.
    * A no-op success would misrepresent a security-sensitive operation. */
   scr_fs_throw_nopath(ENOSYS, "fchmod");
@@ -4606,7 +5623,21 @@ void scr_fs_fchmod(double fd, double mode) {
 #endif
 }
 
+void scr_fs_fchmod_str_mode(double fd, ScrStr *mode) {
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return;
+  if (!scr_fs_fd_valid(fd)) return;
+#ifdef _WIN32
+  (void)parsed;
+  scr_fs_throw_nopath(ENOSYS, "fchmod");
+#else
+  if (fchmod((int)fd, (mode_t)parsed) != 0) scr_fs_throw_nopath(errno, "fchmod");
+#endif
+}
+
 void scr_fs_fsync(double fd) {
+  /* binding.fsync checks the descriptor before the syscall. */
+  if (!scr_fs_fd_valid(fd)) return;
 #ifdef _WIN32
   if (_commit((int)fd) != 0) scr_fs_throw_nopath(errno, "fsync");
 #else
@@ -4615,7 +5646,7 @@ void scr_fs_fsync(double fd) {
 }
 
 void scr_fs_fdatasync(double fd) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_fd_valid(fd)) return;
 #if defined(_WIN32)
   if (_commit((int)fd) != 0) scr_fs_throw_nopath(errno, "fdatasync");
 #elif defined(__APPLE__)
@@ -4641,8 +5672,10 @@ bool scr_fs_truncate_len_valid(double length) {
 }
 
 void scr_fs_ftruncate(double fd, double length) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+  /* ftruncateSync validates len in JS before binding.ftruncate checks the
+   * descriptor: an invalid len wins over an invalid fd. */
   if (!scr_fs_truncate_len_valid(length)) return;
+  if (!scr_fs_fd_valid(fd)) return;
   if (length < 0) length = 0;
 #ifdef _WIN32
   int error = (int)_chsize_s((int)fd, (__int64)length);
@@ -4870,7 +5903,9 @@ static ssize_t scr_fs_pwrite(int fd, const void *data, size_t length, double pos
 #endif
 }
 
-static bool scr_fs_write_fd_valid(double fd) {
+/* getValidatedFd's validateInteger(fd, 'fd', 0, 2147483647). Other units
+ * (the checked-dynamic fd ladders) reuse the exact message. */
+bool scr_fs_fd_valid(double fd) {
   char msg[160];
   char recv[48];
   scr_num_received(fd, recv);
@@ -5012,7 +6047,7 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
  * writes whole (scr_fs_bytes_write.c). */
 double scr_fs_write_mem(double fd, const void *data, size_t length,
                         double position) {
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   /* fs.writeSync(1|2, ...) and writes to a duplicated stdout descriptor go
    * between the program's other output: publish buffered stdout first so
    * source order holds (--stdout-buffering). */
@@ -5097,13 +6132,39 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
   return scr_fs_write_mem(fd, buf->data + off, (size_t)length, position);
 }
 
+/* fs.writeSync(fd, string[, position[, encoding]]): Node's string arm of
+ * writeSync — validateEncoding (hex needs an even number of UTF-16 units),
+ * then binding.writeString's ParseEncoding (an unknown or non-string name
+ * is utf8), then the descriptor, then one write at a safe-integer position
+ * or the current offset. */
+bool scr_fs_write_str_encoding_ok(ScrStr *data, ScrStr *encoding) {
+  ScrStr *enc = scr_bytes_normalize_encoding_or_utf8(encoding);
+  bool ok = true;
+  if (enc->len == 3 && memcmp(enc->data, "hex", 3) == 0) {
+    double units = scr_str_utf16_len(data);
+    if (fmod(units, 2.0) != 0) {
+      ScrStr *shown = scr_str_inspect_quoted(encoding, true);
+      char msg[320];
+      int len = snprintf(msg, sizeof msg,
+                         "The argument 'encoding' is invalid for data of length %.0f. Received %s",
+                         units, shown->data);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+      scr_str_release(shown);
+      ok = false;
+    }
+  }
+  scr_str_release(enc);
+  return ok;
+}
+
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding) {
-  (void)encoding; /* frontend proves utf8; the argument still evaluates */
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  double wrote = scr_fs_write_mem(fd, bytes, data->len, position);
-  scr_str_utf8_end(owned);
+  if (!scr_fs_write_str_encoding_ok(data, encoding)) return 0;
+  ScrStr *enc = scr_bytes_normalize_encoding_or_utf8(encoding);
+  ScrBytes *bytes = scr_bytes_from_str(data, enc);
+  scr_str_release(enc);
+  double wrote = scr_fs_write_mem(fd, bytes->data, bytes->len, position);
+  scr_bytes_release(bytes);
   return wrote;
 }
 
@@ -5222,6 +6283,10 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
+  /* binding.read checks the descriptor after the JS-level window checks
+   * (and after the zero-length early return), so an invalid fd loses to an
+   * invalid offset, position, length or buffer. */
+  if (!scr_fs_fd_valid(fd)) return 0;
   size_t off = (size_t)offset;
   size_t want = (size_t)length;
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
@@ -5256,7 +6321,7 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
  * scalar calls would change short I/O and pipe atomicity. This portable seam
  * also preserves positioned I/O on targets without preadv/pwritev. */
 double scr_fs_read_zero(double fd, double position) {
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   uint8_t dummy;
   ssize_t n = position < 0 ? read((int)fd, &dummy, 0)
     : scr_fs_pread((int)fd, &dummy, 0, (int64_t)position);
@@ -5268,7 +6333,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
                                  bool writing) {
   size_t count = (size_t)scr_arr_len(buffers);
   if (writing && count == 0) return 0;
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   if (count == 0) { scr_fs_throw_nopath(EINVAL, "read"); return 0; }
   size_t length = 0;
   for (size_t i = 0; i < count; i++) {
@@ -5290,8 +6355,11 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
     }
   }
   ScrBytes window = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = data};
-  position = isfinite(position) && position >= 0 && position <= 9007199254740991.0
-    ? trunc(position) : -1;
+  /* GetOffset: a safe integer position is honored; every other value (a
+   * fraction, a negative, NaN) is libuv's "use the current offset". */
+  position = isfinite(position) && trunc(position) == position && position >= 0 &&
+             position <= 9007199254740991.0
+    ? position : -1;
   double transferred = writing
     ? scr_fs_write_sync(fd, &window, 0, (double)length, position)
     : length == 0 ? scr_fs_read_zero(fd, position)
@@ -5320,6 +6388,8 @@ double scr_fs_writev_sync(double fd, ScrArr *buffers, double position) {
 }
 
 void scr_fs_close(double fd) {
+  /* binding.close checks the descriptor before the syscall. */
+  if (!scr_fs_fd_valid(fd)) return;
   if (close((int)fd) != 0) {
     int e = errno;
     char namebuf[16];
@@ -5806,14 +6876,7 @@ void scr_fs_mkdir_recursive(ScrStr *path) {
 /* mkdirSync(p, { recursive: true, mode }): Node passes the mode to every
  * directory the walk creates (existing ones keep theirs). */
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  char *buf = malloc(path->len + 1);
-  if (!buf) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  memcpy(buf, path->data, path->len + 1);
-  scr_mkdir_rec(buf, path->len, (mode_t)mode);
-  free(buf);
+  scr_str_release(scr_fs_mkdir_resolved(path, mode, "options.mode", true));
 }
 
 /* mkdir(p, { recursive: true })'s answer, Node's MKDirpSync first path:
@@ -7161,7 +8224,28 @@ ScrStats *scr_stats_of_fd(int fd, int *error) {
 #endif
 }
 
+/* Node's binding validates the descriptor as an int32 in [0, 2^31-1] before
+ * the syscall, whatever number reached it: a call site the checker typed
+ * passes its value here directly, so the ladder lives on the one entry point
+ * every fstat path calls. */
 ScrStats *scr_fs_fstat(double fd) {
+  char recv[48], msg[192];
+  if (!(isfinite(fd) && trunc(fd) == fd)) {
+    scr_num_received(fd, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  if (fd < 0 || fd > 2147483647.0) {
+    scr_num_received(fd, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be >= 0 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
   int error = 0;
   ScrStats *s = scr_stats_of_fd((int)fd, &error);
   if (!s) scr_fs_throw_nopath(error, "fstat");
@@ -7492,6 +8576,92 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
     scr_dyn_obj_set(object, name, (size_t)len, ns[i]);
   }
   return object;
+}
+
+/* ── checked-dynamic Stats values back to the snapshot ─────────────── */
+
+/* One integer member of a dynamic Stats object: a number member (Stats) and
+ * a bigint member (BigIntStats) name the same snapshot field. */
+static bool scr_stats_dyn_field(const ScrDyn *object, const char *name, uint64_t *out) {
+  ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
+  if (!value) return false;
+  if (value->kind == SCR_DYN_NUM) {
+    *out = (uint64_t)value->v.num;
+    return true;
+  }
+  if (value->kind == SCR_DYN_BIGINT) {
+    *out = (uint64_t)scr_bigint_to_i64(value->v.bigint);
+    return true;
+  }
+  return false;
+}
+
+/* One timestamp: a BigIntStats object carries the exact nanoseconds, a
+ * number Stats object the millisecond value Node computes from them
+ * (msFromTimeSpec: sec * 1000 + nsec / 1e6), which this inverts. */
+static bool scr_stats_dyn_time(const ScrDyn *object, int which, int64_t *sec, int64_t *nsec) {
+  char name[16];
+  int len = snprintf(name, sizeof name, "%sNs", scr_stats_date_names[which]);
+  ScrDyn *value = scr_dyn_obj_get(object, name, (size_t)len);
+  if (value && value->kind == SCR_DYN_BIGINT) {
+    /* nsFromTimeSpecBigInt: the BigInt quotient and remainder. */
+    int64_t ns = scr_bigint_to_i64(value->v.bigint);
+    int64_t q = ns / INT64_C(1000000000);
+    *sec = q;
+    *nsec = ns - q * INT64_C(1000000000);
+    return true;
+  }
+  len = snprintf(name, sizeof name, "%sMs", scr_stats_date_names[which]);
+  value = scr_dyn_obj_get(object, name, (size_t)len);
+  if (value && value->kind == SCR_DYN_NUM) {
+    double ms = value->v.num;
+    double whole = floor(ms / 1000.0);
+    *sec = (int64_t)whole;
+    *nsec = (int64_t)llround((ms - whole * 1000.0) * 1e6);
+    return true;
+  }
+  return false;
+}
+
+/* A typed Stats slot taking a value the compiler held as a checked-dynamic
+ * value: the stat calls' run-time options ladder answers Node's Stats or
+ * BigIntStats object (the member table its `bigint` option chose), and this
+ * copies the object's fields into the snapshot handle the typed members
+ * read. The object's prototype is the brand: anything else is a value the
+ * slot's type cannot hold, the same TypeError the other checked
+ * conversions throw. */
+ScrStats *scr_stats_from_dyn(const ScrDyn *object) {
+  static const char *const names[SCR_STATS_FIELDS] = {
+    "dev", "mode", "nlink", "uid", "gid", "rdev", "blksize", "ino", "size", "blocks",
+  };
+  bool branded =
+    object->kind == SCR_DYN_OBJ &&
+    (object->prototype == scr_stats_protos[0] || object->prototype == scr_stats_protos[1]);
+  if (branded) {
+    ScrStats *s = scr_stats_new();
+    for (size_t i = 0; i < SCR_STATS_FIELDS; i++) {
+      if (!scr_stats_dyn_field(object, names[i], &s->fields[i])) goto fail;
+    }
+    for (int i = 0; i < 4; i++) {
+      if (!scr_stats_dyn_time(object, i, &s->sec[i], &s->nsec[i])) goto fail;
+    }
+    unsigned type = (unsigned)(s->fields[SCR_STATS_MODE] & SCR_STATS_IFMT);
+    s->is_file = type == SCR_STATS_IFREG;
+    s->is_dir = type == SCR_STATS_IFDIR;
+    s->is_symlink = type == SCR_STATS_IFLNK;
+    return s;
+  fail:
+    scr_stats_release(s);
+  }
+  scr_dyn_check_fail(NULL, "Stats", object);
+  return NULL;
+}
+
+/* The same extraction for a `Stats | undefined` slot: the ladder answers the
+ * dynamic undefined for a missing entry whose stat was suppressed. */
+ScrStats *scr_stats_from_dyn_opt(const ScrDyn *object) {
+  if (object->kind == SCR_DYN_UNDEF) return NULL;
+  return scr_stats_from_dyn(object);
 }
 
 /* The names of one scandir listing: byte order on POSIX (libuv sorts),
@@ -10226,7 +11396,7 @@ ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *hash) {
   return scr_crypto_hash_clone(hash);
 }
 
-static bool scr_crypto_integer(double value, const char *name, double max);
+static bool scr_crypto_integer(double value, const char *name, double min, double max);
 
 /* Computes the digest into `out` (hash->out_len bytes) and marks it
  * computed. A Hash keeps a copy for a later digest() or flush. */
@@ -10308,6 +11478,7 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *hash) {
   ScrBytes *result = NULL;
   if (n != 0 || !scr_exc_pending()) {
     result = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    result->is_buffer = true; /* Node's digest() answers a Buffer */
     if (n != 0) memcpy(result->data, digest, n);
   }
   scr_crypto_digest_space_end(digest, hash->out_len, stack);
@@ -10506,7 +11677,7 @@ static bool scr_crypto_uint32(const ScrDyn *value, const char *name, double *out
     else scr_dyn_arg_type_fail(name, "of type number", value);
     return false;
   }
-  if (!scr_crypto_integer(value->v.num, name, 4294967295.0)) return false;
+  if (!scr_crypto_integer(value->v.num, name, 0, 4294967295.0)) return false;
   *out = value->v.num + 0.0;
   return true;
 }
@@ -10691,9 +11862,32 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
   ScrBytes *bytes;
   size_t key_object_len;
   const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
-  if (key_object) {
-    bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
-    if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  const unsigned char *crypto_key = NULL;
+  size_t crypto_key_len = 0;
+  int crypto_key_kind = 0;
+  if (!key_object && scr_crypto_crypto_key_info)
+    crypto_key_kind = scr_crypto_crypto_key_info(key, &crypto_key, &crypto_key_len);
+  if (key_object || crypto_key) {
+    /* prepareSecretKey: a secret KeyObject or CryptoKey supplies its bytes,
+     * and a CryptoKey reports DEP0203. */
+    size_t len = key_object ? key_object_len : crypto_key_len;
+    const unsigned char *data = key_object ? key_object : crypto_key;
+    if (crypto_key && scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      /* A replaced process.emitWarning throws here, before the digest check
+       * (Node's emitter call comes first). */
+      if (scr_exc_pending()) return NULL;
+    }
+    bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(bytes->data, data, len);
+  } else if (crypto_key_kind) {
+    /* A public or private CryptoKey: DEP0203, then Node's key type error. */
+    if (scr_crypto_deprecate_crypto_key) {
+      scr_crypto_deprecate_crypto_key();
+      if (scr_exc_pending()) return NULL;
+    }
+    scr_crypto_invalid_key_object_type(crypto_key_kind == 3);
+    return NULL;
   } else if (scr_crypto_is_key_object(key)) {
     /* A private or public KeyObject: scr_pki.c reports Node's error. */
     scr_crypto_reject_asymmetric_secret(key);
@@ -11341,6 +12535,113 @@ ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options) {
                               has_length, length);
 }
 
+/* Each argument with a typed-ref box materialized (+1); plain values are
+ * retained. False after a throw, with the entries so far left for
+ * scr_crypto_release_args. */
+static bool scr_crypto_unbox_args(ScrDyn **out, ScrDyn *const *args, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    out[i] = args[i]->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(args[i])
+                                                : scr_dyn_retain(args[i]);
+    if (!out[i]) return false;
+  }
+  return true;
+}
+
+static void scr_crypto_release_args(ScrDyn **values, size_t count) {
+  for (size_t i = 0; i < count; i++)
+    if (values[i]) scr_dyn_release(values[i]);
+}
+
+/* validateString for a checked-dynamic argument: borrowed, or NULL with
+ * Node's ERR_INVALID_ARG_TYPE pending. */
+static ScrStr *scr_crypto_string_arg(const char *name, const ScrDyn *value) {
+  if (value->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail(name, "of type string", value);
+    return NULL;
+  }
+  return value->v.str;
+}
+
+/* validateInteger for a checked-dynamic argument. */
+static bool scr_crypto_number_arg(const char *name, const ScrDyn *value, double min, double max,
+                                  double *out) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(name, "of type number", value);
+    return false;
+  }
+  if (!scr_crypto_integer(value->v.num, name, min, max)) return false;
+  *out = value->v.num + 0.0;
+  return true;
+}
+
+/* getArrayBufferOrView for a checked-dynamic argument with Node's list of
+ * the kinds it accepts: a string is its UTF-8 bytes, a view or
+ * ArrayBuffer its bytes. +1 or NULL with Node's error pending. */
+static ScrBytes *scr_crypto_bytes_arg_expected(const char *name, const ScrDyn *value,
+                                               const char *expected) {
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *bytes = scr_bytes_from_str_checked(value->v.str, utf8);
+    scr_str_release(utf8);
+    return bytes;
+  }
+  if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
+    return scr_bytes_buffer_source(value);
+  scr_dyn_arg_type_fail(name, expected, value);
+  return NULL;
+}
+
+static ScrBytes *scr_crypto_bytes_arg(const char *name, const ScrDyn *value) {
+  return scr_crypto_bytes_arg_expected(
+      name, value, "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView");
+}
+
+/* hkdf's salt and info are validateByteSource checks: the same kinds, listed
+ * in that validator's order. */
+static const char SCR_CRYPTO_BYTE_SOURCE_EXPECTED[] =
+    "of type string or an instance of ArrayBuffer, TypedArray, DataView, or Buffer";
+
+/* createHash(algorithm, options) over arguments of any type: Node's
+ * validateString for the algorithm, then the options checks. */
+ScrCryptoHash *scr_crypto_hash_new_any(ScrDyn *alg, ScrDyn *options) {
+  ScrDyn *args[2] = {alg, options};
+  ScrDyn *v[2] = {NULL, NULL};
+  ScrCryptoHash *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 2)) {
+    ScrStr *name = scr_crypto_string_arg("algorithm", v[0]);
+    if (name) result = scr_crypto_hash_new_opts(name, v[1]);
+  }
+  scr_crypto_release_args(v, 2);
+  return result;
+}
+
+/* createHmac(algorithm, key, options): Node names the algorithm "hmac" and
+ * the key's checks follow in scr_crypto_hmac_new_dyn. */
+ScrCryptoHash *scr_crypto_hmac_new_any(ScrDyn *alg, ScrDyn *key, ScrDyn *options) {
+  ScrDyn *args[3] = {alg, key, options};
+  ScrDyn *v[3] = {NULL, NULL, NULL};
+  ScrCryptoHash *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 3)) {
+    ScrStr *name = scr_crypto_string_arg("hmac", v[0]);
+    if (name) result = scr_crypto_hmac_new_dyn(name, v[1], v[2]);
+  }
+  scr_crypto_release_args(v, 3);
+  return result;
+}
+
+/* crypto.hash(algorithm, input, options) over arguments of any type. */
+ScrDyn *scr_crypto_hash_oneshot_any(ScrDyn *alg, ScrDyn *input, ScrDyn *options) {
+  ScrDyn *args[3] = {alg, input, options};
+  ScrDyn *v[3] = {NULL, NULL, NULL};
+  ScrDyn *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 3)) {
+    ScrStr *name = scr_crypto_string_arg("algorithm", v[0]);
+    if (name) result = scr_crypto_hash_oneshot(name, v[1], v[2]);
+  }
+  scr_crypto_release_args(v, 3);
+  return result;
+}
+
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
   SCR_BYTES_SNAPSHOT(left);
   SCR_BYTES_SNAPSHOT(right);
@@ -11638,6 +12939,146 @@ double scr_crypto_random_int(double min, double max) { return scr_random_int_syn
 
 double scr_crypto_random_int_max(double max) { return scr_random_int_sync(0, max, false); }
 
+/* crypto.randomBytes(n) → a real Buffer. The entry lives here rather than
+ * beside the fs/promises code in scr_bytes_io.c: a localized library
+ * archive links only the runtime objects its program reaches, and
+ * scr_bytes_io.o carries fs/promises code whose promise helpers live in the
+ * event-loop unit library links exclude, so a reference to that unit
+ * drags in a closure that cannot link. This unit always links, and the
+ * entry depends only on scr_bytes_new and the system CSPRNG. */
+ScrBytes *scr_crypto_random_bytes(double n) {
+  if (!(n >= 0 && n <= 2147483647)) {
+    char num[32];
+    size_t numlen = scr_f64_to_str(n, num);
+    char msg[128];
+    int mlen = snprintf(
+        msg, sizeof msg,
+        "The value of \"size\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
+        (int)numlen, num);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, n);
+  b->is_buffer = true; /* Node's randomBytes answers a Buffer */
+  if (b->len > 0) arc4random_buf(b->data, b->len);
+  return b;
+}
+
+/* The checked-dynamic completion lives in scr_crypto_async.c, a unit the
+ * runtime unit tests do not link beside scr_lib.c. Declared weak, before
+ * its first use, so a test binary that links scr_lib.c on its own still
+ * links; an executable's link features always select the defining unit for
+ * a program that reaches it. Library builds drop the reference entirely
+ * (#ifndef SCR_LIB at its uses), so nothing of that unit reaches a library
+ * archive, which SC4005 guarantees first. */
+#ifndef SCR_LIB
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak reference in an executable, and the
+ * runtime C tests link scr_lib.c without this unit. A weak DEFINITION
+ * satisfies that link, the same way the inspect reference beside
+ * scr_kill_signal_text does: the async unit's strong definition replaces it
+ * in every program that links the unit, and otherwise the moved arguments
+ * are released without deferring anything. */
+__attribute__((weak)) void scr_crypto_defer_dyn_callback(ScrDyn *callback, ScrDyn *error,
+                                                         ScrDyn *value) {
+  scr_dyn_release(callback);
+  scr_dyn_release(error);
+  if (value != NULL) scr_dyn_release(value);
+}
+#else
+extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
+#endif
+#endif
+
+/* randomBytes and randomInt over any values: Node's checks in its order,
+ * then a Buffer or a number, or the callback with (null, value) in a later
+ * macrotask. */
+ScrDyn *scr_crypto_random_bytes_any(ScrDyn *size, ScrDyn *callback) {
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  /* scr_crypto_random_bytes applies Node's range check, which comes before
+   * the callback's. */
+  ScrBytes *bytes = scr_crypto_random_bytes(size->v.num);
+  if (!bytes) return NULL;
+  if (callback->kind == SCR_DYN_UNDEF) {
+    /* Boxing retains the Buffer. */
+    ScrDyn *result = scr_dyn_new_buffer(bytes);
+    scr_bytes_release(bytes);
+    return result;
+  }
+  if (!scr_dyn_is_callable(callback)) {
+    scr_bytes_release(bytes);
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return NULL;
+  }
+#ifndef SCR_LIB
+  if (scr_crypto_defer_dyn_callback)
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), scr_dyn_new_null(),
+                                 scr_dyn_new_buffer(bytes));
+#endif
+  scr_bytes_release(bytes);
+  return (ScrDyn *)scr_dyn_undefined();
+}
+
+ScrDyn *scr_crypto_random_int_any(ScrDyn *first, ScrDyn *second, ScrDyn *third) {
+  ScrDyn *callback = NULL;
+  double min = 0, max = 0, range = 0, value = 0;
+  bool min_given = false;
+  /* Node reads randomInt([min, ]max[, callback]): an absent or undefined
+   * second argument leaves the one-argument form, a function there is the
+   * callback, and anything else is max. The three-argument form checks its
+   * callback before the numbers. */
+  if (second->kind == SCR_DYN_UNDEF) {
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", first);
+      return NULL;
+    }
+    max = first->v.num;
+  } else if (scr_dyn_is_callable(second)) {
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", first);
+      return NULL;
+    }
+    max = first->v.num;
+    callback = second;
+  } else {
+    min_given = true;
+    if (third->kind != SCR_DYN_UNDEF) {
+      if (!scr_dyn_is_callable(third)) {
+        scr_dyn_arg_type_fail("callback", "of type function", third);
+        return NULL;
+      }
+      callback = third;
+    }
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("min", "a safe integer", first);
+      return NULL;
+    }
+    if (second->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", second);
+      return NULL;
+    }
+    min = first->v.num;
+    max = second->v.num;
+  }
+  if (!scr_crypto_random_int_check(min, max, min_given, &range)) return NULL;
+  for (;;) {
+    if (scr_random_int_left == 0) scr_crypto_random_int_refill();
+    if (scr_crypto_random_int_try(min, range, &value)) break;
+  }
+  if (!callback) return scr_dyn_new_num(value);
+#ifndef SCR_LIB
+  /* Node's randomInt callback receives undefined on success, where
+   * randomBytes' receives null. */
+  if (scr_crypto_defer_dyn_callback)
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), (ScrDyn *)scr_dyn_undefined(),
+                                 scr_dyn_new_num(value));
+#endif
+  return (ScrDyn *)scr_dyn_undefined();
+}
+
 /* ── randomUUID / randomUUIDv7 ─────────────────────────────────────── */
 
 static ScrStr *scr_uuid_string(unsigned char b[16], unsigned char version) {
@@ -11776,6 +13217,19 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
 
+int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
+
+/* DEP0203, once per process: passing a CryptoKey to node:crypto functions
+ * is deprecated. scr_async_dyn.c, which owns the process-warning channel
+ * and which every program holding a CryptoKey links, installs it. */
+void (*scr_crypto_deprecate_crypto_key)(void) = NULL;
+
+void scr_crypto_invalid_key_object_type(bool private_key) {
+  scr_throw_error_msg_code(SCR_ERR_TYPE,
+                           private_key ? "Invalid key object type private, expected secret."
+                                       : "Invalid key object type public, expected secret.",
+                           private_key ? 49 : 48, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
+}
 /* `value instanceof KeyObject`: a secret key, or a private or public key
  * (scr_pki.c, matched by its handle tags so this unit does not link it). */
 bool scr_crypto_is_key_object(const ScrDyn *value) {
@@ -11843,14 +13297,19 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
   const ScrKeyObject *key = h;
   if (strcmp(method, "export") == 0) return scr_key_object_export(key, argc ? args[0] : NULL);
   if (strcmp(method, "equals") == 0) {
+    ScrDyn *undefined = NULL;
+    const ScrDyn *other_value = argc ? args[0] : (undefined = scr_dyn_undefined());
     size_t len;
-    const unsigned char *other = argc ? scr_key_object_bytes(args[0], &len) : NULL;
+    const unsigned char *other = scr_key_object_bytes(other_value, &len);
     if (!other) {
-      ScrDyn *undefined = scr_dyn_undefined();
-      scr_key_object_type_fail("otherKeyObject", argc ? args[0] : undefined);
-      scr_dyn_release(undefined);
-      return NULL;
+      /* Another KeyObject (a private or public key) is never equal to a
+       * secret key; anything else is the argument error. */
+      bool key_object = scr_crypto_is_key_object(other_value);
+      if (!key_object) scr_key_object_type_fail("otherKeyObject", other_value);
+      if (undefined) scr_dyn_release(undefined);
+      return key_object ? scr_dyn_new_bool(false) : NULL;
     }
+    if (undefined) scr_dyn_release(undefined);
     bool equal = len == key->len;
     unsigned char diff = 0;
     for (size_t i = 0; equal && i < len; i++) diff |= other[i] ^ key->data[i];
@@ -11913,9 +13372,9 @@ static void scr_key_object_install(void) {
   scr_dyn_handle_install(SCR_DYNH_KEY_OBJECT, &scr_key_object_ops);
 }
 
-/* createSecretKey(key[, encoding]): a string decodes with a string
- * encoding (UTF-8 otherwise); views, ArrayBuffers and SharedArrayBuffers
- * are copied. */
+/* createSecretKey(key[, encoding]): a string decodes as Buffer.from does
+ * (a non-string encoding, one that is not a known name, or "buffer" reads
+ * as UTF-8); views, ArrayBuffers and SharedArrayBuffers are copied. */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   if (key->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(key);
@@ -11926,10 +13385,18 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   }
   ScrBytes *bytes;
   if (key->kind == SCR_DYN_STR) {
-    bool named = encoding->kind == SCR_DYN_STR;
-    ScrStr *utf8 = named ? NULL : scr_str_new("utf8", 4);
-    bytes = scr_bytes_from_str_checked(key->v.str, named ? encoding->v.str : utf8);
+    const ScrStr *name = encoding->kind == SCR_DYN_STR ? encoding->v.str : NULL;
+    ScrStr *normalized = NULL;
+    if (name && (name->len == 0 || (name->len == 6 && memcmp(name->data, "buffer", 6) == 0))) name = NULL;
+    if (name) {
+      normalized = scr_bytes_normalize_encoding(name);
+      if (!normalized) return NULL;
+      name = normalized;
+    }
+    ScrStr *utf8 = name ? NULL : scr_str_new("utf8", 4);
+    bytes = scr_bytes_from_str(key->v.str, name ? name : utf8);
     if (utf8) scr_str_release(utf8);
+    if (normalized) scr_str_release(normalized);
   } else if (key->kind == SCR_DYN_BYTES || scr_buffer_storage_is(key)) {
     bytes = scr_bytes_buffer_source(key);
   } else {
@@ -11940,6 +13407,15 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   ScrDyn *result = scr_key_object_new(bytes->data, (size_t)scr_bytes_byte_len(bytes));
   scr_bytes_release(bytes);
   return result;
+}
+
+/* Node's synchronous callback gate: a callback that is not a function
+ * throws ERR_INVALID_ARG_TYPE before the operation is scheduled. The
+ * generateKey lowering sequences it after the argument expressions, where
+ * Node validates the callback — before its type and options checks. */
+void scr_crypto_check_callback(const ScrDyn *callback) {
+  if (!scr_dyn_is_callable(callback))
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
 }
 
 /* generateKeySync(type, options) for "hmac" (options.length in bits,
@@ -12001,12 +13477,16 @@ ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options) {
   return result;
 }
 
-/* hkdf's key: a KeyObject's bytes as a fresh u8 Buffer. */
+/* hkdf's key: a secret KeyObject's bytes as a fresh u8 Buffer.
+ * prepareSecretKey reports a private or public key as the wrong kind. */
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key) {
   size_t len;
   const unsigned char *data = scr_key_object_bytes(key, &len);
   if (!data) {
-    scr_key_object_type_fail("key", key);
+    if (scr_crypto_is_key_object(key))
+      scr_crypto_invalid_key_object_type(key->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
+    else
+      scr_key_object_type_fail("key", key);
     return NULL;
   }
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
@@ -12024,6 +13504,7 @@ static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t pas
   size_t digest_len = scr_digest_final(&empty, empty_digest);
   scr_crypto_zero(empty_digest, sizeof empty_digest);
   ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, (double)keylen);
+  result->is_buffer = true; /* Node's derived keys are Buffers */
   unsigned char *block = malloc(salt_len + 4);
   if (!block) scr_trap("scriptc: out of memory\n");
   memcpy(block, salt, salt_len);
@@ -12071,25 +13552,8 @@ ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double itera
   *failure = NULL;
   SCR_BYTES_SNAPSHOT(password);
   SCR_BYTES_SNAPSHOT(salt);
-  if (!isfinite(iterations) || floor(iterations) != iterations ||
-      iterations < 1 || iterations > 2147483647.0) {
-    char value[64], msg[176];
-    size_t value_len = scr_f64_to_str(iterations, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"iterations\" is out of range. It must be >= 1 && <= 2147483647. Received %.*s",
-                     (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
-  }
-  if (!isfinite(keylen) || floor(keylen) != keylen || keylen < 0 || keylen > 2147483647.0) {
-    char value[64], msg[176];
-    size_t value_len = scr_f64_to_str(keylen, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"keylen\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
-                     (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
-  }
+  if (!scr_crypto_integer(iterations, "iterations", 1, 2147483647.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0)) return NULL;
   ScrDigestAlg alg;
   if (!scr_digest_alg(digest->data, digest->len, &alg)) {
     scr_crypto_invalid_digest(digest);
@@ -12117,17 +13581,131 @@ ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
   return result;
 }
 
+/* pbkdf2's argument checks over checked-dynamic values in Node's order:
+ * the digest's type, password, salt, iterations and keylen. The digest's
+ * name resolves in the job. */
+static bool scr_crypto_pbkdf2_values(const ScrDyn *digest, const ScrDyn *password,
+                                     const ScrDyn *salt, const ScrDyn *iterations,
+                                     const ScrDyn *keylen, ScrStr **alg, ScrBytes **pw,
+                                     ScrBytes **sl, double *iteration_count, double *key_len) {
+  *alg = NULL;
+  *pw = NULL;
+  *sl = NULL;
+  *alg = scr_crypto_string_arg("digest", digest);
+  if (!*alg) return false;
+  *pw = scr_crypto_bytes_arg("password", password);
+  if (!*pw) return false;
+  *sl = scr_crypto_bytes_arg("salt", salt);
+  if (!*sl || !scr_crypto_number_arg("iterations", iterations, 1, 2147483647.0, iteration_count) ||
+      !scr_crypto_number_arg("keylen", keylen, 0, 2147483647.0, key_len)) {
+    scr_bytes_release(*sl);
+    scr_bytes_release(*pw);
+    *sl = NULL;
+    *pw = NULL;
+    return false;
+  }
+  return true;
+}
+
+#ifndef SCR_LIB
+/* The pending error taken as a checked-dynamic value (+1). */
+static ScrDyn *scr_crypto_take_error(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+#endif
+
+/* pbkdf2(password, salt, iterations, keylen, digest, callback) over any
+ * values: Node's checks (the callback last), then the job, whose result or
+ * failure reaches the callback in a later macrotask. */
+void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                 ScrDyn *keylen, ScrDyn *digest, ScrDyn *callback) {
+  ScrDyn *args[6] = {password, salt, iterations, keylen, digest, callback};
+  ScrDyn *v[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  ScrStr *alg;
+  ScrBytes *pw = NULL, *sl = NULL;
+  double iteration_count = 0, key_len = 0;
+  if (!scr_crypto_unbox_args(v, args, 6)) {
+    scr_crypto_release_args(v, 6);
+    return;
+  }
+  // Node's five-argument form: a function digest is the callback.
+  ScrDyn *digest_value = v[4], *callback_value = v[5];
+  if (scr_dyn_is_callable(digest_value)) {
+    callback_value = digest_value;
+    digest_value = (ScrDyn *)scr_dyn_undefined();
+  }
+  if (!scr_crypto_pbkdf2_values(digest_value, v[0], v[1], v[2], v[3], &alg, &pw, &sl,
+                                &iteration_count, &key_len)) {
+    scr_crypto_release_args(v, 6);
+    return;
+  }
+  if (!scr_dyn_is_callable(callback_value)) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback_value);
+  } else {
+    const char *failure = NULL;
+    ScrBytes *value = scr_crypto_pbkdf2_job(pw, sl, iteration_count, key_len, alg, &failure);
+#ifndef SCR_LIB
+    if (!scr_exc_pending()) {
+      ScrDyn *error = NULL, *delivery = NULL;
+      if (failure) {
+        scr_throw_error_msg(SCR_ERR_ERROR, failure, strlen(failure));
+        error = scr_crypto_take_error();
+      } else if (value) {
+        error = scr_dyn_new_null();
+        delivery = scr_dyn_new_buffer(value);
+        scr_bytes_release(value);
+      }
+      if (scr_crypto_defer_dyn_callback)
+        scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), error, delivery);
+    }
+#else
+    /* Library mode compiles without the crypto async unit and its loop, and
+     * its async_free gate refuses this callback form before emission; the
+     * job's storage is all that is left to release. */
+    (void)failure;
+    if (value) scr_bytes_release(value);
+#endif
+  }
+  scr_bytes_release(sl);
+  scr_bytes_release(pw);
+  scr_crypto_release_args(v, 6);
+}
+
+/* pbkdf2Sync(password, salt, iterations, keylen, digest) over any values. */
+ScrBytes *scr_crypto_pbkdf2_any(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                ScrDyn *keylen, ScrDyn *digest) {
+  ScrDyn *args[5] = {password, salt, iterations, keylen, digest};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  ScrBytes *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrStr *alg;
+    ScrBytes *pw, *sl;
+    double iteration_count, key_len;
+    if (scr_crypto_pbkdf2_values(v[4], v[0], v[1], v[2], v[3], &alg, &pw, &sl, &iteration_count,
+                                 &key_len)) {
+      result = scr_crypto_pbkdf2(pw, sl, iteration_count, key_len, alg);
+      scr_bytes_release(sl);
+      scr_bytes_release(pw);
+    }
+  }
+  scr_crypto_release_args(v, 5);
+  return result;
+}
+
 /* RFC 5869 HKDF and RFC 7914 scrypt share the digest core in both
  * execution tiers. Sensitive scratch storage is cleared before release. */
-static bool scr_crypto_integer(double value, const char *name, double max) {
-  if (isfinite(value) && floor(value) == value && value >= 0 && value <= max) return true;
+static bool scr_crypto_integer(double value, const char *name, double min, double max) {
+  if (isfinite(value) && floor(value) == value && value >= min && value <= max) return true;
   char received[64], requirement[80], message[256];
   size_t n = scr_f64_to_str(value, received);
   received[n] = '\0';
   if (!isfinite(value) || floor(value) != value) {
     snprintf(requirement, sizeof requirement, "an integer");
   } else {
-    snprintf(requirement, sizeof requirement, ">= 0 && <= %.0f", max);
+    snprintf(requirement, sizeof requirement, ">= %.0f && <= %.0f", min, max);
     if (fabs(value) > 4294967296.0) {
       char digits[40];
       snprintf(digits, sizeof digits, "%.0f", value);
@@ -12150,7 +13728,7 @@ ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
   SCR_BYTES_SNAPSHOT(ikm);
   SCR_BYTES_SNAPSHOT(salt);
   SCR_BYTES_SNAPSHOT(info);
-  if (!scr_crypto_integer(keylen, "length", 9007199254740991.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "length", 0, 9007199254740991.0)) return NULL;
   size_t info_len = info->len * scr_bytes_elem_size(info->elem);
   if (info_len > 1024) {
     char message[192];
@@ -12284,16 +13862,20 @@ ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double ke
                                   double n, double r, double p, double maxmem) {
   SCR_BYTES_SNAPSHOT(password);
   SCR_BYTES_SNAPSHOT(salt);
-  if (!scr_crypto_integer(keylen, "keylen", 2147483647.0) ||
-      !scr_crypto_integer(n, "N", 4294967295.0) || !scr_crypto_integer(r, "r", 4294967295.0) ||
-      !scr_crypto_integer(p, "p", 4294967295.0) || !scr_crypto_integer(maxmem, "maxmem", 9007199254740991.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0) ||
+      !scr_crypto_integer(n, "N", 0, 4294967295.0) || !scr_crypto_integer(r, "r", 0, 4294967295.0) ||
+      !scr_crypto_integer(p, "p", 0, 4294967295.0) || !scr_crypto_integer(maxmem, "maxmem", 0, 9007199254740991.0)) return NULL;
   if (n == 0) n = 16384;
   if (r == 0) r = 8;
   if (p == 0) p = 1;
   if (maxmem == 0) maxmem = 33554432;
   size_t memory;
   if (!scr_scrypt_params(n, r, p, maxmem, &memory)) return NULL;
-  if (keylen == 0) return scr_bytes_new(SCR_BYTES_U8, 0);
+  if (keylen == 0) {
+    ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+    empty->is_buffer = true; /* Node's derived keys are Buffers */
+    return empty;
+  }
   size_t words = 32 * (size_t)r, block_len = words * sizeof(uint32_t);
   size_t b_len = block_len * (size_t)p;
   ScrBytes *b = scr_crypto_pbkdf2_raw(password->data, password->len * scr_bytes_elem_size(password->elem),
@@ -12347,12 +13929,12 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
     value = scr_scrypt_read_option(options, name);
     if (scr_exc_pending()) return false;
     if (value->kind != SCR_DYN_NUM) {
-      scr_dyn_arg_type_fail(name, "number", value);
+      scr_dyn_arg_type_fail(name, "of type number", value);
       scr_dyn_release(value);
       return false;
     }
     *out = value->v.num;
-    bool valid = scr_crypto_integer(*out, name, max);
+    bool valid = scr_crypto_integer(*out, name, 0, max);
     scr_dyn_release(value);
     return valid;
   }
@@ -12360,47 +13942,224 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
   return true;
 }
 
-ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options) {
-  if (!scr_crypto_integer(keylen, "keylen", 2147483647.0)) return NULL;
-  double values[4] = {16384, 8, 1, 33554432};
-  if (options && scr_dyn_truthy(options)) {
-    const char *names[3] = {"N", "r", "p"};
-    const char *aliases[3] = {"cost", "blockSize", "parallelization"};
-    for (size_t i = 0; i < 3; i++) {
-      bool primary, alias;
-      if (!scr_scrypt_option(options, names[i], 4294967295.0, &values[i], &primary)) return NULL;
-      // Node reads the alias to test presence before checking the conflict.
-      ScrDyn *alias_value = scr_scrypt_read_option(options, aliases[i]);
-      if (scr_exc_pending()) return NULL;
-      alias = alias_value && alias_value->kind != SCR_DYN_UNDEF;
-      if (primary && alias) {
-        char message[160];
-        int len = snprintf(message, sizeof message, "Option \"%s\" cannot be used in combination with option \"%s\"", names[i], aliases[i]);
-        scr_dyn_release(alias_value);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)len, "ERR_INCOMPATIBLE_OPTION_PAIR");
-        return NULL;
-      }
-      if (alias) {
-        scr_dyn_release(alias_value);
-        alias_value = scr_scrypt_read_option(options, aliases[i]);
-        if (scr_exc_pending()) return NULL;
-        if (alias_value->kind != SCR_DYN_NUM) {
-          scr_dyn_arg_type_fail(aliases[i], "number", alias_value);
-          scr_dyn_release(alias_value);
-          return NULL;
-        }
-        values[i] = alias_value->v.num;
-        if (!scr_crypto_integer(values[i], aliases[i], 4294967295.0)) {
-          scr_dyn_release(alias_value);
-          return NULL;
-        }
-      }
+/* scrypt's options bag: Node's defaults in values[N, r, p, maxmem], with the
+ * primary names before their deprecated aliases and the pair conflicts it
+ * reports. False with Node's error pending. */
+static bool scr_crypto_scrypt_options(ScrDyn *options, double values[4]) {
+  if (!options || !scr_dyn_truthy(options)) return true;
+  const char *names[3] = {"N", "r", "p"};
+  const char *aliases[3] = {"cost", "blockSize", "parallelization"};
+  for (size_t i = 0; i < 3; i++) {
+    bool primary, alias;
+    if (!scr_scrypt_option(options, names[i], 4294967295.0, &values[i], &primary)) return false;
+    // Node reads the alias to test presence before checking the conflict.
+    ScrDyn *alias_value = scr_scrypt_read_option(options, aliases[i]);
+    if (scr_exc_pending()) return false;
+    alias = alias_value && alias_value->kind != SCR_DYN_UNDEF;
+    if (primary && alias) {
+      char message[160];
+      int len = snprintf(message, sizeof message, "Option \"%s\" cannot be used in combination with option \"%s\"", names[i], aliases[i]);
       scr_dyn_release(alias_value);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)len, "ERR_INCOMPATIBLE_OPTION_PAIR");
+      return false;
     }
-    bool present;
-    if (!scr_scrypt_option(options, "maxmem", 9007199254740991.0, &values[3], &present)) return NULL;
+    if (alias) {
+      scr_dyn_release(alias_value);
+      alias_value = scr_scrypt_read_option(options, aliases[i]);
+      if (scr_exc_pending()) return false;
+      if (alias_value->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail(aliases[i], "of type number", alias_value);
+        scr_dyn_release(alias_value);
+        return false;
+      }
+      values[i] = alias_value->v.num;
+      if (!scr_crypto_integer(values[i], aliases[i], 0, 4294967295.0)) {
+        scr_dyn_release(alias_value);
+        return false;
+      }
+    }
+    scr_dyn_release(alias_value);
   }
+  bool present;
+  return scr_scrypt_option(options, "maxmem", 9007199254740991.0, &values[3], &present);
+}
+
+ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options) {
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0)) return NULL;
+  double values[4] = {16384, 8, 1, 33554432};
+  if (!scr_crypto_scrypt_options(options, values)) return NULL;
   return scr_crypto_scrypt_derive(password, salt, keylen, values[0], values[1], values[2], values[3]);
+}
+
+/* hkdf's ikm over any value: a secret KeyObject's or CryptoKey's bytes, a
+ * string's UTF-8 bytes, or a view's or ArrayBuffer's bytes. +1, or NULL
+ * with Node's error pending. A private or public KeyObject is the wrong
+ * kind of key, as prepareSecretKey reports. */
+static ScrBytes *scr_crypto_hkdf_ikm_arg(const ScrDyn *value) {
+  size_t len;
+  const unsigned char *data = scr_key_object_bytes(value, &len);
+  if (data) {
+    ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(bytes->data, data, len);
+    return bytes;
+  }
+  if (scr_crypto_is_key_object(value)) {
+    if (scr_crypto_reject_asymmetric_secret) scr_crypto_reject_asymmetric_secret(value);
+    else scr_crypto_invalid_key_object_type(value->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
+    return scr_crypto_bytes_arg("ikm", value);
+  scr_dyn_arg_type_fail(
+      "ikm",
+      "of type string or an instance of SecretKeyObject, ArrayBuffer, TypedArray, DataView, or Buffer",
+      value);
+  return NULL;
+}
+
+/* hkdf(digest, ikm, salt, info, length) over any values: Node's checks in
+ * its order, then the derivation (which reports an XOF as "Deriving bits
+ * failed"). */
+ScrDyn *scr_crypto_hkdf_any(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                            ScrDyn *keylen) {
+  ScrDyn *args[5] = {digest, ikm, salt, info, keylen};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  ScrDyn *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrStr *alg = scr_crypto_string_arg("digest", v[0]);
+    ScrBytes *key = alg ? scr_crypto_hkdf_ikm_arg(v[1]) : NULL;
+    ScrBytes *sl =
+        key ? scr_crypto_bytes_arg_expected("salt", v[2], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    ScrBytes *inf =
+        sl ? scr_crypto_bytes_arg_expected("info", v[3], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    double length = 0;
+    if (inf && scr_crypto_number_arg("length", v[4], 0, 9007199254740991.0, &length))
+      result = scr_crypto_hkdf(alg, key, sl, inf, length);
+    scr_bytes_release(inf);
+    scr_bytes_release(sl);
+    scr_bytes_release(key);
+  }
+  scr_crypto_release_args(v, 5);
+  return result;
+}
+
+/* hkdf(digest, ikm, salt, info, length, callback) over any values: Node's
+ * checks in its order — the callback last — then the derivation, whose
+ * result or failure reaches the callback in a later macrotask. A
+ * synchronous failure (a parameter range, the digest) throws instead. */
+void scr_crypto_hkdf_any_async(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                               ScrDyn *keylen, ScrDyn *callback) {
+  ScrDyn *args[6] = {digest, ikm, salt, info, keylen, callback};
+  ScrDyn *v[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  if (scr_crypto_unbox_args(v, args, 6)) {
+    ScrStr *alg = scr_crypto_string_arg("digest", v[0]);
+    ScrBytes *key = alg ? scr_crypto_hkdf_ikm_arg(v[1]) : NULL;
+    ScrBytes *sl =
+        key ? scr_crypto_bytes_arg_expected("salt", v[2], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    ScrBytes *inf =
+        sl ? scr_crypto_bytes_arg_expected("info", v[3], SCR_CRYPTO_BYTE_SOURCE_EXPECTED) : NULL;
+    double length = 0;
+    if (inf && scr_crypto_number_arg("length", v[4], 0, 9007199254740991.0, &length)) {
+      if (!scr_dyn_is_callable(v[5])) {
+        scr_dyn_arg_type_fail("callback", "of type function", v[5]);
+      } else {
+        ScrBytes *value = scr_crypto_hkdf_bytes(alg, key, sl, inf, length);
+#ifndef SCR_LIB
+        if (!scr_exc_pending()) {
+          ScrDyn *error = NULL, *delivery = NULL;
+          if (value->len == 0) {
+            scr_bytes_release(value);
+            scr_throw_error_msg(SCR_ERR_ERROR, "Deriving bits failed", 20);
+            error = scr_crypto_take_error();
+          } else {
+            error = scr_dyn_new_null();
+            delivery = scr_array_buffer_from_bytes(value);
+            scr_bytes_release(value);
+          }
+          if (scr_crypto_defer_dyn_callback)
+            scr_crypto_defer_dyn_callback(scr_dyn_retain(v[5]), error, delivery);
+        }
+#else
+        /* Library mode compiles without the crypto async unit and its
+         * loop; the async_free gate refuses this callback form before
+         * emission. */
+        if (value) scr_bytes_release(value);
+#endif
+      }
+    }
+    scr_bytes_release(inf);
+    scr_bytes_release(sl);
+    scr_bytes_release(key);
+  }
+  scr_crypto_release_args(v, 6);
+}
+
+/* scrypt(password, salt, keylen[, options]) over any values: Node's checks
+ * — password, salt, keylen, options, then the callback — and the
+ * derivation. */
+ScrBytes *scr_crypto_scrypt_any(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                ScrDyn *options) {
+  ScrDyn *args[4] = {password, salt, keylen, options};
+  ScrDyn *v[4] = {NULL, NULL, NULL, NULL};
+  ScrBytes *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 4)) {
+    ScrBytes *pw = scr_crypto_bytes_arg("password", v[0]);
+    ScrBytes *sl = pw ? scr_crypto_bytes_arg("salt", v[1]) : NULL;
+    double length = 0;
+    if (sl && scr_crypto_number_arg("keylen", v[2], 0, 2147483647.0, &length))
+      result = scr_crypto_scrypt(pw, sl, length, v[3]);
+    scr_bytes_release(sl);
+    scr_bytes_release(pw);
+  }
+  scr_crypto_release_args(v, 4);
+  return result;
+}
+
+/* scrypt(password, salt, keylen[, options], callback) over any values:
+ * Node's checks in its order, then the derivation, whose result reaches
+ * the callback in a later macrotask. A call without a callback takes the
+ * fourth value as the callback and reads no options, as Node swaps them. */
+void scr_crypto_scrypt_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                 ScrDyn *options, ScrDyn *callback) {
+  ScrDyn *args[5] = {password, salt, keylen, options, callback};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrDyn *options_value = v[3], *callback_value = v[4];
+    if (callback_value->kind == SCR_DYN_UNDEF) {
+      callback_value = options_value;
+      options_value = NULL;
+    }
+    ScrBytes *pw = scr_crypto_bytes_arg("password", v[0]);
+    ScrBytes *sl = pw ? scr_crypto_bytes_arg("salt", v[1]) : NULL;
+    double length = 0;
+    if (sl && scr_crypto_number_arg("keylen", v[2], 0, 2147483647.0, &length)) {
+      double values[4] = {16384, 8, 1, 33554432};
+      size_t memory;
+      if (scr_crypto_scrypt_options(options_value, values) &&
+          scr_scrypt_params(values[0], values[1], values[2], values[3], &memory)) {
+        if (!scr_dyn_is_callable(callback_value)) {
+          scr_dyn_arg_type_fail("callback", "of type function", callback_value);
+        } else {
+          ScrBytes *value = scr_crypto_scrypt_derive(pw, sl, length, values[0], values[1],
+                                                     values[2], values[3]);
+#ifndef SCR_LIB
+          if (!scr_exc_pending()) {
+            ScrDyn *delivery = scr_dyn_new_buffer(value);
+            scr_bytes_release(value);
+            if (scr_crypto_defer_dyn_callback)
+              scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), scr_dyn_new_null(),
+                                            delivery);
+          }
+#else
+          if (value) scr_bytes_release(value);
+#endif
+        }
+      }
+    }
+    scr_bytes_release(sl);
+    scr_bytes_release(pw);
+  }
+  scr_crypto_release_args(v, 5);
 }
 
 /* The composed `new crypto.X509Certificate(data).fingerprint` read, fused

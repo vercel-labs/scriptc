@@ -68,6 +68,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
+import { guessedOverloadValue } from "../overload-choice.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
@@ -547,6 +548,30 @@ function isArrayBufferViewFieldRead(lowerer: Lowerer, node: ts.Node): boolean {
   );
 }
 
+/** Whether the constructor of `decl`'s class assigns `decl`'s field
+ * unconditionally at its top level, which is what makes the field's
+ * declared type the type of every read (once construction returns). */
+function assignedAtConstructorTopLevel(decl: ts.PropertyDeclaration): boolean {
+  const name = decl.name;
+  if (!ts.isIdentifier(name)) return false;
+  const cls = decl.parent;
+  if (cls === undefined || (!ts.isClassDeclaration(cls) && !ts.isClassExpression(cls)))
+    return false;
+  const constructor = cls.members.nodes.find(
+    (member): member is ts.ConstructorDeclaration =>
+      ts.isConstructorDeclaration(member) && member.body !== undefined,
+  );
+  return (constructor?.body?.statements?.nodes ?? []).some(
+    (statement) =>
+      ts.isExpressionStatement(statement) &&
+      ts.isBinaryExpression(statement.expression) &&
+      statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(statement.expression.left) &&
+      statement.expression.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      statement.expression.left.name.text === name.text,
+  );
+}
+
 /** Checker-driven union narrowing. tsc's control-flow analysis narrows a
  * union-typed reference at use sites (`if (r.kind === "ok") { ...r... }`
  * types `r` as the ok-arm inside the branch); the IR value is still the
@@ -579,6 +604,27 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       return expr.type.kind === "dyn"
         ? expr
         : { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc };
+    }
+    // A JSDoc annotation on an initializer-less JavaScript field is the same
+    // claim about later writes: the constructor may never assign it, and
+    // Node reads undefined. The slot keeps the undefined arm; a read the
+    // checker types as the annotation alone must validate it like the
+    // unannotated case above instead of trusting the arm is present.
+    if (
+      expr.type.kind === "union" &&
+      lowerer.armTag(expr.type.unionId, UNDEFINED_T) >= 0 &&
+      (lowerer.typeOf(node).flags & ts.TypeFlags.Undefined) === 0 &&
+      symbol &&
+      symbol.declarations.some(
+        (decl) =>
+          ts.isPropertyDeclaration(decl) &&
+          !decl.initializer &&
+          decl.type !== undefined &&
+          isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+          !assignedAtConstructorTopLevel(decl),
+      )
+    ) {
+      return { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc };
     }
   }
   // A JS class field the collector widened to an undefined-armed union
@@ -804,6 +850,22 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // check can produce an uninhabited value.
     if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+    // A read whose type rests on an undecided overload
+    // (guessedOverloadValue): the mapped type is the resolved overload's
+    // guess — `generateKeyPairSync("rsa-pss", options)` resolves to the PEM
+    // overload, so `.publicKey` maps to `string` although the call may
+    // answer the KeyObject pair — and the read keeps the actual value. The
+    // conversions below validate against the guess and would throw on the
+    // value the other overload answers.
+    if (
+      narrowed !== null &&
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node) ||
+        ts.isIdentifier(node)) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      guessedOverloadValue(lowerer, node)
+    )
+      return expr;
     if (
       narrowed &&
       (narrowed.kind === "f64" ||
@@ -2516,6 +2578,34 @@ export function sharedDynConversion(
   );
   if (!adopts || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
   return { kind: "dynCheck", value, shared: true, type: target, loc };
+}
+
+/** The checked conversion of a Stats/BigIntStats value held as a
+ * checked-dynamic object. The stat calls' run-time options ladder answers
+ * Node's Stats or BigIntStats object — the member table its call-time
+ * `bigint` option chose — and a typed slot reads it through a snapshot
+ * extraction (scr_stats_from_dyn), which copies the object's fields and
+ * throws the checked conversion's TypeError for a value outside the type.
+ * A `Stats | undefined` slot keeps the dynamic undefined as its absent arm
+ * (the runtime answers +1-or-NULL, the call site builds the arms). Null for
+ * every other target, so the checked-cast domain keeps deciding them. */
+export function statsDynConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  expected: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expected.kind === "stats" || expected.kind === "bigintStats")
+    return { kind: "libCall", fn: "fs.statsFromDyn", args: [value], type: expected, loc };
+  if (expected.kind !== "union") return null;
+  const def = lowerer.unions.get(expected.unionId);
+  if (
+    def?.arms.length !== 2 ||
+    !def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  )
+    return null;
+  return { kind: "libCall", fn: "fs.statsFromDynOpt", args: [value], type: expected, loc };
 }
 
 /** A dynamic value no other holder can reference when it converts: parsed

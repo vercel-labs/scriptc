@@ -32,7 +32,12 @@ import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
-import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
+import {
+  INSPECT_CUSTOM_DESCRIPTION,
+  PROMISIFY_CUSTOM_DESCRIPTION,
+  isInspectCustomAccess,
+  isPromisifyCustomAccess,
+} from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
 import {
   argumentCountSlot,
@@ -565,6 +570,16 @@ export function lowerPropertyAccessExpr(
       kind: "libCall",
       fn: "sym.for",
       args: [{ kind: "strLit", value: INSPECT_CUSTOM_DESCRIPTION, type: STRING, loc }],
+      type: SYMBOL_T,
+      loc,
+    };
+  }
+  // util.promisify.custom: Symbol.for('nodejs.util.promisify.custom').
+  if (isPromisifyCustomAccess(lowerer, expr)) {
+    return {
+      kind: "libCall",
+      fn: "sym.for",
+      args: [{ kind: "strLit", value: PROMISIFY_CUSTOM_DESCRIPTION, type: STRING, loc }],
       type: SYMBOL_T,
       loc,
     };

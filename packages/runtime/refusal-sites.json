@@ -1992,12 +1992,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_util_promisify.c",
-  "function": "scr_util_promisify",
-  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_util_style.c",
   "function": "scr_util_style_text",
   "message": "util.styleText over native custom streams is not supported yet",

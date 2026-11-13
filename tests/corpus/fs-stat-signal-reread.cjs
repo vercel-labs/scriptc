@@ -64,9 +64,11 @@ const steps = [
     let called = 'not called';
     const answered = fs.stat(file, stateful({ aborted: false }), (err, stats) => {
       called = `${err}|${typeof stats.size}`;
+      // The callback reads `stats`, so the directory stays until it has run;
+      // advancing here keeps the cleanup off this callback's path.
+      next();
     });
     console.log('false aborted continues', called, answered);
-    next();
   },
 ];
 

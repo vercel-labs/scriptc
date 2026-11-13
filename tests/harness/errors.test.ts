@@ -3995,10 +3995,12 @@ class Named {
 }
 const s: string = process.argv.length > 99 ? "" : "%s";
 const o: string = process.argv.length > 99 ? "" : "%o";
+const colored = new Error("e");
+colored.stack = "Error: e\\n    at thrower (node:fs:1:1)";
 const attempts: Array<() => string> = [
   () => util.format(s, new Named()),
   () => util.format(o, { a: 1 }),
-  () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
+  () => util.formatWithOptions({ colors: true }, s, "x", colored),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
   () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
@@ -4018,7 +4020,7 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     expect(r.stdout).toBe(
       "n\n" +
         "{ a: 1 }\n" +
-        "Error SC2020 colored inspect output of Error values has no lowering\n" +
+        "x Error: e\n\u001b[90m    at thrower (node:fs:1:1)\u001b[39m\n" +
         "[ 1, ... 1 more item ]\n" +
         "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +

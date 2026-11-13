@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* getcwd: formatError's colored frames compare the cwd */
 
 static void insp_oom(void) {
   scr_trap("scriptc: out of memory\n");
@@ -190,6 +191,7 @@ typedef enum {
   INSP_SYMBOL,
   INSP_DATE,
   INSP_REGEXP,
+  INSP_MODULE,
 } InspStyle;
 
 /* inspect.styles mapped through inspect.colors: [open, close]. These are
@@ -207,6 +209,7 @@ static const unsigned char insp_style_codes[][2] = {
     {32, 39}, /* symbol: green */
     {35, 39}, /* date: magenta */
     {31, 39}, /* regexp: red */
+    {4, 24},  /* module: underline */
 };
 
 /* The styleType name Node's inspect.styles keys each InspStyle by. */
@@ -232,6 +235,8 @@ static const char *insp_style_name(InspStyle style) {
       return "date";
     case INSP_REGEXP:
       return "regexp";
+    case INSP_MODULE:
+      return "module";
   }
   return "special";
 }
@@ -457,6 +462,26 @@ static int insp_fmt_num_prop(char *buf, size_t size, const char *key, double val
   int n = snprintf(buf, size, "%s: %.*s", key, (int)grouped->len, grouped->data);
   scr_str_release(grouped);
   return n;
+}
+
+/* insp_fmt_num_prop's text with the colors formatExtraProperties gives it:
+ * the bracketed key takes the 'string' style and the count the 'number'
+ * style. The layout measures the entry with the codes stripped, so the
+ * plain form is exactly the same text. +1. */
+static ScrStr *insp_styled_num_prop(const char *key, double value) {
+  char plain[64];
+  int n = insp_fmt_num_prop(plain, sizeof plain, key, value);
+  if (!g_colors) return scr_str_new(plain, (size_t)n);
+  const char *digits = plain + strlen(key) + 2;
+  InspBuf out = {0};
+  insp_style_open(&out, INSP_STRING);
+  ib_cstr(&out, key);
+  insp_style_close(&out, INSP_STRING);
+  ib_cstr(&out, ": ");
+  insp_style_open(&out, INSP_NUMBER);
+  ib_cstr(&out, digits);
+  insp_style_close(&out, INSP_NUMBER);
+  return ib_take(&out);
 }
 
 /* formatNumber: JS ToString EXCEPT -0 renders as '-0'. Under the render's
@@ -1494,7 +1519,10 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   if (shown) scr_bytes_read(h, 0, head, shown);
   static const char hex[] = "0123456789abcdef";
   InspBuf contents = {0};
-  ib_cstr(&contents, "[Uint8Contents]: <");
+  if (g_colors) insp_style_open(&contents, INSP_SPECIAL);
+  ib_cstr(&contents, "[Uint8Contents]");
+  if (g_colors) insp_style_close(&contents, INSP_SPECIAL);
+  ib_cstr(&contents, ": <");
   for (size_t i = 0; i < shown; i++) {
     if (i) ib_char(&contents, ' ');
     ib_char(&contents, hex[head[i] >> 4]);
@@ -1508,13 +1536,11 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
     ib_bytes(&contents, more, (size_t)n);
   }
   ib_char(&contents, '>');
-  char byte_length[48];
-  int bn = insp_fmt_num_prop(byte_length, sizeof byte_length, "[byteLength]", (double)len);
   scr_insp_begin(recurse + 1);
   ScrStr *entry = ib_take(&contents);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
-  entry = scr_str_new(byte_length, (size_t)bn);
+  entry = insp_styled_num_prop("[byteLength]", (double)len);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
   InspBuf open = {0};
@@ -1538,20 +1564,20 @@ static ScrStr *insp_data_view_body(const ScrBytes *b, double recurse, double dep
   if (recurse > depth) return scr_str_new("[DataView]", 10);
   if (insp_hidden_shared_view(b)) return scr_str_new("", 0);
   const ScrBytes *owner = b->backing ? b->backing : b;
-  char line[64];
   scr_insp_begin(recurse + 1);
-  int n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", scr_bytes_byte_len(b));
-  ScrStr *entry = scr_str_new(line, (size_t)n);
+  ScrStr *entry = insp_styled_num_prop("[byteLength]", scr_bytes_byte_len(b));
   scr_insp_entry(entry, false);
   scr_str_release(entry);
-  n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
-  entry = scr_str_new(line, (size_t)n);
+  entry = insp_styled_num_prop("[byteOffset]", scr_bytes_byte_offset(b));
   scr_insp_entry(entry, false);
   scr_str_release(entry);
   ScrStr *buffer = scr_insp_array_buffer(owner, owner->shared ? "SharedArrayBuffer" : "ArrayBuffer",
                                          recurse + 1, depth);
   InspBuf eb = {0};
-  ib_cstr(&eb, "[buffer]: ");
+  if (g_colors) insp_style_open(&eb, INSP_STRING);
+  ib_cstr(&eb, "[buffer]");
+  if (g_colors) insp_style_close(&eb, INSP_STRING);
+  ib_cstr(&eb, ": ");
   ib_bytes(&eb, buffer->data, buffer->len);
   scr_str_release(buffer);
   entry = ib_take(&eb);
@@ -1619,12 +1645,307 @@ static void insp_swallow_new_exc(bool had_pending) {
   scr_caught_release(caught);
 }
 
+/* ── formatError's colored frames ─────────────────────────────────────── */
+
+/* The ids Node's BuiltinModule.exists answers true for: the keys of Node
+ * 24.22's `process.binding('natives')`, sorted and NUL-separated (the
+ * trailing NUL closes the list). formatError colors a frame line dim when
+ * the frame names one of them — `at f (node:fs:1:1)` is a core frame — and
+ * leaves a name the builtin map does not hold plain. Regenerate the list
+ * with the pinned Node when the pin moves:
+ *   node -e "console.log(Object.keys(process.binding('natives')).sort())"
+ */
+static const char insp_builtin_ids[] =
+    "_http_agent\0_http_client\0_http_common\0_http_incoming\0_http_outgoing\0_http_server\0_stream_duplex\0"
+    "_stream_passthrough\0_stream_readable\0_stream_transform\0_stream_wrap\0_stream_writable\0"
+    "_tls_common\0_tls_wrap\0assert\0assert/strict\0async_hooks\0buffer\0child_process\0cluster\0"
+    "configs\0console\0constants\0crypto\0dgram\0diagnostics_channel\0dns\0dns/promises\0domain\0"
+    "events\0fs\0fs/promises\0http\0http2\0https\0inspector\0inspector/promises\0internal/abort_controller\0"
+    "internal/assert\0internal/assert/assertion_error\0internal/assert/calltracker\0internal/assert/myers_diff\0"
+    "internal/assert/utils\0internal/async_context_frame\0internal/async_hooks\0internal/async_local_storage/async_context_frame\0"
+    "internal/async_local_storage/async_hooks\0internal/async_local_storage/run_scope\0internal/blob\0"
+    "internal/blocklist\0internal/bootstrap/node\0internal/bootstrap/realm\0internal/bootstrap/shadow_realm\0"
+    "internal/bootstrap/switches/does_not_own_process_state\0internal/bootstrap/switches/does_own_process_state\0"
+    "internal/bootstrap/switches/is_main_thread\0internal/bootstrap/switches/is_not_main_thread\0"
+    "internal/bootstrap/web/exposed-wildcard\0internal/bootstrap/web/exposed-window-or-worker\0"
+    "internal/buffer\0internal/child_process\0internal/child_process/serialization\0internal/cli_table\0"
+    "internal/cluster/child\0internal/cluster/primary\0internal/cluster/round_robin_handle\0internal/cluster/shared_handle\0"
+    "internal/cluster/utils\0internal/cluster/worker\0internal/console/constructor\0internal/console/global\0"
+    "internal/constants\0internal/crypto/aes\0internal/crypto/argon2\0internal/crypto/certificate\0"
+    "internal/crypto/cfrg\0internal/crypto/chacha20_poly1305\0internal/crypto/cipher\0internal/crypto/diffiehellman\0"
+    "internal/crypto/ec\0internal/crypto/hash\0internal/crypto/hashnames\0internal/crypto/hkdf\0"
+    "internal/crypto/kem\0internal/crypto/kem_hybrids\0internal/crypto/keygen\0internal/crypto/keys\0"
+    "internal/crypto/mac\0internal/crypto/ml_dsa\0internal/crypto/ml_kem\0internal/crypto/pbkdf2\0"
+    "internal/crypto/provider_mac\0internal/crypto/random\0internal/crypto/rsa\0internal/crypto/scrypt\0"
+    "internal/crypto/sig\0internal/crypto/util\0internal/crypto/webcrypto\0internal/crypto/webcrypto_util\0"
+    "internal/crypto/webidl\0internal/crypto/x509\0internal/data_url\0internal/debugger/inspect\0"
+    "internal/debugger/inspect_client\0internal/debugger/inspect_helpers\0internal/debugger/inspect_probe\0"
+    "internal/debugger/inspect_repl\0internal/deps/acorn/acorn-walk/dist/walk\0internal/deps/acorn/acorn/dist/acorn\0"
+    "internal/deps/amaro/dist/index\0internal/deps/minimatch/index\0internal/deps/undici/undici\0"
+    "internal/deps/v8/tools/arguments\0internal/deps/v8/tools/codemap\0internal/deps/v8/tools/consarray\0"
+    "internal/deps/v8/tools/csvparser\0internal/deps/v8/tools/logreader\0internal/deps/v8/tools/profile\0"
+    "internal/deps/v8/tools/profile_view\0internal/deps/v8/tools/sourcemap\0internal/deps/v8/tools/splaytree\0"
+    "internal/deps/v8/tools/tickprocessor\0internal/deps/v8/tools/tickprocessor-driver\0internal/dgram\0"
+    "internal/dns/callback_resolver\0internal/dns/promises\0internal/dns/utils\0internal/encoding\0"
+    "internal/encoding/single-byte\0internal/encoding/util\0internal/error_serdes\0internal/errors\0"
+    "internal/errors/error_source\0internal/event_target\0internal/events/abort_listener\0internal/events/symbols\0"
+    "internal/file\0internal/fixed_queue\0internal/freelist\0internal/freeze_intrinsics\0internal/fs/cp/cp\0"
+    "internal/fs/cp/cp-sync\0internal/fs/dir\0internal/fs/glob\0internal/fs/promises\0internal/fs/read/context\0"
+    "internal/fs/recursive_watch\0internal/fs/rimraf\0internal/fs/streams\0internal/fs/sync_write_stream\0"
+    "internal/fs/utils\0internal/fs/watchers\0internal/heap_utils\0internal/histogram\0internal/http\0"
+    "internal/http2/compat\0internal/http2/core\0internal/http2/util\0internal/inspector/network\0"
+    "internal/inspector/network_http\0internal/inspector/network_http2\0internal/inspector/network_resources\0"
+    "internal/inspector/network_undici\0internal/inspector/webstorage\0internal/inspector_async_hook\0"
+    "internal/inspector_network_tracking\0internal/js_stream_socket\0internal/legacy/processbinding\0"
+    "internal/linkedlist\0internal/locks\0internal/main/check_syntax\0internal/main/embedding\0"
+    "internal/main/eval_stdin\0internal/main/eval_string\0internal/main/inspect\0internal/main/mksnapshot\0"
+    "internal/main/print_help\0internal/main/prof_process\0internal/main/repl\0internal/main/run_main_module\0"
+    "internal/main/test_runner\0internal/main/watch_mode\0internal/main/worker_thread\0internal/mime\0"
+    "internal/modules/cjs/loader\0internal/modules/customization_hooks\0internal/modules/esm/assert\0"
+    "internal/modules/esm/create_dynamic_module\0internal/modules/esm/get_format\0internal/modules/esm/hooks\0"
+    "internal/modules/esm/initialize_import_meta\0internal/modules/esm/load\0internal/modules/esm/loader\0"
+    "internal/modules/esm/module_job\0internal/modules/esm/module_map\0internal/modules/esm/resolve\0"
+    "internal/modules/esm/shared_constants\0internal/modules/esm/translators\0internal/modules/esm/utils\0"
+    "internal/modules/esm/worker\0internal/modules/helpers\0internal/modules/package_json_reader\0"
+    "internal/modules/package_map\0internal/modules/run_main\0internal/modules/typescript\0internal/navigator\0"
+    "internal/net\0internal/options\0internal/per_context/domexception\0internal/per_context/messageport\0"
+    "internal/per_context/primordials\0internal/perf/event_loop_delay\0internal/perf/event_loop_utilization\0"
+    "internal/perf/nodetiming\0internal/perf/observe\0internal/perf/performance\0internal/perf/performance_entry\0"
+    "internal/perf/resource_timing\0internal/perf/timerify\0internal/perf/usertiming\0internal/perf/utils\0"
+    "internal/priority_queue\0internal/process/execution\0internal/process/finalization\0internal/process/per_thread\0"
+    "internal/process/permission\0internal/process/pre_execution\0internal/process/promises\0internal/process/report\0"
+    "internal/process/signal\0internal/process/task_queues\0internal/process/warning\0internal/process/worker_thread_only\0"
+    "internal/promise_hooks\0internal/querystring\0internal/quic/diagnostics\0internal/quic/quic\0"
+    "internal/quic/state\0internal/quic/stats\0internal/quic/symbols\0internal/readline/callbacks\0"
+    "internal/readline/emitKeypressEvents\0internal/readline/interface\0internal/readline/promises\0"
+    "internal/readline/utils\0internal/repl\0internal/repl/await\0internal/repl/completion\0internal/repl/history\0"
+    "internal/repl/utils\0internal/socket_list\0internal/socketaddress\0internal/source_map/prepare_stack_trace\0"
+    "internal/source_map/source_map\0internal/source_map/source_map_cache\0internal/source_map/source_map_cache_map\0"
+    "internal/stream_base_commons\0internal/streams/add-abort-signal\0internal/streams/compose\0"
+    "internal/streams/destroy\0internal/streams/duplex\0internal/streams/duplexify\0internal/streams/duplexpair\0"
+    "internal/streams/end-of-stream\0internal/streams/fast-utf8-stream\0internal/streams/from\0"
+    "internal/streams/iter/broadcast\0internal/streams/iter/classic\0internal/streams/iter/consumers\0"
+    "internal/streams/iter/duplex\0internal/streams/iter/from\0internal/streams/iter/pull\0internal/streams/iter/push\0"
+    "internal/streams/iter/ringbuffer\0internal/streams/iter/share\0internal/streams/iter/transform\0"
+    "internal/streams/iter/types\0internal/streams/iter/utils\0internal/streams/lazy_transform\0"
+    "internal/streams/legacy\0internal/streams/operators\0internal/streams/passthrough\0internal/streams/pipeline\0"
+    "internal/streams/readable\0internal/streams/state\0internal/streams/transform\0internal/streams/utils\0"
+    "internal/streams/writable\0internal/test/binding\0internal/test/transfer\0internal/test_runner/assert\0"
+    "internal/test_runner/coverage\0internal/test_runner/harness\0internal/test_runner/mock/loader\0"
+    "internal/test_runner/mock/mock\0internal/test_runner/mock/mock_timers\0internal/test_runner/reporter/dot\0"
+    "internal/test_runner/reporter/junit\0internal/test_runner/reporter/lcov\0internal/test_runner/reporter/rerun\0"
+    "internal/test_runner/reporter/spec\0internal/test_runner/reporter/tap\0internal/test_runner/reporter/utils\0"
+    "internal/test_runner/reporter/v8-serializer\0internal/test_runner/runner\0internal/test_runner/snapshot\0"
+    "internal/test_runner/tag_filter\0internal/test_runner/test\0internal/test_runner/tests_stream\0"
+    "internal/test_runner/utils\0internal/timers\0internal/tls/common\0internal/tls/secure-context\0"
+    "internal/tls/wrap\0internal/trace_events_async_hooks\0internal/tty\0internal/url\0internal/util\0"
+    "internal/util/colors\0internal/util/comparisons\0internal/util/debounce\0internal/util/debuglog\0"
+    "internal/util/diff\0internal/util/inspect\0internal/util/inspector\0internal/util/parse_args/parse_args\0"
+    "internal/util/parse_args/utils\0internal/util/throttle\0internal/util/trace_sigint\0internal/util/types\0"
+    "internal/v8/startup_snapshot\0internal/v8_prof_polyfill\0internal/validators\0internal/vm\0"
+    "internal/vm/module\0internal/wasm_web_api\0internal/watch_mode/files_watcher\0internal/watchdog\0"
+    "internal/webidl\0internal/webstorage\0internal/webstreams/adapters\0internal/webstreams/compression\0"
+    "internal/webstreams/encoding\0internal/webstreams/queuingstrategies\0internal/webstreams/readablestream\0"
+    "internal/webstreams/transfer\0internal/webstreams/transformstream\0internal/webstreams/util\0"
+    "internal/webstreams/writablestream\0internal/worker\0internal/worker/clone_dom_exception\0"
+    "internal/worker/io\0internal/worker/js_transferable\0internal/worker/messaging\0module\0net\0"
+    "os\0path\0path/posix\0path/win32\0perf_hooks\0process\0punycode\0querystring\0quic\0readline\0"
+    "readline/promises\0repl\0sea\0sqlite\0stream\0stream/consumers\0stream/iter\0stream/promises\0"
+    "stream/web\0string_decoder\0sys\0test\0test/reporters\0timers\0timers/promises\0tls\0trace_events\0"
+    "tty\0url\0util\0util/types\0v8\0vm\0wasi\0worker_threads\0zlib\0zlib/iter\0";
+
+/* BuiltinModule.exists for the module id a `node:` frame names. */
+static bool insp_builtin_module(const char *id, size_t len) {
+  if (len == 0) return false;
+  for (const char *p = insp_builtin_ids; *p; p += strlen(p) + 1) {
+    size_t n = strlen(p);
+    if (n == len && memcmp(p, id, len) == 0) return true;
+  }
+  return false;
+}
+
+/* Whether `lit` occurs at `at` in a line of length `len`. */
+static bool insp_at(const char *s, size_t len, size_t at, const char *lit) {
+  size_t n = strlen(lit);
+  return at <= len && at + n <= len && memcmp(s + at, lit, n) == 0;
+}
+
+/* Node's coreModuleRegExp, /^ {4}at (?:[^/\\(]+ \\(|)node:(.+):\d+:\d+\)?$/,
+ * over one frame line: true when the line names an existing builtin
+ * module, the case formatError dims whole. The capture is greedy, so the
+ * module id runs to the last two colon-number groups. */
+static bool insp_core_frame(const char *line, size_t len) {
+  if (!insp_at(line, len, 0, "    at ")) return false;
+  size_t i = 7;
+  if (!insp_at(line, len, i, "node:")) {
+    /* the optional `fn (` part: one or more bytes that are neither '/' nor
+     * '(' and then a space and '(' */
+    size_t j = i;
+    while (j < len && line[j] != '/' && line[j] != '(') j++;
+    if (j == i || j >= len || line[j] != '(' || line[j - 1] != ' ' || j - 1 == i) return false;
+    i = j + 1;
+    if (!insp_at(line, len, i, "node:")) return false;
+  }
+  size_t end = len;
+  if (end > i && line[end - 1] == ')') end--;
+  size_t id_start = i + 5;
+  size_t q = end;
+  while (q > id_start && line[q - 1] >= '0' && line[q - 1] <= '9') q--;
+  if (q == end || q <= id_start || line[q - 1] != ':') return false;
+  size_t q2 = q - 1;
+  while (q2 > id_start && line[q2 - 1] >= '0' && line[q2 - 1] <= '9') q2--;
+  if (q2 == q - 1 || q2 <= id_start || line[q2 - 1] != ':') return false;
+  return q2 - 1 > id_start && insp_builtin_module(line + id_start, q2 - 1 - id_start);
+}
+
+/* Appends one styled span: `text` in the given style when the rendering is
+ * colored, plain otherwise. */
+static void insp_spanned_into(InspBuf *b, const char *text, size_t len, InspStyle style) {
+  if (g_colors) insp_style_open(b, style);
+  ib_bytes(b, text, len);
+  if (g_colors) insp_style_close(b, style);
+}
+
+/* Node's markNodeModules: the package name of each `/node_modules/<name>/`
+ * segment of a frame line takes the 'module' style, `@scope/name` included;
+ * a "node_modules" that is not a whole path segment stays plain. */
+static void insp_mark_node_modules_into(InspBuf *b, const char *line, size_t len) {
+  size_t last = 0, from = 0;
+  bool marked = false;
+  for (;;) {
+    size_t pos = SIZE_MAX;
+    for (size_t k = from; k + 12 <= len; k++)
+      if (memcmp(line + k, "node_modules", 12) == 0) {
+        pos = k;
+        break;
+      }
+    if (pos == SIZE_MAX) break;
+    char before = pos > 0 ? line[pos - 1] : '\0';
+    char after = pos + 12 < len ? line[pos + 12] : '\0';
+    if ((after != '/' && after != '\\') || (before != '/' && before != '\\')) {
+      from = pos + 1;
+      continue;
+    }
+    size_t name_start = pos + 13;
+    ib_bytes(b, line + last, name_start - last);
+    size_t name_end = name_start;
+    while (name_end < len && line[name_end] != before) name_end++;
+    if (name_start < len && line[name_start] == '@') {
+      size_t next = name_end < len ? name_end + 1 : len;
+      while (next < len && line[next] != before) next++;
+      name_end = next;
+    }
+    insp_spanned_into(b, line + name_start, name_end - name_start, INSP_MODULE);
+    last = name_end;
+    from = name_end;
+    marked = true;
+  }
+  if (!marked) ib_bytes(b, line, len);
+  else ib_bytes(b, line + last, len - last);
+}
+
+/* Node's markCwd over one line: `dir` (`cwd`, or its file:// href when the
+ * raw directory is not in the line) styles the path from the opening
+ * parenthesis before it, when there is one, through the separator after the
+ * directory, and a closing parenthesis that ends such a line on its own.
+ * Appends the marked line and answers true; false, with nothing appended,
+ * when the line does not carry the directory — which is what makes
+ * formatError retry with the href. */
+static bool insp_mark_cwd_into(InspBuf *b, const char *line, size_t len, const char *dir,
+                               size_t dir_len) {
+  size_t pos = SIZE_MAX;
+  for (size_t k = 0; dir_len && k + dir_len <= len; k++)
+    if (memcmp(line + k, dir, dir_len) == 0) {
+      pos = k;
+      break;
+    }
+  if (pos == SIZE_MAX) return false;
+  size_t length = dir_len;
+  if (pos >= 7 && memcmp(line + pos - 7, "file://", 7) == 0) {
+    length += 7;
+    pos -= 7;
+  }
+  size_t start = pos > 0 && line[pos - 1] == '(' ? pos - 1 : pos;
+  bool trailing_paren = start != pos && len > 0 && line[len - 1] == ')';
+  size_t end = trailing_paren ? len - 1 : len;
+  size_t dir_end = pos + length + 1;
+  if (dir_end > len) dir_end = len;
+  if (end < dir_end) end = dir_end;
+  ib_bytes(b, line, start);
+  insp_spanned_into(b, line + start, dir_end - start, INSP_UNDEFINED);
+  ib_bytes(b, line + dir_end, end - dir_end);
+  if (trailing_paren) insp_spanned_into(b, ")", 1, INSP_UNDEFINED);
+  return true;
+}
+
+/* formatError's colored stack: the "Name: message" header stays plain, and
+ * each frame line is dim when it names a builtin module, else marked by
+ * markNodeModules and markCwd (retried with the working directory's
+ * file:// href). The caller adds the indentation, as Node's final
+ * replaceAll does. +1. */
+static ScrStr *insp_colored_stack(const ScrStr *stack) {
+  size_t start = SIZE_MAX;
+  for (size_t i = 0; i + 7 <= stack->len; i++)
+    if (stack->data[i] == '\n' && memcmp(stack->data + i, "\n    at", 7) == 0) {
+      start = i;
+      break;
+    }
+  InspBuf out = {0};
+  if (start == SIZE_MAX) {
+    ib_bytes(&out, stack->data, stack->len);
+    return ib_take(&out);
+  }
+  ib_bytes(&out, stack->data, start);
+  char cwd_buf[4096];
+  const char *cwd = getcwd(cwd_buf, sizeof cwd_buf);
+  size_t cwd_len = cwd ? strlen(cwd) : 0;
+  char *href = NULL;
+  size_t href_len = 0;
+  if (cwd) {
+    href = malloc(cwd_len + 8);
+    if (!href) insp_oom();
+    memcpy(href, "file://", 7);
+    memcpy(href + 7, cwd, cwd_len);
+    href[cwd_len + 7] = '\0';
+    href_len = cwd_len + 7;
+  }
+  size_t pos = start + 1;
+  for (;;) {
+    size_t line_end = pos;
+    while (line_end < stack->len && stack->data[line_end] != '\n') line_end++;
+    const char *line = stack->data + pos;
+    size_t len = line_end - pos;
+    ib_char(&out, '\n');
+    if (insp_core_frame(line, len)) {
+      insp_spanned_into(&out, line, len, INSP_UNDEFINED);
+    } else {
+      InspBuf marked = {0};
+      insp_mark_node_modules_into(&marked, line, len);
+      ScrStr *modules = ib_take(&marked);
+      if (!insp_mark_cwd_into(&out, modules->data, modules->len, cwd, cwd_len) &&
+          !insp_mark_cwd_into(&out, modules->data, modules->len, href, href_len))
+        ib_bytes(&out, modules->data, modules->len);
+      scr_str_release(modules);
+    }
+    if (line_end >= stack->len) break;
+    pos = line_end + 1;
+  }
+  free(href);
+  return ib_take(&out);
+}
+
 /* Appends the base an error's stack renders as: the stack text itself, or
  * Node's bracket form when it carries no frame line. */
 static void insp_stack_base_into(InspBuf *b, const ScrStr *stack) {
   bool frames = insp_stack_has_frames(stack);
   if (!frames) ib_char(b, '[');
-  insp_indented_into(b, stack);
+  if (frames && g_colors) {
+    ScrStr *colored = insp_colored_stack(stack);
+    insp_indented_into(b, colored);
+    scr_str_release(colored);
+  } else {
+    insp_indented_into(b, stack);
+  }
   if (!frames) ib_char(b, ']');
 }
 
@@ -1817,7 +2138,11 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
   {
     InspBuf entry = {0};
     ib_cstr(&entry, "code: ");
-    insp_quote_into(&entry, e->code->data, e->code->len);
+    ScrStr *code = scr_str_new(e->code->data, e->code->len);
+    ScrStr *quoted = scr_insp_str(code);
+    scr_str_release(code);
+    ib_str(&entry, quoted);
+    scr_str_release(quoted);
     ScrStr *entry_str = ib_take(&entry);
     scr_insp_entry(entry_str, false);
     scr_str_release(entry_str);
@@ -2433,7 +2758,11 @@ static ScrStr *scr_insp_weak_collection(const char *label, double recurse, doubl
     return ib_take(&out);
   }
   ib_cstr(&out, label);
-  ib_cstr(&out, " { <items unknown> }");
+  ib_cstr(&out, " { ");
+  if (g_colors) insp_style_open(&out, INSP_SPECIAL);
+  ib_cstr(&out, "<items unknown>");
+  if (g_colors) insp_style_close(&out, INSP_SPECIAL);
+  ib_cstr(&out, " }");
   return ib_take(&out);
 }
 
@@ -3105,10 +3434,18 @@ static ScrStr *insp_bytes_bigint(const ScrBytes *b, size_t i) {
 static ScrStr *insp_backing_buffer(const ScrBytes *b) {
   const ScrBytes *owner = b->backing ? b->backing : b;
   const char *cls = owner->shared ? "SharedArrayBuffer" : "ArrayBuffer";
-  char line[64];
-  int n = snprintf(line, sizeof line, "%s { [byteLength]: %zu }", cls,
-                   (size_t)scr_bytes_byte_len(owner));
-  return scr_str_new(line, (size_t)n);
+  /* formatRaw's fast path for a buffer with no own keys: the class, then
+   * `[byteLength]` with the count styled as a number (never grouped). */
+  char count[32];
+  int n = snprintf(count, sizeof count, "%zu", (size_t)scr_bytes_byte_len(owner));
+  InspBuf out = {0};
+  ib_cstr(&out, cls);
+  ib_cstr(&out, " { [byteLength]: ");
+  if (g_colors) insp_style_open(&out, INSP_NUMBER);
+  ib_bytes(&out, count, (size_t)n);
+  if (g_colors) insp_style_close(&out, INSP_NUMBER);
+  ib_cstr(&out, " }");
+  return ib_take(&out);
 }
 
 /* A numeric typed array (not a Buffer): `Uint8Array(n) [ ... ]` with
@@ -3156,27 +3493,25 @@ static ScrStr *insp_typed_array_body(ScrBytes *b, double recurse, double depth,
   size_t entries = shown + (more ? 1 : 0);
   if (g_show_hidden) {
     /* Node's extraKeys for a typed array, after the elements. */
-    char line[64];
     size_t elem = scr_bytes_elem_size(b->elem);
-    int n = insp_fmt_num_prop(line, sizeof line, "[BYTES_PER_ELEMENT]", (double)elem);
-    ScrStr *s = scr_str_new(line, (size_t)n);
+    ScrStr *s = insp_styled_num_prop("[BYTES_PER_ELEMENT]", (double)elem);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)b->len);
-    s = scr_str_new(line, (size_t)n);
+    s = insp_styled_num_prop("[length]", (double)b->len);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", (double)(b->len * elem));
-    s = scr_str_new(line, (size_t)n);
+    s = insp_styled_num_prop("[byteLength]", (double)(b->len * elem));
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
-    s = scr_str_new(line, (size_t)n);
+    s = insp_styled_num_prop("[byteOffset]", scr_bytes_byte_offset(b));
     scr_insp_entry(s, false);
     scr_str_release(s);
     ScrStr *owner = insp_backing_buffer(b);
     InspBuf eb = {0};
-    ib_cstr(&eb, "[buffer]: ");
+    if (g_colors) insp_style_open(&eb, INSP_STRING);
+    ib_cstr(&eb, "[buffer]");
+    if (g_colors) insp_style_close(&eb, INSP_STRING);
+    ib_cstr(&eb, ": ");
     ib_bytes(&eb, owner->data, owner->len);
     scr_str_release(owner);
     s = ib_take(&eb);
@@ -4598,10 +4933,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       /* An Error carried as a checked-dynamic value (a caught error, an
        * Error stored in an `unknown` slot): the error's own rendering,
        * never the encoding's internal marker. */
-      if (scr_dyn_obj_get(d, "%error", 6) != NULL) {
-        if (g_colors) return insp_colors_fence("Error values");
+      if (scr_dyn_obj_get(d, "%error", 6) != NULL)
         return scr_insp_dyn_error(d, recurse, depth);
-      }
       /* Object.create(null)'s dictionary: Node prefixes the rendering
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
@@ -4623,12 +4956,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
     case SCR_DYN_HANDLE: {
-      /* TextDecoder's text takes no colors and TextEncoder's view styles
-       * its string, as Node's inspectors do. */
-      if (g_colors && d->v.handle.tag != SCR_DYNH_SET && d->v.handle.tag != SCR_DYNH_MAP &&
-          d->v.handle.tag != SCR_DYNH_DATE && d->v.handle.tag != SCR_DYNH_TEXT_DECODER &&
-          d->v.handle.tag != SCR_DYNH_TEXT_ENCODER &&
-          d->v.handle.tag != SCR_DYNH_REGEXP)
+      /* An island value renders through Node's own util.inspect, which this
+       * call cannot hand the options it is running with: a colored
+       * rendering of one has no lowering. Every other handle below styles
+       * its own entries from the same tables the walk uses. */
+      if (g_colors && d->v.handle.tag == SCR_DYNH_NODE_ISLAND)
         return insp_colors_fence_values(scr_dyn_handle_cls(d));
       if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
@@ -4736,14 +5068,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
 
     case SCR_DYN_TYPED_REF: {
-      if (g_colors && scr_insp_is_generator(d)) return insp_colors_fence("generator objects");
+      /* A compiled generator object is the bare `Object [Generator] {}`,
+       * whose tag takes no style, so colors change nothing about it. */
       if (scr_insp_is_generator(d)) return scr_insp_generator(d);
       const char *cls = NULL;
       ScrDyn *view = scr_event_ref_hooks ? scr_event_ref_hooks->inspect_view(d, &cls) : NULL;
-      if (view && g_colors) {
-        scr_dyn_release(view);
-        return insp_colors_fence_values(cls);
-      }
       if (view) {
         /* The handle rule above: the class name past the depth limit. */
         if (recurse > depth) {
@@ -4773,19 +5102,16 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       double time;
       ScrStr *date_class = materialized->kind == SCR_DYN_OBJ && scr_dyn_date_class_time(d, &time)
           ? scr_dyn_date_class_name(d) : NULL;
-      if (date_class && g_colors) {
-        scr_str_release(date_class);
-        scr_dyn_release(materialized);
-        return insp_colors_fence("Date subclass instances");
-      }
       if (date_class) {
         /* An instance of a class declared `extends Date`: the class name and
          * the time as Date.prototype.toISOString formats it, then its own
-         * enumerable properties when it has any. */
+         * enumerable properties when it has any. Node styles the whole head
+         * with the 'date' style only when nothing follows it; a property
+         * means a plain head and its own styled entries, and past the depth
+         * limit Node's placeholder for a value with own keys is `[cls]`. */
         ScrStr *iso = scr_insp_date(time);
         InspBuf head = {0};
         ib_bytes(&head, date_class->data, date_class->len);
-        scr_str_release(date_class);
         ib_char(&head, ' ');
         ib_bytes(&head, iso->data, iso->len);
         scr_str_release(iso);
@@ -4793,10 +5119,22 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         bool fields = false;
         for (size_t i = 0; i < scr_dyn_obj_count(materialized) && !fields; i++)
           fields = scr_dyn_obj_prop_at(materialized, i).enumerable;
-        if (!fields || recurse > depth) {
+        if (!fields) {
+          scr_str_release(date_class);
           scr_dyn_release(materialized);
-          return prefix;
+          return insp_styled(prefix, INSP_DATE);
         }
+        if (recurse > depth) {
+          scr_str_release(prefix);
+          scr_dyn_release(materialized);
+          InspBuf br = {0};
+          ib_char(&br, '[');
+          ib_bytes(&br, date_class->data, date_class->len);
+          ib_char(&br, ']');
+          scr_str_release(date_class);
+          return insp_styled(ib_take(&br), INSP_SPECIAL);
+        }
+        scr_str_release(date_class);
         char *cls = malloc(prefix->len + 1);
         if (!cls) scr_trap("scriptc: out of memory\n");
         memcpy(cls, prefix->data, prefix->len);
@@ -4930,7 +5268,6 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     }
     case SCR_DYN_BYTES: {
       ScrBytes *b = d->v.bytes;
-      if (b->is_data_view && g_colors) return insp_colors_fence("DataView values");
       if (b->is_data_view) return insp_data_view_body(b, recurse, depth, d);
       if (d->buffer) {
         /* Buffer-flavored (a stream chunk): Node's <Buffer ..> form. */

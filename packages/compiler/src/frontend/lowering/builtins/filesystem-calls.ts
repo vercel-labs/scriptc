@@ -32,6 +32,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import { defaultAfterUndefined } from "../optional-arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -1334,7 +1335,43 @@ export function lowerFsMkdirSyncCall(
           : type.kind === "void"
             ? "fs.mkdirObjVoidSync"
             : "fs.mkdirObjSync";
-      return { kind: "libCall", fn, args: [path, mode, recursive], type, loc };
+      const call = (pathArg: IrExpr, modeArg: IrExpr, recursiveArg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn,
+        args: [pathArg, modeArg, recursiveArg],
+        type,
+        loc,
+      });
+      // The options object is constructed before the call, so its
+      // initializers run in source order; only then does Node read
+      // `recursive` before `mode`. The emitted call evaluates its arguments
+      // path, mode, recursive, so a recursive-first literal whose two
+      // members can both have an effect keeps them in locals first.
+      const keepsSourceOrder =
+        modeNode !== null &&
+        recursiveNode !== null &&
+        options.first === "recursive" &&
+        !isSafeToDiscard(mode) &&
+        !isSafeToDiscard(recursive);
+      if (!keepsSourceOrder) return call(path, mode, recursive);
+      const pathLocal = lowerer.declareHiddenLocal("%mkdirPath", STRING);
+      const recursiveLocal = lowerer.declareHiddenLocal("%mkdirRecursive", BOOL);
+      const modeLocal = lowerer.declareHiddenLocal("%mkdirMode", mode.type);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+          { kind: "varDecl", localId: recursiveLocal.id, init: recursive, loc: recursive.loc },
+          { kind: "varDecl", localId: modeLocal.id, init: mode, loc: mode.loc },
+        ],
+        result: call(
+          varRef(pathLocal.id, STRING, loc),
+          varRef(modeLocal.id, mode.type, loc),
+          varRef(recursiveLocal.id, BOOL, loc),
+        ),
+        type,
+        loc,
+      };
     }
   }
   // An options value whose arms only the runtime sees, or whose typed arms
@@ -2547,20 +2584,29 @@ export function lowerFsReadPathCall(
 }
 
 /** Both mkdir forms accept the same literal option shape; evaluation stays in the caller. */
-function parseMkdirOptions(
-  node: ts.Expression,
-): { recursive: ts.Expression | null; mode: ts.Expression | null } | null {
+function parseMkdirOptions(node: ts.Expression): {
+  recursive: ts.Expression | null;
+  mode: ts.Expression | null;
+  /** The first member written in the literal: the object is constructed
+   * before the call, so its initializers run in that order. */
+  first: "recursive" | "mode" | null;
+} | null {
   if (!ts.isObjectLiteralExpression(node)) return null;
   let recursive: ts.Expression | null = null;
   let mode: ts.Expression | null = null;
+  let first: "recursive" | "mode" | null = null;
   for (const property of node.properties.nodes) {
     const member = optionMember(property);
     if (!member) return null;
-    if (member.name === "recursive") recursive = member.value;
-    else if (member.name === "mode") mode = member.value;
-    else return null;
+    if (member.name === "recursive") {
+      recursive = member.value;
+      first ??= "recursive";
+    } else if (member.name === "mode") {
+      mode = member.value;
+      first ??= "mode";
+    } else return null;
   }
-  return { recursive, mode };
+  return { recursive, mode, first };
 }
 
 /** fs.existsSync(path) where the path value is not statically a string: a

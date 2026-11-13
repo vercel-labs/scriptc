@@ -1908,6 +1908,10 @@ export function lowerFsStatOptionsCall(
     return plainAfter(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions);
   }
   let throwIfNoEntry: IrExpr | null = null;
+  // The options expression itself, when reading its members does not
+  // already evaluate it: Node evaluates the argument before the stat, so
+  // the call runs as an effect in front of the result.
+  let optionsEffect: IrExpr | null = null;
   // The representation the call's own members pin, when they differ from the
   // call type's (a stored record's literal member).
   let pinned: "bigint" | "number" | null = representation;
@@ -1957,6 +1961,12 @@ export function lowerFsStatOptionsCall(
         "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
       );
     }
+    // Every member the call reads is pinned, so only the expression's own
+    // effects remain: evaluate it before the stat, once. A runtime
+    // throwIfNoEntry is read off the lowered record in the result, which
+    // evaluates it there instead.
+    const readsOptions = throwIfNoEntry !== null && throwIfNoEntry.kind !== "boolLit";
+    if (!readsOptions && !isSafeToDiscard(opts)) optionsEffect = opts;
   }
   // An object literal whose bigint member is a value only the runtime knows
   // selects the member table at the call: the whole literal takes the ladder.
@@ -2005,13 +2015,17 @@ export function lowerFsStatOptionsCall(
       );
     }
   }
-  // With a bigint member's effect, the path binds first, then the members
-  // run in source order (a runtime throwIfNoEntry into a local), then the
-  // stat; without one, the call evaluates its operands in that order itself.
+  // With a bigint member's effect or an options expression the result does
+  // not read, the path binds first, then the options run in source order (a
+  // runtime throwIfNoEntry into a local), then the stat; a literal without
+  // either lets the call evaluate its operands in that order itself.
   const ordered = (stat: (pathArg: IrExpr, flag: IrExpr | null) => IrExpr): IrExpr => {
-    if (!bigintEffect && ts.isObjectLiteralExpression(optsNode)) return stat(path, throwIfNoEntry);
+    if (!bigintEffect && optionsEffect === null && ts.isObjectLiteralExpression(optsNode))
+      return stat(path, throwIfNoEntry);
     const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
     const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc }];
+    if (optionsEffect !== null)
+      stmts.push({ kind: "exprStmt", expr: optionsEffect, loc: optionsEffect.loc });
     let flag = throwIfNoEntry;
     for (const member of members) {
       if (member !== "throwIfNoEntry") {
@@ -2036,7 +2050,8 @@ export function lowerFsStatOptionsCall(
         "the result must be Stats | undefined when throwIfNoEntry may be false",
       );
     }
-    if (!bigintEffect && ts.isObjectLiteralExpression(optsNode)) return plainAfter(null);
+    if (!bigintEffect && optionsEffect === null && ts.isObjectLiteralExpression(optsNode))
+      return plainAfter(null);
     return ordered((pathArg) => ({
       kind: "libCall",
       fn: plainFn,
@@ -2093,10 +2108,11 @@ export function lowerFsStatFdOptionsCall(
   const fd = lowerer.lowerExprExpecting(fdNode, F64);
   const plain = (
     repr: "bigint" | "number" = representation === "bigint" ? "bigint" : "number",
+    fdArg: IrExpr = fd,
   ): IrExpr => ({
     kind: "libCall",
     fn: "fs.fstatSync",
-    args: [fd],
+    args: [fdArg],
     type: repr === "bigint" ? BIGINT_STATS_T : STATS_T,
     loc,
   });
@@ -2145,7 +2161,21 @@ export function lowerFsStatFdOptionsCall(
         "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
       );
     }
-    return plain(repr);
+    // Node evaluates the descriptor argument first, then the options
+    // expression; only the record's type was read, so its own effects run
+    // before the stat.
+    if (isSafeToDiscard(opts)) return plain(repr);
+    const fdLocal = lowerer.declareHiddenLocal("%fstatFd", F64);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: fdLocal.id, init: fd, loc: fd.loc },
+        { kind: "exprStmt", expr: opts, loc: opts.loc },
+      ],
+      result: plain(repr, varRef(fdLocal.id, F64, loc)),
+      type: plain(repr).type,
+      loc,
+    };
   }
   for (const p of optsNode.properties.nodes) {
     const m = optionMember(p);

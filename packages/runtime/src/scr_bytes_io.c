@@ -277,17 +277,19 @@ static const char *scr_fs_user_buffer_len_name(const ScrDyn *option) {
                                       : "options.buffer.byteLength";
 }
 
-/* getReadFileBuffer: a factory is called with the file size and its answer
- * must be an ArrayBufferView; a non-Buffer view becomes a u8 Buffer over
- * exactly its bytes (Node's Buffer.from(buffer.buffer, byteOffset,
- * byteLength)); a buffer smaller than the file throws. +1; NULL with the
- * exception pending. */
-static ScrBytes *scr_fs_user_buffer(const ScrDyn *option, double size) {
+/* getReadFileBuffer: a factory is called as a method of the options object
+ * (`options.buffer(size)`), so `this` is the options; its answer must be an
+ * ArrayBufferView. A non-Buffer view becomes a u8 Buffer over exactly its
+ * bytes (Node's Buffer.from(buffer.buffer, byteOffset, byteLength)); a buffer
+ * smaller than the file throws. +1; NULL with the exception pending. */
+static ScrBytes *scr_fs_user_buffer(const ScrDyn *option, double size, const ScrDyn *receiver) {
   bool factory = option->kind == SCR_DYN_FUNC;
   ScrDyn *value;
   if (factory) {
     ScrDyn *arg = scr_dyn_new_num(size);
+    scr_dyn_this_push_dyn(receiver);
     value = scr_dyn_call(option, &arg, 1, "options.buffer");
+    scr_dyn_this_pop();
     scr_dyn_release(arg);
     if (!value) return NULL;
     if (value->kind != SCR_DYN_BYTES) {
@@ -373,7 +375,7 @@ static ScrBytes *scr_fs_read_sync_result(int fd, const ScrFsReadOptions *read) {
     return bytes;
   }
   double size = scr_fs_file_size(fd);
-  ScrBytes *buffer = scr_fs_user_buffer(read->buffer, size);
+  ScrBytes *buffer = scr_fs_user_buffer(read->buffer, size, read->object);
   double pos = buffer ? scr_fs_read_user_buffer(fd, buffer, size, read->buffer) : -1;
   int saved = errno;
   scr_fs_raw_close(fd);

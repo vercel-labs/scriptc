@@ -1023,10 +1023,22 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.secureHeapUsed",
+  "crypto.setEngine",
+  "crypto.fipsGet",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   "crypto.diffieHellman",
 ]);
 
@@ -1739,20 +1751,28 @@ const RUNTIME_FEATURE_RULES = {
     // The legacy url functions, crypto.createCipheriv,
     // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
-    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
-    // handles and promises through it.
+    // encrypt and decrypt link scr_cipher.c too), as do the
+    // checked-dynamic Hmac constructors when their key is a CryptoKey
+    // (DEP0203, scr_lib.c); scr_wasm.c boxes its handles and promises
+    // through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.hmacNewDyn",
+      "crypto.hmacNewAny",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      // crypto.fips reports DEP0093 once per process on its first read.
+      "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      "crypto.signOneshotCb",
+      "crypto.verifyOneshotCb",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",
@@ -2440,6 +2460,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Fingerprint256",
       "crypto.x509Fingerprint512",
       "crypto.x509InfoAccess",
+      "crypto.x509KeyUsage",
       "crypto.x509Issuer",
       "crypto.x509Raw",
       "crypto.x509RawDer",

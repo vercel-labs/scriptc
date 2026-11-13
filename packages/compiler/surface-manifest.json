@@ -705,33 +705,25 @@
       "id": "node-builtin.crypto.privateDecrypt",
       "kind": "node-builtin",
       "name": "crypto.privateDecrypt",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.privateEncrypt",
       "kind": "node-builtin",
       "name": "crypto.privateEncrypt",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.publicDecrypt",
       "kind": "node-builtin",
       "name": "crypto.publicDecrypt",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.publicEncrypt",
       "kind": "node-builtin",
       "name": "crypto.publicEncrypt",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.randomBytes",
@@ -785,6 +777,12 @@
       "id": "node-builtin.crypto.secureHeapUsed",
       "kind": "node-builtin",
       "name": "crypto.secureHeapUsed",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.setEngine",
+      "kind": "node-builtin",
+      "name": "crypto.setEngine",
       "status": "static"
     },
     {

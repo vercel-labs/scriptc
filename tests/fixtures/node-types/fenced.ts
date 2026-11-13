@@ -64,12 +64,11 @@ http2.createSecureServer({
 });
 http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamResetBurst: 1 + 0 });
 http2.connect("https://localhost");
-/* The crypto surface beyond the lowered slice (randomness, the hash
- * chain, the introspection statics): RSA encryption names the lowered
- * asymmetric surface, symmetric ciphers the missing cipher stack, and
- * setFips the FIPS truth (getFips() lowers to 0); secureHeapUsed() lowers. */
-import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
-publicEncrypt("key", Buffer.alloc(1));
+/* The crypto surface beyond the lowered slice: RSA encryption and the
+ * introspection statics lower (publicEncrypt(), secureHeapUsed()), so
+ * symmetric ciphers name the missing cipher stack and setFips the FIPS
+ * truth (getFips() lowers to 0). */
+import { createCipheriv, secureHeapUsed, setFips } from "node:crypto";
 createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 secureHeapUsed();
 setFips(false);

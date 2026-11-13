@@ -145,6 +145,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // scr_crypto_x509_key_usage reads the certificate's extended key usage
+  // extension: a certificate without one answers undefined and a malformed
+  // extension is skipped, so no program-visible error is raised.
+  "crypto.x509KeyUsage",
   // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
   // timer the handle names: the loop's clear, or the mock's own entry
   // removal when the program mocks timers. Neither throws nor runs a

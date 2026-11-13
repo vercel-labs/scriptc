@@ -19728,7 +19728,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -19787,30 +19786,61 @@
           "tests/corpus/7093-x509-methods-js.mjs",
           "tests/corpus/7122-webcrypto-node-crypto.ts",
           "tests/corpus/7123-webcrypto-node-crypto.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/7152-crypto-prime.ts",
           "tests/corpus/7153-crypto-prime-errors.cjs",
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-checked-arguments.cjs",
+          "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-create-mac-errors.mjs",
           "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs",
+          "tests/corpus/crypto-key-object-properties.ts",
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/corpus/crypto-module-catalogs.ts",
+          "tests/corpus/crypto-random-arguments.cjs",
+          "tests/corpus/crypto-rsa-key-types.cjs",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-secret-key-inputs.ts",
           "tests/corpus/crypto-secure-heap-used.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-options.ts",
           "tests/corpus/crypto-sign-pipe.ts",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-signer-encodings.ts",
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/x509-issuer-certificate.ts",
+          "tests/corpus/x509-key-usage.ts",
           "tests/fixtures/node-types/cipher.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
@@ -20138,11 +20168,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20165,11 +20196,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20192,13 +20224,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createCipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -20235,13 +20267,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createDecipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -20278,15 +20310,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20310,15 +20344,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20342,15 +20378,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellmanGroup",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20374,16 +20412,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createECDH",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
-          "tests/corpus/6701-ecdh-formats.ts",
-          "tests/corpus/6702-ecdh-errors.js",
-          "tests/corpus/6703-ecdh-private-keys.ts",
-          "tests/corpus/6704-ecdh-set-public-key.cjs",
-          "tests/corpus/6705-ecdh-handles.ts",
-          "tests/fixtures/node-types/ecdh.ts"
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20406,7 +20446,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20422,6 +20462,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20445,7 +20487,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20461,6 +20503,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20516,13 +20560,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20573,13 +20613,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20602,11 +20638,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSecretKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20629,18 +20666,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20663,18 +20704,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createVerify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20720,18 +20765,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.diffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.diffieHellman",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20777,11 +20822,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20809,13 +20855,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20843,13 +20885,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20872,11 +20910,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKeySync",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20899,11 +20938,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20926,11 +20966,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20953,11 +20994,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getCipherInfo",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getCipherInfo",
         "tests": [
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7157-crypto-cipher-info-typed.ts"
+          "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20980,10 +21022,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCiphers",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21006,10 +21049,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCurves",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21032,15 +21076,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.getDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -21090,10 +21136,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getHashes",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21116,10 +21163,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getMacs",
         "tests": [
-          "tests/corpus/crypto-create-mac.ts"
+          "tests/corpus/crypto-introspection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21169,7 +21216,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21185,6 +21232,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21208,13 +21257,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdf",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21237,13 +21287,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdfSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21289,7 +21340,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21305,6 +21356,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21328,7 +21381,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21344,6 +21397,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21367,8 +21422,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21390,8 +21451,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21413,8 +21480,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21436,8 +21509,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21459,18 +21538,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.randomBytes",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomBytes",
         "tests": [
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21498,7 +21572,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21526,7 +21601,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21549,11 +21625,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.randomInt",
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
-          "tests/corpus/2890-crypto-static-utility.ts"
+          "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21581,7 +21658,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21609,7 +21687,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21632,13 +21711,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scrypt",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21661,13 +21741,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scryptSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21716,8 +21797,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.setEngine",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21762,18 +21846,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21823,18 +21911,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21857,10 +21949,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.constants",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-constants-object.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -21883,8 +21977,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.fips",
+        "tests": [
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22305,8 +22404,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.Certificate",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22351,8 +22454,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.exportChallenge",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22374,8 +22481,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.exportPublicKey",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22397,8 +22508,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.verifySpkac",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22420,9 +22535,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Cipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22459,9 +22578,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22498,9 +22621,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.getAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22537,9 +22664,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22576,9 +22707,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22615,9 +22750,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22654,9 +22793,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Decipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22693,9 +22836,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22732,9 +22879,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22771,9 +22922,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22810,9 +22965,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22849,9 +23008,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22888,9 +23051,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22920,9 +23084,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22952,9 +23117,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22984,9 +23150,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getGenerator",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23016,9 +23183,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrime",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23048,9 +23216,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23080,9 +23249,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23112,9 +23282,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23144,9 +23315,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23176,9 +23348,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.verifyError",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23208,9 +23381,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23240,9 +23414,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23272,9 +23447,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23304,9 +23480,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23336,9 +23513,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23368,9 +23546,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23400,9 +23579,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23432,9 +23612,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23464,7 +23645,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23480,6 +23661,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23503,7 +23686,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23519,6 +23702,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23542,7 +23727,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23558,6 +23743,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23581,7 +23768,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23597,6 +23784,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23620,7 +23809,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23636,6 +23825,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23659,7 +23850,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23675,6 +23866,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23698,7 +23891,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23714,6 +23907,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23737,11 +23932,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:KeyObject",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23764,11 +23960,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.equals",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23791,11 +23988,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.export",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23841,18 +24039,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asymmetricKeyDetails",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23875,18 +24065,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asymmetricKeyType",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23909,11 +24091,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.symmetricKeySize",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23936,11 +24119,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.type",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24044,18 +24228,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24078,18 +24266,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24112,18 +24304,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24146,18 +24342,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24180,18 +24380,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24214,18 +24418,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24248,12 +24456,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:X509Certificate",
         "tests": [
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
-          "tests/corpus/6936-x509-certificate-fields.ts"
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24276,7 +24485,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkEmail",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24306,7 +24515,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkHost",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24336,7 +24545,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIP",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24366,7 +24575,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIssued",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24396,7 +24605,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkPrivateKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24426,7 +24635,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toJSON",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24456,7 +24665,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toLegacyObject",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24486,7 +24695,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toString",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24516,7 +24725,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.verify",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24546,11 +24755,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.ca",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24573,11 +24785,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24600,11 +24815,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint256",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24627,11 +24845,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint512",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24654,8 +24875,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.infoAccess",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24677,11 +24905,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.issuer",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24731,8 +24962,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.keyUsage",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24754,7 +24992,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.publicKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24784,11 +25022,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.raw",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24811,11 +25052,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.serialNumber",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24838,11 +25082,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subject",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24865,11 +25112,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subjectAltName",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24892,11 +25142,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFrom",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24919,11 +25172,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFromDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24946,11 +25202,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validTo",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24973,11 +25232,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validToDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25000,11 +25262,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithm",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25027,11 +25292,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithmOid",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25661,7 +25929,7 @@
       "anchor": "dep0009-cryptopbkdf2-without-digest",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -25677,6 +25945,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -26081,9 +26351,10 @@
       "anchor": "dep0031-ecdhsetpublickey",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -28555,9 +28826,10 @@
       "anchor": "dep0167-weak-diffiehellmangroup-instances-modp1-modp2-modp5",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -28792,7 +29064,7 @@
       "anchor": "dep0179-hash-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28808,6 +29080,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -28844,7 +29118,7 @@
       "anchor": "dep0181-hmac-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28860,6 +29134,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },

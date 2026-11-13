@@ -1752,6 +1752,9 @@ function buildLibFnSignatures() {
     "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+    /** keyUsage: the extended key usage OIDs as a dynamic array, or
+     * undefined when the extension is absent. */
+    "crypto.x509KeyUsage": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },
@@ -1771,6 +1774,17 @@ function buildLibFnSignatures() {
     "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
     "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
+    /** crypto.Certificate's SPKAC methods (scr_pki.c), over the spkac
+     * argument and its optional encoding: the base64 text decodes as
+     * NETSCAPE_SPKI_b64_decode does (EVP_DecodeBlock, then d2i), and a
+     * string decodes as Buffer.from does. verifySpkac checks the signature
+     * against the key the SPKAC itself carries; exportChallenge copies the
+     * challenge, exportPublicKey writes the key's PEM. Input no decoder
+     * accepts answers false or an empty Buffer (Node answers an empty
+     * string). */
+    "crypto.spkacVerify": { argTypes: [DYN, DYN], result: BOOL },
+    "crypto.spkacChallenge": { argTypes: [DYN, DYN], result: BYTES_U8 },
+    "crypto.spkacPublicKey": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "fs.closeSync": { argTypes: [F64], result: VOID },
     "stats.isFile": { argTypes: [STATS_T], result: BOOL },
     "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },
@@ -3804,6 +3818,18 @@ function buildLibFnSignatures() {
     "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
     "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
     "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
+    /** The any-argument forms: Node's argument types are checked at run
+     * time, in its order, for calls whose arguments do not fit the typed
+     * signatures (missing ones read as undefined). */
+    "crypto.hashNewAny": { argTypes: [DYN, DYN], result: CRYPTOHASH_T },
+    "crypto.hmacNewAny": { argTypes: [DYN, DYN, DYN], result: CRYPTOHMAC_T },
+    "crypto.hashOneshotAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.pbkdf2Any": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.pbkdf2AnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.hkdfAny": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.hkdfAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.scryptAny": { argTypes: [DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.scryptAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
     /** Views of any element kind (the validator checks both are views). */
     "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
     "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
@@ -3833,6 +3859,10 @@ function buildLibFnSignatures() {
     "crypto.createSecretKey": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeySync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
+    /** Node's synchronous callback gate, for a callback only the dynamic
+     * checker can see: a non-function throws ERR_INVALID_ARG_TYPE before
+     * generateKey's type and options checks, where Node validates it. */
+    "crypto.checkCallback": { argTypes: [DYN], result: VOID },
     "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
     "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
     /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
@@ -3855,6 +3885,13 @@ function buildLibFnSignatures() {
     "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
     "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
     "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
+    "crypto.randomBytesAny": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** The checked-dynamic entries a call takes when its callback position
+     * can hold a function: same checks, and the callback in a later
+     * macrotask (the synchronous spellings above never schedule). */
+    "crypto.randomBytesAnyCb": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAnyCb": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
     "crypto.hkdf": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: DYN },
     "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },
@@ -6509,10 +6546,22 @@ function buildLibFnSignatures() {
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.signOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
     "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
-    "crypto.createSign": { argTypes: [DYN], result: DYN },
-    "crypto.createVerify": { argTypes: [DYN], result: DYN },
+    "crypto.verifyOneshotCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.verifyOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.publicEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.publicDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    /** setEngine's checked-dynamic (engine[, flags]) form and the deprecated
+     * crypto.fips read, which reports DEP0093 once per process. */
+    "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
+    "crypto.fipsGet": { argTypes: [], result: F64 },
+    "crypto.createSign": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.createVerify": { argTypes: [DYN, DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
      * result (map and filter of a Buffer return a Buffer). */
     "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },

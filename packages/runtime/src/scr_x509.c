@@ -1746,6 +1746,33 @@ static void scr_x509_key_fields(const ScrX509Parts *parts, ScrDyn *slots[6]) {
 
 static const uint8_t SCR_X509_OID_EKU[] = {0x55, 0x1D, 0x25};
 
+/* x509.keyUsage: Node's enumUsages — undefined when the extended key usage
+ * extension is absent, the dotted OID of each purpose otherwise (an empty
+ * sequence answers an empty array). */
+ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der) {
+  ScrX509Parts parts;
+  if (!scr_x509_parts(SCR_X509_DER(der), &parts)) return scr_dyn_undefined();
+  size_t n;
+  const uint8_t *eku = scr_x509_ext(&parts, SCR_X509_OID_EKU, sizeof SCR_X509_OID_EKU, &n);
+  uint8_t tag;
+  size_t len;
+  const uint8_t *purposes = eku ? scr_der_tl(eku, eku + n, &tag, &len) : NULL;
+  if (!purposes || tag != 0x30) return scr_dyn_undefined();
+  ScrDyn *arr = scr_dyn_new_arr();
+  const uint8_t *end = purposes + len;
+  for (const uint8_t *p = purposes; p < end;) {
+    const uint8_t *oid = scr_der_tl(p, end, &tag, &len);
+    if (!oid) break;
+    p = oid + len;
+    if (tag != 0x06) continue;
+    ScrX509Buf dotted = {0};
+    scr_x509_oid_dotted(&dotted, oid, len);
+    scr_dyn_arr_push(arr, scr_x509_dyn_text(dotted.data, dotted.len));
+    free(dotted.data);
+  }
+  return arr;
+}
+
 /* x509.toLegacyObject(): Node's X509ToObject, member order included. */
 ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
   ScrX509Parts parts;
@@ -1784,28 +1811,7 @@ ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
     scr_dyn_obj_set(obj, texts[i].key, strlen(texts[i].key), scr_dyn_new_str(s));
     scr_str_release(s);
   }
-  size_t n;
-  const uint8_t *eku = ok ? scr_x509_ext(&parts, SCR_X509_OID_EKU, sizeof SCR_X509_OID_EKU, &n) : NULL;
-  uint8_t tag;
-  size_t len;
-  const uint8_t *purposes = eku ? scr_der_tl(eku, eku + n, &tag, &len) : NULL;
-  if (purposes && tag == 0x30) {
-    ScrDyn *arr = scr_dyn_new_arr();
-    const uint8_t *end = purposes + len;
-    for (const uint8_t *p = purposes; p < end;) {
-      const uint8_t *oid = scr_der_tl(p, end, &tag, &len);
-      if (!oid) break;
-      p = oid + len;
-      if (tag != 0x06) continue;
-      ScrX509Buf dotted = {0};
-      scr_x509_oid_dotted(&dotted, oid, len);
-      scr_dyn_arr_push(arr, scr_x509_dyn_text(dotted.data, dotted.len));
-      free(dotted.data);
-    }
-    scr_dyn_obj_set(obj, "ext_key_usage", 13, arr);
-  } else {
-    scr_dyn_obj_set(obj, "ext_key_usage", 13, scr_dyn_undefined());
-  }
+  scr_dyn_obj_set(obj, "ext_key_usage", 13, scr_crypto_x509_key_usage(der));
   ScrStr *serial = scr_crypto_x509_serial_number(der);
   scr_dyn_obj_set(obj, "serialNumber", 12, scr_dyn_new_str(serial));
   scr_str_release(serial);

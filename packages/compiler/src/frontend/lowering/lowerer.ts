@@ -148,6 +148,7 @@ import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import { lowerCertificateCall } from "./builtins/certificate.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
 import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
@@ -760,6 +761,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  cryptoConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -22567,6 +22569,7 @@ export class Lowerer {
       lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerX509Call(this, expr) ??
+      lowerCertificateCall(this, expr) ??
       lowerEcdhCall(this, expr) ??
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
@@ -23445,6 +23448,13 @@ export class Lowerer {
     if (bi.module === "crypto" && bi.member === "webcrypto") {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     }
+    // crypto.fips is getFips() behind a once-per-process DEP0093 report:
+    // the exports object (require() or a default import) owns it as a
+    // getter. The ES module namespace does not export it — a TypeScript
+    // read there is refused by name, and a JavaScript read is undefined.
+    if (bi.module === "crypto" && bi.member === "fips") {
+      return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
+    }
     // Members that are global objects (`require("stream/web").ReadableStream
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.
@@ -23456,6 +23466,8 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
     // `zlib.constants` as a value: the module's singleton record.
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
+    // `crypto.constants` as a value: the same story over the OpenSSL table.
+    if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23563,6 +23575,7 @@ export class Lowerer {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
+    if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     return null;
   }
 

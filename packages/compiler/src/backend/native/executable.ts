@@ -379,6 +379,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
+  unit((u) => u.opts.utilTraceSigInt === true, "scr_util_trace_sigint.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -395,13 +397,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
   unit((u) => u.opts.parseArgs, "scr_util.c"),
   unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
-  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  unit((u) => u.opts.inspect, "scr_util_style.c"),
   unit(
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",
   ),
   // util.promisify over an untyped function: dyn promises and calls.
   unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  // util.promisify's custom protocol, which the typed lowering reads over
+  // the boxed function; both lowerings share it.
+  unit((u) => u.opts.utilPromisify === true, "scr_util_promisify_custom.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&

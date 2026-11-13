@@ -2120,9 +2120,19 @@ static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
   return NULL;
 }
 
+/* The inspect unit reads a boxed promise through this reader: the state
+ * flags and, once settled, the outcome the boxed payload carries. */
+static void scr_dyn_promise_inspect(const ScrPromise *p, bool *pending, bool *rejected,
+                                    ScrDyn **value) {
+  *pending = scr_promise_is_pending(p);
+  *rejected = !*pending && scr_promise_is_rejected(p);
+  *value = *pending ? NULL : scr_promise_reason_dyn(p);
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_inspect_dyn_fn = scr_dyn_promise_inspect;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -2140,6 +2150,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_inspect_dyn_fn = scr_dyn_promise_inspect;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

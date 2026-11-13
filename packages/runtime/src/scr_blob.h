@@ -57,8 +57,15 @@ ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
  * module `id`, Node's sorted export names as enumerable read-only accessors
  * whose getters call `getter` with the name, `Symbol.toStringTag` "Module"
  * (the well-known symbol is `tag_key`), and Node's strict-mode write
- * TypeErrors. Borrows all four; +1 object. */
+ * TypeErrors. A program module's ("file:") id and a builtin's ES module
+ * spelling ("esm:") carry Node's util.types brand; a sub-namespace member's
+ * bare builtin id does not. Borrows all four; +1 object. */
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
+/* A JavaScript source's namespace taken as a value (moduleNamespaceObject):
+ * the object built from the module's export values, which the runtime keeps
+ * for module `id` and answers to every later request, marked as a module
+ * namespace. Borrows both; +1 object. */
+ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);

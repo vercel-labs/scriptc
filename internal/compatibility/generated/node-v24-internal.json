@@ -26295,11 +26295,12 @@
       "anchor": "dep0044-utilisarray",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.isArray",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -26587,11 +26588,12 @@
       "anchor": "dep0060-util_extend",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util._extend",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util._extend",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54224,6 +54226,8 @@
           "tests/corpus/timers-handle-surface.ts",
           "tests/corpus/timers-optional-delay-reads.ts",
           "tests/corpus/timers-untyped-delays.cjs",
+          "tests/corpus/url-search-params-record-init-order.cjs",
+          "tests/corpus/url-search-params-record-init-order.ts",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -55698,7 +55702,9 @@
           "tests/corpus/1793-searchparams-iteration.ts",
           "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/node24-url-mutation.ts",
-          "tests/corpus/node24-url-factories.ts"
+          "tests/corpus/node24-url-factories.ts",
+          "tests/corpus/url-search-params-record-init-order.ts",
+          "tests/corpus/url-search-params-record-init-order.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -55756,7 +55762,9 @@
           "tests/corpus/1793-searchparams-iteration.ts",
           "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/node24-url-mutation.ts",
-          "tests/corpus/node24-url-factories.ts"
+          "tests/corpus/node24-url-factories.ts",
+          "tests/corpus/url-search-params-record-init-order.ts",
+          "tests/corpus/url-search-params-record-init-order.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78156,23 +78164,18 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "packages/runtime/test/glob.test.ts",
           "packages/runtime/test/path.test.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
           "tests/corpus/5142-path-parse-format.ts",
           "tests/corpus/5145-path-matches-glob-basics.ts",
-          "tests/corpus/5146-path-matches-glob-braces.ts",
-          "tests/corpus/5147-path-matches-glob-extglob.ts",
-          "tests/corpus/5148-path-matches-glob-classes.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -78218,16 +78221,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.basename",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.basename",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78250,16 +78255,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.dirname",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.dirname",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78282,16 +78289,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.extname",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.extname",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78314,12 +78323,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.format",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.format",
         "tests": [
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
+          "tests/corpus/9205-path-namespace-members.ts",
           "tests/corpus/path-parse-dynamic-binding/main.ts",
-          "packages/runtime/test/path.test.ts"
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78342,13 +78357,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.matchesGlob",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.matchesGlob",
         "tests": [
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
           "tests/corpus/5145-path-matches-glob-basics.ts",
-          "tests/corpus/5146-path-matches-glob-braces.ts",
-          "tests/corpus/5147-path-matches-glob-extglob.ts",
-          "tests/corpus/5148-path-matches-glob-classes.ts",
+          "tests/corpus/9205-path-namespace-members.ts",
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
           "packages/runtime/test/glob.test.ts"
         ]
       },
@@ -78372,16 +78391,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.isAbsolute",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.isAbsolute",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78404,16 +78425,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.join",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.join",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78436,16 +78459,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.normalize",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.normalize",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78468,12 +78493,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.parse",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.parse",
         "tests": [
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
           "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
+          "tests/corpus/9205-path-namespace-members.ts",
           "tests/corpus/path-parse-dynamic-binding/main.ts",
-          "packages/runtime/test/path.test.ts"
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78496,16 +78527,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.relative",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.relative",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78528,16 +78561,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.resolve",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.resolve",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78560,16 +78595,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.toNamespacedPath",
+        "status": "supported",
+        "evidence": "compiler-feature:path.path.toNamespacedPath",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78592,16 +78629,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.delimiter",
+        "status": "supported",
+        "evidence": "compiler-feature:path.delimiter",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -78624,16 +78663,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.posix",
+        "status": "supported",
+        "evidence": "compiler-feature:path.posix",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -78656,16 +78697,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.sep",
+        "status": "supported",
+        "evidence": "compiler-feature:path.sep",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -78688,16 +78731,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.path.win32",
+        "status": "supported",
+        "evidence": "compiler-feature:path.win32",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2915-path-function-values.ts",
-          "tests/corpus/2916-path-function-values-cjs.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/2918-builtin-callable-widths-cjs.ts",
+          "tests/corpus/path-posix-edges.ts",
+          "tests/corpus/path-win32-edges.ts",
+          "tests/corpus/path-format-values.js",
+          "tests/corpus/5142-path-parse-format.ts",
+          "tests/corpus/5145-path-matches-glob-basics.ts",
           "tests/corpus/9205-path-namespace-members.ts",
-          "tests/corpus/path-parse-dynamic-binding/main.ts"
+          "tests/corpus/path-parse-dynamic-binding/main.ts",
+          "packages/runtime/test/path.test.ts",
+          "packages/runtime/test/glob.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -103781,7 +103826,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "packages/runtime/test/url-legacy.test.ts",
-          "tests/corpus/1794-searchparams-url-live.ts",
           "tests/corpus/5220-url-parse-warnings.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
@@ -103794,9 +103838,6 @@
           "tests/corpus/5229-url-legacy-errors.cjs",
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs",
-          "tests/corpus/8423-urlsearchparams-implicit-string.ts",
-          "tests/corpus/9200-url-namespace-construct.ts",
-          "tests/corpus/9201-url-namespace-construct.cjs",
           "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/9206-url-revoke-object-url.ts",
           "tests/corpus/compat-url-search-params.ts",
@@ -103811,8 +103852,18 @@
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/url-Url-value.cjs",
           "tests/corpus/url-Url-value.ts",
+          "tests/corpus/url-create-object-url-args.cjs",
+          "tests/corpus/url-create-object-url.ts",
+          "tests/corpus/url-factories-js.js",
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-file-url.ts",
+          "tests/corpus/url-legacy-parse-grid.ts",
+          "tests/corpus/url-namespace-functions.ts",
+          "tests/corpus/url-revoke-object-url-key.ts",
           "tests/corpus/url-runtime-base.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/file-url-conversion.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -103910,9 +103961,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/url-runtime-base.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
@@ -103939,9 +103991,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.url.toString",
         "tests": [
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-factories-js.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-factory-errors.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -103968,9 +104022,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.url.toJSON",
         "tests": [
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-factories-js.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-factory-errors.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -103997,10 +104053,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL.createObjectURL",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/url-create-object-url.ts",
+          "tests/corpus/url-create-object-url-args.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -104023,10 +104080,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL.revokeObjectURL",
         "tests": [
-          "tests/corpus/9206-url-revoke-object-url.ts"
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-factories-js.js",
+          "tests/corpus/9206-url-revoke-object-url.ts",
+          "tests/corpus/url-revoke-object-url-key.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104049,9 +104109,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL.canParse",
         "tests": [
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-factories-js.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-factory-errors.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -104078,9 +104140,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL.parse",
         "tests": [
+          "tests/corpus/url-factories.ts",
+          "tests/corpus/url-factories-js.js",
           "tests/corpus/node24-url-factories.ts",
           "tests/corpus/node24-url-factory-errors.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -104107,9 +104171,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.hash",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104135,9 +104200,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.host",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104163,9 +104229,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.hostname",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104191,9 +104258,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.href",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104219,9 +104287,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.origin",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104245,9 +104314,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.password",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104273,9 +104343,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.pathname",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104301,9 +104372,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.port",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104329,9 +104401,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.protocol",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104380,9 +104453,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.search",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/node24-url-mutation-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104408,9 +104482,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.searchParams",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104434,9 +104509,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.username",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
           "tests/corpus/node24-url-authority.ts",
           "tests/corpus/node24-url-authority-coercion.js",
           "tests/fixtures/node-types/url-mutation.ts"
@@ -104540,9 +104616,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.URLSearchParams",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104566,9 +104644,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.append",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104592,9 +104674,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.delete",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104618,9 +104704,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.entries",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
         ]
@@ -104645,9 +104734,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.forEach",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104671,9 +104764,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.get",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104697,9 +104794,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.getAll",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104723,9 +104824,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.has",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104749,9 +104854,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.keys",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
         ]
@@ -104776,9 +104884,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.set",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104802,9 +104914,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.sort",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104828,9 +104944,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.toString",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104854,9 +104974,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.values",
         "tests": [
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
           "tests/corpus/5833-url-search-params-iterators.ts",
           "tests/corpus/5834-url-search-params-iterators-dynamic.mjs"
         ]
@@ -104881,9 +105004,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104907,9 +105034,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlSearchParams.size",
         "tests": [
+          "tests/corpus/url-search-params-class.ts",
+          "tests/corpus/url-search-params-js.js",
+          "tests/corpus/url-whatwg-properties.ts",
+          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
           "tests/corpus/compat-url-search-params.ts"
         ]
       },
@@ -104933,12 +105064,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.domainToASCII",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.domainToASCII",
         "tests": [
-          "tests/corpus/5228-url-domain-conversion.ts",
-          "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts"
+          "tests/corpus/url-namespace-functions.ts",
+          "tests/corpus/5228-url-domain-conversion.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104961,12 +105091,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.domainToUnicode",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.domainToUnicode",
         "tests": [
-          "tests/corpus/5228-url-domain-conversion.ts",
-          "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts"
+          "tests/corpus/url-namespace-functions.ts",
+          "tests/corpus/5228-url-domain-conversion.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104989,9 +105118,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.url.fileURLToPath",
         "tests": [
+          "tests/corpus/url-file-url.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-options.ts",
           "tests/corpus/node24-file-url-errors.js",
@@ -105018,9 +105148,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.url.fileURLToPathBuffer",
         "tests": [
+          "tests/corpus/url-file-url.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-options.ts",
           "tests/corpus/node24-file-url-errors.js",
@@ -105047,17 +105178,23 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.format",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.format",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
           "tests/corpus/5224-url-format-objects.ts",
           "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5226-url-resolve.ts",
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts",
           "tests/corpus/url-Url-value.cjs",
-          "tests/corpus/url-Url-value.ts"
+          "tests/corpus/url-Url-value.ts",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105080,9 +105217,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.url.pathToFileURL",
         "tests": [
+          "tests/corpus/url-file-url.ts",
           "tests/corpus/node24-file-url-buffer.ts",
           "tests/corpus/node24-file-url-options.ts",
           "tests/corpus/node24-file-url-errors.js",
@@ -105109,15 +105247,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.urlToHttpOptions",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.urlToHttpOptions",
         "tests": [
-          "tests/corpus/1794-searchparams-url-live.ts",
-          "tests/corpus/8423-urlsearchparams-implicit-string.ts",
-          "tests/corpus/9200-url-namespace-construct.ts",
-          "tests/corpus/9201-url-namespace-construct.cjs",
-          "tests/corpus/9202-url-search-params-foreach-thisarg.ts",
-          "tests/corpus/9206-url-revoke-object-url.ts"
+          "tests/corpus/url-namespace-functions.ts",
+          "tests/corpus/5228-url-domain-conversion.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105163,9 +105297,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105193,9 +105328,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.auth",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105223,9 +105359,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.hash",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105253,9 +105390,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.host",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105283,9 +105421,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.hostname",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105313,9 +105452,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.href",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105343,9 +105483,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.path",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105373,9 +105514,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.pathname",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105403,9 +105545,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.port",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105433,9 +105576,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.protocol",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105463,9 +105607,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.query",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105493,9 +105638,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.search",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105523,9 +105669,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:url.urlObject.slashes",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
@@ -105553,17 +105700,23 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.format",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.format",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
           "tests/corpus/5224-url-format-objects.ts",
           "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5226-url-resolve.ts",
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts",
           "tests/corpus/url-Url-value.cjs",
-          "tests/corpus/url-Url-value.ts"
+          "tests/corpus/url-Url-value.ts",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105586,17 +105739,23 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.format",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.format",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
           "tests/corpus/5224-url-format-objects.ts",
           "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5226-url-resolve.ts",
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts",
           "tests/corpus/url-Url-value.cjs",
-          "tests/corpus/url-Url-value.ts"
+          "tests/corpus/url-Url-value.ts",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105619,19 +105778,23 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.parse",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.parse",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
           "tests/corpus/5220-url-parse-warnings.ts",
           "tests/corpus/5221-url-parse-shapes.ts",
           "tests/corpus/5222-url-parse-hosts.ts",
           "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
+          "tests/corpus/5226-url-resolve.ts",
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
-          "packages/runtime/test/url-legacy.test.ts",
-          "tests/fixtures/node-types/url-legacy.ts",
           "tests/corpus/url-Url-value.cjs",
-          "tests/corpus/url-Url-value.ts"
+          "tests/corpus/url-Url-value.ts",
+          "packages/runtime/test/url-legacy.test.ts",
+          "tests/fixtures/node-types/url-legacy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105654,12 +105817,21 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.url.resolve",
+        "status": "supported",
+        "evidence": "compiler-feature:url.url.resolve",
         "tests": [
+          "tests/corpus/url-legacy-parse-grid.ts",
+          "tests/corpus/5220-url-parse-warnings.ts",
+          "tests/corpus/5221-url-parse-shapes.ts",
+          "tests/corpus/5222-url-parse-hosts.ts",
+          "tests/corpus/5223-url-parse-query.ts",
+          "tests/corpus/5224-url-format-objects.ts",
+          "tests/corpus/5225-url-format-whatwg.ts",
           "tests/corpus/5226-url-resolve.ts",
           "tests/corpus/5227-url-legacy-dependency/main.ts",
           "tests/corpus/5229-url-legacy-errors.cjs",
+          "tests/corpus/url-Url-value.cjs",
+          "tests/corpus/url-Url-value.ts",
           "packages/runtime/test/url-legacy.test.ts",
           "tests/fixtures/node-types/url-legacy.ts"
         ]
@@ -105777,6 +105949,7 @@
           "tests/corpus/5191-util-callbackify.ts",
           "tests/corpus/5192-util-debuglog.cjs",
           "tests/corpus/5193-util-debuglog.ts",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/5470-strip-vt-osc.cjs",
           "tests/corpus/5471-strip-vt-csi.cjs",
           "tests/corpus/5472-strip-vt-random.cjs",
@@ -105848,9 +106021,40 @@
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
+          "tests/corpus/util-ansi-text.ts",
+          "tests/corpus/util-deep-equal-accessors.ts",
+          "tests/corpus/util-deep-equal-buffers.ts",
+          "tests/corpus/util-deep-equal-builtins.ts",
+          "tests/corpus/util-deep-equal-classes.ts",
+          "tests/corpus/util-deep-equal-detached-buffers.cjs",
+          "tests/corpus/util-deep-equal-errors.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
+          "tests/corpus/util-mark-promise-handled-args.cjs",
+          "tests/corpus/util-mark-promise-handled.ts",
+          "tests/corpus/util-mime-object-view.ts",
+          "tests/corpus/util-promisify-custom-args.cjs",
+          "tests/corpus/util-promisify-custom-typed.ts",
+          "tests/corpus/util-promisify-custom.ts",
+          "tests/corpus/util-set-trace-sigint-args.cjs",
+          "tests/corpus/util-set-trace-sigint.ts",
+          "tests/corpus/util-system-errors.ts",
+          "tests/corpus/util-text-codecs.ts",
+          "tests/corpus/util-timing-function-shape.ts",
+          "tests/corpus/util-transferable-abort-args.cjs",
+          "tests/corpus/util-transferable-abort.ts",
           "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
           "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/util-types-module-namespace/main.ts",
@@ -105915,11 +106119,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util._extend",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util._extend",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105942,11 +106147,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.isArray",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105969,11 +106175,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.MIMEType",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105996,11 +106203,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mime.toString",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106023,11 +106231,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mime.toJSON",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106050,11 +106259,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.MIMEType.parse",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106077,11 +106287,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.type",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106104,11 +106315,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.subtype",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106131,11 +106343,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.essence",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106158,11 +106371,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.params",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106185,11 +106399,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.MIMEParams",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106212,11 +106427,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.delete",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106239,11 +106455,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.entries",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106266,11 +106483,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.get",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106293,11 +106511,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.has",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106320,11 +106539,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.keys",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106347,11 +106567,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.set",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106374,11 +106595,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams.values",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106401,11 +106623,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.mimeParams",
         "tests": [
           "tests/corpus/7707-util-mime-type.cjs",
-          "tests/corpus/7708-util-mime-type.ts"
+          "tests/corpus/7708-util-mime-type.ts",
+          "tests/corpus/util-mime-object-view.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106428,14 +106651,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.TextDecoder",
         "tests": [
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
-          "tests/corpus/7747-text-codec-untyped-slot.js"
+          "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106550,14 +106774,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.textDecoder.decode",
         "tests": [
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
-          "tests/corpus/7747-text-codec-untyped-slot.js"
+          "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106580,11 +106805,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.encoding",
         "tests": [
           "tests/corpus/node24-text-codec-properties.ts",
-          "tests/fixtures/node-types/text-encoding.ts"
+          "tests/fixtures/node-types/text-encoding.ts",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106607,11 +106833,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.fatal",
         "tests": [
           "tests/corpus/node24-text-codec-properties.ts",
-          "tests/fixtures/node-types/text-encoding.ts"
+          "tests/fixtures/node-types/text-encoding.ts",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106634,11 +106861,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.ignoreBOM",
         "tests": [
           "tests/corpus/node24-text-codec-properties.ts",
-          "tests/fixtures/node-types/text-encoding.ts"
+          "tests/fixtures/node-types/text-encoding.ts",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106661,14 +106889,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.TextEncoder",
         "tests": [
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
-          "tests/corpus/7747-text-codec-untyped-slot.js"
+          "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106691,14 +106920,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.textEncoder.encode",
         "tests": [
           "tests/corpus/text-codec-values/main.ts",
           "tests/fixtures/node-types/text-codecs.mts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/3133-text-decoder-streaming.ts",
-          "tests/corpus/7747-text-codec-untyped-slot.js"
+          "tests/corpus/7747-text-codec-untyped-slot.js",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106721,12 +106951,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.textEncoder.encodeInto",
         "tests": [
           "tests/corpus/node24-text-encode-into.ts",
           "tests/corpus/node24-text-codec-properties.ts",
-          "tests/fixtures/node-types/text-encoding.ts"
+          "tests/fixtures/node-types/text-encoding.ts",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106749,12 +106980,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.encoding",
         "tests": [
           "tests/corpus/node24-text-encode-into.ts",
           "tests/corpus/node24-text-codec-properties.ts",
-          "tests/fixtures/node-types/text-encoding.ts"
+          "tests/fixtures/node-types/text-encoding.ts",
+          "tests/corpus/util-text-codecs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -106805,8 +107037,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.convertProcessSignalToExitCode",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.convertProcessSignalToExitCode",
         "tests": [
           "tests/corpus/7702-util-signal-exit-code.cjs"
         ]
@@ -106831,8 +107063,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debuglog",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debuglog",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
           "tests/corpus/5193-util-debuglog.ts",
@@ -106859,7 +107091,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.debuglog",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
@@ -106887,11 +107119,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debug",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debug",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
-          "tests/corpus/5193-util-debuglog.ts"
+          "tests/corpus/5193-util-debuglog.ts",
+          "tests/fixtures/node-types/util-callables.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106914,8 +107147,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.deprecate",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.deprecate",
         "tests": [
           "tests/corpus/5187-util-deprecate.cjs",
           "tests/corpus/5188-util-deprecate-flags.cjs",
@@ -106943,11 +107176,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debounce",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debounce",
         "tests": [
           "tests/corpus/7710-util-debounce.cjs",
-          "tests/corpus/7712-util-debounce-throttle.ts"
+          "tests/corpus/7712-util-debounce-throttle.ts",
+          "tests/corpus/util-timing-function-shape.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106970,11 +107204,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.throttle",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.throttle",
         "tests": [
           "tests/corpus/7711-util-throttle.cjs",
-          "tests/corpus/7712-util-debounce-throttle.ts"
+          "tests/corpus/7712-util-debounce-throttle.ts",
+          "tests/corpus/util-timing-function-shape.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106997,8 +107232,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.diff",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.diff",
         "tests": [
           "tests/corpus/7705-util-diff.cjs",
           "tests/corpus/7706-util-diff.ts"
@@ -107028,12 +107263,17 @@
         "evidence": "compiler-feature:util.util.format",
         "tests": [
           "tests/corpus/1636-util-format.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
           "tests/corpus/inspect-numeric-separator.ts",
-          "tests/corpus/util-format-json-error.ts"
+          "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107060,12 +107300,17 @@
         "evidence": "compiler-feature:util.util.formatWithOptions",
         "tests": [
           "tests/corpus/1636-util-format.ts",
+          "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
           "tests/corpus/inspect-numeric-separator.ts",
-          "tests/corpus/util-format-json-error.ts"
+          "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107111,13 +107356,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.getSystemErrorName",
         "tests": [
           "tests/corpus/node24-system-errors.ts",
           "tests/corpus/node24-system-error-validation.js",
           "tests/corpus/node24-system-errors.cjs",
-          "tests/fixtures/node-types/system-errors.ts"
+          "tests/fixtures/node-types/system-errors.ts",
+          "tests/corpus/util-system-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107140,13 +107386,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.getSystemErrorMap",
         "tests": [
           "tests/corpus/node24-system-errors.ts",
           "tests/corpus/node24-system-error-validation.js",
           "tests/corpus/node24-system-errors.cjs",
-          "tests/fixtures/node-types/system-errors.ts"
+          "tests/fixtures/node-types/system-errors.ts",
+          "tests/corpus/util-system-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107169,13 +107416,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.getSystemErrorMessage",
         "tests": [
           "tests/corpus/node24-system-errors.ts",
           "tests/corpus/node24-system-error-validation.js",
           "tests/corpus/node24-system-errors.cjs",
-          "tests/fixtures/node-types/system-errors.ts"
+          "tests/fixtures/node-types/system-errors.ts",
+          "tests/corpus/util-system-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107198,8 +107446,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.setTraceSigInt",
+        "tests": [
+          "tests/corpus/util-set-trace-sigint.ts",
+          "tests/corpus/util-set-trace-sigint-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107265,7 +107517,13 @@
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-max-string-length.ts",
           "tests/corpus/inspect-numeric-separator.ts",
-          "tests/corpus/inspect-hidden-properties.cjs"
+          "tests/corpus/inspect-hidden-properties.cjs",
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107294,7 +107552,13 @@
           "tests/corpus/7526-inspect-options-runtime.ts",
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
-          "tests/corpus/inspect-max-string-length.ts"
+          "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107321,7 +107585,8 @@
         "evidence": "compiler-feature:util.custom",
         "tests": [
           "tests/corpus/7524-inspect-custom.ts",
-          "tests/corpus/7525-inspect-custom.cjs"
+          "tests/corpus/7525-inspect-custom.cjs",
+          "tests/corpus/util-inspect-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -107344,8 +107609,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-feature:util.util.inspect.defaultOptions",
+        "tests": [
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/7526-inspect-options-runtime.ts",
+          "tests/corpus/inspect-max-array-length.ts",
+          "tests/corpus/inspect-max-string-length.ts",
+          "tests/corpus/inspect-numeric-separator.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107367,8 +107639,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-feature:util.util.inspect",
+        "tests": [
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/inspect-numeric-separator.ts",
+          "tests/corpus/5884-inspect-layout-options.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107489,7 +107766,13 @@
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/fixtures/node-types/deep-equality.ts",
-          "packages/compiler/test/deep-equality.test.ts"
+          "packages/compiler/test/deep-equality.test.ts",
+          "tests/corpus/util-deep-equal-builtins.ts",
+          "tests/corpus/util-deep-equal-classes.ts",
+          "tests/corpus/util-deep-equal-errors.ts",
+          "tests/corpus/util-deep-equal-buffers.ts",
+          "tests/corpus/util-deep-equal-accessors.ts",
+          "tests/corpus/util-deep-equal-detached-buffers.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -107512,8 +107795,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.markPromiseAsHandled",
+        "tests": [
+          "tests/corpus/util-mark-promise-handled.ts",
+          "tests/corpus/util-mark-promise-handled-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107535,8 +107822,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.parseArgs",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.parseArgs",
         "tests": [
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/node24-parseargs.js"
@@ -107562,8 +107849,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.parseArgs",
+        "status": "supported",
+        "evidence": "compiler-dedicated:parseArgs",
         "tests": [
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/node24-parseargs.js"
@@ -107589,7 +107876,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.parseEnv",
         "tests": [
           "tests/corpus/node24-env-parse.ts",
@@ -107641,6 +107928,9 @@
           "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/corpus/7522-promisify-untyped.cjs",
           "tests/corpus/7523-promisify-untyped.ts",
+          "tests/corpus/util-promisify-custom.ts",
+          "tests/corpus/util-promisify-custom-args.cjs",
+          "tests/corpus/util-promisify-custom-typed.ts",
           "tests/harness/project-config.test.ts"
         ]
       },
@@ -107687,8 +107977,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.custom",
+        "tests": [
+          "tests/corpus/util-promisify-custom.ts",
+          "tests/corpus/util-promisify-custom-args.cjs",
+          "tests/corpus/util-promisify-custom-typed.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -107710,7 +108005,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.stripVTControlCharacters",
         "tests": [
           "tests/corpus/node24-text-utilities.ts",
@@ -107722,7 +108017,8 @@
           "tests/corpus/5471-strip-vt-csi.cjs",
           "tests/corpus/5472-strip-vt-random.cjs",
           "tests/corpus/5473-strip-vt-unterminated.cjs",
-          "tests/corpus/5474-strip-vt-surrogates.ts"
+          "tests/corpus/5474-strip-vt-surrogates.ts",
+          "tests/corpus/util-ansi-text.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107745,14 +108041,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.styleText",
         "tests": [
           "tests/corpus/node24-style-text.ts",
           "tests/corpus/node24-style-text-validation.js",
           "tests/corpus/node24-style-text-environment.js",
           "tests/corpus/node24-style-text.cjs",
-          "tests/fixtures/node-types/style-text.ts"
+          "tests/fixtures/node-types/style-text.ts",
+          "tests/corpus/util-ansi-text.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107775,7 +108072,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.toUSVString",
         "tests": [
           "tests/corpus/node24-text-utilities.ts",
@@ -107787,7 +108084,8 @@
           "tests/corpus/5471-strip-vt-csi.cjs",
           "tests/corpus/5472-strip-vt-random.cjs",
           "tests/corpus/5473-strip-vt-unterminated.cjs",
-          "tests/corpus/5474-strip-vt-surrogates.ts"
+          "tests/corpus/5474-strip-vt-surrogates.ts",
+          "tests/corpus/util-ansi-text.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107810,8 +108108,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.transferableAbortController",
+        "tests": [
+          "tests/corpus/util-transferable-abort.ts",
+          "tests/corpus/util-transferable-abort-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107833,8 +108135,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.transferableAbortSignal",
+        "tests": [
+          "tests/corpus/util-transferable-abort.ts",
+          "tests/corpus/util-transferable-abort-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107856,8 +108162,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.aborted",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.aborted",
         "tests": [
           "tests/corpus/7703-util-aborted.cjs",
           "tests/corpus/7704-util-aborted.ts"
@@ -107883,15 +108189,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.types",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.types",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
-          "tests/corpus/node24-util-types.cjs",
-          "tests/corpus/util-types-arguments-object.ts",
-          "tests/corpus/util-types-module-namespace/main.ts",
-          "tests/fixtures/node-types/util-types.ts"
+          "tests/corpus/node24-util-types.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -107914,9 +108225,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isAnyArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107943,9 +108265,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isArrayBufferView",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107972,14 +108305,24 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isArgumentsObject",
         "tests": [
-          "tests/corpus/util-types-arguments-object.ts",
-          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
-          "tests/corpus/util-types-module-namespace.cjs"
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
         ]
       },
       "anchorSource": "exact"
@@ -108002,9 +108345,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108031,9 +108385,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isAsyncFunction",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108060,11 +108425,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigInt64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108091,11 +108465,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigIntObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108122,11 +108505,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigUint64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108153,11 +108545,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBooleanObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108184,11 +108585,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBoxedPrimitive",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108215,11 +108625,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isCryptoKey",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108246,9 +108665,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isDataView",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108275,11 +108705,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isDate",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108306,11 +108745,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isExternal",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108337,11 +108785,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108368,9 +108825,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108397,9 +108865,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108426,9 +108905,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isGeneratorFunction",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108455,9 +108945,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isGeneratorObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108484,9 +108985,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt8Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108513,9 +109025,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108542,9 +109065,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108571,11 +109105,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isKeyObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108602,9 +109145,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isMap",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108631,11 +109185,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isMapIterator",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108662,14 +109225,24 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isModuleNamespaceObject",
         "tests": [
-          "tests/corpus/util-types-arguments-object.ts",
-          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
           "tests/corpus/util-types-module-namespace/main.ts",
           "tests/corpus/util-types-module-namespace-js/main.js",
-          "tests/corpus/util-types-module-namespace.cjs"
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs",
+          "tests/fixtures/node-types/util-types.ts"
         ]
       },
       "anchorSource": "exact"
@@ -108692,9 +109265,20 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isNativeError",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108721,11 +109305,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isNumberObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108752,9 +109345,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isPromise",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108781,9 +109385,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isProxy",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108810,9 +109425,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isRegExp",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108839,9 +109465,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSet",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108868,11 +109505,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSetIterator",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108899,11 +109545,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSharedArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108930,11 +109585,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isStringObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108961,11 +109625,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSymbolObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108992,9 +109665,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isTypedArray",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109021,9 +109705,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint8Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109050,9 +109745,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint8ClampedArray",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109079,9 +109785,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109108,9 +109825,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109137,9 +109865,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isWeakMap",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -109166,9 +109905,20 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isWeakSet",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-brand.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-arguments-object.ts",
+          "tests/corpus/util-types-arguments-object.cjs",
+          "tests/corpus/util-types-module-namespace.cjs",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",

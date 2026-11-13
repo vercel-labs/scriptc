@@ -2278,6 +2278,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const iterator = lowerStringIteratorCall(lowerer, expr, expr.expression);
     if (iterator) return iterator;
+    const spIterator = lowerSearchParamsIteratorElementCall(lowerer, expr, expr.expression);
+    if (spIterator) return spIterator;
   }
 
   // The element spelling of an unsupported native Web method must fence
@@ -4666,6 +4668,38 @@ function lowerStringIteratorCall(
   const value = lowerStringIteratorValue(lowerer, receiver, type, locOf(call));
   if (!value) lowerer.unsupported("SC1090", call, "this string iterator type");
   return value;
+}
+
+/** `sp[Symbol.iterator]()` on a URLSearchParams receiver: Node makes
+ * URLSearchParams.prototype[Symbol.iterator] the same function as
+ * entries(), so the call answers the live pair iterator the checked-
+ * dynamic view's entries() does (appends made after it was created are
+ * visited). Null for other element calls. */
+function lowerSearchParamsIteratorElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
+  )
+    return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "searchParams") return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
+    method: "entries",
+    calleeName: v8CalleeText(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }
 
 /** Iterator types with checked runtime receivers, whose helper calls lower
@@ -12166,13 +12200,16 @@ export function lowerRecordFieldCall(
  * every call whose member is generic-callable — lowering it or fencing
  * with a named message. */
 /** The URL factories use the constructor's conversion order and parser.
- * URL.revokeObjectURL() with NO argument: Node's ERR_MISSING_ARGS
- * throws before the registry lookup, so the zero-argument contract is
- * exact without any blob machinery. The one-argument form coerces the
- * id to a string (a Symbol throws) and finds nothing registered — a
- * compiled program cannot create a blob URL, so the lookup always
- * misses and the call is its own coercion. createObjectURL keeps its
- * fence: there is no blob registry to register into. */
+ * URL.createObjectURL(blob) hands the argument to the runtime registry,
+ * which validates it (a non-Blob throws Node's ERR_INVALID_ARG_TYPE) and
+ * registers it under a fresh "blob:nodedata:<uuid>" id; surplus arguments
+ * are evaluated and dropped, like every Node call. URL.revokeObjectURL()
+ * with NO argument: Node's ERR_MISSING_ARGS throws before the registry
+ * lookup. The one-argument form coerces the id to a string (a Symbol
+ * throws); the runtime parses the string as a URL and drops the
+ * registration whose id sits between the first and second colon of its
+ * pathname, so a query or fragment still revokes the registration the
+ * bare id names, and ids that were never registered miss. */
 function lowerUrlStaticCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -12184,6 +12221,44 @@ function lowerUrlStaticCall(
   if (!sym || !lowerer.isStdlibSymbol(sym) || ts.symbolName(sym) !== "URL") return null;
   if (callee.name.text === "canParse" || callee.name.text === "parse") {
     return lowerUrlFactory(lowerer, call, callee.name.text);
+  }
+  if (callee.name.text === "createObjectURL") {
+    if (call.arguments.nodes.some(ts.isSpreadElement))
+      lowerer.noLowering("URL.createObjectURL with spread arguments", call);
+    const args = call.arguments.nodes;
+    const input: IrExpr = args[0]
+      ? lowerer.lowerExprExpecting(args[0], DYN)
+      : dynUndefinedExpr(locOf(call));
+    const result: IrExpr = {
+      kind: "libCall",
+      fn: "url.createObjectURL",
+      args: [input],
+      type: STRING,
+      loc: locOf(call),
+    };
+    if (args.length <= 1) return result;
+    // Node ignores surplus arguments; they are still evaluated.
+    const saved = lowerer.declareHiddenLocal("%objectUrlInput", DYN);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: saved.id, init: input, loc: locOf(call) },
+        ...args.slice(1).map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ],
+      result: {
+        kind: "libCall",
+        fn: "url.createObjectURL",
+        args: [varRef(saved.id, DYN, locOf(call))],
+        type: STRING,
+        loc: locOf(call),
+      },
+      type: STRING,
+      loc: locOf(call),
+    };
   }
   if (callee.name.text !== "revokeObjectURL") return null;
   const args = call.arguments.nodes;

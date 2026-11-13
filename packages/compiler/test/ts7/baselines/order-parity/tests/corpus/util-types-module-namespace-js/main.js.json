@@ -1,5 +1,7 @@
 {
  "order": [
+  "<repo>/tests/corpus/util-types-module-namespace-js/fixed.js",
+  "<repo>/tests/corpus/util-types-module-namespace-js/mutable.js",
   "<repo>/tests/corpus/util-types-module-namespace-js/mod.js",
   "<repo>/tests/corpus/util-types-module-namespace-js/main.js"
  ],

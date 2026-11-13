@@ -13,9 +13,6 @@ const webReadable = Readable.toWeb(Readable.from(["a"]));
 const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
 console.log(typeof webReadable, typeof webWritable);
 
-// url: object URLs.
-console.log(URL.createObjectURL(new Blob(["x"])));
-
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
 timer.close();

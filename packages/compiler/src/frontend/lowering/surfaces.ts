@@ -1908,6 +1908,38 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
       },
+      // The argument is checked at runtime: a promise marks its rejection
+      // handled, anything else throws ERR_INVALID_ARG_TYPE (the lowering in
+      // the util spoke supplies the missing-argument undefined).
+      markPromiseAsHandled: {
+        fn: "util.markPromiseAsHandled",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
+      },
+      // The argument is checked at runtime and the same signal answers
+      // (a non-signal throws ERR_INVALID_ARG_TYPE); the controller is an
+      // ordinary AbortController whose signal is marked the same way.
+      transferableAbortSignal: {
+        fn: "util.transferableAbortSignal",
+        params: [DYN],
+        result: DYN,
+        valueParams: exactValueParams(DYN),
+      },
+      transferableAbortController: {
+        fn: "util.transferableAbortController",
+        params: [],
+        result: DYN,
+        valueParams: exactValueParams(),
+      },
+      // Node reads no argument and answers undefined; the argument (and any
+      // surplus) is still evaluated.
+      setTraceSigInt: {
+        fn: "util.setTraceSigInt",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
+      },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
       aborted: {
         fn: "util.aborted",
@@ -2048,6 +2080,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     },
     // The util/types spoke supplies the probe name to the shared brand check.
     "util/types": {
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isAnyArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBufferView: { fn: "util.typeIs", params: [DYN], result: BOOL },
@@ -2089,13 +2123,6 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isFloat16Array: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isCryptoKey: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isExternal: { fn: "util.typeIs", params: [DYN], result: BOOL },
-      // Both answer at the call site where the compiler knows the value
-      // (lowerUtilTypeCall): the arguments object and ESM namespace
-      // bindings. At run time the brand check recognizes boxed program
-      // namespaces; the compiled arguments list and builtin module values
-      // carry neither brand (see docs/content/limitations).
-      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
-      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
     },
     buffer: {
       // Node 24's deprecate(SlowBuffer): DEP0030 on the first call, then

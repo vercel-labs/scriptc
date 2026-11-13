@@ -124,7 +124,10 @@ export function lowerModuleNamespaceElement(
  * in JavaScript): an object holding each value export, keyed in the
  * namespace's sorted key order. The copy is exact while every export is a
  * binding that never changes after initialization (const, function or
- * class); null for other namespaces, which keep their fence. */
+ * class); null for other namespaces, which keep their fence. The runtime
+ * keeps the first copy it builds for a module and answers it to every later
+ * request (module.namespaceCopy), so the value has Node's per-module
+ * identity and answers util.types.isModuleNamespaceObject. */
 export function moduleNamespaceObject(
   lowerer: Lowerer,
   ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
@@ -178,7 +181,22 @@ export function moduleNamespaceObject(
         params: [],
         returnType: DYN,
         locals: [...context.locals],
-        body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+        body: [
+          {
+            kind: "return",
+            value: {
+              // The runtime keeps the first object it builds for a module,
+              // so a namespace taken as a value twice is the same object,
+              // and marks it as a module namespace for util.types.
+              kind: "libCall",
+              fn: "module.namespaceCopy",
+              args: [strLit(ns.type.moduleId, loc), { kind: "dynObjLit", fields, type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
         loc,
       };
       lowerer.liftedFns.push(fn);
@@ -483,8 +501,20 @@ export function moduleNamespaceBuiltinDynValue(
   lowerer: Lowerer,
   moduleId: string,
   loc: SrcLoc,
+  /** Whether the value is the module's ES module namespace object (an
+   * `import * as ns` or dynamic import value), which Node brands as a
+   * module namespace. A sub-namespace member (`fs.promises`,
+   * `util.types`) is the module's CommonJS exports object instead: the same
+   * object shape without the brand (util.types.isModuleNamespaceObject
+   * answers false for it), and a distinct object from the namespace value. */
+  esmNamespace = true,
 ): IrExpr | null {
   if (!moduleId.startsWith("builtin:")) return null;
+  // The runtime keys its per-module objects by the id, and brands a box
+  // whose id names an ES module namespace ("file:" or "esm:"). The prefix
+  // also keeps the namespace value distinct from the sub-namespace member's
+  // exports object, as in Node.
+  const boxId = esmNamespace ? `esm:${moduleId}` : moduleId;
   const module = moduleId.slice("builtin:".length);
   const name = `%module.namespace:${moduleId}`;
   let keys = lowerer.builtinNamespaceBoxKeys.get(moduleId);
@@ -536,7 +566,7 @@ export function moduleNamespaceBuiltinDynValue(
     kind: "libCall",
     fn: "module.namespaceDyn",
     args: [
-      strLit(moduleId, loc),
+      strLit(boxId, loc),
       {
         kind: "arrayLit",
         elems: keys.map((key) => strLit(key, loc)),

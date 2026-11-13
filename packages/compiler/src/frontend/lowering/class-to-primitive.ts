@@ -1,23 +1,29 @@
-import { varRef } from "../../ir/build.js";
+import { strLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DATE_T,
   DYN,
   F64,
   STRING,
+  VOID,
+  typeKey,
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
 } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
+import type { ParamShape } from "./call-signatures.js";
+import { omittedArgFor } from "./call-arguments.js";
 import { isClassCallback } from "./class-callbacks.js";
 import { TO_STRING_TAG_FIELD } from "./symbol-fields.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { DATE_TIME_FIELD, dateRootOf } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
 import { concatOperand } from "./lower-exprs.js";
+import { keyedHelperName } from "./stable-names.js";
 
 /** The ToPrimitive hint of a conversion: `String(x)` and template literals
  * take "string", `+` "default", `Number(x)` "number". */
@@ -253,6 +259,141 @@ function classConversion(
   return prefix.length > 0
     ? { kind: "seqExpr", stmts: prefix, result, type: resultType, loc }
     : result;
+}
+
+/** The conversion method an instance of `info` runs where the value is
+ * untyped (String(value), a template, a property key, `%s`): a declared
+ * [Symbol.toPrimitive], called with "string", else a declared toString —
+ * the order classConversion takes for the "string" hint. Null when the
+ * class declares neither, and for the shapes the untyped conversion cannot
+ * run faithfully: a method the program can replace at run time (an
+ * instance field, a callback member or a prototype write), an abstract
+ * method with no implementation below (the direct call refuses it), and a
+ * conversion Node calls without arguments but the compiled method needs
+ * them. Those keep the runtime's refusal by name. A declared answer that
+ * is not a primitive registers too: the runtime throws Node's TypeError
+ * when the conversion produces it. */
+export function classStringMethod(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+): {
+  method: "sym:toPrimitive" | "toString";
+  ret: IrType;
+  params: ParamShape[];
+} | null {
+  const exotic = declared(lowerer, info, "sym:toPrimitive");
+  const to = exotic ?? declared(lowerer, info, "toString");
+  const method = exotic ? "sym:toPrimitive" : "toString";
+  if (!to) return null;
+  if (!exotic) {
+    if (info.fields.has("toString") || isClassCallback(lowerer, info, "toString")) return null;
+    if (lowerer.prototypeMethodAccesses.has("toString")) return null;
+  }
+  const found = findMethodOn(lowerer, info, method)!;
+  // A builtin base's conversion (Error.prototype.toString, Array's) is the
+  // runtime's, not a compiled method: the runtime's own paths answer it.
+  if (found.declarer.def.runtime) return null;
+  if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) return null;
+  const params = found.sig.params;
+  // The conversion calls the method the way Node does: the hint and no
+  // other argument. A declared parameter past the hint must have an absent
+  // spelling (an optional or defaulted parameter); a required one, a rest
+  // one, or the hidden `arguments` slot would need an argument Node does
+  // not pass, so the class keeps the runtime's refusal.
+  const supplied = method === "sym:toPrimitive" && params.length > 0 ? 1 : 0;
+  if (supplied === 1 && params[0]!.mode !== "required" && params[0]!.mode !== "omittable")
+    return null;
+  for (let i = supplied; i < params.length; i++) {
+    const param = params[i]!;
+    if (param.mode !== "omittable" || omittedArgFor(lowerer, param.type, loc) === null) return null;
+  }
+  return { method, ret: to.ret, params };
+}
+
+/** `%util.clsString.<n>(self): dyn` — the class's conversion method over a
+ * checked instance, its primitive answer boxed. The runtime calls it when a
+ * conversion meets an instance of the class among an untyped value
+ * (scr_dyn_typed_ref_string_view). */
+function classToStringDynHelper(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+  method: "sym:toPrimitive" | "toString",
+  ret: IrType,
+  params: ParamShape[],
+  loc: SrcLoc,
+): string {
+  const name = keyedHelperName(lowerer, "%util.clsString", typeKey(t));
+  const args: IrExpr[] = [];
+  if (method === "sym:toPrimitive" && params.length > 0) {
+    args.push(lowerer.coerceToExpected(strLit("string", loc), params[0]!.type));
+  }
+  for (let i = args.length; i < params.length; i++) {
+    args.push(omittedArgFor(lowerer, params[i]!.type, loc)!);
+  }
+  const call = accessorCall(lowerer, t.className, method, varRef("v.0", t, loc), args, ret, loc);
+  const body: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: "v.0",
+      init: lowerer.coerceToExpected(varRef("self.0", DYN, loc), t),
+      loc,
+    },
+    { kind: "return", value: lowerer.coerceToExpected(call, DYN), loc },
+  ];
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "self.0", name: "self", type: DYN }],
+    returnType: DYN,
+    locals: [
+      { id: "self.0", name: "self", type: DYN, mutable: false },
+      { id: "v.0", name: "v", type: t, mutable: false },
+    ],
+    body,
+    loc,
+  });
+  return name;
+}
+
+/** The statements %main runs first, in every thread: each class whose
+ * instances the program can construct and whose conversion the untyped
+ * path cannot otherwise run registers its compiled String(instance) under
+ * its instances' typed-ref type key (scr_dyn_register_class_to_string). */
+export function classToStringRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStmt[] {
+  const stmts: IrStmt[] = [];
+  for (const info of lowerer.classes.values()) {
+    if (info.def.runtime || info.def.abstract) continue;
+    const plan = classStringMethod(lowerer, info, loc);
+    if (!plan) continue;
+    const t = { kind: "object" as const, className: info.def.name };
+    const fn = classToStringDynHelper(lowerer, t, plan.method, plan.ret, plan.params, loc);
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.registerClassToString",
+        args: [
+          strLit(typeKey(t), loc),
+          {
+            kind: "dynFrom",
+            value: {
+              kind: "closure",
+              fnName: fn,
+              captures: [],
+              type: { kind: "func", params: [DYN], ret: DYN },
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  return stmts;
 }
 
 /** A class of the program whose chain reaches no builtin base: its

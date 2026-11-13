@@ -45,6 +45,8 @@ const features = {
   webBodies: false,
   abortSignal: false,
   utilTiming: false,
+  utilMarkPromiseAsHandled: false,
+  utilTraceSigInt: false,
   dynBuffer: false,
   fsPathValue: false,
   builtinValues: false,

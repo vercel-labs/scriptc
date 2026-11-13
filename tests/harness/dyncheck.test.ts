@@ -196,10 +196,11 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
-  test("joining an untyped array refuses an instance whose class defines toString", async () => {
-    // Node runs the class's toString for each element. The walk over an
-    // untyped array cannot call a compiled method, and "[object Object]"
-    // would be a wrong answer, so the conversion throws by name.
+  test("joining an untyped array converts an instance through its class's toString", async () => {
+    // Node runs the class's toString for each element. The runtime calls the
+    // compiled conversion the program registered for the class, so an
+    // instance in an untyped slot converts as it does at its class's own
+    // call sites; a class without a conversion prints "[object Object]".
     const r = await compileAndRun(
       "untyped-join-class-to-string",
       `
@@ -224,15 +225,13 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
       attempt("direct", () => String(one));
     `,
     );
-    const refusal =
-      "Error String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known";
     expect(r.stdout).toBe(
       [
-        `join ${refusal}`,
-        `String ${refusal}`,
-        `template ${refusal}`,
-        `inherited ${refusal}`,
-        `nested ${refusal}`,
+        "join x+a",
+        "String x,a",
+        "template x,a",
+        "inherited a+x",
+        "nested 1+x",
         "plain [object Object]+a+++1",
         "direct x",
         "",
@@ -242,11 +241,10 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
-  test("an untyped RegExp with properties of its own keeps the inspector's refusal", async () => {
-    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`).
-    // The untyped inspector prints a RegExp's pattern and flags only, so one
-    // the program gave properties of its own is refused by name instead of
-    // printed without them; a RegExp without any prints.
+  test("an untyped RegExp with properties of its own prints them", async () => {
+    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`),
+    // including inside a Set and a class field; a RegExp without any prints as
+    // its pattern and flags.
     const r = await compileAndRun(
       "untyped-regexp-own-properties",
       `
@@ -268,8 +266,8 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stdout).toBe(
       [
         "[ /a+/g, [ /c/ ] ]",
-        "set threw util.inspect of a dynamic RegExp is not supported yet",
-        "class field threw util.inspect of a dynamic RegExp is not supported yet",
+        "Set(1) { /b+/i { extra: 1 } }",
+        "Box { v: /b+/i { extra: 1 } }",
         "Set(1) { /d/ }",
         "",
       ].join("\n"),
@@ -2109,11 +2107,12 @@ console.log("done", caught);
     expect(r.stdout).toBe("done 100\n");
   });
 
-  test("an inspection refusal throws before console.log writes", async () => {
-    // A promise reached through `unknown` has no dynamic rendering; the
-    // refusal must stop the call, not print a partial line and continue.
+  test("an untyped promise inspects in Node's Promise form", async () => {
+    // A promise reached through `unknown` renders with its settled value, at
+    // the top level and inside records and arrays, and inspect answers the
+    // same text console.log writes.
     const r = await compileAndRun(
-      "inspect-refusal-unwind",
+      "inspect-promise-render",
       `import { inspect } from "node:util";
 const p: unknown = Promise.resolve(3);
 function attempt(label: string, f: () => void): void {
@@ -2133,18 +2132,30 @@ console.log(p);
 console.log("after");
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
-    expect(r.exitCode).toBe(1);
+    expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+      [
+        "x Promise { 3 }",
+        "log returned",
+        "13",
+        "inspect returned",
+        "{ a: Promise { 3 } }",
+        "record returned",
+        "[ Promise { 3 } ]",
+        "array returned",
+        "before",
+        "Promise { 3 }",
+        "after",
+        "",
+      ].join("\n"),
     );
-    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+    expect(r.stderr).toBe("");
   });
 
-  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+  test("a promise in a record's kept source properties renders in Node's form", async () => {
     // A record converted from an object with undeclared properties renders
-    // them through its checked view; a refusal there, inside an enclosing
-    // record or array, must not leave that render's frames open.
+    // them through its checked view; a promise there, inside an enclosing
+    // record or array, renders with its settled value.
     const r = await compileAndRun(
       "inspect-refusal-kept-source",
       `import { inspect } from "node:util";
@@ -2166,12 +2177,13 @@ attempt("array", () => console.log(inspect([r, r])));
 console.log([3, 4], { d: 5 });
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      `record ${refusal}\n` +
+      `{ outer: { a: 1, p: Promise { 3 } }, n: [ 1, 2 ] }\n` +
+        "record returned\n" +
         `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
-        `array ${refusal}\n` +
+        "[ { a: 1, p: Promise { 3 } }, { a: 1, p: Promise { 3 } } ]\n" +
+        "array returned\n" +
         "[ 3, 4 ] { d: 5 }\n",
     );
   });
@@ -2268,13 +2280,13 @@ try {
     );
   });
 
-  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
+  test("%o prints the dynamic kinds whose hidden entries render", async () => {
     // Node's showHidden adds a function's length/name/prototype and an
-    // error's enumerable properties; %o throws the 'not supported yet'
-    // Error for them instead of printing without them. A typed array's
-    // byte fields do render; a SharedArrayBuffer's own accessors do not.
+    // error's enumerable properties; the walk renders both. A typed array's
+    // byte fields render; a SharedArrayBuffer's own accessors do not, so
+    // those keep the 'not supported yet' Error.
     const r = await compileAndRun(
-      "format-o-hidden-refusals",
+      "format-o-hidden-renders",
       `import { format } from "node:util";
 function f(): void {}
 const sab = new SharedArrayBuffer(1);
@@ -2291,8 +2303,12 @@ for (const [label, value] of values) {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       [
-        "fn util.format %o of function values is not supported yet",
-        "err util.format %o of Error values is not supported yet",
+        "fn <ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
+        "err [Error: e] { [stack]: [Getter/Setter], [message]: 'e' }",
         "u8 Uint8Array(1) [",
         "  0,",
         "  [BYTES_PER_ELEMENT]: 1,",
@@ -2309,10 +2325,11 @@ for (const [label, value] of values) {
     );
   });
 
-  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+  test("console.dir renders showHidden through the checked-dynamic walk", async () => {
     // dir is inspect with customInspect: false, so the hidden entries come
-    // from the walk's showHidden state; the kinds without a hidden view
-    // keep their refusal, naming console.dir.
+    // from the walk's showHidden state; a function's own hidden entries
+    // render, and the kinds without a hidden view keep their refusal,
+    // naming console.dir.
     const r = await compileAndRun(
       "console-dir-show-hidden",
       `const arr: any = [1, 2];
@@ -2339,7 +2356,11 @@ try {
       [
         "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
         "[ 1, 2, extra: 3 ]",
-        "console.dir with showHidden of function values is not supported yet",
+        "<ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
         "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
         "",
       ].join("\n"),

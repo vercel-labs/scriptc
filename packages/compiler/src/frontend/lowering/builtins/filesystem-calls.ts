@@ -32,7 +32,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import { defaultAfterUndefined } from "../optional-arguments.js";
-import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { isConstantOperand } from "../expressions/library-callbacks.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -1342,17 +1342,18 @@ export function lowerFsMkdirSyncCall(
         type,
         loc,
       });
-      // The options object is constructed before the call, so its
-      // initializers run in source order; only then does Node read
-      // `recursive` before `mode`. The emitted call evaluates its arguments
-      // path, mode, recursive, so a recursive-first literal whose two
-      // members can both have an effect keeps them in locals first.
+      // Node constructs the options object before the call, so its
+      // initializers run in source order; the emitted call evaluates its
+      // arguments path, mode, recursive. When recursive is written first,
+      // keep the members in locals so that order holds. Only a constant
+      // member may cross the other: a variable read can see what the other
+      // initializer assigns, and an effect must stay where it is written.
       const keepsSourceOrder =
         modeNode !== null &&
         recursiveNode !== null &&
         options.first === "recursive" &&
-        !isSafeToDiscard(mode) &&
-        !isSafeToDiscard(recursive);
+        !isConstantOperand(lowerer, recursiveNode) &&
+        !isConstantOperand(lowerer, modeNode);
       if (!keepsSourceOrder) return call(path, mode, recursive);
       const pathLocal = lowerer.declareHiddenLocal("%mkdirPath", STRING);
       const recursiveLocal = lowerer.declareHiddenLocal("%mkdirRecursive", BOOL);

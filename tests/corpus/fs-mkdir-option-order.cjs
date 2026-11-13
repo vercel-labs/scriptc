@@ -50,4 +50,35 @@ try {
   console.log("throw second", error.message, log.join(","));
 }
 console.log("stray dirs", fs.existsSync(under("throw-first")), fs.existsSync(under("throw-second")));
+// A recursive-first initializer that assigns the variable the mode member
+// reads: the initializer order decides the directory's mode. Both modes keep
+// their owner bits under either a 022 or a 077 umask.
+let mutableMode = 0o600;
+function assigningRecursive() {
+  mutableMode = 0o700;
+  return false;
+}
+fs.mkdirSync(under("assigned-mode"), { recursive: assigningRecursive(), mode: mutableMode });
+console.log("assigned mode", (fs.statSync(under("assigned-mode")).mode & 0o777).toString(8));
+const modeHolder = { mode: 0o600 };
+function assigningField() {
+  modeHolder.mode = 0o700;
+  return false;
+}
+fs.mkdirSync(under("assigned-field"), { recursive: assigningField(), mode: modeHolder.mode });
+console.log("assigned field", (fs.statSync(under("assigned-field")).mode & 0o777).toString(8));
+// A mode member written first still runs before the recursive member.
+let recursiveFlag = false;
+function assigningMode() {
+  recursiveFlag = true;
+  return 0o700;
+}
+function readingRecursive() {
+  return recursiveFlag;
+}
+fs.mkdirSync(under("assigned-recursive/nested"), {
+  mode: assigningMode(),
+  recursive: readingRecursive(),
+});
+console.log("assigned recursive", fs.statSync(under("assigned-recursive/nested")).isDirectory());
 fs.rmSync(root, { recursive: true, force: true });

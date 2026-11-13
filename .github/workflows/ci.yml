@@ -1009,8 +1009,10 @@ jobs:
     # Each LLVM differential slice takes 30 to 40 minutes on a hosted runner.
     # The package/install and link-parity contracts and the Node island
     # harness run in their own job (llvm_artifacts_macos_arm64_contracts), so
-    # no slice carries them.
-    timeout-minutes: 50
+    # no slice carries them. A recent run measured 39 to 46 minutes per slice,
+    # and a busy runner was cancelled inside shard 4/5 at the 50-minute limit.
+    # Keep a quarter hour of slack so a slow runner finishes its slice.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:

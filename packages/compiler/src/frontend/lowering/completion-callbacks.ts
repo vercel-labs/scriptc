@@ -13,25 +13,41 @@ import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mapExprChildren, mapStmtChildren } from "../../ir/traverse.js";
 import { moduleUsesAsyncContext } from "../../ir/runtime-features.js";
 
-/** The argument that is the completion callback: its index; "last" for
- * calls whose callback is the final argument when one is passed; or
- * "arguments" for the fs callback calls, whose argument is the call's
- * dyn argument vector, where the runtime finds the callback. */
-type CallbackPosition = number | "last" | "arguments";
+/** The argument that is the completion callback: its index (several, for
+ * a call whose callback sits in one of two positions); "last" for calls
+ * whose callback is the final argument when one is passed; or "arguments"
+ * for the fs callback calls, whose argument is the call's dyn argument
+ * vector, where the runtime finds the callback. */
+type CallbackPosition = number | readonly number[] | "last" | "arguments";
 
 const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   IrLibFn,
   CallbackPosition
 >([
   ["cp.execFile", 2],
+  ["cp.execFileOpts", 2],
   ["crypto.generateKeyCb", 2],
   ["crypto.hkdfCb", 5],
+  ["crypto.hkdfAnyCb", 5],
   ["crypto.pbkdf2Cb", 5],
+  // pbkdf2's five-argument form passes the callback as the digest.
+  ["crypto.pbkdf2AnyCb", [4, 5]],
   ["crypto.randomBytesCb", 1],
+  ["crypto.randomBytesAnyCb", 1],
   ["crypto.randomFillCb", 4],
   ["crypto.randomFillCbDyn", 4],
   ["crypto.randomIntCb", 3],
+  // randomInt's callback is the second argument in its two-argument form
+  // and the third in its three-argument form; a bound non-callback value
+  // passes through untouched.
+  ["crypto.randomIntAnyCb", [1, 2]],
   ["crypto.scryptCb", 4],
+  // scrypt's four-argument form passes the callback as the options value.
+  ["crypto.scryptAnyCb", [3, 4]],
+  // A sign or verify callback the checker cannot prove is a function
+  // runs synchronously as `undefined` and asynchronously otherwise.
+  ["crypto.signOneshotMaybe", 3],
+  ["crypto.verifyOneshotMaybe", 4],
   ["dgram.bindCb", 3],
   ["dgram.closeCb", 1],
   ["dgram.connectCb", 3],
@@ -139,12 +155,25 @@ function bindCall(e: IrExpr): IrExpr {
     };
     return { ...e, args };
   }
-  const index = position === "last" ? e.args.length - 1 : position;
-  const cb = e.args[index];
-  if (cb === undefined || (position === "last" && cb.type.kind !== "func")) return e;
+  if (position === "last") {
+    const index = e.args.length - 1;
+    const cb = e.args[index];
+    if (cb === undefined || cb.type.kind !== "func") return e;
+    const args = e.args.slice();
+    args[index] = bindToActiveContext(cb, BIND_EMPTY_CONTEXT.has(e.fn));
+    return { ...e, args };
+  }
   const args = e.args.slice();
-  args[index] = bindToActiveContext(cb, BIND_EMPTY_CONTEXT.has(e.fn));
-  return { ...e, args };
+  let bound = false;
+  for (const index of typeof position === "number" ? [position] : position) {
+    const cb = args[index];
+    if (cb === undefined) continue;
+    const active = bindToActiveContext(cb, BIND_EMPTY_CONTEXT.has(e.fn));
+    if (active === cb) continue;
+    args[index] = active;
+    bound = true;
+  }
+  return bound ? { ...e, args } : e;
 }
 
 /** Binds the completion callbacks of `mod` when its scheduling carries

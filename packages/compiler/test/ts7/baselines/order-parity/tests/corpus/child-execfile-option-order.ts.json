@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-execfile-option-order.ts"
+ ],
+ "diags": []
+}

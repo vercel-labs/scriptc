@@ -11454,14 +11454,15 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/1525-child-exit-signal.ts",
           "tests/corpus/1565-spawn-pipe-streams.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
           "tests/corpus/2895-child-stdin-write-after-end.ts",
-          "tests/corpus/2896-child-stdin-write-after-finish.ts",
           "tests/corpus/2897-child-stdin-destroy.ts",
-          "tests/corpus/2898-child-stdin-spawn-failure.ts",
           "tests/corpus/2911-execfile-callback.ts",
           "tests/corpus/2939-child-shell-text.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
@@ -11469,10 +11470,37 @@
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
           "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/5060-child-fork-exit-after-messages/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/5062-child-fork-message-before-eof/main.ts",
           "tests/corpus/5627-exec-callback.ts",
+          "tests/corpus/5636-child-error-props.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
+          "tests/corpus/8722-child-spawn-error-fields.cjs",
           "tests/corpus/8921-child-max-buffer-sync.js",
           "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/9475-child-signal-start-state.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-detached-session.mjs",
+          "tests/corpus/child-exec-env-timeout.cjs",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-execfile-env-timeout.ts",
+          "tests/corpus/child-execfile-option-order.ts",
+          "tests/corpus/child-execfile-timeout-overflow.ts",
+          "tests/corpus/child-kill-signal-case.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
+          "tests/corpus/child-stdin-pipe-interface.ts",
+          "tests/corpus/child-stdio-options/main.ts",
+          "tests/corpus/child-stdio-stream-types.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs",
+          "tests/corpus/child-symbol-dispose/main.ts",
           "tests/corpus/compat-child-process-handle.ts",
           "tests/fixtures/node-types/child-exec.ts",
           "tests/harness/project-config.test.ts"
@@ -11549,7 +11577,9 @@
         "tests": [
           "tests/corpus/5627-exec-callback.ts",
           "tests/fixtures/node-types/child-exec.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/child-exec-env-timeout.cjs",
+          "tests/corpus/child-kill-signal-case.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11575,7 +11605,11 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.child_process.execFile",
         "tests": [
-          "tests/corpus/2911-execfile-callback.ts"
+          "tests/corpus/2911-execfile-callback.ts",
+          "tests/corpus/child-execfile-env-timeout.ts",
+          "tests/corpus/child-execfile-timeout-overflow.ts",
+          "tests/corpus/child-kill-signal-case.ts",
+          "tests/corpus/child-execfile-option-order.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11601,7 +11635,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.child_process.fork",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11635,7 +11671,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11658,9 +11701,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.options.detached",
         "tests": [
+          "tests/corpus/child-detached-session.mjs",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -11684,8 +11728,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.options.stdio",
+        "tests": [
+          "tests/corpus/child-stdio-options/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -11741,7 +11788,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11775,7 +11829,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11809,7 +11870,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11832,11 +11900,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.maxBuffer",
         "tests": [
           "tests/corpus/8921-child-max-buffer-sync.js",
-          "tests/corpus/8922-child-max-buffer-async.ts"
+          "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11931,7 +12000,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.ChildProcess",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11954,10 +12024,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.disconnect",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11980,10 +12052,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.kill",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12006,9 +12080,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess",
         "tests": [
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs",
           "tests/corpus/2844-node-disposable-resources.ts"
         ]
       },
@@ -12032,10 +12108,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.ref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-detached-session.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -12061,7 +12139,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.send",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5060-child-fork-exit-after-messages/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12084,10 +12163,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.unref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-detached-session.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -12110,8 +12191,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.channel",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -12133,8 +12217,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.ref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12156,8 +12243,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.unref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12179,10 +12269,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.connected",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12205,10 +12296,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.exitCode",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12231,10 +12323,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.killed",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -12257,9 +12351,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.pid",
         "tests": [
+          "tests/corpus/1470-child-lifecycle.ts",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12283,9 +12378,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.signalCode",
         "tests": [
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12309,7 +12406,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.spawnargs",
         "tests": [
           "tests/corpus/child-spawnfile-spawnargs.ts"
@@ -12335,7 +12432,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.spawnfile",
         "tests": [
           "tests/corpus/child-spawnfile-spawnargs.ts"
@@ -12361,11 +12458,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stderr",
         "tests": [
           "tests/corpus/1565-spawn-pipe-streams.ts",
-          "tests/corpus/2939-child-shell-text.ts"
+          "tests/corpus/child-stdio-stream-types.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12388,15 +12485,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stdin",
         "tests": [
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
           "tests/corpus/2895-child-stdin-write-after-end.ts",
-          "tests/corpus/2896-child-stdin-write-after-finish.ts",
           "tests/corpus/2897-child-stdin-destroy.ts",
-          "tests/corpus/2898-child-stdin-spawn-failure.ts"
+          "tests/corpus/child-stdin-pipe-interface.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12420,7 +12516,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "evidence": "compiler-feature:child_process.stdio"
       },
       "anchorSource": "ancestor"
     },
@@ -12442,11 +12538,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stdout",
         "tests": [
           "tests/corpus/1565-spawn-pipe-streams.ts",
-          "tests/corpus/2939-child-shell-text.ts"
+          "tests/corpus/child-stdio-stream-types.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12469,11 +12565,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'close'",
         "tests": [
-          "tests/corpus/2939-child-shell-text.ts",
-          "tests/corpus/3131-child-rest-listeners.js"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/3131-child-rest-listeners.js",
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-stdio-options/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12496,10 +12595,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'disconnect'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12522,9 +12623,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'error'",
         "tests": [
+          "tests/corpus/5636-child-error-props.ts",
+          "tests/corpus/8722-child-spawn-error-fields.cjs",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12548,10 +12651,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'exit'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12577,7 +12682,10 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'message'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5062-child-fork-message-before-eof/main.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12600,10 +12708,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'spawn'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/9475-child-signal-start-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -19728,7 +19837,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -19787,30 +19895,61 @@
           "tests/corpus/7093-x509-methods-js.mjs",
           "tests/corpus/7122-webcrypto-node-crypto.ts",
           "tests/corpus/7123-webcrypto-node-crypto.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/7152-crypto-prime.ts",
           "tests/corpus/7153-crypto-prime-errors.cjs",
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-checked-arguments.cjs",
+          "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-create-mac-errors.mjs",
           "tests/corpus/crypto-create-mac.ts",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs",
+          "tests/corpus/crypto-key-object-properties.ts",
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/corpus/crypto-module-catalogs.ts",
+          "tests/corpus/crypto-random-arguments.cjs",
+          "tests/corpus/crypto-rsa-key-types.cjs",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-secret-key-inputs.ts",
           "tests/corpus/crypto-secure-heap-used.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-options.ts",
           "tests/corpus/crypto-sign-pipe.ts",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-signer-encodings.ts",
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/x509-issuer-certificate.ts",
+          "tests/corpus/x509-key-usage.ts",
           "tests/fixtures/node-types/cipher.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
@@ -20138,11 +20277,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20165,11 +20305,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.checkPrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.checkPrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20192,13 +20333,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createCipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -20235,13 +20376,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createDecipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -20278,15 +20419,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20310,15 +20453,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20342,15 +20487,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellmanGroup",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20374,16 +20521,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createECDH",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
-          "tests/corpus/6701-ecdh-formats.ts",
-          "tests/corpus/6702-ecdh-errors.js",
-          "tests/corpus/6703-ecdh-private-keys.ts",
-          "tests/corpus/6704-ecdh-set-public-key.cjs",
-          "tests/corpus/6705-ecdh-handles.ts",
-          "tests/fixtures/node-types/ecdh.ts"
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20406,7 +20555,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20422,6 +20571,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20445,7 +20596,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20461,6 +20612,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20516,13 +20669,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20573,13 +20722,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20602,11 +20747,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSecretKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20629,18 +20775,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20663,18 +20813,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createVerify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20720,18 +20874,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.diffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.diffieHellman",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20777,11 +20931,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20809,13 +20964,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20843,13 +20994,9 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/fixtures/node-types/keys.ts",
+          "tests/corpus/crypto-key-sources.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20872,11 +21019,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKeySync",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20899,11 +21047,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrime",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrime",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20926,11 +21075,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.generatePrimeSync",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.generatePrimeSync",
         "tests": [
           "tests/corpus/7152-crypto-prime.ts",
-          "tests/corpus/7153-crypto-prime-errors.cjs"
+          "tests/corpus/7153-crypto-prime-errors.cjs",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20953,11 +21103,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getCipherInfo",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getCipherInfo",
         "tests": [
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7157-crypto-cipher-info-typed.ts"
+          "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/crypto-checked-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -20980,10 +21131,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCiphers",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21006,10 +21158,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getCurves",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21032,15 +21185,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.getDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -21090,10 +21245,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getHashes",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-module-catalogs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21116,10 +21272,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.getMacs",
         "tests": [
-          "tests/corpus/crypto-create-mac.ts"
+          "tests/corpus/crypto-introspection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21169,7 +21325,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21185,6 +21341,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21208,13 +21366,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdf",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21237,13 +21396,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hkdfSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21289,7 +21449,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21305,6 +21465,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21328,7 +21490,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21344,6 +21506,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21367,8 +21531,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21390,8 +21560,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21413,8 +21589,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21436,8 +21618,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21459,18 +21647,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.randomBytes",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.randomBytes",
         "tests": [
+          "tests/corpus/5442-crypto-random-values.ts",
+          "tests/corpus/5443-crypto-random-arguments.js",
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21498,7 +21681,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21526,7 +21710,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21549,11 +21734,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.randomInt",
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
-          "tests/corpus/2890-crypto-static-utility.ts"
+          "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21581,7 +21767,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21609,7 +21796,8 @@
         "tests": [
           "tests/corpus/5442-crypto-random-values.ts",
           "tests/corpus/5443-crypto-random-arguments.js",
-          "tests/corpus/1358-crypto-random.ts"
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/crypto-random-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21632,13 +21820,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scrypt",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21661,13 +21850,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.scryptSync",
         "tests": [
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
-          "tests/corpus/5438-crypto-kdf-digests.ts"
+          "tests/corpus/5438-crypto-kdf-digests.ts",
+          "tests/corpus/crypto-kdf-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -21716,8 +21906,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.setEngine",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21762,18 +21955,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21823,18 +22020,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21857,10 +22058,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.constants",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-constants-object.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -21883,8 +22086,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.fips",
+        "tests": [
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22305,8 +22513,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.Certificate",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22351,8 +22563,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.exportChallenge",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22374,8 +22590,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.exportPublicKey",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22397,8 +22617,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.certificate.verifySpkac",
+        "tests": [
+          "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/fixtures/node-types/crypto-spkac-certificate.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -22420,9 +22644,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Cipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22459,9 +22687,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22498,9 +22730,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.getAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22537,9 +22773,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22576,9 +22816,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22615,9 +22859,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22654,9 +22902,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Decipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22693,9 +22945,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22732,9 +22988,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22771,9 +23031,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22810,9 +23074,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22849,9 +23117,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22888,9 +23160,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22920,9 +23193,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22952,9 +23226,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -22984,9 +23259,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getGenerator",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23016,9 +23292,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrime",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23048,9 +23325,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23080,9 +23358,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23112,9 +23391,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23144,9 +23424,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23176,9 +23457,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.verifyError",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23208,9 +23490,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23240,9 +23523,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23272,9 +23556,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23304,9 +23589,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23336,9 +23622,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23368,9 +23655,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23400,9 +23688,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23432,9 +23721,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23464,7 +23754,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23480,6 +23770,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23503,7 +23795,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23519,6 +23811,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23542,7 +23836,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23558,6 +23852,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23581,7 +23877,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23597,6 +23893,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23620,7 +23918,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23636,6 +23934,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23659,7 +23959,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23675,6 +23975,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23698,7 +24000,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23714,6 +24016,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23737,11 +24041,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:KeyObject",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23764,11 +24069,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.equals",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23791,11 +24097,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.export",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23841,18 +24148,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asymmetricKeyDetails",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23875,18 +24174,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asymmetricKeyType",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23909,11 +24200,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.symmetricKeySize",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -23936,11 +24228,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.type",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-key-object-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24044,18 +24337,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24078,18 +24375,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24112,18 +24413,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24146,18 +24451,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24180,18 +24489,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24214,18 +24527,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
-          "tests/fixtures/node-types/keys.ts"
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24248,12 +24565,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:X509Certificate",
         "tests": [
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
-          "tests/corpus/6936-x509-certificate-fields.ts"
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24276,7 +24594,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkEmail",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24306,7 +24624,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkHost",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24336,7 +24654,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIP",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24366,7 +24684,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIssued",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24396,7 +24714,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkPrivateKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24426,7 +24744,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toJSON",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24456,7 +24774,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toLegacyObject",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24486,7 +24804,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toString",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24516,7 +24834,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.verify",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24546,11 +24864,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.ca",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24573,11 +24894,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24600,11 +24924,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint256",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24627,11 +24954,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint512",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24654,8 +24984,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.infoAccess",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24677,11 +25014,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.issuer",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24731,8 +25071,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.keyUsage",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24754,7 +25101,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.publicKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24784,11 +25131,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.raw",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24811,11 +25161,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.serialNumber",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24838,11 +25191,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subject",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24865,11 +25221,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subjectAltName",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24892,11 +25251,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFrom",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24919,11 +25281,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFromDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24946,11 +25311,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validTo",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24973,11 +25341,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validToDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25000,11 +25371,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithm",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25027,11 +25401,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithmOid",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25661,7 +26038,7 @@
       "anchor": "dep0009-cryptopbkdf2-without-digest",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -25677,6 +26054,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -26081,9 +26460,10 @@
       "anchor": "dep0031-ecdhsetpublickey",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -28554,9 +28934,10 @@
       "anchor": "dep0167-weak-diffiehellmangroup-instances-modp1-modp2-modp5",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -28791,7 +29172,7 @@
       "anchor": "dep0179-hash-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28807,6 +29188,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -28843,7 +29226,7 @@
       "anchor": "dep0181-hmac-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28859,6 +29242,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -31456,15 +31841,20 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
           "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts",
           "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts",
           "tests/corpus/dns-promises-untyped.cjs",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolver-class.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -31510,8 +31900,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.Resolver",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31533,8 +31929,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.cancel",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31556,8 +31958,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.getServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31579,11 +31987,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.lookup",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31606,11 +32015,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.lookupService",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31633,8 +32043,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31656,8 +32073,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve4",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31679,8 +32103,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve6",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31702,8 +32133,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveAny",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31725,8 +32163,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveCaa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31748,8 +32193,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveCname",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31771,8 +32223,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveMx",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31794,8 +32253,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveNaptr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31817,8 +32283,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveNs",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31840,8 +32313,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolvePtr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31863,8 +32343,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveSoa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31886,8 +32373,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveSrv",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31909,8 +32403,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveTlsa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31932,8 +32433,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveTxt",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31955,8 +32463,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.reverse",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31978,8 +32493,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.setDefaultResultOrder",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32001,11 +32522,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.getDefaultResultOrder",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32028,8 +32550,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.setServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32097,8 +32625,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32120,12 +32654,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookup",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32148,10 +32683,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.Resolver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32174,8 +32712,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.Resolver",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32197,8 +32741,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.cancel",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32220,8 +32770,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.setLocalAddress",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32243,12 +32799,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.getServers",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32271,12 +32828,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookup",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32322,12 +32880,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookupService",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32350,8 +32909,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32373,8 +32938,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve4",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32396,8 +32967,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve6",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32419,8 +32996,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveAny",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32442,8 +33025,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveCname",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32465,8 +33054,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveCaa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32488,8 +33083,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveMx",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32511,8 +33112,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveNaptr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32534,8 +33141,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveNs",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32557,8 +33170,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolvePtr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32580,8 +33199,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveSoa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32603,8 +33228,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveSrv",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32626,8 +33257,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveTlsa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32649,8 +33286,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveTxt",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32672,8 +33315,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.reverse",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32695,12 +33344,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.setDefaultResultOrder",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32723,12 +33373,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.getDefaultResultOrder",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32751,8 +33402,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.setServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33482,6 +34139,8 @@
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
@@ -37647,8 +38306,12 @@
       "anchor": "err_invalid_ip_address",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74743,7 +75406,9 @@
           "tests/corpus/2597-dgram-send-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/5647-net-is-ip.ts",
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
           "tests/corpus/compat-net-server-socket.ts",
           "tests/corpus/compat-net-socket-members.mjs",
           "tests/corpus/compat-net-socket-members.ts",
@@ -74754,12 +75419,24 @@
           "tests/corpus/http-response-dynamic-write-encoding.mjs",
           "tests/corpus/http-server-listen-options.ts",
           "tests/corpus/http-server-request-destroy-unlistened.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-is-ip-inputs.ts",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-address-unix-shorthand.ts",
+          "tests/corpus/net-server-dispose-drop.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
+          "tests/corpus/net-socket-chaining-dyn.cjs",
+          "tests/corpus/net-socket-chaining.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
+          "tests/corpus/net-socket-tos-keepalive.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
@@ -74815,10 +75492,11 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:net.BlockList",
         "tests": [
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -75177,8 +75855,11 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.PRIVATE_RANGES",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75195,7 +75876,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.rules",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75217,7 +75898,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.size",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75239,10 +75920,11 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:net.SocketAddress",
         "tests": [
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -75283,7 +75965,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.address",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75305,7 +75987,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.family",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75327,7 +76009,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.flowlabel",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75349,7 +76031,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.port",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75371,10 +76053,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Server",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75422,19 +76106,12 @@
       "anchor": "serverclosecallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-server-dispose-drop.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75452,8 +76129,11 @@
       "anchor": "serversymbolasyncdispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.server",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75470,10 +76150,12 @@
       "anchor": "servergetconnectionscallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.getConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75491,19 +76173,14 @@
       "anchor": "serverlisten",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75551,19 +76228,14 @@
       "anchor": "serverlistenoptions-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75581,19 +76253,14 @@
       "anchor": "serverlistenpath-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75611,19 +76278,14 @@
       "anchor": "serverlistenport-host-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75641,10 +76303,12 @@
       "anchor": "serverref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.ref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75662,10 +76326,12 @@
       "anchor": "serverunref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.unref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75683,10 +76349,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.listening",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75704,10 +76372,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.maxConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75725,8 +76395,11 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.dropMaxConnection",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75743,10 +76416,12 @@
       "anchor": "event-close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75764,10 +76439,12 @@
       "anchor": "event-connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connection'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75785,7 +76462,7 @@
       "anchor": "event-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75807,10 +76484,12 @@
       "anchor": "event-listening",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'listening'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75828,8 +76507,11 @@
       "anchor": "event-drop",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'drop'",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75846,10 +76528,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Socket",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76020,7 +76704,7 @@
       "anchor": "socketdestroysoon",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.destroySoon",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76123,7 +76807,7 @@
       "anchor": "socketresetanddestroy",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.resetAndDestroy",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76205,10 +76889,12 @@
       "anchor": "socketsetkeepalive",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76226,8 +76912,11 @@
       "anchor": "socketsetkeepaliveoptions",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.setKeepAlive",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76244,10 +76933,12 @@
       "anchor": "socketsetkeepaliveenable-initialdelay-interval-count",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76265,10 +76956,12 @@
       "anchor": "socketsetnodelaynodelay",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setNoDelay",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76316,8 +77009,11 @@
       "anchor": "socketgettypeofservice",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.getTypeOfService",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76334,8 +77030,11 @@
       "anchor": "socketsettypeofservicetos",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.setTypeOfService",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76403,8 +77102,11 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.autoSelectFamilyAttemptedAddresses",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76426,8 +77128,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.bufferSize",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76444,10 +77149,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesRead",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76465,10 +77172,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesWritten",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76486,10 +77195,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.connecting",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76507,10 +77218,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.destroyed",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76528,7 +77241,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localAddress",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76550,10 +77263,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localPort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76571,7 +77286,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localFamily",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76593,7 +77308,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.pending",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76615,10 +77330,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remoteAddress",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76636,7 +77353,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remoteFamily",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76658,10 +77375,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remotePort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76679,8 +77398,11 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.server",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76726,10 +77448,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.readyState",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76747,10 +77471,12 @@
       "anchor": "event-close_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76768,10 +77494,12 @@
       "anchor": "event-connect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connect'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76789,8 +77517,11 @@
       "anchor": "event-connectionattempt",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttempt'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76807,8 +77538,11 @@
       "anchor": "event-connectionattemptfailed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttemptFailed'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76825,8 +77559,11 @@
       "anchor": "event-connectionattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttemptTimeout'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76843,10 +77580,12 @@
       "anchor": "event-data",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'data'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76864,7 +77603,7 @@
       "anchor": "event-drain",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'drain'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76886,10 +77625,12 @@
       "anchor": "event-end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'end'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76907,10 +77648,12 @@
       "anchor": "event-error_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76928,8 +77671,11 @@
       "anchor": "event-lookup",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'lookup'",
+        "tests": [
+          "tests/corpus/6443-net-lookup-http-close-text.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76946,7 +77692,7 @@
       "anchor": "event-ready",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'ready'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76968,7 +77714,7 @@
       "anchor": "event-timeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'timeout'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76990,8 +77736,12 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.BoundSocket",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77008,8 +77758,12 @@
       "anchor": "boundsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.address",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77026,8 +77780,12 @@
       "anchor": "boundsocketfd",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.fd",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77044,8 +77802,12 @@
       "anchor": "boundsocketclose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.close",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77062,8 +77824,12 @@
       "anchor": "boundsocketsymboldispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77080,8 +77846,12 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.isPipe",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -77098,19 +77868,14 @@
       "anchor": "netconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77158,19 +77923,14 @@
       "anchor": "netconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77188,19 +77948,14 @@
       "anchor": "netconnectport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77218,19 +77973,14 @@
       "anchor": "netcreateconnection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77278,19 +78028,14 @@
       "anchor": "netcreateconnectionpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77308,19 +78053,14 @@
       "anchor": "netcreateconnectionport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77368,8 +78108,11 @@
       "anchor": "netgetdefaultautoselectfamily",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.getDefaultAutoSelectFamily",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77386,8 +78129,11 @@
       "anchor": "netsetdefaultautoselectfamilyvalue",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.setDefaultAutoSelectFamily",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77404,19 +78150,12 @@
       "anchor": "netgetdefaultautoselectfamilyattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.getDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.getDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77434,19 +78173,12 @@
       "anchor": "netsetdefaultautoselectfamilyattempttimeoutvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.setDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.setDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/http-server-listen-options.ts",
-          "tests/corpus/net-server-address-unix-shorthand.ts"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77464,11 +78196,11 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIP",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIP",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77486,11 +78218,11 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIPv4",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIPv4",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77508,11 +78240,11 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIPv6",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIPv6",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87329,8 +88061,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:readline.InterfaceConstructor"
       },
       "anchorSource": "exact"
     },

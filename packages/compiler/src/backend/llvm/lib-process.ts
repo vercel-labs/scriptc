@@ -15,6 +15,7 @@ import { f64Lit } from "./common.js";
 import { mockTimerSym } from "./lib-shared.js";
 import { FN_ATTRS } from "./shapes.js";
 import { registerReplay } from "./emit-journal.js";
+import { isDynUndefined } from "../../ir/runtime-features.js";
 import { typedRefRecipe } from "./expr-calls.js";
 import { frameText } from "./frame-positions.js";
 
@@ -49,6 +50,64 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       `${out} = call ptr @scr_exec_file(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name})`,
     );
     return host.own({ name: out, type: e.type });
+  }
+  if (e.fn === "cp.execFileOpts") {
+    // The env/timeout/killSignal slice: the same callback contract and
+    // ownership as cp.execFileCwd, plus the option values the runtime
+    // validates before it starts the child (Node's validateTimeout and
+    // sanitizeKillSignal — the call can throw, so the pending check runs).
+    const callbackArg = e.args[2];
+    if (!callbackArg)
+      throw new InternalCompilerError("llvm emitter bug: execFile callback missing");
+    const cbT = callbackArg.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: execFile callback not a func");
+    const cmd = host.emitExpr(e.args[0]!);
+    const argv = host.emitExpr(e.args[1]!);
+    const cb = host.emitExpr(callbackArg);
+    host.toHeap(cb);
+    const shell = host.emitExpr(e.args[3]!);
+    const cwd = host.emitExpr(e.args[4]!);
+    const hasEnv = host.emitExpr(e.args[5]!);
+    const envPairs = host.emitExpr(e.args[6]!);
+    const timeout = host.emitExpr(e.args[7]!);
+    const killSignal = host.emitExpr(e.args[8]!);
+    const adapter = host.execFileThunkFor(cbT);
+    host.usesTimers = true;
+    const out = B.tmp();
+    host.declare(
+      `declare ptr @scr_exec_file_opts(ptr, ptr, ptr, ptr, i1, ptr, i1, ptr, double, ptr)`,
+    );
+    B.line(
+      `${out} = call ptr @scr_exec_file_opts(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name}, i1 ${hasEnv.name}, ptr ${envPairs.name}, double ${timeout.name}, ptr ${killSignal.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "cp.spawnArmed") {
+    // spawn's options core plus the options that arm a timer and an abort
+    // subscription (SCR_CHILD_CP_OPTIONS). The launch checks throw before
+    // a child starts, so the call's exception edge is checked here; the
+    // last argument is the abort-listener seam, an absent signal opts out
+    // of the event-target unit.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    let add = "null";
+    if (!isDynUndefined(e.args[14]!)) {
+      host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+      add = "@scr_events_add_abort_listener";
+    }
+    host.declare(
+      `declare ptr @scr_spawn_armed(ptr, ptr, double, double, double, double, double, i1 zeroext, i1 zeroext, i1 zeroext, ptr, ptr, double, ptr, ptr, ptr)`,
+    );
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_spawn_armed(ptr ${args[0]!.name}, ptr ${args[1]!.name}, double ${args[2]!.name}, double ${args[3]!.name}, double ${args[4]!.name}, double ${args[5]!.name}, double ${args[6]!.name}, i1 ${args[7]!.name}, i1 ${args[8]!.name}, i1 ${args[9]!.name}, ptr ${args[10]!.name}, ptr ${args[11]!.name}, double ${args[12]!.name}, ptr ${args[13]!.name}, ptr ${args[14]!.name}, ptr ${add})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
   }
   if (
     e.fn === "cp.spawn" ||
@@ -152,6 +211,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const out = B.tmp();
     B.line(`${out} = call i1 @scr_child_ipc_connected(ptr ${child.name})`);
     return { name: out, type: e.type };
+  }
+  if (e.fn === "child.channel") {
+    // The Control handle as a checked-dynamic value (+1): undefined for a
+    // child without an IPC channel, null after a disconnect.
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_child_channel(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call ptr @scr_child_channel(ptr ${child.name}) ; +1`);
+    return host.own({ name: out, type: e.type });
   }
   if (e.fn === "child.send" || e.fn === "child.sendCb") {
     host.usesTimers = true;

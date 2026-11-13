@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3764,
+    "matrixRows": 3763,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 125,
+      "not-applicable": 126,
       "chapters": 6
     }
   },
@@ -290,8 +290,8 @@
     {
       "slug": "readline",
       "title": "Readline",
-      "entries": 43,
-      "apiEntries": 43
+      "entries": 42,
+      "apiEntries": 42
     },
     {
       "slug": "repl",
@@ -8749,7 +8749,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8772,9 +8772,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -8864,7 +8864,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8910,7 +8910,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8933,7 +8933,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8956,7 +8956,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8979,7 +8979,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9025,7 +9025,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9048,9 +9048,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9071,9 +9071,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9094,9 +9094,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9117,7 +9117,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9140,7 +9140,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9163,7 +9163,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9186,7 +9186,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9209,7 +9209,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9232,7 +9232,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9255,7 +9255,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9278,7 +9278,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9301,7 +9301,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9325,8 +9325,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -9347,7 +9347,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9370,7 +9370,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9393,7 +9393,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9416,7 +9416,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9439,7 +9439,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9485,7 +9485,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -10911,8 +10911,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -10934,8 +10934,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -10957,8 +10957,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -10980,8 +10980,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -11003,7 +11003,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.",
         "verification": "test-backed"
       }
@@ -11026,7 +11026,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.",
         "verification": "test-backed"
       }
@@ -11049,7 +11049,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.",
         "verification": "test-backed"
       }
@@ -11072,7 +11072,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.",
         "verification": "test-backed"
       }
@@ -11095,7 +11095,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11118,7 +11118,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11210,7 +11210,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11233,7 +11233,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11256,7 +11256,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11302,8 +11302,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Derives the shared secret a private KeyObject and a public KeyObject agree on for the supported curves and X25519, in its synchronous and callback forms, with Node's key-type, curve and key checks.",
         "verification": "test-backed"
       }
     },
@@ -11348,7 +11348,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11417,7 +11417,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11440,8 +11440,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -11463,8 +11463,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -11486,8 +11486,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -11509,7 +11509,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -11532,7 +11532,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -11555,7 +11555,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.",
         "verification": "test-backed"
       }
@@ -11601,7 +11601,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -11624,7 +11624,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -11670,7 +11670,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11693,7 +11693,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11716,7 +11716,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11762,7 +11762,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11785,7 +11785,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -11808,9 +11808,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11831,9 +11831,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11854,9 +11854,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11877,9 +11877,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11900,8 +11900,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -11969,7 +11969,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -12038,7 +12038,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -12061,7 +12061,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -12107,9 +12107,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12153,7 +12153,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -12199,7 +12199,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -12222,8 +12222,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Each crypto.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.",
         "verification": "test-backed"
       }
     },
@@ -12245,9 +12245,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12314,9 +12314,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12337,9 +12337,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12360,9 +12360,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12383,9 +12383,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Reads the base64 SPKAC text a Netscape spkac file holds, as a string or its bytes, with leading space and tab and trailing whitespace and dashes trimmed; verifies RSA signatures, exports the challenge as UTF-8 and the public key as a PEM Buffer, and answers an empty Buffer (verifySpkac false) for text no spkac decoder accepts, where Node answers an empty string.",
+        "verification": "test-backed"
       }
     },
     {
@@ -12406,8 +12406,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12429,8 +12429,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12452,8 +12452,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12475,8 +12475,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12498,8 +12498,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12521,8 +12521,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12544,8 +12544,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12567,8 +12567,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12590,8 +12590,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12613,8 +12613,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12636,8 +12636,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12659,8 +12659,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12682,7 +12682,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12705,7 +12705,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12728,7 +12728,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12751,7 +12751,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12774,7 +12774,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12797,7 +12797,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12820,7 +12820,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12843,7 +12843,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12866,7 +12866,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12889,7 +12889,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12912,7 +12912,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.",
         "verification": "test-backed"
       }
@@ -12935,7 +12935,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -12958,7 +12958,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -12981,7 +12981,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -13004,7 +13004,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -13027,7 +13027,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -13050,7 +13050,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -13073,7 +13073,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.",
         "verification": "test-backed"
       }
@@ -13096,7 +13096,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13119,7 +13119,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13142,7 +13142,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13165,7 +13165,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13188,7 +13188,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13211,7 +13211,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13234,7 +13234,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13257,7 +13257,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13280,7 +13280,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13303,7 +13303,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13349,7 +13349,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13372,7 +13372,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13395,8 +13395,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13418,8 +13418,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13510,7 +13510,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13533,7 +13533,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13556,7 +13556,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13579,7 +13579,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13602,7 +13602,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13625,7 +13625,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13648,7 +13648,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13671,7 +13671,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13694,7 +13694,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13717,7 +13717,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13740,7 +13740,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13763,7 +13763,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13786,7 +13786,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13809,7 +13809,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13832,7 +13832,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13855,7 +13855,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -13878,8 +13878,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13901,8 +13901,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13924,8 +13924,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13947,8 +13947,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -13970,9 +13970,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -13993,8 +13993,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14039,9 +14039,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14062,7 +14062,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -14085,8 +14085,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14108,8 +14108,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14131,8 +14131,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14154,8 +14154,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14177,8 +14177,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14200,8 +14200,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14223,8 +14223,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14246,8 +14246,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14269,8 +14269,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -14292,8 +14292,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -15948,7 +15948,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -15971,9 +15971,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15994,9 +15994,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16017,9 +16017,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16040,8 +16040,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16063,8 +16063,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16086,9 +16086,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16109,9 +16109,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16132,9 +16132,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16155,9 +16155,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16178,9 +16178,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16201,9 +16201,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16224,9 +16224,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16247,9 +16247,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16270,9 +16270,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16293,9 +16293,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16316,9 +16316,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16339,9 +16339,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16362,9 +16362,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16385,9 +16385,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16408,9 +16408,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16431,9 +16431,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16454,8 +16454,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16477,9 +16477,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16500,9 +16500,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16523,8 +16523,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16546,9 +16546,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16569,9 +16569,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16592,9 +16592,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16615,9 +16615,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16638,8 +16638,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16661,8 +16661,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16684,8 +16684,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -16707,9 +16707,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16730,9 +16730,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16753,9 +16753,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16776,9 +16776,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16799,9 +16799,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16822,9 +16822,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16845,9 +16845,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16868,9 +16868,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16891,9 +16891,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16914,9 +16914,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16937,9 +16937,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16960,9 +16960,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16983,9 +16983,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17006,9 +17006,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17029,9 +17029,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -17052,8 +17052,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -17075,8 +17075,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
     },
@@ -17098,9 +17098,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21064,9 +21064,9 @@
       "anchor": "err_invalid_ip_address",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -47421,7 +47421,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -47719,9 +47719,9 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -47737,7 +47737,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47755,7 +47755,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47773,7 +47773,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -47809,7 +47809,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47827,7 +47827,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47845,7 +47845,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47863,7 +47863,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -47881,7 +47881,7 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -47917,8 +47917,8 @@
       "anchor": "serverclosecallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -47935,9 +47935,9 @@
       "anchor": "serversymbolasyncdispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -47953,7 +47953,7 @@
       "anchor": "servergetconnectionscallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -47971,8 +47971,8 @@
       "anchor": "serverlisten",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48007,8 +48007,8 @@
       "anchor": "serverlistenoptions-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48025,8 +48025,8 @@
       "anchor": "serverlistenpath-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48043,8 +48043,8 @@
       "anchor": "serverlistenport-host-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -48061,7 +48061,7 @@
       "anchor": "serverref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48079,7 +48079,7 @@
       "anchor": "serverunref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48097,7 +48097,7 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48115,7 +48115,7 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48133,9 +48133,9 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48151,7 +48151,7 @@
       "anchor": "event-close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48169,7 +48169,7 @@
       "anchor": "event-connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48187,7 +48187,7 @@
       "anchor": "event-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48205,7 +48205,7 @@
       "anchor": "event-listening",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48223,9 +48223,9 @@
       "anchor": "event-drop",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48241,7 +48241,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48367,7 +48367,7 @@
       "anchor": "socketdestroysoon",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48439,7 +48439,7 @@
       "anchor": "socketresetanddestroy",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48493,7 +48493,7 @@
       "anchor": "socketsetkeepalive",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48511,9 +48511,9 @@
       "anchor": "socketsetkeepaliveoptions",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48529,7 +48529,7 @@
       "anchor": "socketsetkeepaliveenable-initialdelay-interval-count",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48547,7 +48547,7 @@
       "anchor": "socketsetnodelaynodelay",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48583,9 +48583,9 @@
       "anchor": "socketgettypeofservice",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48601,9 +48601,9 @@
       "anchor": "socketsettypeofservicetos",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48655,9 +48655,9 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48678,9 +48678,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48696,7 +48696,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48714,7 +48714,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48732,7 +48732,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48750,7 +48750,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48768,7 +48768,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48786,7 +48786,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48804,7 +48804,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48822,7 +48822,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48840,7 +48840,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48858,7 +48858,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -48876,7 +48876,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48894,9 +48894,9 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -48930,7 +48930,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48948,7 +48948,7 @@
       "anchor": "event-close_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48966,7 +48966,7 @@
       "anchor": "event-connect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -48984,9 +48984,9 @@
       "anchor": "event-connectionattempt",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49002,9 +49002,9 @@
       "anchor": "event-connectionattemptfailed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49020,9 +49020,9 @@
       "anchor": "event-connectionattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49038,7 +49038,7 @@
       "anchor": "event-data",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -49056,7 +49056,7 @@
       "anchor": "event-drain",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -49074,7 +49074,7 @@
       "anchor": "event-end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -49092,7 +49092,7 @@
       "anchor": "event-error_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -49110,9 +49110,9 @@
       "anchor": "event-lookup",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49128,7 +49128,7 @@
       "anchor": "event-ready",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -49146,7 +49146,7 @@
       "anchor": "event-timeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -49164,9 +49164,9 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49182,9 +49182,9 @@
       "anchor": "boundsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49200,9 +49200,9 @@
       "anchor": "boundsocketfd",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49218,9 +49218,9 @@
       "anchor": "boundsocketclose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49236,9 +49236,9 @@
       "anchor": "boundsocketsymboldispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49254,9 +49254,9 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49272,8 +49272,8 @@
       "anchor": "netconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49308,8 +49308,8 @@
       "anchor": "netconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49326,8 +49326,8 @@
       "anchor": "netconnectport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49344,8 +49344,8 @@
       "anchor": "netcreateconnection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49380,8 +49380,8 @@
       "anchor": "netcreateconnectionpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49398,8 +49398,8 @@
       "anchor": "netcreateconnectionport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49434,9 +49434,9 @@
       "anchor": "netgetdefaultautoselectfamily",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49452,9 +49452,9 @@
       "anchor": "netsetdefaultautoselectfamilyvalue",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -49470,8 +49470,8 @@
       "anchor": "netgetdefaultautoselectfamilyattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49488,8 +49488,8 @@
       "anchor": "netsetdefaultautoselectfamilyattempttimeoutvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -49506,8 +49506,8 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -49524,8 +49524,8 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -49542,8 +49542,8 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -56177,7 +56177,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -56620,29 +56620,6 @@
       }
     },
     {
-      "id": "readline:cdf3ee503158",
-      "chapter": "readline",
-      "kind": "class",
-      "name": "InterfaceConstructor",
-      "signature": "Class: `InterfaceConstructor`",
-      "label": "InterfaceConstructor",
-      "apiSymbol": "InterfaceConstructor",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-interfaceconstructor",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "readline:7f16c47dd206",
       "chapter": "readline",
       "kind": "method",
@@ -56650,7 +56627,7 @@
       "signature": "`rl.close()`",
       "label": "rl.close()",
       "apiSymbol": "rl.close",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlclose",
       "nodeStability": {
@@ -56673,7 +56650,7 @@
       "signature": "`rl[Symbol.dispose]()`",
       "label": "rl[Symbol.dispose]()",
       "apiSymbol": "rl",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsymboldispose",
       "nodeStability": {
@@ -56696,7 +56673,7 @@
       "signature": "`rl.pause()`",
       "label": "rl.pause()",
       "apiSymbol": "rl.pause",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlpause",
       "nodeStability": {
@@ -56719,7 +56696,7 @@
       "signature": "`rl.prompt([preserveCursor])`",
       "label": "rl.prompt([preserveCursor])",
       "apiSymbol": "rl.prompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlpromptpreservecursor",
       "nodeStability": {
@@ -56742,7 +56719,7 @@
       "signature": "`rl.resume()`",
       "label": "rl.resume()",
       "apiSymbol": "rl.resume",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlresume",
       "nodeStability": {
@@ -56765,7 +56742,7 @@
       "signature": "`rl.setPrompt(prompt)`",
       "label": "rl.setPrompt(prompt)",
       "apiSymbol": "rl.setPrompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsetpromptprompt",
       "nodeStability": {
@@ -56788,7 +56765,7 @@
       "signature": "`rl.getPrompt()`",
       "label": "rl.getPrompt()",
       "apiSymbol": "rl.getPrompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlgetprompt",
       "nodeStability": {
@@ -56811,7 +56788,7 @@
       "signature": "`rl.write(data[, key])`",
       "label": "rl.write(data[, key])",
       "apiSymbol": "rl.write",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlwritedata-key",
       "nodeStability": {
@@ -56834,7 +56811,7 @@
       "signature": "`rl[Symbol.asyncIterator]()`",
       "label": "rl[Symbol.asyncIterator]()",
       "apiSymbol": "rl",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsymbolasynciterator",
       "nodeStability": {
@@ -56857,7 +56834,7 @@
       "signature": "`rl.getCursorPos()`",
       "label": "rl.getCursorPos()",
       "apiSymbol": "rl.getCursorPos",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlgetcursorpos",
       "nodeStability": {
@@ -56880,7 +56857,7 @@
       "signature": "`line` Type: {string}",
       "label": "line",
       "apiSymbol": "line",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "class-interfaceconstructor",
       "nodeStability": {
@@ -56903,7 +56880,7 @@
       "signature": "`cursor` Type: {number|undefined}",
       "label": "cursor",
       "apiSymbol": "cursor",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "class-interfaceconstructor",
       "nodeStability": {
@@ -56926,7 +56903,7 @@
       "signature": "Event: `'close'`",
       "label": "'close'",
       "apiSymbol": "'close'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-close",
       "nodeStability": {
@@ -56949,7 +56926,7 @@
       "signature": "Event: `'error'`",
       "label": "'error'",
       "apiSymbol": "'error'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-error",
       "nodeStability": {
@@ -56972,7 +56949,7 @@
       "signature": "Event: `'line'`",
       "label": "'line'",
       "apiSymbol": "'line'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-line",
       "nodeStability": {
@@ -56995,7 +56972,7 @@
       "signature": "Event: `'history'`",
       "label": "'history'",
       "apiSymbol": "'history'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-history",
       "nodeStability": {
@@ -57018,7 +56995,7 @@
       "signature": "Event: `'pause'`",
       "label": "'pause'",
       "apiSymbol": "'pause'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-pause",
       "nodeStability": {
@@ -57041,7 +57018,7 @@
       "signature": "Event: `'resume'`",
       "label": "'resume'",
       "apiSymbol": "'resume'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-resume",
       "nodeStability": {
@@ -57064,7 +57041,7 @@
       "signature": "Event: `'SIGCONT'`",
       "label": "'SIGCONT'",
       "apiSymbol": "'SIGCONT'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigcont",
       "nodeStability": {
@@ -57087,7 +57064,7 @@
       "signature": "Event: `'SIGINT'`",
       "label": "'SIGINT'",
       "apiSymbol": "'SIGINT'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigint",
       "nodeStability": {
@@ -57110,7 +57087,7 @@
       "signature": "Event: `'SIGTSTP'`",
       "label": "'SIGTSTP'",
       "apiSymbol": "'SIGTSTP'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigtstp",
       "nodeStability": {

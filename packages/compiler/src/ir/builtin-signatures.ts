@@ -1058,9 +1058,19 @@ function buildLibFnSignatures() {
     "process.exiting": { argTypes: [], result: BOOL },
     /** net's process-wide happy-eyeballs attempt budget (Node's default
      * 250ms): one runtime double in the core unit, so reading/writing it
-     * never forces the net unit into the link. Never throw. */
+     * never forces the net unit into the link. setDefaultAutoSelectFamily
+     * throws Node's ERR_INVALID_ARG_TYPE for a non-boolean value. */
     "net.getAutoSelTimeout": { argTypes: [], result: F64 },
-    "net.setAutoSelTimeout": { argTypes: [F64], result: VOID },
+    /** setDefaultAutoSelectFamilyAttemptTimeout(value): Node's
+     * validateInt32 ladder runs over the checked-dynamic value, so a
+     * non-number throws ERR_INVALID_ARG_TYPE instead of a lowering
+     * refusal (the validateBoolean twin above). */
+    "net.setAutoSelTimeout": { argTypes: [DYN], result: VOID },
+    /** net.getDefaultAutoSelectFamily()/setDefaultAutoSelectFamily(value):
+     * Node's process-wide boolean (true by default). The value crosses as a
+     * dyn so the runtime can raise the same TypeError Node does. */
+    "net.getDefaultAutoSel": { argTypes: [], result: BOOL },
+    "net.setDefaultAutoSel": { argTypes: [DYN], result: VOID },
     /** realpath(3) with Node's error shape (syscall "lstat" in the message,
      * Node's own spelling for realpathSync failures). +1 fresh string. */
     "fs.realpathSync": { argTypes: [STRING], result: STRING },
@@ -1752,6 +1762,9 @@ function buildLibFnSignatures() {
     "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+    /** keyUsage: the extended key usage OIDs as a dynamic array, or
+     * undefined when the extension is absent. */
+    "crypto.x509KeyUsage": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },
@@ -1771,6 +1784,17 @@ function buildLibFnSignatures() {
     "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
     "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
+    /** crypto.Certificate's SPKAC methods (scr_pki.c), over the spkac
+     * argument and its optional encoding: the base64 text decodes as
+     * NETSCAPE_SPKI_b64_decode does (EVP_DecodeBlock, then d2i), and a
+     * string decodes as Buffer.from does. verifySpkac checks the signature
+     * against the key the SPKAC itself carries; exportChallenge copies the
+     * challenge, exportPublicKey writes the key's PEM. Input no decoder
+     * accepts answers false or an empty Buffer (Node answers an empty
+     * string). */
+    "crypto.spkacVerify": { argTypes: [DYN, DYN], result: BOOL },
+    "crypto.spkacChallenge": { argTypes: [DYN, DYN], result: BYTES_U8 },
+    "crypto.spkacPublicKey": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "fs.closeSync": { argTypes: [F64], result: VOID },
     "stats.isFile": { argTypes: [STATS_T], result: BOOL },
     "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },
@@ -1958,7 +1982,7 @@ function buildLibFnSignatures() {
      * union (null = spawn failure or signal death, type-directed
      * construction in the backend like process.envGet); stdout/stderr are
      * +1 strings. */
-    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING)], result: SPAWNRES_T },
+    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING), STRING], result: SPAWNRES_T },
     // spawnSync's options form: timeout, killSignal name ("" = SIGTERM),
     // and the three stdio modes.
     /** spawnSync with options (scr_child.c): the cp.spawnSync core plus the
@@ -1972,13 +1996,13 @@ function buildLibFnSignatures() {
      * call site's `Signals | null` union (null = exited normally or spawn
      * failure), constructed type-directedly like spawnRes.status. */
     "cp.spawnSyncOpts": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
      * pairs replace the child's environment (recordToEnvPairs). */
     "cp.spawnSyncEnv": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING), STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
@@ -1987,7 +2011,7 @@ function buildLibFnSignatures() {
      * maps the value to the three modes. Args (cmd, argv, timeout,
      * killSignal, stdio). Never throws, like the other spawnSync forms. */
     "cp.spawnSyncStdioStr": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING, STRING],
       result: SPAWNRES_T,
     },
     /** spawnSync with the `cwd`, `input`, and `shell` options (the
@@ -2002,7 +2026,20 @@ function buildLibFnSignatures() {
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        BOOL,
+        STRING,
+      ],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -2021,6 +2058,7 @@ function buildLibFnSignatures() {
         BOOL,
         BOOL,
         arrayOf(STRING),
+        STRING,
       ],
       result: SPAWNRES_T,
     },
@@ -2095,6 +2133,20 @@ function buildLibFnSignatures() {
       argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL, null],
       result: VOID,
     },
+    /** Server.prototype.listen over dynamic arguments: args [server, arg0,
+     * arg1, arg2, fence]. The runtime runs Node's normalizeArgs (a function,
+     * null or undefined port binds an unused one; a pipe-name string is the
+     * path; an object is the option bag), the already-listening check, the
+     * callback registration, the bound-socket adoption, then the bag's
+     * signal, fd, port and path in Node's order (with backlog, ipv6Only and
+     * reusePort). An adopted TCP handle or an unmodeled form reaches the
+     * compiler-rendered fence after its validation. May-throw seed. */
+    "net.listenDyn": { argTypes: [NETSERVER_T, DYN, DYN, DYN, STRING], result: VOID },
+    // The same with a statically function-typed listen callback peeled off.
+    "net.listenDynCb": {
+      argTypes: [NETSERVER_T, DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: VOID,
+    },
     "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
     "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
     /** socket.ref()/unref() and server.ref()/unref(): whether the handle
@@ -2153,13 +2205,21 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    /** net.connect/createConnection over a RUNTIME option bag (computed
-     * keys — the invalid-input probes): Node-order validation (the
-     * objectMode trio's ERR_INVALID_ARG_VALUE, validatePort, host string,
-     * autoSelectFamily boolean, the attempt budget), then the trailing
-     * compiler-rendered fence — ALWAYS THROWS (the error.nodeThrow
-     * polymorphic-result carve-out). May-throw seed. */
-    "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
+    /** net.connect/createConnection over dynamic arguments (a runtime
+     * option bag, or positional values whose kinds only the run decides):
+     * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
+     * — the Socket constructor's option ladder, net.connect's timeout, the
+     * missing-argument check and lookupAndConnect's validation — then dials
+     * with the options it models; a caller-supplied lookup or an adopted
+     * handle reaches the compiler-rendered fence after its validation.
+     * May-throw seed. */
+    "net.connectDyn": { argTypes: [DYN, DYN, DYN, STRING], result: NETSOCKET_T },
+    // The same with a statically function-typed connect listener peeled off
+    // (Node's normalizeArgs takes the last argument as the callback).
+    "net.connectDynCb": {
+      argTypes: [DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: NETSOCKET_T,
+    },
     "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
     // The options form's `port`: validatePort over the TCP branch's number
     // or string, the whole options object's Received text for a value that
@@ -2197,12 +2257,12 @@ function buildLibFnSignatures() {
      * divergence), and a lookup error surfaces as the deferred socket
      * 'error'. A synchronous throw INSIDE the lookup propagates out of the
      * connect call (may-throw seed). */
-    "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+    "net.connectLookup": { argTypes: [F64, STRING, null, DYN], result: NETSOCKET_T },
     /** connect({ host, port, lookup }) with a lookup of Node's own type, as
      * a checked-dynamic function: the runtime calls it with { hints, all:
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
-    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN, DYN], result: NETSOCKET_T },
     /** socket.write: Node's Writable answer — false when the writes not yet
      * completely sent, each counted in full, reach the 65536-byte
      * high-water mark ('drain' follows), and on an ended or closed socket. */
@@ -2340,6 +2400,27 @@ function buildLibFnSignatures() {
     "dns.getServers": { argTypes: [], result: DYN },
     "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
     "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
+    /** The stub resolver (scr_dns_resolve.c): the binding names the c-ares
+     * query ("queryA", "getHostByAddr", …), `typed` says the callback's
+     * result parameter cannot take the undefined Node passes on an error,
+     * and the promise forms fulfill with the dyn result. Argument errors
+     * throw synchronously in both forms (Node validates before it queues
+     * the query). */
+    "dns.resolveChk": { argTypes: [STRING, DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolvePromise": { argTypes: [STRING, DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** resolve(hostname, rrtype[, callback]): the rrtype picks the binding
+     * at run time (Node's resolveMap). */
+    "dns.resolveRrChk": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolveRrPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** The Resolver handle (SCR_DYNH_DNS_RESOLVER): the constructor's
+     * options, the instanceof test, and the servers of the module defaults.
+     * A handle's own methods are dyn calls on the handle value, so they need
+     * no entry here. */
+    "dns.resolverNew": { argTypes: [DYN, BOOL], result: DYN },
+    "dns.resolverIs": { argTypes: [DYN, BOOL], result: BOOL },
+    "dns.setServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesSetServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesGetServers": { argTypes: [BOOL], result: DYN },
     // node:test (scr_test.c). Bodies are program-dependent closures (0 or
     // 1 testCtx param, void or Promise<void> result — the spoke pinned the
     // shape): null slots. sub's result is the settled Promise<void> the
@@ -2809,6 +2890,9 @@ function buildLibFnSignatures() {
     "net.sockSetTimeout": { argTypes: [NETSOCKET_T, F64], result: VOID },
     /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings throw the "not supported yet" Error, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
     "net.sockSetEncoding": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+    /** The untyped argument: a missing or undefined encoding means utf8, a
+     * non-string throws Node's argument TypeError (may throw). */
+    "net.sockSetEncodingDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "http.reqSetEncoding": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "net.sockOnTimeout": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2962,7 +3046,9 @@ function buildLibFnSignatures() {
      * the read half ends. */
     "net.sockPause": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
-    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
+    /** setNoDelay(enable): the argument as written (undefined means true);
+     * answers the socket. */
+    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
@@ -2982,7 +3068,13 @@ function buildLibFnSignatures() {
     "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
-    "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+    /** setKeepAlive(enable, initialDelay, interval, count): the arguments
+     * as written (a missing one is the dyn undefined value); answers the
+     * socket. */
+    "net.sockSetKeepAlive": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, DYN],
+      result: NETSOCKET_T,
+    },
     "net.sockOnReady": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
@@ -2994,6 +3086,17 @@ function buildLibFnSignatures() {
      * gets (err, address, family, host) once per resolved address, or once
      * with the lookup error, before the connect. */
     "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+    /** socket.on/once of the happy-eyeballs attempt events: the dyn
+     * listener gets (ip, port, family), plus the error for Failed. `which`
+     * is 0 (connectionAttempt), 1 (Failed) or 2 (Timeout). */
+    "net.sockOnAttempt": { argTypes: [NETSOCKET_T, DYN, F64, BOOL], result: VOID },
+    /** socket.bufferSize: the unsent bytes, or a dyn undefined before the
+     * socket has a handle (Node's deprecated writableLength alias). */
+    "net.sockBufferSize": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.autoSelectFamilyAttemptedAddresses: the "$ip:$port" strings
+     * of a multi-address dial, a dyn undefined when the dial took the
+     * single-address path. */
+    "net.sockAttemptedAddresses": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockOnWriteFlush": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -3019,7 +3122,22 @@ function buildLibFnSignatures() {
     "net.blockListNew": { argTypes: [DYN], result: DYN },
     "net.isBlockList": { argTypes: [DYN], result: BOOL },
     "net.blockListPrivateRanges": { argTypes: [], result: DYN },
+    /** net.BoundSocket: construction validates its options and binds;
+     * server.listen(bound[, cb]) adopts the bound descriptor. */
+    "net.boundSocketNew": { argTypes: [DYN], result: DYN },
+    "net.isBoundSocket": { argTypes: [DYN], result: BOOL },
+    "net.listenBound": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.listenBoundCb": {
+      argTypes: [NETSERVER_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+    /** server[Symbol.asyncDispose](): a void promise that fulfills at
+     * 'close' (at once for a server that never listened). */
+    "net.serverAsyncDispose": {
+      argTypes: [NETSERVER_T],
+      result: { kind: "promise", inner: VOID },
+    },
     "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
     /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out
@@ -3519,13 +3637,13 @@ function buildLibFnSignatures() {
      * parameter, Node's event object. */
     "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, encoding —
      * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
      * (+ captured stderr) on non-zero exit or signal death, "spawnSync
      * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
      * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
-     * and stderr properties (Buffer outputs when buffers is set: no
-     * encoding option). Result is the captured utf8 stdout (+1). */
+     * and stderr properties (decoded strings: the encoding option's name).
+     * Result is the captured stdout decoded with that encoding (+1). */
     "cp.execSync": {
       argTypes: [
         STRING,
@@ -3539,9 +3657,30 @@ function buildLibFnSignatures() {
         F64,
         F64,
         F64,
-        BOOL,
+        STRING,
       ],
       result: STRING,
+    },
+    /** The unencoded execFileSync/execSync form (cp.execSyncBytes): the
+     * same call with Node's Buffer result and Buffer error outputs. Args:
+     * cmd, argv, shell, input, hasInput, cwd, hasEnv, envPairs, timeoutMs,
+     * stdoutMode, stderrMode. THROWS Node's exact errors, with the
+     * status/signal/output/pid/stdout/stderr properties. */
+    "cp.execSyncBytes": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        BOOL,
+        STRING,
+        BOOL,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+      ],
+      result: BYTES_U8,
     },
     /** The promisified-execFile/exec capture (args: cmd, argv, shell, cwd,
      * hasEnv, envPairs, timeoutMs; shell marks exec's /bin/sh -c argv, as
@@ -3648,6 +3787,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
       result: CHILD_T,
     },
+    /** The callback slice with `env`, `timeout` and `killSignal` (the
+     * SCR_CHILD_CP_OPTIONS build): (cmd, argv, callback, shell, cwd,
+     * hasEnv, envPairs, timeoutMs, killSignal). cwd "" = inherit;
+     * envPairs REPLACES the environment when hasEnv (an empty list with
+     * hasEnv is Node's `env: {}`); timeoutMs 0 = no deadline; killSignal
+     * "" = the SIGTERM default, otherwise a signal name resolved by the
+     * runtime. Throws Node's option errors synchronously (validateTimeout's
+     * ERR_OUT_OF_RANGE, sanitizeKillSignal's ERR_UNKNOWN_SIGNAL) before the
+     * child starts. The callback contract is cp.execFile's. */
+    "cp.execFileOpts": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
+      result: CHILD_T,
+    },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).
@@ -3674,6 +3826,34 @@ function buildLibFnSignatures() {
         BOOL,
         arrayOf(STRING),
         STRING,
+      ],
+      result: CHILD_T,
+    },
+    /** spawn's options form with `timeout`, `killSignal` and `signal`
+     * (the SCR_CHILD_CP_OPTIONS build): cp.spawnOpts' arguments, then
+     * timeoutMs (0 = no timer), killSignal and signal as checked-dynamic
+     * values (undefined = absent; killSignal may be a name, matched
+     * without case, or a signal number). Node's launch checks run in its
+     * order — validateTimeout, validateAbortSignal, sanitizeKillSignal —
+     * before the child starts, so unlike cp.spawnOpts this call can throw
+     * synchronously. */
+    "cp.spawnArmed": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+        F64,
+        F64,
+        BOOL,
+        BOOL,
+        BOOL,
+        arrayOf(STRING),
+        STRING,
+        F64,
+        DYN,
+        DYN,
       ],
       result: CHILD_T,
     },
@@ -3895,8 +4075,15 @@ function buildLibFnSignatures() {
     "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
+    /** ChildProcess[Symbol.dispose](): Node's dispose sends SIGTERM only
+     * while `killed` is false. */
+    "child.dispose": { argTypes: [CHILD_T], result: VOID },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
     "child.ref": { argTypes: [CHILD_T], result: VOID },
+    /** subprocess.channel: the checked-dynamic Control handle (undefined
+     * without an IPC channel, null after a disconnect); the lowering
+     * supplies its DYN type. */
+    "child.channel": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
     /* The Buffer captures (spawnSync without an encoding option): the same
@@ -3997,6 +4184,18 @@ function buildLibFnSignatures() {
     "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
     "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
     "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
+    /** The any-argument forms: Node's argument types are checked at run
+     * time, in its order, for calls whose arguments do not fit the typed
+     * signatures (missing ones read as undefined). */
+    "crypto.hashNewAny": { argTypes: [DYN, DYN], result: CRYPTOHASH_T },
+    "crypto.hmacNewAny": { argTypes: [DYN, DYN, DYN], result: CRYPTOHMAC_T },
+    "crypto.hashOneshotAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.pbkdf2Any": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.pbkdf2AnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.hkdfAny": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.hkdfAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.scryptAny": { argTypes: [DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.scryptAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
     /** Views of any element kind (the validator checks both are views). */
     "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
     "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
@@ -4026,6 +4225,10 @@ function buildLibFnSignatures() {
     "crypto.createSecretKey": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeySync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
+    /** Node's synchronous callback gate, for a callback only the dynamic
+     * checker can see: a non-function throws ERR_INVALID_ARG_TYPE before
+     * generateKey's type and options checks, where Node validates it. */
+    "crypto.checkCallback": { argTypes: [DYN], result: VOID },
     "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
     "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
     /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
@@ -4048,6 +4251,13 @@ function buildLibFnSignatures() {
     "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
     "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
     "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
+    "crypto.randomBytesAny": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** The checked-dynamic entries a call takes when its callback position
+     * can hold a function: same checks, and the callback in a later
+     * macrotask (the synchronous spellings above never schedule). */
+    "crypto.randomBytesAnyCb": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAnyCb": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
     "crypto.hkdf": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: DYN },
     "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },
@@ -6702,10 +6912,22 @@ function buildLibFnSignatures() {
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.signOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
     "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
-    "crypto.createSign": { argTypes: [DYN], result: DYN },
-    "crypto.createVerify": { argTypes: [DYN], result: DYN },
+    "crypto.verifyOneshotCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.verifyOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.publicEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.publicDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    /** setEngine's checked-dynamic (engine[, flags]) form and the deprecated
+     * crypto.fips read, which reports DEP0093 once per process. */
+    "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
+    "crypto.fipsGet": { argTypes: [], result: F64 },
+    "crypto.createSign": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.createVerify": { argTypes: [DYN, DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
      * result (map and filter of a Buffer return a Buffer). */
     "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },

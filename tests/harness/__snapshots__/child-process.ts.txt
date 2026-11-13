@@ -55,83 +55,83 @@ child-process.ts:50:24 - error SC2020: 'spawnSync with a typed options value and
   49 | const typedOptions: SpawnSyncOptionsWithStringEncoding = { encoding: "utf8", shell: true };
   50 | spawnSync("printf %s", ["unsafe"], typedOptions);
      |                        ^~~~~~~~~~
-  51 | // The callback slice accepts inline utf8/maxBuffer/cwd/shell options, but
+  51 | // The callback slice accepts inline utf8/maxBuffer/cwd/env/timeout/
 
   hint: the options record may enable shell, where Node warns DEP0190 for unescaped arguments — put the complete command in the first argument and pass no args
 
-child-process.ts:53:1 - error SC2020: 'execFile with 1 arguments' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:54:1 - error SC2020: 'execFile with 1 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  52 | // not all of Node's options or the optional-callback overload family.
-  53 | execFile("true");
+  53 | // optional-callback overload family.
+  54 | execFile("true");
      | ^~~~~~~~~~~~~~~~
-  54 | execFile("true", [], { killSignal: "SIGTERM" }, () => {});
+  55 | execFile("true", [], { input: "x" }, () => {});
 
   hint: the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)
 
-child-process.ts:54:24 - error SC2020: 'execFile option 'killSignal'' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:55:24 - error SC2020: 'execFile option 'input'' is part of the standard library types but has no scriptc lowering yet
 
-  53 | execFile("true");
-  54 | execFile("true", [], { killSignal: "SIGTERM" }, () => {});
-     |                        ^~~~~~~~~~~~~~~~~~~~~
-  55 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
+  54 | execFile("true");
+  55 | execFile("true", [], { input: "x" }, () => {});
+     |                        ^~~~~~~~~~
+  56 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
-  hint: encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
+  hint: encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
 
-child-process.ts:55:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:56:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
 
-  54 | execFile("true", [], { killSignal: "SIGTERM" }, () => {});
-  55 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
+  55 | execFile("true", [], { input: "x" }, () => {});
+  56 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
      |                    ^~~~~~~~~~~~~~~~
-  56 | const bufferLimit = 1024;
+  57 | const bufferLimit = 1024;
 
   hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
 
-child-process.ts:59:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:60:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 
-  58 | const getEncoding = (): "utf8" => "utf8";
-  59 | execFile("true", [], { encoding: getEncoding() }, () => {});
+  59 | const getEncoding = (): "utf8" => "utf8";
+  60 | execFile("true", [], { encoding: getEncoding() }, () => {});
      |                                  ^~~~~~~~~~~~~
-  60 | // Fork targets are part of the compiled graph and therefore must resolve at
+  61 | // Fork targets are part of the compiled graph and therefore must resolve at
 
   hint: pass the literal 'utf8' or 'utf-8' (other expressions might have side effects)
 
-child-process.ts:62:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:63:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
 
-  61 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
-  62 | fork(process.argv[1]!);
+  62 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
+  63 | fork(process.argv[1]!);
      |      ^~~~~~~~~~~~~~~~
-  63 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  64 | const staticWorker = new URL("./child-process.ts", import.meta.url);
 
   hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed
 
-child-process.ts:64:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:65:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
 
-  63 | const staticWorker = new URL("./child-process.ts", import.meta.url);
-  64 | fork(staticWorker, [], { serialization: "advanced" });
+  64 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  65 | fork(staticWorker, [], { serialization: "advanced" });
      |                                         ^~~~~~~~~~
-  65 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  66 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
 
   hint: the static IPC channel supports Node's default serialization or serialization: "json"
 
-child-process.ts:65:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:66:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
 
-  64 | fork(staticWorker, [], { serialization: "advanced" });
-  65 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  65 | fork(staticWorker, [], { serialization: "advanced" });
+  66 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
      |                                                                ^~~~~~~~
-  66 | // Keep each fence on its own statement so diagnostics remain site-specific.
+  67 | // Keep each fence on its own statement so diagnostics remain site-specific.
 
   hint: the fourth stdio entry must be "ipc"
 
-child-process.ts:70:21 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+child-process.ts:71:21 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
 
-  69 | const pipedOut = piped.stdout!;
-  70 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
+  70 | const pipedOut = piped.stdout!;
+  71 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
      |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  71 | pipedOut.setEncoding("utf8");
+  72 | pipedOut.setEncoding("utf8");
 
-child-process.ts:76:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+child-process.ts:77:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
 
-  75 | pipedErr.setEncoding("utf8");
-  76 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
+  76 | pipedErr.setEncoding("utf8");
+  77 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
      |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  77 | 
+  78 | 

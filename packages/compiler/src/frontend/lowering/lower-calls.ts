@@ -199,6 +199,7 @@ import {
   lowerChildStreamMethodCall,
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
+import { lowerChildDisposeCall } from "./builtins/child-process.js";
 import {
   heldLoaderMemberThrow,
   isDirectOnlyResolveCallee,
@@ -280,6 +281,7 @@ import {
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
   lowerServerAsyncDisposeCall,
+  lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
   EMITTER_API_MEMBERS,
@@ -2314,6 +2316,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
+    const childDispose = lowerChildDisposeCall(lowerer, expr);
+    if (childDispose) return childDispose;
     const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
     if (readlineDispose) return readlineDispose;
     const dirDispose = lowerDirDisposeCall(lowerer, expr);
@@ -2322,6 +2326,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (streamDispose) return streamDispose;
     const serverDispose = lowerServerAsyncDisposeCall(lowerer, expr);
     if (serverDispose) return serverDispose;
+    const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);
+    if (netServerDispose) return netServerDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");

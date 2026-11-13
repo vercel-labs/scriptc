@@ -101,6 +101,29 @@ declare module "crypto" {
       passphrase?: string | undefined;
     };
   }
+  export interface RSAPSSKeyPairKeyObjectOptions {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+    hashAlgorithm?: string | undefined;
+    mgf1HashAlgorithm?: string | undefined;
+    /* Node validates a number ("options.saltLength" must be of type number),
+       where @types/node declares a string. */
+    saltLength?: number | undefined;
+  }
+  export interface RSAPSSKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+    hashAlgorithm?: string | undefined;
+    mgf1HashAlgorithm?: string | undefined;
+    saltLength?: number | undefined;
+    publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
@@ -122,6 +145,18 @@ declare module "crypto" {
   export function generateKeyPairSync(
     type: "rsa",
     options: RSAKeyPairKeyObjectOptions,
+  ): KeyPairKeyObjectResult;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairKeyObjectOptions,
   ): KeyPairKeyObjectResult;
   export function generateKeyPairSync(
     type: "ec",
@@ -195,6 +230,7 @@ declare module "crypto" {
     padding?: number | undefined;
     saltLength?: number | undefined;
     dsaEncoding?: "der" | "ieee-p1363" | undefined;
+    context?: ScriptcBufferView | undefined;
   }
   export interface SignPrivateKeyInput extends PrivateKeyInput, SigningOptions {}
   export interface SignKeyObjectInput extends SigningOptions {
@@ -214,12 +250,107 @@ declare module "crypto" {
     data: ScriptcBufferView,
     key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
   ): Buffer;
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: (err: Error | null, signature: Buffer) => void,
+  ): void;
+  // Node reads a callback that is undefined at run time as no callback and
+  // answers synchronously, where @types/node's signatures make the call
+  // untyped; the value it answers is the signature Buffer.
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: undefined,
+  ): Buffer;
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: ((err: Error | null, signature: Buffer) => void) | undefined,
+  ): Buffer | void;
+  // Node evaluates every argument the call supplies and ignores the ones
+  // past the last it declares, so a longer call still answers: the
+  // synchronous result when the callback position holds no function, and
+  // undefined when the job is deferred to it.
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    ...surplus: unknown[]
+  ): Buffer | void;
   export function verify(
     algorithm: string | null | undefined,
     data: ScriptcBufferView,
     key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
     signature: ScriptcBufferView,
   ): boolean;
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
+  // As with sign: an undefined callback at run time answers the verdict
+  // synchronously.
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: undefined,
+  ): boolean;
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: ((err: Error | null, result: boolean) => void) | undefined,
+  ): boolean | void;
+  // As with sign: a call with more arguments than the shapes above name
+  // ignores what it supplies past the callback position and still answers
+  // the synchronous verdict.
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    ...surplus: unknown[]
+  ): boolean | void;
+  /* RSA's public-key operations. The key is key material, a KeyObject, or
+   * an options object whose own `key` is either, with the padding and OAEP
+   * options beside it. */
+  export type KeyLike = string | Buffer | KeyObject;
+  export interface RsaPublicKey {
+    key: KeyLike;
+    padding?: number | undefined;
+  }
+  export interface RsaPrivateKey {
+    key: KeyLike;
+    passphrase?: string | undefined;
+    oaepHash?: string | undefined;
+    oaepLabel?: ScriptcBufferView | undefined;
+    padding?: number | undefined;
+  }
+  export function publicEncrypt(
+    key: RsaPublicKey | RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function publicDecrypt(
+    key: RsaPublicKey | RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function privateDecrypt(
+    privateKey: RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function privateEncrypt(
+    privateKey: RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
   /* Sign and Verify are Writables: each write goes through update(), and
    * ending finishes them. */
   export class Sign extends Writable {
@@ -248,10 +379,13 @@ declare module "crypto" {
       signatureEncoding?: BinaryToTextEncoding,
     ): boolean;
   }
-  export function createSign(algorithm: string): Sign;
-  export function createVerify(algorithm: string): Verify;
+  export function createSign(algorithm: string, options?: import("stream").WritableOptions): Sign;
+  export function createVerify(
+    algorithm: string,
+    options?: import("stream").WritableOptions,
+  ): Verify;
   export function createSecretKey(key: ScriptcBufferView | ArrayBufferLike): KeyObject;
-  export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
+  export function createSecretKey(key: string, encoding?: BufferEncoding): KeyObject;
   export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
   export function generateKey(
     type: "hmac" | "aes",
@@ -273,7 +407,7 @@ declare module "crypto" {
   export function secureHeapUsed(): SecureHeapUsage;
   export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
-  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
+  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "latin1" | "binary";
   export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
   export type LegacyCharacterEncoding = "ascii" | "binary" | "ucs2" | "ucs-2";
   export type Encoding = BinaryToTextEncoding | CharacterEncoding | LegacyCharacterEncoding;
@@ -600,69 +734,138 @@ declare module "crypto" {
     options?: { authTagLength?: number },
   ): Decipheriv;
   export type ECDHKeyFormat = "compressed" | "uncompressed" | "hybrid";
+  /* Node answers every key result through its internal encode(): a falsy
+   * encoding and the string "buffer" answer the bytes themselves, and any
+   * other encoding answers buffer.toString(encoding). Each encoding-taking
+   * member therefore has a Buffer form for null, undefined, "" and
+   * "buffer", a string form for the spellings in Encoding, and a
+   * `Buffer | string` form for an encoding whose type is not known to be
+   * one of those (a union, or the encoding a variable holds).
+   * @types/node declares fewer forms, and declares computeSecret's view
+   * form with an output encoding where Node reads the second argument as
+   * the key's input encoding. */
   export class ECDH {
     private constructor();
     static convertKey(
       key: BinaryLike,
       curve: string,
-      inputEncoding?: BinaryToTextEncoding,
-      outputEncoding?: "latin1" | "hex" | "base64" | "base64url",
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
       format?: ECDHKeyFormat,
     ): Buffer | string;
     generateKeys(): Buffer;
-    generateKeys(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    generateKeys(encoding: Encoding, format?: ECDHKeyFormat): string;
+    generateKeys(encoding: null | undefined | "" | "buffer", format?: ECDHKeyFormat): Buffer;
+    generateKeys(
+      encoding?: Encoding | "" | "buffer" | null,
+      format?: ECDHKeyFormat,
+    ): Buffer | string;
+    /* computeSecret(key, inputEncoding, outputEncoding): a string key is
+     * read through inputEncoding (undefined, null and "" read utf8) and a
+     * view key ignores it, so a two-argument call answers a Buffer for
+     * either. */
     computeSecret(otherPublicKey: ScriptcBufferView): Buffer;
-    computeSecret(otherPublicKey: string, inputEncoding: BinaryToTextEncoding): Buffer;
-    computeSecret(otherPublicKey: ScriptcBufferView, outputEncoding: BinaryToTextEncoding): string;
+    computeSecret(otherPublicKey: string): Buffer;
+    computeSecret(otherPublicKey: string, inputEncoding: Encoding | ""): Buffer;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: null,
+    ): Buffer;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
+    ): string;
     computeSecret(
       otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
     getPrivateKey(): Buffer;
-    getPrivateKey(encoding: BinaryToTextEncoding): string;
-    getPublicKey(encoding?: null, format?: ECDHKeyFormat): Buffer;
-    getPublicKey(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    getPrivateKey(encoding: Encoding): string;
+    getPrivateKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrivateKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
+    getPublicKey(encoding?: null | "" | "buffer", format?: ECDHKeyFormat): Buffer;
+    getPublicKey(encoding: Encoding, format?: ECDHKeyFormat): string;
+    getPublicKey(
+      encoding?: Encoding | "" | "buffer" | null,
+      format?: ECDHKeyFormat,
+    ): Buffer | string;
     setPrivateKey(privateKey: ScriptcBufferView): void;
-    setPrivateKey(privateKey: string, encoding: BinaryToTextEncoding): void;
+    setPrivateKey(privateKey: string, encoding?: Encoding | "" | null): void;
   }
   export function createECDH(curveName: string): ECDH;
+  /* The same encode() reading as ECDH above; DiffieHellmanGroup is this
+   * class without the key setters. */
   export class DiffieHellman {
     private constructor();
     generateKeys(): Buffer;
-    generateKeys(encoding: BinaryToTextEncoding): string;
+    generateKeys(encoding: Encoding): string;
+    generateKeys(encoding: null | undefined | "" | "buffer"): Buffer;
+    generateKeys(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
+    computeSecret(otherPublicKey: ScriptcBufferView): Buffer;
+    computeSecret(otherPublicKey: string): Buffer;
     computeSecret(
-      otherPublicKey: ScriptcBufferView,
-      inputEncoding?: null,
+      otherPublicKey: string,
+      inputEncoding: Encoding | "",
       outputEncoding?: null,
     ): Buffer;
     computeSecret(
-      otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
       outputEncoding?: null,
     ): Buffer;
     computeSecret(
       otherPublicKey: ScriptcBufferView,
-      inputEncoding: null,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
     computeSecret(
       otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
     getPrime(): Buffer;
-    getPrime(encoding: BinaryToTextEncoding): string;
+    getPrime(encoding: Encoding): string;
+    getPrime(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrime(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getGenerator(): Buffer;
-    getGenerator(encoding: BinaryToTextEncoding): string;
+    getGenerator(encoding: Encoding): string;
+    getGenerator(encoding: null | undefined | "" | "buffer"): Buffer;
+    getGenerator(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getPublicKey(): Buffer;
-    getPublicKey(encoding: BinaryToTextEncoding): string;
+    getPublicKey(encoding: Encoding): string;
+    getPublicKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPublicKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getPrivateKey(): Buffer;
-    getPrivateKey(encoding: BinaryToTextEncoding): string;
+    getPrivateKey(encoding: Encoding): string;
+    getPrivateKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrivateKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     setPublicKey(publicKey: ScriptcBufferView): void;
-    setPublicKey(publicKey: string, encoding: BufferEncoding): void;
+    setPublicKey(publicKey: string, encoding?: Encoding | "" | null): void;
     setPrivateKey(privateKey: ScriptcBufferView): void;
-    setPrivateKey(privateKey: string, encoding: BufferEncoding): void;
+    setPrivateKey(privateKey: string, encoding?: Encoding | "" | null): void;
     verifyError: number;
   }
   export type DiffieHellmanGroup = Omit<DiffieHellman, "setPublicKey" | "setPrivateKey">;
@@ -801,6 +1004,10 @@ declare module "crypto" {
     readonly subject: string;
     readonly subjectAltName: string | undefined;
     readonly infoAccess: string | undefined;
+    /* undefined when the certificate carries no extended key usage
+     * extension (Node answers undefined there, though @types/node declares
+     * the member non-optional). */
+    readonly keyUsage: string[] | undefined;
     readonly issuer: string;
     /* the issuer certificate Node's TLS layer attaches to a peer's
      * certificate; undefined for a certificate the program built from PEM
@@ -832,11 +1039,33 @@ declare module "crypto" {
     multiLabelWildcards?: boolean;
     singleLabelSubdomains?: boolean;
   }
+  /* The SPKAC class. Node's instance carries no state — every method reads
+   * its argument — so the class lowers to the empty record; the methods
+   * take the base64 SPKAC text (a string decodes with the optional
+   * encoding as Buffer.from does, views and ArrayBuffers are their bytes)
+   * and answer Node's Buffer, or an empty Buffer for input no SPKAC
+   * decoder accepts (Node answers an empty string there). */
+  export class Certificate {
+    static exportChallenge(spkac: BinaryLike, encoding?: string): Buffer;
+    static exportPublicKey(spkac: BinaryLike, encoding?: string): Buffer;
+    static verifySpkac(spkac: BinaryLike): boolean;
+    exportChallenge(spkac: BinaryLike, encoding?: string): Buffer;
+    exportPublicKey(spkac: BinaryLike, encoding?: string): Buffer;
+    verifySpkac(spkac: BinaryLike): boolean;
+  }
   /* The crypto introspection statics: getFips() answers 0 (a compiled
    * binary is never a FIPS build), the three name lists bake as fresh
    * string[] literals of Node v24 answers, and constants (below) bakes
    * per member like http2.constants. */
   export function getFips(): 1 | 0;
+  /* Deprecated alias of getFips() (Node answers the number 0 here); each
+   * process reports DEP0093 once, on the first read. The exports object
+   * owns it as a getter, so only require() and a default import see it. */
+  export const fips: 0 | 1;
+  /* OpenSSL 3 registers only the "dynamic" engine in a compiled binary:
+   * that id is accepted, and every other id is Node's
+   * ERR_CRYPTO_ENGINE_UNKNOWN. `flags` is Node's method mask. */
+  export function setEngine(engine: string, flags?: number): void;
   export function getCiphers(): string[];
   export type CipherMode =
     | "cbc"
@@ -870,8 +1099,9 @@ declare module "crypto" {
   export function getCurves(): string[];
   export function getMacs(): string[];
   /* Node v24 crypto.constants, literal-typed (the Http2Constants
-   * stance). Every ACCESS bakes as its literal at lowering; the object
-   * itself never materializes (bare crypto.constants value uses fence). */
+   * stance). Every ACCESS bakes as its literal at lowering; a program
+   * that reads the object whole gets the module's singleton record,
+   * built from the same table. */
   export interface CryptoConstants {
     readonly OPENSSL_VERSION_NUMBER: 810549392;
     readonly SSL_OP_ALL: 2147485776;

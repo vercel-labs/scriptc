@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dns-scoped-reverse.cjs"
+ ],
+ "diags": []
+}

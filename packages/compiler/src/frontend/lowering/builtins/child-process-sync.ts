@@ -1,8 +1,10 @@
 import { keyedHelperName } from "../stable-names.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 import { recordToEnvPairs } from "./environment.js";
 import {
   armedMaxBuffer,
   type ChildEvalStep,
+  encodingNameValue,
   lowerChildArgsArg,
   windowsOnlyOption,
   withChildArgsCheck,
@@ -15,6 +17,7 @@ import { conditionalSpreadOf } from "../expressions/object-literals.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
+  BYTES_U8,
   F64,
   type IrExpr,
   type IrStmt,
@@ -103,8 +106,10 @@ export function lowerExecSyncCall(
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
-  // Without an encoding option, a failure's error carries Buffer outputs.
-  let encodingGiven = false;
+  // Node's encoding option: the name the STRING result decodes with (a
+  // folded canonical spelling, or a value read at the call), or null for
+  // the Buffer result (no option, "buffer", null/undefined).
+  let encoding: IrExpr | null = null;
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
@@ -147,8 +152,7 @@ export function lowerExecSyncCall(
               runtime.timeout,
               runtime.stdoutMode,
               runtime.stderrMode,
-              // The runtime options carry a utf8 encoding (others throw).
-              boolLit(false, loc),
+              runtime.encoding,
             ],
             type: STRING,
             loc,
@@ -267,15 +271,30 @@ export function lowerExecSyncCall(
       const member = m.name;
       switch (member) {
         case "encoding": {
+          // Node's normalizeExecArgs: null/undefined and "buffer" select
+          // the Buffer result; any other value names a Buffer encoding
+          // the STRING result decodes with — a folded literal, or a
+          // BufferEncoding-typed value read at the call.
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-            lowerer.noLowering(
-              `${shell ? "execSync" : "execFileSync"} with a non-utf8 encoding`,
-              m.value,
-              'outputs are captured as utf8 — pass { encoding: "utf8" }',
-            );
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) break; // Buffer
+          const what = shell ? "execSync" : "execFileSync";
+          if (t.isStringLiteralType()) {
+            if (t.value === "buffer") break; // Node's normalizing of "buffer"
+            const lit = knownBufEncoding(t.value);
+            if (lit === undefined) {
+              lowerer.noLowering(
+                `${what} with encoding "${t.value}"`,
+                m.value,
+                'a Buffer encoding name (or "buffer"/null for the Buffer result) is the supported encoding option',
+              );
+            }
+            encoding = strLit(lit, loc);
+          } else {
+            encoding = encodingNameValue(lowerer, what, m.value);
+            // A value read at the call is the launch's last argument: its
+            // evaluation sits where the member does among the others.
+            optionSteps.push(11);
           }
-          encodingGiven = true;
           break;
         }
         case "cwd":
@@ -417,12 +436,17 @@ export function lowerExecSyncCall(
     }
   }
 
+  // The STRING form (an encoding option names a Buffer encoding) decodes
+  // the capture with it and answers a string; the unencoded form answers
+  // Node's Buffer and carries Buffers on a failure.
+  const stringResult = encoding !== null;
+  const resultType: IrType = stringResult ? STRING : BYTES_U8;
   const execCall = (hasE: IrExpr, pairs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
       {
         kind: "libCall",
-        fn: "cp.execSync",
+        fn: stringResult ? "cp.execSync" : "cp.execSyncBytes",
         args: [
           cmdArg,
           argvExpr,
@@ -435,9 +459,9 @@ export function lowerExecSyncCall(
           timeout,
           numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
           numLit(stderrMode, loc),
-          boolLit(!encodingGiven, loc),
+          ...(encoding !== null ? [encoding] : []),
         ],
-        type: STRING,
+        type: resultType,
         loc,
       },
       shell ? 1 : 0,
@@ -467,7 +491,7 @@ export function lowerExecSyncCall(
       cond: condEnvSpread.cond,
       then: condEnvSpread.whenTrue ? withEnv : without,
       else_: condEnvSpread.whenTrue ? without : withEnv,
-      type: STRING,
+      type: resultType,
       loc,
     };
   }
@@ -478,8 +502,8 @@ export function lowerExecSyncCall(
  * argument whose type mapped to the interned exec-options record
  * (ExecFileSyncOptionsWithStringEncoding). cwd/input/timeout read their
  * fields with the literal path's defaults on the undefined arm; the
- * stdio modes (and the encoding gate) compute through interned helpers
- * over the record. The options expression re-reads per member, so only
+ * stdio modes compute through interned helpers over the record. The
+ * options expression re-reads per member, so only
  * side-effect-free reads qualify (the `in`-operator fold discipline) —
  * bind computed options to a const first. Null when the shape isn't the
  * exec-options record (the caller keeps its fence). */
@@ -497,6 +521,7 @@ function lowerExecSyncRuntimeOptions(
   maxBuffer: IrExpr;
   stdoutMode: IrExpr;
   stderrMode: IrExpr;
+  encoding: IrExpr;
 } | null {
   const opts = lowerer.lowerExpr(optsNode);
   if (opts.type.kind !== "record") return null;
@@ -572,6 +597,9 @@ function lowerExecSyncRuntimeOptions(
     maxBuffer: readOpt("maxBuffer", { kind: "numLit", value: 1024 * 1024, type: F64, loc }, F64),
     stdoutMode: modeCall(1),
     stderrMode: modeCall(2),
+    // The WithStringEncoding record's encoding is a required BufferEncoding
+    // name: the call is the STRING form and decodes through it.
+    encoding: { kind: "recordGet", obj: opts, shapeId, field: "encoding", type: STRING, loc },
   };
 }
 
@@ -581,8 +609,8 @@ function lowerExecSyncRuntimeOptions(
  * applies to all three fds, an array reads its fd's entry ("pipe" when
  * the array is short — Node's default per fd). Any other runtime string
  * throws the catchable TypeError the literal path fences at compile
- * time; the fd-1 helper also gates the encoding (utf8/utf-8 only —
- * outputs are captured utf8). */
+ * time. Any encoding the record carries decodes the capture (the runtime
+ * normalizes the name; a string `input` is encoded with it too). */
 function execStdioModeHelper(
   lowerer: Lowerer,
   shapeId: string,
@@ -628,7 +656,6 @@ function execStdioModeHelper(
     { id: "o.0", name: "o", type: optsT, mutable: false },
     { id: "s.0", name: "s", type: STRING, mutable: false },
     { id: "a.0", name: "a", type: arrayOf(STRING), mutable: false },
-    { id: "e.0", name: "e", type: STRING, mutable: false },
   ];
   // pipe/ignore → the fd's mode; anything else throws (the literal
   // path's fence, moved to runtime). fd 1: pipe=1 (capture), ignore=0.
@@ -657,55 +684,6 @@ function execStdioModeHelper(
     ),
   ];
   const body: IrStmt[] = [];
-  if (fd === 1) {
-    // The encoding gate rides the first helper call: outputs are
-    // captured utf8, and a runtime encoding this lowering would
-    // mislabel throws instead.
-    body.push({
-      kind: "varDecl",
-      localId: "e.0",
-      init: { kind: "recordGet", obj: o, shapeId, field: "encoding", type: STRING, loc },
-      loc,
-    });
-    body.push({
-      kind: "if",
-      cond: {
-        kind: "logical",
-        op: "&&",
-        left: {
-          kind: "strEq",
-          negated: true,
-          left: varRef("e.0", STRING, loc),
-          right: strLit("utf8", loc),
-          type: BOOL,
-          loc,
-        },
-        right: {
-          kind: "strEq",
-          negated: true,
-          left: varRef("e.0", STRING, loc),
-          right: strLit("utf-8", loc),
-          type: BOOL,
-          loc,
-        },
-        type: BOOL,
-        loc,
-      },
-      then: [
-        throwType(
-          concat(
-            concat(
-              strLit('execSync output is captured as utf8 — encoding "', loc),
-              varRef("e.0", STRING, loc),
-            ),
-            strLit('" has no static lowering', loc),
-          ),
-        ),
-      ],
-      else_: null,
-      loc,
-    });
-  }
   if (stdioT.kind !== "union")
     throw new InternalCompilerError("emitter bug: exec-options stdio is not a union");
   const uTag = lowerer.armTag(stdioT.unionId, UNDEFINED_T);

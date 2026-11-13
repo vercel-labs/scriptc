@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-fips-deprecated.cjs"
+ ],
+ "diags": []
+}

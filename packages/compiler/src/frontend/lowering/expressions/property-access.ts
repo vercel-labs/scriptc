@@ -110,6 +110,7 @@ import {
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
+  DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
@@ -2270,6 +2271,26 @@ export function lowerPropertyAccessExpr(
       expr,
     );
   }
+  // A checker-`any` receiver whose value is a typed HANDLE (`const ds: any
+  // = sock` adopts the socket's static kind): JavaScript's [[Get]] on the
+  // value, which the handle's checked-dynamic table answers — Node's own
+  // member read (a socket's `server`, a connection's `bufferSize`). The
+  // box shares the handle, so it needs no fresh-result restriction.
+  if (
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    DYN_HANDLE_KINDS.has(recvLowered.type.kind)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
   // TypeError at the read (only an optional chain, lowered elsewhere,
   // answers undefined). A primitive receiver that is not nullish never
@@ -3213,13 +3234,21 @@ export function lowerIntrinsicProperty(
       };
       return { kind: "libCall", fn: "child.signalCode", args: [receiver], type, loc };
     }
+    // channel: the IPC channel's Control object — undefined for a spawn,
+    // the fork's stable-identity handle, null once the channel disconnected
+    // or the child exited. It is a checked-dynamic value; its ref()/unref()
+    // reach the runtime handle rather than the ChildProcess' own switch.
+    if (name === "channel") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "child.channel", args: [receiver], type: DYN, loc };
+    }
     if (name === "on" || name === "once" || name === "kill" || name === "unref") {
       lowerer.unsupported("SC1090", expr, `child methods as values (call '${name}' directly)`);
     }
     lowerer.noLowering(
       `ChildProcess.${name}`,
       expr,
-      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, kill(signal?), ref(), and unref() are the supported ChildProcess members',
+      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, channel, kill(signal?), ref(), and unref() are the supported ChildProcess members',
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

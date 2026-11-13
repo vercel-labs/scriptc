@@ -2275,6 +2275,7 @@ static SCR_COLD void scr_net_listen_again(ScrClosure *cb /*moves, nullable*/) {
 }
 
 static bool scr_net_server_add_blocked(ScrNetServer *s, const char *event);
+static void scr_net_server_listen_bound_adopt_dyn(ScrNetServer *s, const ScrDyn *boundv);
 
 /* listen(..., callback) adds the callback with once('listening', callback)
  * before it binds, as Node's Server.prototype.listen does: 'newListener'
@@ -3625,16 +3626,78 @@ static size_t scr_net_display_len(const char *s, size_t n) {
   return chars;
 }
 
+/* One array element as inspect renders it, read without running program
+ * code: the dense item, an own property in the array's spill table (a far
+ * index write or a defined accessor), or a hole. */
+typedef struct {
+  bool present;        /* an own data element (value below, borrowed) */
+  bool accessor;       /* an own accessor element */
+  bool getter, setter; /* an accessor's halves */
+  const ScrDyn *value;
+} ScrNetInspectElem;
+
+static ScrNetInspectElem scr_net_inspect_elem(const ScrDyn *v, size_t index) {
+  ScrNetInspectElem e;
+  memset(&e, 0, sizeof e);
+  if (scr_dyn_arr_has_index(v, index)) {
+    e.present = true;
+    e.value = v->v.arr.items[index];
+    return e;
+  }
+  const ScrDyn *props = v->v.arr.properties;
+  if (props == NULL) return e;
+  char key[32];
+  int len = snprintf(key, sizeof key, "%zu", index);
+  size_t at = scr_dyn_obj_index_of(props, key, (size_t)len);
+  if (at == SIZE_MAX) return e;
+  ScrDynProp prop = scr_dyn_obj_prop_at(props, at);
+  if (prop.accessor) {
+    e.accessor = true;
+    e.getter = prop.getter != NULL;
+    e.setter = prop.setter != NULL;
+    return e;
+  }
+  e.present = true;
+  e.value = prop.value;
+  return e;
+}
+
 /* The inside of a container — "k: v, k2: v2" or "1, 2" — with `sep`
- * between entries, so one-line and broken layouts share the entry code. */
+ * between entries, so one-line and broken layouts share the entry code.
+ * Array elements are read from the array's own storage only: a hole
+ * renders as Node's "<N empty item(s)>" and an own accessor as
+ * "[Getter]"-shaped text, so formatting a validation error never runs a
+ * program's getter (and never touches memory the getter's owner may
+ * release). */
 static void scr_net_inspect_body(const ScrDyn *v, bool arr, ScrDyn *keys, double n, ScrJsonBuf *b,
                                  int depth, int max_depth, const char *sep) {
   for (double i = 0; i < n; i++) {
     if (i > 0) scr_jb_puts(b, sep);
     if (arr) {
-      ScrDyn *item = scr_dyn_arr_at(v, i);
-      scr_net_inspect_into(item, b, depth + 1, max_depth);
-      scr_dyn_release(item);
+      ScrNetInspectElem e = scr_net_inspect_elem(v, (size_t)i);
+      if (e.accessor) {
+        scr_jb_puts(b, e.getter && e.setter ? "[Getter/Setter]"
+                          : e.getter        ? "[Getter]"
+                          : e.setter        ? "[Setter]"
+                                            : "undefined");
+        continue;
+      }
+      if (!e.present) {
+        /* one entry per run of holes, as util.inspect counts them */
+        double run = 1;
+        while (i + run < n) {
+          ScrNetInspectElem next = scr_net_inspect_elem(v, (size_t)(i + run));
+          if (next.present || next.accessor) break;
+          run++;
+        }
+        char text[48];
+        int len = run == 1 ? snprintf(text, sizeof text, "<1 empty item>")
+                           : snprintf(text, sizeof text, "<%.0f empty items>", run);
+        scr_jb_write(b, text, len < 0 ? 0 : (size_t)len);
+        i += run - 1;
+        continue;
+      }
+      scr_net_inspect_into(e.value, b, depth + 1, max_depth);
       continue;
     }
     ScrDyn *key = scr_dyn_arr_at(keys, i);
@@ -3684,8 +3747,13 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
       scr_jb_puts(b, arr ? "[Array]" : "[Object]");
       return;
     }
+    /* The container is held for the whole traversal. A nested value is a
+     * borrowed member of its parent, and the recursive render below reads
+     * only own storage, but holding it keeps the invariant local: no
+     * rendering step can leave this frame with a released container. */
+    scr_dyn_retain((ScrDyn *)v);
     ScrDyn *keys = arr ? NULL : scr_dyn_obj_keys(v);
-    double n = arr ? scr_dyn_arr_len(v) : (keys ? scr_dyn_arr_len(keys) : 0);
+    double n = arr ? (double)scr_dyn_arr_length(v) : (keys ? scr_dyn_arr_len(keys) : 0);
     if (!arr && depth == 0 && n > 0) {
       /* util.inspect keeps a container on one line while that line fits
        * breakLength (80 by default, less the room it reserves), and an
@@ -3707,6 +3775,7 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
       }
       scr_str_release(flat);
       scr_dyn_release(keys);
+      scr_dyn_release((ScrDyn *)v);
       return;
     }
     scr_jb_putc(b, arr ? '[' : '{');
@@ -3715,6 +3784,7 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
     if (n > 0) scr_jb_putc(b, ' ');
     scr_jb_putc(b, arr ? ']' : '}');
     scr_dyn_release(keys);
+    scr_dyn_release((ScrDyn *)v);
     return;
   }
   default: scr_jb_puts(b, "[object]"); return;
@@ -4351,6 +4421,43 @@ static int scr_net_dyn_backlog(const ScrDyn *opt, double from_args) {
   return n > 0x7fffffff ? 0x7fffffff : (int)n;
 }
 
+/* The option values a dynamic listen bag answers. Coercing the backlog,
+ * arming the signal's listener and other reentrant steps run program code,
+ * and a hook may remove a property from the bag, which releases the value a
+ * later ladder step reads. Each value is held from the read until the
+ * ladder is done, which is what Node's own reads are: its locals keep the
+ * values a deleted property no longer reaches. */
+typedef struct {
+  ScrDyn *signal, *fd, *port, *host, *path, *backlog, *reuse, *ipv6;
+} ScrNetListenBag;
+
+static void scr_net_listen_bag_hold(ScrNetListenBag *o, const ScrDyn *bag) {
+  o->signal = scr_dyn_obj_get(bag, "signal", 6);
+  o->fd = scr_dyn_obj_get(bag, "fd", 2);
+  o->port = scr_dyn_obj_get(bag, "port", 4);
+  o->host = scr_dyn_obj_get(bag, "host", 4);
+  o->path = scr_dyn_obj_get(bag, "path", 4);
+  o->backlog = scr_dyn_obj_get(bag, "backlog", 7);
+  o->reuse = scr_dyn_obj_get(bag, "reusePort", 9);
+  o->ipv6 = scr_dyn_obj_get(bag, "ipv6Only", 8);
+  ScrDyn **held[] = { &o->signal, &o->fd, &o->port, &o->host,
+                      &o->path,   &o->backlog, &o->reuse, &o->ipv6 };
+  for (size_t i = 0; i < sizeof held / sizeof held[0]; i++)
+    if (*held[i] != NULL) scr_dyn_retain(*held[i]);
+}
+
+static void scr_net_listen_bag_drop(ScrNetListenBag *o) {
+  scr_dyn_release(o->signal);
+  scr_dyn_release(o->fd);
+  scr_dyn_release(o->port);
+  scr_dyn_release(o->host);
+  scr_dyn_release(o->path);
+  scr_dyn_release(o->backlog);
+  scr_dyn_release(o->reuse);
+  scr_dyn_release(o->ipv6);
+  memset(o, 0, sizeof *o);
+}
+
 /* Server.prototype.listen over dynamic arguments. normalizeArgs reads the
  * positionals (the lowering peels the trailing callback), the already-
  * listening check and the callback registration come first, then the
@@ -4422,28 +4529,36 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
   double backlog_from_args = scr_net_dyn_to_number(a1, true);
   if (backlog_from_args == 0) backlog_from_args = scr_net_dyn_to_number(a2, true);
 
-  /* the adopted bound socket: `options instanceof BoundSocket` or
-   * `options.handle instanceof BoundSocket` */
-  const ScrDyn *handle = bag_keys ? scr_dyn_obj_get(bag, "handle", 6) : NULL;
-  const ScrDyn *bound = NULL;
-  if (a0->kind == SCR_DYN_HANDLE && a0->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET)
-    bound = a0;
-  else if (handle != NULL && handle->kind == SCR_DYN_HANDLE &&
-           handle->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET)
-    bound = handle;
+  /* the adopted bound socket: `options instanceof BoundSocket` */
+  bool direct_bound =
+      a0->kind == SCR_DYN_HANDLE && a0->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET;
 
   if (s->listening) {
     scr_dyn_release(made);
     scr_net_listen_again(cb);
     return;
   }
-  if (bound != NULL) {
+  if (direct_bound) {
+    /* the positional value is the handle itself; the caller keeps it alive */
     scr_dyn_release(made);
-    scr_net_listen_bound_cb(s, bound, cb);
+    scr_net_listen_bound_cb(s, a0, cb);
     return;
   }
   /* the callback registers before any validation, as in Node */
   if (!scr_net_listen_add_cb(s, cb)) {
+    scr_dyn_release(made);
+    return;
+  }
+
+  /* `options.handle instanceof BoundSocket` — read only now, after the
+   * callback's 'newListener' hooks: Node's Server.prototype.listen runs
+   * `once('listening', cb)` first and selects the handle afterwards, so a
+   * hook that removes or replaces the property decides what is adopted
+   * (and the runtime never holds a pointer the hook has released). */
+  const ScrDyn *handle = bag_keys ? scr_dyn_obj_get(bag, "handle", 6) : NULL;
+  if (handle != NULL && handle->kind == SCR_DYN_HANDLE &&
+      handle->v.handle.tag == SCR_DYNH_NET_BOUND_SOCKET) {
+    scr_net_server_listen_bound_adopt_dyn(s, handle);
     scr_dyn_release(made);
     return;
   }
@@ -4481,27 +4596,24 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
     return;
   }
 
-  const ScrDyn *o_signal = scr_dyn_obj_get(bag, "signal", 6);
-  const ScrDyn *o_fd = scr_dyn_obj_get(bag, "fd", 2);
-  const ScrDyn *o_port = scr_dyn_obj_get(bag, "port", 4);
-  const ScrDyn *o_host = scr_dyn_obj_get(bag, "host", 4);
-  const ScrDyn *o_path = scr_dyn_obj_get(bag, "path", 4);
-  const ScrDyn *o_backlog = scr_dyn_obj_get(bag, "backlog", 7);
-  const ScrDyn *o_reuse = scr_dyn_obj_get(bag, "reusePort", 9);
-  const ScrDyn *o_ipv6 = scr_dyn_obj_get(bag, "ipv6Only", 8);
-  bool reuse_port = o_reuse != NULL && o_reuse->kind == SCR_DYN_BOOL && o_reuse->v.b;
-  bool ipv6_only = o_ipv6 != NULL && o_ipv6->kind == SCR_DYN_BOOL && o_ipv6->v.b;
-  int backlog = scr_net_dyn_backlog(o_backlog, backlog_from_args);
+  /* The bag's option values, held across the steps below that run program
+   * code (the backlog conversion, the signal's listener). */
+  ScrNetListenBag o;
+  scr_net_listen_bag_hold(&o, bag);
+  bool reuse_port = o.reuse != NULL && o.reuse->kind == SCR_DYN_BOOL && o.reuse->v.b;
+  bool ipv6_only = o.ipv6 != NULL && o.ipv6->kind == SCR_DYN_BOOL && o.ipv6->v.b;
+  int backlog = scr_net_dyn_backlog(o.backlog, backlog_from_args);
 
   /* addServerAbortSignalOption */
-  if (!scr_net_server_arm_abort(s, o_signal, add_abort)) {
+  if (!scr_net_server_arm_abort(s, o.signal, add_abort)) {
+    scr_net_listen_bag_drop(&o);
     scr_dyn_release(made);
     return;
   }
 
   /* (handle, ...) by descriptor: a non-negative number adopts it */
-  if (o_fd != NULL && o_fd->kind == SCR_DYN_NUM && o_fd->v.num >= 0) {
-    double fdv = o_fd->v.num;
+  if (o.fd != NULL && o.fd->kind == SCR_DYN_NUM && o.fd->v.num >= 0) {
+    double fdv = o.fd->v.num;
     bool usable = trunc(fdv) == fdv && fdv <= 2147483647 &&
                   strcmp(scr_net_fd_type((int)fdv), "TCP") == 0;
     if (!usable) {
@@ -4512,6 +4624,7 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
                          scr_net_uv_reason(EINVAL));
       if (!s->pending_err) s->pending_err = scr_str_new(msg, len < 0 ? 0 : (size_t)len);
       scr_net_server_register(s);
+      scr_net_listen_bag_drop(&o);
       scr_dyn_release(made);
       return;
     }
@@ -4523,6 +4636,7 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
                          scr_net_uv_reason(err));
       if (!s->pending_err) s->pending_err = scr_str_new(msg, len < 0 ? 0 : (size_t)len);
       scr_net_server_register(s);
+      scr_net_listen_bag_drop(&o);
       scr_dyn_release(made);
       return;
     }
@@ -4541,12 +4655,14 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
     s->emit_listening = true;
     scr_net_watch_read(fd, s, true);
     scr_net_server_register(s);
+    scr_net_listen_bag_drop(&o);
     scr_dyn_release(made);
     return;
   }
 
   /* listen(), listen(null), listen(cb) and options whose port is null or
    * an explicit undefined: bind an arbitrary port */
+  const ScrDyn *o_port = o.port;
   bool port_unset = a0->kind == SCR_DYN_FUNC ||
                     (o_port != NULL && (o_port->kind == SCR_DYN_NULL ||
                                         o_port->kind == SCR_DYN_UNDEF));
@@ -4558,41 +4674,46 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
   if (o_port != NULL && (o_port->kind == SCR_DYN_NUM || o_port->kind == SCR_DYN_STR)) {
     double port = 0;
     if (!scr_net_validate_port_dyn(o_port, "options.port", &port)) {
+      scr_net_listen_bag_drop(&o);
       scr_dyn_release(made);
       return;
     }
     ScrStr *host = NULL;
-    if (o_host != NULL && o_host->kind != SCR_DYN_UNDEF && o_host->kind != SCR_DYN_NULL &&
-        scr_net_dyn_truthy(o_host)) {
-      if (!scr_net_listen_hostname_chk(o_host)) {
+    if (o.host != NULL && o.host->kind != SCR_DYN_UNDEF && o.host->kind != SCR_DYN_NULL &&
+        scr_net_dyn_truthy(o.host)) {
+      if (!scr_net_listen_hostname_chk(o.host)) {
+        scr_net_listen_bag_drop(&o);
         scr_dyn_release(made);
         return;
       }
-      host = o_host->v.str;
+      host = o.host->v.str;
     }
     if (host != NULL) {
       scr_net_listen_opts_impl(s, port, host, ipv6_only, reuse_port, backlog, NULL);
     } else {
       scr_net_listen_any(s, port, reuse_port, ipv6_only, backlog, NULL);
     }
+    scr_net_listen_bag_drop(&o);
     scr_dyn_release(made);
     return;
   }
 
   /* (path[, backlog][, cb]) or options.path: a Unix socket / Windows pipe */
-  if (o_path != NULL && o_path->kind == SCR_DYN_STR && scr_net_dyn_is_pipe_name(o_path)) {
+  if (o.path != NULL && o.path->kind == SCR_DYN_STR && scr_net_dyn_is_pipe_name(o.path)) {
     const ScrDyn *readable = scr_dyn_obj_get(bag, "readableAll", 11);
     const ScrDyn *writable = scr_dyn_obj_get(bag, "writableAll", 11);
     bool ra = readable != NULL && scr_net_dyn_truthy(readable);
     bool wa = writable != NULL && scr_net_dyn_truthy(writable);
-    if (o_path->v.str->data[0] == '\0' && (ra || wa)) {
+    if (o.path->v.str->data[0] == '\0' && (ra || wa)) {
       scr_net_throw_arg_value("options", bag,
                               "can not set readableAll or writableAllt to true when path is "
                               "abstract unix socket");
+      scr_net_listen_bag_drop(&o);
       scr_dyn_release(made);
       return;
     }
-    scr_net_listen_path_impl(s, o_path->v.str, backlog, NULL);
+    scr_net_listen_path_impl(s, o.path->v.str, backlog, NULL);
+    scr_net_listen_bag_drop(&o);
     scr_dyn_release(made);
     return;
   }
@@ -4603,6 +4724,7 @@ void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, con
   } else {
     scr_net_throw_arg_value("options", bag, NULL);
   }
+  scr_net_listen_bag_drop(&o);
   scr_dyn_release(made);
 }
 
@@ -5453,30 +5575,33 @@ bool scr_net_sock_set_keepalive_opts(ScrNetSocket *s, const ScrDyn *options /*bo
   ScrDyn *delay = scr_dyn_obj_get(bag, "initialDelay", 12);
   ScrDyn *interval = scr_dyn_obj_get(bag, "interval", 8);
   ScrDyn *count = scr_dyn_obj_get(bag, "count", 5);
+  /* Node's function reads all four properties before any ToNumber runs.
+   * The coercions below call the values' hooks, which may remove a sibling
+   * property from the bag and release the value a later step reads, so each
+   * read is held until the call is done. */
+  ScrDyn **held[] = { &enable, &delay, &interval, &count };
+  for (size_t i = 0; i < sizeof held / sizeof held[0]; i++)
+    if (*held[i] != NULL) scr_dyn_retain(*held[i]);
   bool on = enable != NULL && scr_dyn_truthy(enable);
   double delay_ms = 0, interval_ms = 0, count_n = 0;
-  if (delay != NULL && !scr_dyn_number_coerce_js(delay, &delay_ms)) {
-    scr_dyn_release(view);
-    return false;
-  }
+  bool ok = true;
+  if (delay != NULL && !scr_dyn_number_coerce_js(delay, &delay_ms)) ok = false;
   bool has_interval = interval != NULL && interval->kind != SCR_DYN_UNDEF;
-  if (has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) {
-    scr_dyn_release(view);
-    return false;
-  }
+  if (ok && has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) ok = false;
   bool has_count = count != NULL && count->kind != SCR_DYN_UNDEF;
-  if (has_count && !scr_dyn_number_coerce_js(count, &count_n)) {
-    scr_dyn_release(view);
-    return false;
+  if (ok && has_count && !scr_dyn_number_coerce_js(count, &count_n)) ok = false;
+  if (ok) {
+    /* Node keeps the last values on the socket (undefined interval/count
+     * included) and applies the whole set, here and again at afterConnect. */
+    s->ka_interval_s = has_interval ? scr_net_keepalive_seconds(interval_ms) : 0;
+    s->ka_count = has_count ? scr_net_keepalive_count(count_n) : 0;
+    int delay_s = scr_net_keepalive_seconds(delay_ms);
+    scr_net_sock_set_keepalive(s, on, (double)delay_s * 1000.0);
   }
-  /* Node keeps the last values on the socket (undefined interval/count
-   * included) and applies the whole set, here and again at afterConnect. */
-  s->ka_interval_s = has_interval ? scr_net_keepalive_seconds(interval_ms) : 0;
-  s->ka_count = has_count ? scr_net_keepalive_count(count_n) : 0;
-  int delay_s = scr_net_keepalive_seconds(delay_ms);
-  scr_net_sock_set_keepalive(s, on, (double)delay_s * 1000.0);
+  for (size_t i = 0; i < sizeof held / sizeof held[0]; i++)
+    if (*held[i] != NULL) scr_dyn_release(*held[i]);
   scr_dyn_release(view);
-  return true;
+  return ok;
 }
 
 /* socket.setKeepAlive([enable][, initialDelay][, interval][, count]) as the
@@ -7242,30 +7367,21 @@ static void scr_net_bound_install(void) {
   scr_dyn_handle_install(SCR_DYNH_NET_BOUND_SOCKET, &scr_net_bound_ops);
 }
 
-/* server.listen(boundSocket[, cb]): adopt the descriptor the bound socket
- * holds. Node's order: an already-listening server throws
- * ERR_SERVER_ALREADY_LISTEN before the callback joins 'listening', and a
- * consumed bound handle throws ERR_SOCKET_HANDLE_ADOPTED. Both errors are
- * catchable here (compiled callers check for the exception). */
-static void scr_net_server_listen_bound_impl(ScrNetServer *s, const ScrDyn *boundv,
-                                             ScrClosure *cb /*moves, nullable*/) {
-  if (s->listening) {
-    static const char msg[] = "Listen method has been called more than once without closing.";
-    if (cb) scr_closure_release(cb);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SERVER_ALREADY_LISTEN");
-    return;
-  }
-  ScrNetBoundSocket *b = scr_net_bound_of(boundv);
-  if (b == NULL) {
-    if (cb) scr_closure_release(cb);
-    scr_dyn_arg_type_fail("handle", "an instance of BoundSocket", boundv);
-    return;
-  }
-  if (!scr_net_listen_add_cb(s, cb)) return;
+/* Adopts `b`, which the caller holds a reference to; the listen callback is
+ * already in the 'listening' list, and this releases the caller's reference
+ * on every path. The socket is held this way because the handle that named
+ * it can be released while adoption runs (a 'newListener' hook that removes
+ * the property it was read from), and the descriptor transfer and the bound
+ * endpoint reads below must see the socket the handle named. */
+static void scr_net_server_listen_bound_adopt(ScrNetServer *s, ScrNetBoundSocket *b) {
   scr_net_server_capture_listen(s);
-  if (s->close_emitted) return;
+  if (s->close_emitted) {
+    scr_net_bound_release(b);
+    return;
+  }
   if (b->fd < 0) {
     scr_net_bound_adopted();
+    scr_net_bound_release(b);
     return;
   }
   int fd = b->fd;
@@ -7281,6 +7397,7 @@ static void scr_net_server_listen_bound_impl(ScrNetServer *s, const ScrDyn *boun
     int n = snprintf(msg, sizeof msg, "listen %s", scr_net_errname(err));
     if (!s->pending_err) s->pending_err = scr_str_new(msg, n < 0 ? 0 : (size_t)n);
     scr_net_server_register(s); /* the sweep delivers the failure */
+    scr_net_bound_release(b);
     return;
   }
   s->fd = fd;
@@ -7297,6 +7414,47 @@ static void scr_net_server_listen_bound_impl(ScrNetServer *s, const ScrDyn *boun
   }
   scr_net_watch_read(fd, s, true);
   scr_net_server_register(s);
+  scr_net_bound_release(b);
+}
+
+/* The same adoption over a checked-dynamic handle, which the adoption holds
+ * by its own reference while it runs. */
+static void scr_net_server_listen_bound_adopt_dyn(ScrNetServer *s, const ScrDyn *boundv) {
+  ScrNetBoundSocket *b = scr_net_bound_of(boundv);
+  if (b == NULL) return;
+  scr_net_server_listen_bound_adopt(s, scr_net_bound_retain(b));
+}
+
+/* server.listen(boundSocket[, cb]): adopt the descriptor the bound socket
+ * holds. Node's order: an already-listening server throws
+ * ERR_SERVER_ALREADY_LISTEN before the callback joins 'listening', and a
+ * consumed bound handle throws ERR_SOCKET_HANDLE_ADOPTED. Both errors are
+ * catchable here (compiled callers check for the exception). The handle
+ * arrives as a value the caller keeps alive; the dynamic listen path reads
+ * an options bag's handle again after this registration instead (Node
+ * reads `options.handle` after `once('listening')`). */
+static void scr_net_server_listen_bound_impl(ScrNetServer *s, const ScrDyn *boundv,
+                                             ScrClosure *cb /*moves, nullable*/) {
+  if (s->listening) {
+    static const char msg[] = "Listen method has been called more than once without closing.";
+    if (cb) scr_closure_release(cb);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SERVER_ALREADY_LISTEN");
+    return;
+  }
+  ScrNetBoundSocket *b = scr_net_bound_of(boundv);
+  if (b == NULL) {
+    if (cb) scr_closure_release(cb);
+    scr_dyn_arg_type_fail("handle", "an instance of BoundSocket", boundv);
+    return;
+  }
+  /* Hold the native socket across the callback registration: its
+   * 'newListener' hooks can release the value that named it. */
+  scr_net_bound_retain(b);
+  if (!scr_net_listen_add_cb(s, cb)) {
+    scr_net_bound_release(b);
+    return;
+  }
+  scr_net_server_listen_bound_adopt(s, b);
 }
 
 void scr_net_listen_bound(ScrNetServer *s, const ScrDyn *bound) {
@@ -8581,6 +8739,13 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   scr_net_ls_drop(&sock->wcb_ls);
   scr_net_ls_drop(&sock->ready_ls);
   scr_net_ls_drop(&sock->lookup_ls);
+  /* the attempt events cannot fire once the socket is closed, and a
+   * listener that captures this socket would keep the closed socket (and
+   * everything it holds) reachable through the untraced handle: drop them
+   * with the other lists. */
+  scr_net_ls_drop(&sock->attempt_ls);
+  scr_net_ls_drop(&sock->attempt_fail_ls);
+  scr_net_ls_drop(&sock->attempt_timeout_ls);
   if (sock->pipe_dst) {
     scr_net_sock_release(sock->pipe_dst);
     sock->pipe_dst = NULL;
@@ -8978,6 +9143,9 @@ static void scr_net_cleanup_atexit(void) {
     scr_net_ls_drop(&s->readable_ls);
     scr_net_ls_drop(&s->drain_ls);
     scr_net_ls_drop(&s->lookup_ls);
+    scr_net_ls_drop(&s->attempt_ls);
+    scr_net_ls_drop(&s->attempt_fail_ls);
+    scr_net_ls_drop(&s->attempt_timeout_ls);
     /* Tear down the protocol layer's parser NOW: an in-flight http
      * exchange (a handler that threw before res.end()) holds req/res,
      * and the res holds this socket back — a cycle the lean untraced
@@ -9577,17 +9745,39 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
     const ScrDyn *first = argc > 0 ? args[0] : NULL;
     const ScrDyn *cb = argc > 0 && args[argc - 1]->kind == SCR_DYN_FUNC ? args[argc - 1] : NULL;
     /* listen(boundSocket[, cb]) and listen({ handle: boundSocket }[, cb]):
-     * the bound descriptor is adopted, as Node's BoundSocket branch does. */
-    const ScrDyn *bound = NULL;
+     * the bound descriptor is adopted, as Node's BoundSocket branch does.
+     * The positional handle is the caller's value; an options bag's handle
+     * is read only after the callback registration, as in Node, so a
+     * 'newListener' hook that removes it changes what is adopted. */
     if (scr_net_is_bound_socket(first)) {
-      bound = first;
-    } else if (first != NULL && first->kind == SCR_DYN_OBJ) {
-      const ScrDyn *h = scr_dyn_obj_get(first, "handle", 6);
-      if (scr_net_is_bound_socket(h)) bound = h;
-    }
-    if (bound != NULL) {
-      scr_net_listen_bound_cb(s, bound, cb ? scr_dyn_listener_closure0(cb) : NULL);
+      scr_net_listen_bound_cb(s, first, cb ? scr_dyn_listener_closure0(cb) : NULL);
       return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+    }
+    bool bag = first != NULL && first->kind == SCR_DYN_OBJ;
+    if (bag) {
+      if (s->listening) {
+        scr_net_listen_again(cb ? scr_dyn_listener_closure0(cb) : NULL);
+        return NULL;
+      }
+      if (!scr_net_listen_add_cb(s, cb ? scr_dyn_listener_closure0(cb) : NULL))
+        return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+      const ScrDyn *h = scr_dyn_obj_get(first, "handle", 6);
+      if (scr_net_is_bound_socket(h)) {
+        scr_net_server_listen_bound_adopt_dyn(s, h);
+        return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+      }
+      /* Not a bound handle any more (a 'newListener' hook removed or
+       * replaced it): Node's ladder reads port/path from the bag next. A
+       * bag that carries neither ends in Node's own ERR_INVALID_ARG_VALUE,
+       * which this lane can answer as written; a bag with either is a
+       * modelable-nowhere options form and keeps the fence. */
+      if (!scr_dyn_obj_enumerable(first, "port", 4) &&
+          !scr_dyn_obj_enumerable(first, "path", 4)) {
+        scr_net_throw_arg_value("options", first, "must have the property \"port\" or \"path\"");
+      } else {
+        scr_net_dynh_srv_unsupported("listen", "the options-object form on a dynamic value is not modeled (use listen(port[, host][, cb]))");
+      }
+      return NULL;
     }
     double port = 0;
     int form = scr_net_listen_port_check(first, &port);

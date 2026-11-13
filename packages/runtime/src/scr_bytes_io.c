@@ -634,6 +634,17 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   return !scr_exc_pending();
 }
 
+/* checkAborted's `signal.aborted` and `signal.reason` reads. Node reaches
+ * them through an ordinary property access on its own fresh read of
+ * options.signal, so the value need not be the AbortSignal that
+ * validateAbortSignal saw: a stateful getter may answer an array, a number
+ * or a plain object on that read. scr_dyn_obj_read answers those values'
+ * members (undefined when the value has none) and never dispatches a
+ * non-handle as a native handle. */
+static ScrDyn *scr_fs_cb_aborted_member(const ScrDyn *signal, const char *name) {
+  return scr_dyn_obj_read(signal, name, strlen(name));
+}
+
 /* The AbortError Node's checkAborted hands the stat callback: name
  * AbortError, code ABORT_ERR, the signal's reason as cause. +1 dyn error. */
 static ScrDyn *scr_fs_cb_abort_error_dyn(const ScrDyn *signal) {
@@ -645,9 +656,7 @@ static ScrDyn *scr_fs_cb_abort_error_dyn(const ScrDyn *signal) {
   error->name = scr_str_new("AbortError", 10);
   error->name_present = true;
   scr_error_set_code(error, "ABORT_ERR");
-  ScrStr *key = scr_str_new("reason", 6);
-  ScrDyn *reason = scr_dyn_handle_key_get(signal, key);
-  scr_str_release(key);
+  ScrDyn *reason = scr_fs_cb_aborted_member(signal, "reason");
   if (reason) {
     if (reason->kind != SCR_DYN_UNDEF) scr_error_set_cause(error, reason);
     scr_dyn_release(reason);
@@ -666,9 +675,7 @@ static bool scr_fs_cb_stat_aborted(const ScrDyn *options, const ScrDyn *callback
   ScrDyn *signal = scr_fs_cb_option(options, "signal");
   if (!signal) return false;
   if (scr_fs_dyn_absent(signal)) { scr_dyn_release(signal); return true; }
-  ScrStr *key = scr_str_new("aborted", 7);
-  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
-  scr_str_release(key);
+  ScrDyn *aborted = scr_fs_cb_aborted_member(signal, "aborted");
   bool cancelled = aborted && scr_dyn_truthy(aborted);
   scr_dyn_release(aborted);
   if (!cancelled) { scr_dyn_release(signal); return true; }
@@ -834,9 +841,7 @@ static bool scr_fs_cb_write_aborted(const ScrDyn *options, const ScrDyn *callbac
   ScrDyn *signal = scr_fs_cb_option(options, "signal");
   if (!signal) return false;
   if (scr_fs_dyn_absent(signal)) { scr_dyn_release(signal); return false; }
-  ScrStr *key = scr_str_new("aborted", 7);
-  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
-  scr_str_release(key);
+  ScrDyn *aborted = scr_fs_cb_aborted_member(signal, "aborted");
   bool cancelled = aborted && scr_dyn_truthy(aborted);
   scr_dyn_release(aborted);
   if (!cancelled) { scr_dyn_release(signal); return false; }

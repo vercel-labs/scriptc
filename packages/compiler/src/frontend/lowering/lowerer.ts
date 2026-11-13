@@ -202,6 +202,7 @@ import {
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  namespacePromiseFnAdapter,
   adaptedFunction,
   variadicBoundaryBlocker,
   sortComparatorResultAdapter,
@@ -17308,6 +17309,19 @@ export class Lowerer {
       return { kind: "promiseVoidWiden", value: expr, type: expected, loc: expr.loc };
     }
     if (expected.kind === "dyn" && expr.type.kind !== "dyn") {
+      // A function whose result is a `Promise<module namespace>`
+      // (`() => import("./chunk.mjs")` passed into untyped code): the
+      // boxed thunk has no dynamic form for a namespace, so an interned
+      // frontend adapter maps the promise to the namespace's dynamic value
+      // first, and the adapter's `Promise<unknown>` signature boxes.
+      if (expr.type.kind === "func" && !this.dynConvertible(expr.type)) {
+        const adapted = this.namespacePromiseFnAdapter(expr.type, expr.loc);
+        if (adapted !== null)
+          return this.coerceToExpected(
+            { kind: "call", callee: adapted.name, args: [expr], type: adapted.type, loc: expr.loc },
+            DYN,
+          );
+      }
       // Native void calls still have a JavaScript value: undefined. Keep
       // the call's effects before exposing that value to checked JS code.
       if (expr.type.kind === "void") {
@@ -18119,6 +18133,13 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return funcCoerceAdapter(this, fromT, toT, loc);
+  }
+
+  namespacePromiseFnAdapter(
+    fromT: IrType & { kind: "func" },
+    loc: SrcLoc,
+  ): { name: string; type: IrType & { kind: "func" } } | null {
+    return namespacePromiseFnAdapter(this, fromT, loc);
   }
 
   sortComparatorResultAdapter(fromT: IrType & { kind: "func" }, loc: SrcLoc): string | null {

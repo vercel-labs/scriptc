@@ -292,10 +292,7 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
 /** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
  * `!function () { … }();`): the operand still evaluates once for its
  * effects and any exception, while the value the negation would read is
- * never consumed. A negation whose result is used — an initializer, a
- * condition, a logical operand — keeps the diagnostic, because converting a
- * value the checker types `void` needs a runtime value the lowering does
- * not model. */
+ * never consumed. */
 const discardedVoidNegation = (node: ts.Node): boolean => {
   // The diagnostic's span is the void-typed OPERAND (the call), so climb
   // to the `!` that tests it, then out of any parentheses.
@@ -315,6 +312,212 @@ const discardedVoidNegation = (node: ts.Node): boolean => {
   return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
 };
 
+/** Whether the function `decl` always completes with `undefined`: a plain
+ * function or method with a block body and no `return` of a value. An
+ * async function answers a promise, a generator an iterator, and an arrow
+ * with an expression body answers that expression, so none qualifies. */
+const answersUndefined = (decl: ts.Node): boolean => {
+  if (
+    !(
+      ts.isFunctionDeclaration(decl) ||
+      ts.isFunctionExpression(decl) ||
+      ts.isArrowFunction(decl) ||
+      ts.isMethodDeclaration(decl)
+    ) ||
+    decl.asteriskToken ||
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    return false;
+  const body = decl.body as ts.Node | undefined;
+  if (body === undefined || !ts.isBlock(body)) return false;
+  let value = false;
+  ts.walkPreorder(body, (node) => {
+    if (value || (node !== body && ts.isFunctionLike(node))) return "skip";
+    if (ts.isReturnStatement(node) && node.expression && !ts.isVoidExpression(node.expression))
+      value = true;
+    return undefined;
+  });
+  return !value;
+};
+
+/** A `const` declarator whose initializer is `node`. */
+const constInitializerOf = (node: ts.Node): boolean => {
+  const decl = node.parent;
+  return (
+    decl !== undefined &&
+    ts.isVariableDeclaration(decl) &&
+    decl.initializer === node &&
+    decl.parent !== undefined &&
+    (decl.parent.flags & ts.NodeFlags.Const) !== 0
+  );
+};
+
+/** The symbol a callee names: the binding of an identifier, or the member
+ * a property access or a string-keyed element access reads, through import
+ * aliases. */
+const calleeSymbolOf = (callee: ts.Node, checker: ts.TypeChecker): ts.Symbol | undefined => {
+  let site: ts.Node | undefined = callee;
+  if (ts.isPropertyAccessExpression(callee)) site = callee.name;
+  else if (ts.isElementAccessExpression(callee))
+    site = ts.isStringLiteralLike(callee.argumentExpression)
+      ? callee.argumentExpression
+      : undefined;
+  else if (!ts.isIdentifier(callee)) site = undefined;
+  let symbol = site === undefined ? undefined : checker.getSymbolAtLocation(site);
+  if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = checker.getAliasedSymbol(symbol);
+  return symbol;
+};
+
+/** Whether `node`, a member access, is written: an assignment or compound
+ * assignment target (directly or inside a destructuring pattern), a
+ * `++`/`--` operand, a for-in/of head, or a `delete` operand. */
+const memberWriteTarget = (node: ts.Node): boolean => {
+  let current = node;
+  for (;;) {
+    const parent: ts.Node | undefined = current.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === current)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === current &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return (
+        parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    if (ts.isForInStatement(parent) || ts.isForOfStatement(parent))
+      return parent.initializer === current;
+    return ts.isDeleteExpression(parent);
+  }
+};
+
+const methodNameWrites = new WeakMap<ts.Program, Map<string, boolean>>();
+
+/** Whether some implementation file can replace the member named `name`
+ * on any receiver: a write or `delete` of a property access or a
+ * string-keyed element access of that name, a call argument naming it (a
+ * reflective definition such as `Object.defineProperty(o, name, …)` or
+ * `Reflect.set(o, name, v)`), or an object literal argument with a member
+ * of that name (`Object.assign(C.prototype, { name() {} })`). A write
+ * through a computed key the source does not spell is not seen. */
+const methodNameWritten = (program: ts.Program, name: string): boolean => {
+  let names = methodNameWrites.get(program);
+  if (names === undefined) {
+    names = new Map();
+    methodNameWrites.set(program, names);
+  }
+  const known = names.get(name);
+  if (known !== undefined) return known;
+  let written = false;
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (written) break;
+    if (!ts.sourceTextIncludes(sf, name)) continue;
+    ts.walkPreorder(sf, (node) => {
+      if (written) return "skip";
+      if (
+        (ts.isPropertyAccessExpression(node) && node.name.text === name) ||
+        (ts.isElementAccessExpression(node) &&
+          ts.isStringLiteralLike(node.argumentExpression) &&
+          node.argumentExpression.text === name)
+      )
+        written = memberWriteTarget(node);
+      else if (ts.isCallExpression(node))
+        written = node.arguments.nodes.some(
+          (argument) =>
+            (ts.isStringLiteralLike(argument) && argument.text === name) ||
+            (ts.isObjectLiteralExpression(argument) &&
+              argument.properties.nodes.some(
+                (member) =>
+                  member.name !== undefined &&
+                  (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name)) &&
+                  member.name.text === name,
+              )),
+        );
+      return undefined;
+    });
+  }
+  names.set(name, written);
+  return written;
+};
+
+/** Whether the void-typed `node` is `undefined` whenever it runs: a call
+ * whose callee is a JavaScript function that answers undefined
+ * (answersUndefined) and that names that function in a way no write can
+ * replace while the type stays `void`, or a `const` holding such a call.
+ * The callee qualifies when it is the function itself (called where it is
+ * written), a function declaration's own name or an import of it (SC1090
+ * refuses reassigning it), a `const` the function initializes, or a member
+ * access that reads a class method whose name no code writes
+ * (methodNameWritten; an override answers through the class's dispatch).
+ * A function typed `() => void` by an annotation or a declaration file can
+ * answer any value, and so can a reassignable binding, a property holding
+ * the function, or a class method the program writes, so their calls are
+ * not. */
+const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): boolean => {
+  if (depth > 8) return false;
+  const checker = program.getTypeChecker();
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const decl = checker.getSymbolAtLocation(expr)?.valueDeclaration;
+    return (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      constInitializerOf(decl.initializer) &&
+      undefinedAtRunTime(decl.initializer, program, depth + 1)
+    );
+  }
+  if (!ts.isCallExpression(expr) || expr.questionDotToken) return false;
+  const decl = checker.getResolvedSignature(expr)?.declaration;
+  if (
+    decl === undefined ||
+    !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
+    !answersUndefined(decl)
+  )
+    return false;
+  let callee: ts.Node = expr.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (callee === decl) return true;
+  const named = calleeSymbolOf(callee, checker)?.valueDeclaration;
+  if (named === undefined) return false;
+  if (ts.isFunctionDeclaration(decl)) return named === decl && ts.isIdentifier(callee);
+  if (ts.isMethodDeclaration(decl)) {
+    if (named !== decl || ts.isIdentifier(callee)) return false;
+    if (decl.parent === undefined || !ts.isClassLikeDeclaration(decl.parent)) return false;
+    const name = decl.name;
+    return (
+      (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isPrivateIdentifier(name)) &&
+      !methodNameWritten(program, name.text)
+    );
+  }
+  if (!ts.isIdentifier(callee) || !ts.isVariableDeclaration(named)) return false;
+  let held: ts.Node = decl;
+  while (held.parent !== undefined && ts.isParenthesizedExpression(held.parent)) held = held.parent;
+  return named.initializer === held && constInitializerOf(held);
+};
+
+/** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
+ * discarded negation is never read, and an operand that is always
+ * `undefined` tests false. Any other void-typed operand keeps the triage
+ * row, because the lowering has no runtime value for it. */
+const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
+  discardedVoidNegation(node) || undefinedAtRunTime(node, program);
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -332,6 +535,17 @@ const LEGACY_REGEX_ESCAPE = at(
     "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
     ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
   ),
+);
+
+const UNDECLARED_NAME_READ = THROW(
+  "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+  [
+    "tests/corpus/8427-sloppy-with-island/main.js",
+    "tests/corpus/8515-js-undeclared-read.js",
+    "tests/corpus/8941-js-host-name-read.js",
+    "tests/corpus/global-detection-typeof.cjs",
+    "tests/corpus/js-type-package-global-read.js",
+  ],
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
@@ -650,6 +864,16 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   ],
   [1064, CHECKER(JSDOC_CLAIM)],
   [2366, CHECKER(JSDOC_CLAIM, ["tests/corpus/js-object-receiver-storage.js"])],
+  // A subclass STATIC side that does not match its base's (2417): a static
+  // method or field whose JSDoc signature differs from the inherited one
+  // (`static isError(input)` on an `Error` subclass, whose base declares
+  // `isError` as a type predicate). The assignment check is a type-space
+  // claim about the constructor object; the member itself is an ordinary
+  // static that installs on the constructor, and Node never reads the
+  // signature. A checked file keeps the error: the project asked tsc for
+  // it. Its instance-side sibling (2416) stays refused — a differing
+  // instance member's storage is the class lowering's business.
+  [2417, inCheckedJs(CHECKER(JSDOC_CLAIM, ["tests/corpus/js-subclass-static-side.js"]))],
   // The async-iterator protocol demand (2504). Whether a value is
   // async-iterable is a runtime fact of untyped JS, exactly like the sync
   // demand: `for await` over a non-iterable value and `yield*` in an async
@@ -835,38 +1059,32 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // route the sloppy semantics need. TypeScript input keeps the compile
   // error: an undeclared name there is a bug, not a runtime path, unless a
   // library the project's `lib` names declares it and Node defines no such
-  // global (program.ts, projectLibraryName admits those sites). 2552 is
-  // 2304's did-you-mean spelling, 2584 its spelling for a name another
-  // library declares (`document`, `window`: Node defines neither), and
-  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
-  // the checker reports against the property instead of the reference.
-  [
-    2304,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8427-sloppy-with-island/main.js", "tests/corpus/8515-js-undeclared-read.js"],
-    ),
-  ],
-  [
-    2552,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-    ),
-  ],
-  [
-    2584,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
-    ),
-  ],
-  [
-    18004,
-    THROW(
-      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
-      ["tests/corpus/8515-js-undeclared-read.js"],
-    ),
-  ],
+  // global (program.ts, projectLibraryName admits those sites). The checker
+  // splits the one unresolved name across a family of codes that differ only
+  // in the suggestion they print: 2552 is 2304's did-you-mean spelling, 2584
+  // its spelling for a name another library declares (`document`, `window`:
+  // Node defines neither), and 18004 the same unresolved name in SHORTHAND
+  // position (`{ x }`), which the checker reports against the property
+  // instead of the reference. The type-package suggestions are a code each
+  // (`require` is 2580, `describe` 2582, `Bun` 2867 when the project's
+  // tsconfig has no `types` field, and 2591/2593/2868 when it has one), and
+  // every spelling names the same undeclared global: Node throws
+  // `ReferenceError: Bun is not defined` for it whatever tsc suggests
+  // installing. The unknown-name codes this list leaves out are the ones
+  // that do not name an undeclared global: 2583 (a newer library's name,
+  // which Node may define) and 2585/2586 (a `lib` setting).
+  [2304, UNDECLARED_NAME_READ],
+  [2552, UNDECLARED_NAME_READ],
+  [2580, UNDECLARED_NAME_READ],
+  [2581, UNDECLARED_NAME_READ],
+  [2582, UNDECLARED_NAME_READ],
+  [2584, UNDECLARED_NAME_READ],
+  [2591, UNDECLARED_NAME_READ],
+  [2592, UNDECLARED_NAME_READ],
+  [2593, UNDECLARED_NAME_READ],
+  [2867, UNDECLARED_NAME_READ],
+  [2868, UNDECLARED_NAME_READ],
+  [18004, UNDECLARED_NAME_READ],
   // ---- The checker's OPINIONS about legal JavaScript ----
   // Each diagnostic below reports that a construct is unusual for TypeScript,
   // never that it is illegal JavaScript: Node gives it a defined runtime
@@ -1123,19 +1341,23 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
-  // 1345, a discarded negation of a void-typed operand (`!register();`):
-  // Node evaluates the operand once and throws the boolean away, and the
-  // operand's ordinary lowering does exactly that. A consumed negation
-  // keeps the triage row below, and a checked project keeps the diagnostic:
-  // it asked tsc to judge the test.
+  // 1345, a truthiness test of a void-typed operand whose answer is known
+  // (`!register();`, `if (this["~findRoute"](event))` on an empty base
+  // method): a discarded negation's boolean is never read, and a call of a
+  // function whose own body never returns a value answers undefined, which
+  // tests false; the operand still evaluates once for its effects and any
+  // exception. A class method overridden to answer a value is dispatched by
+  // the class, which carries that value. Every other void-typed operand keeps
+  // the triage row below. A checked project keeps the diagnostic: it asked
+  // tsc to judge the test.
   [
     1345,
     inCheckedJs(
       at(
-        discardedVoidNegation,
+        voidTruthinessKnown,
         CHECKER(
-          "a discarded negation's boolean is never consumed: Node evaluates the operand once for its effects, and the operand's ordinary lowering does the same",
-          ["tests/corpus/discarded-void-negation.mjs"],
+          "a discarded negation's boolean is never read, and a call of a function whose body returns no value is undefined, which tests false; the lowering evaluates the operand once for its effects",
+          ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
         ),
       ),
     ),
@@ -1376,13 +1598,14 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
-  // The discarded `!voidCall();` sites are admitted by the 1345 opinion row;
-  // every site whose boolean is consumed needs a runtime value for a
-  // void-typed operand, which the lowering does not model.
+  // The 1345 opinion row admits the sites whose truthiness is known; any
+  // other void-typed operand (a callback typed `() => void`, a function a
+  // binding can replace) can hold a value at run time, and the test needs a
+  // runtime value that the lowering does not model.
   [
     1345,
     REWRITE(
-      "a truthiness test of a void-typed expression whose boolean is used",
+      "a truthiness test of a void-typed expression that can hold a value",
       "the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model",
     ),
   ],
@@ -1477,13 +1700,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2416,
     REFUSE(
       "a subclass member whose type differs from its base's",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
-  [
-    2417,
-    REFUSE(
-      "a subclass static side whose type differs from its base's",
       "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],

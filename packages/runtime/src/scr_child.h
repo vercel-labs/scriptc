@@ -311,6 +311,9 @@ void scr_process_ipc_disconnect(void);
 void scr_process_ipc_on_message(ScrClosure *cb /*moves*/,
                                 ScrIpcMessageFn fn, bool once);
 void scr_process_ipc_on_disconnect(ScrClosure *cb /*moves*/, bool once);
+/* process.channel (Node's Control): undefined without a channel, null once
+ * it is gone, else the cached object with ref()/unref(). +1. */
+ScrDyn *scr_process_channel_value(void);
 void scr_child_exit_thunk0(ScrClosure *cb, bool has_code, double code,
                             const char *signal_name);
 void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg);

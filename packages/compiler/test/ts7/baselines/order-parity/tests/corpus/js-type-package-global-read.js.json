@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-type-package-global-read.js"
+ ],
+ "diags": []
+}

@@ -9867,6 +9867,19 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
     lowerer.isProcessEnv(target.expression) ||
     heldEnvValueType(lowerer, target.expression) !== null
   ) {
+    // A dynamic key keeps Node's delete trap semantics: a Symbol removes
+    // nothing (and never converts), anything else ToStrings first.
+    if (
+      ts.isElementAccessExpression(target) &&
+      lowerer.mapTypeOf(lowerer.typeOf(target.argumentExpression))?.kind !== "string"
+    ) {
+      const key = lowerer.lowerExprExpecting(target.argumentExpression, DYN);
+      return {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.envUnsetDyn", args: [key], type: VOID, loc },
+        loc,
+      };
+    }
     const key = lowerKey();
     refuseDefinedEnvWrite(lowerer, key, target);
     return {
@@ -11199,17 +11212,19 @@ export function lowerExprStatement(
             loc: locOf(expr.left.name),
           };
           refuseDefinedEnvWrite(lowerer, key, expr.left);
-          const value = lowerer.lowerExpr(expr.right);
-          if (value.type.kind !== "string") {
-            lowerer.unsupported(
-              "SC1090",
-              expr.right,
-              `assigning '${lowerer.fmt(value.type)}' values to process.env (env values are strings — convert first: \`\${v}\`)`,
-            );
+          // Node ToStrings the assigned value (a Symbol throws).
+          if (lowerer.mapTypeOf(lowerer.typeOf(expr.right))?.kind === "string") {
+            const value = lowerer.lowerExpr(expr.right);
+            return {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+              loc,
+            };
           }
+          const value = lowerer.lowerExprExpecting(expr.right, DYN);
           return {
             kind: "exprStmt",
-            expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+            expr: { kind: "libCall", fn: "process.envSetDyn", args: [key, value], type: VOID, loc },
             loc,
           };
         }
@@ -11489,10 +11504,26 @@ export function lowerExprStatement(
           lowerer.stdlibGlobalMember(expr.left, "process") === "exitCode"
         ) {
           const loc = locOf(expr);
-          const value = lowerer.lowerExprExpecting(expr.right, F64);
+          // The setter's conversion (a numeric string, '' throwing,
+          // null/undefined clearing) decides the static route: numbers
+          // take the typed validator, everything else the checked-dynamic
+          // conversion.
+          const type = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+          if (type?.kind === "f64") {
+            const value = lowerer.lowerExprExpecting(expr.right, F64);
+            const fn = programReadsExitCode(lowerer)
+              ? "process.setExitCodeTracked"
+              : "process.setExitCode";
+            return {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn, args: [value], type: VOID, loc },
+              loc,
+            };
+          }
+          const value = lowerer.lowerExprExpecting(expr.right, DYN);
           const fn = programReadsExitCode(lowerer)
-            ? "process.setExitCodeTracked"
-            : "process.setExitCode";
+            ? "process.setExitCodeDynTracked"
+            : "process.setExitCodeDyn";
           return {
             kind: "exprStmt",
             expr: { kind: "libCall", fn, args: [value], type: VOID, loc },
@@ -11500,16 +11531,46 @@ export function lowerExprStatement(
           };
         }
         if (!expr.left.questionDotToken) {
+          // process.debugPort = port: Node's Int32Value conversion, the
+          // 0-or-1024..65535 gate (ERR_OUT_OF_RANGE) and a refused write
+          // leaving the previous value.
+          if (lowerer.stdlibGlobalMember(expr.left, "process") === "debugPort") {
+            const loc = locOf(expr);
+            return {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "process.setDebugPort",
+                args: [lowerer.lowerExprExpecting(expr.right, DYN)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            };
+          }
           const flag = lowerer.stdlibGlobalMember(expr.left, "process");
-          if (flag === "noDeprecation" || flag === "throwDeprecation") {
+          if (
+            flag === "noDeprecation" ||
+            flag === "throwDeprecation" ||
+            flag === "traceDeprecation" ||
+            flag === "traceProcessWarnings"
+          ) {
             const loc = locOf(expr);
             const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            const slot =
+              flag === "noDeprecation"
+                ? 0
+                : flag === "throwDeprecation"
+                  ? 1
+                  : flag === "traceDeprecation"
+                    ? 2
+                    : 3;
             return {
               kind: "exprStmt",
               expr: {
                 kind: "libCall",
                 fn: "process.setDeprecationFlag",
-                args: [numLit(flag === "noDeprecation" ? 0 : 1, loc), value],
+                args: [numLit(slot, loc), value],
                 type: VOID,
                 loc,
               },
@@ -11546,17 +11607,25 @@ export function lowerExprStatement(
           // runtime truncates to the original argument area on POSIX).
           if (flag === "title") {
             const loc = locOf(expr);
-            const value = lowerer.lowerExpr(expr.right);
-            if (value.type.kind !== "string") {
-              lowerer.noLowering(
-                `process.title writes of '${lowerer.fmt(value.type)}' values`,
-                expr.right,
-                "assign a string",
-              );
+            // Node ToStrings the assigned value (a Symbol throws).
+            if (lowerer.mapTypeOf(lowerer.typeOf(expr.right))?.kind === "string") {
+              const value = lowerer.lowerExpr(expr.right);
+              return {
+                kind: "exprStmt",
+                expr: { kind: "libCall", fn: "process.setTitle", args: [value], type: VOID, loc },
+                loc,
+              };
             }
+            const value = lowerer.lowerExprExpecting(expr.right, DYN);
             return {
               kind: "exprStmt",
-              expr: { kind: "libCall", fn: "process.setTitle", args: [value], type: VOID, loc },
+              expr: {
+                kind: "libCall",
+                fn: "process.setTitleDyn",
+                args: [value],
+                type: VOID,
+                loc,
+              },
               loc,
             };
           }

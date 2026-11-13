@@ -342,9 +342,26 @@ static void scr_x509_dec_sub(char *digits, size_t *len, unsigned sub) {
   while (*len > 1 && digits[*len - 1] == 0) (*len)--;
 }
 
-/* An OID's dotted text (OBJ_obj2txt with no_name), rendered exactly: the
- * arcs are not bounded to a fixed-width integer. */
-static void scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
+/* A subidentifier's decimal rendering costs time quadratic in its length,
+ * and no real arc is wider than a 128-bit GUID (19 bytes). Longer arcs are
+ * not rendered: a field that carries one omits it. */
+#define SCR_X509_OID_ARC_MAX 32
+
+/* Whether every subidentifier of `oid` fits the rendering budget. */
+static bool scr_x509_oid_arcs_fit(const uint8_t *oid, size_t n) {
+  size_t arc = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (++arc > SCR_X509_OID_ARC_MAX) return false;
+    if (!(oid[i] & 0x80)) arc = 0;
+  }
+  return true;
+}
+
+/* An OID's dotted text (OBJ_obj2txt with no_name), rendered exactly for
+ * every arc within SCR_X509_OID_ARC_MAX. Answers false, having appended
+ * nothing, for an OID with a wider arc. */
+static bool scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
+  if (!scr_x509_oid_arcs_fit(oid, n)) return false;
   size_t cap = n * 3 + 1;
   char *digits = malloc(cap);
   if (!digits) scr_trap("scriptc: out of memory\n");
@@ -366,6 +383,7 @@ static void scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
     scr_x509_put_dec(b, digits, len);
   }
   free(digits);
+  return true;
 }
 
 typedef struct {
@@ -443,7 +461,7 @@ static const ScrX509OidName scr_x509_access_names[] = {
 static bool scr_x509_oid_name(ScrX509Buf *b, const uint8_t *oid, size_t n,
                               const ScrX509OidName *table, size_t count) {
   ScrX509Buf dotted = {0};
-  scr_x509_oid_dotted(&dotted, oid, n);
+  if (!scr_x509_oid_dotted(&dotted, oid, n)) return false;
   for (size_t i = 0; i < count; i++) {
     if (strlen(table[i].oid) == dotted.len && memcmp(table[i].oid, dotted.data, dotted.len) == 0) {
       scr_x509_puts(b, table[i].name);
@@ -663,6 +681,7 @@ static void scr_x509_general_name(ScrX509Buf *b, uint8_t tag, const uint8_t *v, 
       return;
     }
     case 0x88: /* registeredID */
+      if (!scr_x509_oid_arcs_fit(v, n)) return;
       scr_x509_puts(b, "Registered ID:");
       scr_x509_oid_dotted(b, v, n);
       return;
@@ -1825,7 +1844,7 @@ ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der) {
     p = oid + len;
     if (tag != 0x06) continue;
     ScrX509Buf dotted = {0};
-    scr_x509_oid_dotted(&dotted, oid, len);
+    if (!scr_x509_oid_dotted(&dotted, oid, len)) continue;
     scr_dyn_arr_push(arr, scr_x509_dyn_text(dotted.data, dotted.len));
     free(dotted.data);
   }

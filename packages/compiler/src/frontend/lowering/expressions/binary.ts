@@ -44,6 +44,7 @@ import {
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { isPureReference } from "../effect-free.js";
 import {
   bigintCompoundValue,
   compoundUnsupported,
@@ -495,6 +496,40 @@ function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boole
     const name = symbol ? ts.symbolName(symbol) : "";
     return symbol !== null && lowerer.isStdlibSymbol(symbol) && (name === "Map" || name === "Set");
   });
+}
+
+/** Whether evaluating `node` only reads: a literal, a variable, a stored
+ * field, or an element or the length of an array or string reached through
+ * those. Such an operand runs no program code, so it cannot write what
+ * another operand of the same expression reads. */
+function onlyReads(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(node)) return onlyReads(lowerer, node.expression);
+  if (ts.isStringLiteral(node) || ts.isNumericLiteral(node)) return true;
+  if (isPureReference(lowerer, node)) return true;
+  const indexable = (receiver: ts.Expression): boolean => {
+    let type: IrType | null;
+    try {
+      type = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+    } catch {
+      return false;
+    }
+    return type?.kind === "array" || type?.kind === "string";
+  };
+  if (ts.isElementAccessExpression(node) && !node.questionDotToken) {
+    return (
+      onlyReads(lowerer, node.expression) &&
+      onlyReads(lowerer, node.argumentExpression) &&
+      indexable(node.expression)
+    );
+  }
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    !node.questionDotToken &&
+    node.name.text === "length"
+  ) {
+    return onlyReads(lowerer, node.expression) && indexable(node.expression);
+  }
+  return false;
 }
 
 /** Whether every arm of `type` is a unit: a value of it is null or
@@ -2921,14 +2956,30 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // operand values. This matters for `take()[0] + 1` and for two reads
     // with observable getters/calls.
     const prefix: IrStmt[] = [];
-    const stable = (operand: IrExpr): IrExpr => {
-      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+    const repeatable = (operand: IrExpr): boolean =>
+      isSafeToRepeat(operand) || isSafeToDiscard(operand);
+    const hoist = (operand: IrExpr): IrExpr => {
       const tmp = lowerer.declareHiddenLocal("%plus", operand.type);
       prefix.push({ kind: "varDecl", localId: tmp.id, init: operand, loc });
       return varRef(tmp.id, operand.type, loc);
     };
-    const stableLeft = stable(left);
-    const stableRight = stable(right);
+    // The prefix runs before the result reads an operand left in place, so
+    // a hoisted right operand would run before a left operand that reads a
+    // variable or a field: `local + (local = "x")` must read `local` first.
+    // The left operand stays in place only when it is a literal or when the
+    // right operand only reads (`head + PAD[j]`, `c + rest.length`); any
+    // other right operand, an assignment or a call among them, might write
+    // what the left one reads.
+    const literal = (operand: IrExpr): boolean =>
+      operand.kind === "strLit" ||
+      operand.kind === "numLit" ||
+      operand.kind === "boolLit" ||
+      operand.kind === "unitLit";
+    const stableLeft =
+      repeatable(left) && (repeatable(right) || literal(left) || onlyReads(lowerer, expr.right))
+        ? left
+        : hoist(left);
+    const stableRight = repeatable(right) ? right : hoist(right);
     const leftString = lowerer.ensureString(stableLeft, expr.left);
     const rightString = lowerer.ensureString(stableRight, expr.right);
     const concat: IrExpr = {

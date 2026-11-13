@@ -879,26 +879,16 @@ try {
   await createArchive(archive);
 
   const remote = (async () => {
-    await allWorkers(
-      "Creating",
-      async (worker) => {
-        created.add(worker.name);
-        await createWorker(worker);
-      },
-      allSandboxes.length,
-      allSandboxes,
-    );
-
-    await allWorkers(
-      "Uploading worktree",
-      (worker) => uploadArchive(worker, archive),
-      8,
-      allSandboxes,
-    );
-
+    // Each Sandbox is created when its own preparation starts. A Sandbox's
+    // lifetime runs from creation, and with more Sandboxes than the
+    // preparation concurrency the first ones would otherwise spend their
+    // budget waiting for the last wave to finish preparing.
     await allWorkers(
       "Preparing worktree",
       async (worker) => {
+        created.add(worker.name);
+        await createWorker(worker);
+        await uploadArchive(worker, archive);
         if (bootstrapCommand) {
           await execIn(
             worker,

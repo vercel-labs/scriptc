@@ -621,14 +621,10 @@ function cleanupCall(
     };
   }
   if (value.type.kind === "child") {
+    /* ChildProcess[Symbol.dispose]: SIGTERM only while `killed` is false,
+     * and the method answers nothing. */
     return {
-      call: {
-        kind: "libCall",
-        fn: "child.kill",
-        args: [value, { kind: "strLit", value: "SIGTERM", type: STRING, loc }],
-        type: BOOL,
-        loc,
-      },
+      call: { kind: "libCall", fn: "child.dispose", args: [value], type: VOID, loc },
       async: false,
     };
   }
@@ -15492,7 +15488,11 @@ function lowerForOfClassIterator(
   }
   const isLet = list !== null && (list.flags & ts.NodeFlags.Let) !== 0;
   const decl = list ? list.declarations.nodes[0]! : null;
-  if (decl && !ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  // A DESTRUCTURING loop variable (`for (const [name, value] of pairs)`,
+  // `for (const { name, value } of attrs)`) binds from the yielded value
+  // exactly as a `const [name, value] = value` declaration does, so the
+  // pattern runs over the `%vof` hidden local below.
+  const pattern = decl !== null && !ts.isIdentifier(decl.name) ? decl.name : null;
   const loc = locOf(stmt);
   lowerer.scopes.push(new Map());
   try {
@@ -15517,17 +15517,22 @@ function lowerForOfClassIterator(
             },
           ]
         : [];
-    const varTarget = exprTarget ?? (decl ? forOfVarTarget(lowerer, decl) : null);
-    const x = varTarget
-      ? lowerer.declareHiddenLocal("%vof", cit.valueT)
-      : lowerer.declareLocal(
-          decl!.name as ts.Identifier,
-          (decl!.name as ts.Identifier).text,
-          cit.valueT,
-          isLet,
-        );
+    const varTarget =
+      exprTarget ?? (decl !== null && pattern === null ? forOfVarTarget(lowerer, decl) : null);
+    const x =
+      varTarget || pattern
+        ? lowerer.declareHiddenLocal("%vof", cit.valueT)
+        : lowerer.declareLocal(
+            decl!.name as ts.Identifier,
+            (decl!.name as ts.Identifier).text,
+            cit.valueT,
+            isLet,
+          );
     const xRef: IrExpr = { kind: "varRef", localId: x.id, type: cit.valueT, loc };
     const blame: ts.Node = decl?.name ?? exprTargetNode ?? stmt.initializer;
+    const patternBind: IrStmt[] = [];
+    if (pattern !== null)
+      lowerer.lowerBindingPattern(pattern, () => xRef, cit.valueT, isLet, patternBind);
     const head: IrStmt[] = [
       ...setDone(true),
       {
@@ -15583,6 +15588,11 @@ function lowerForOfClassIterator(
           ]
         : []),
       ...setDone(false),
+      // A destructuring loop variable binds from the value just read, in
+      // the body's own control flow: an abrupt completion there (a trapping
+      // position read, a throwing default) closes the iterator like the
+      // rest of the body does.
+      ...patternBind,
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     const loop: IrStmt = {

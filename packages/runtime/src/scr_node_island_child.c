@@ -602,6 +602,13 @@ static ScrStr *nc_string(void *island, int prop) {
   return s;
 }
 
+/* subprocess.channel: the island's own Control object (+1), forwarded so
+ * its ref()/unref() reach Node's handle; undefined when it has none. */
+static ScrDyn *nc_channel(void *island) {
+  ScrDyn *d = nc_get(island, "channel");
+  return d != NULL ? d : scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* child.spawnargs: read once, so repeated reads answer one array, as the
  * island's property does. */
 static ScrArr *nc_spawnargs(void *island) {
@@ -741,8 +748,8 @@ static void nc_drop(void *island) {
 
 static const ScrChildIslandOps nc_ops = {
     nc_drop,      nc_stdio,    nc_on,           nc_off,         nc_on_dyn, nc_number,
-    nc_boolean,   nc_string,   nc_spawnargs,    nc_kill,        nc_call,   nc_send,
-    nc_set_encoding, nc_write, nc_bridge_write, nc_bridge_final,
+    nc_boolean,   nc_string,   nc_channel,      nc_spawnargs,   nc_kill,   nc_call,
+    nc_send,      nc_set_encoding, nc_write,    nc_bridge_write, nc_bridge_final,
 };
 
 /* ── the conversions (dyn.ts, ISLAND_ADOPTED_KINDS) ─────────────────────── */

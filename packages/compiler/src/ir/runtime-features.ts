@@ -1030,10 +1030,22 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.secureHeapUsed",
+  "crypto.setEngine",
+  "crypto.fipsGet",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   "crypto.diffieHellman",
 ]);
 
@@ -1660,7 +1672,13 @@ const RUNTIME_FEATURE_RULES = {
    * own, so a program that never passes those options keeps the default
    * object, byte for byte. */
   childOptionExt: rule({
-    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+    fns: [
+      "cp.spawnSyncExt",
+      "cp.spawnSyncExtEnv",
+      "cp.execFileCwd",
+      "cp.execFileOpts",
+      "cp.spawnArmed",
+    ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
@@ -1746,20 +1764,28 @@ const RUNTIME_FEATURE_RULES = {
     // The legacy url functions, crypto.createCipheriv,
     // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
-    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
-    // handles and promises through it.
+    // encrypt and decrypt link scr_cipher.c too), as do the
+    // checked-dynamic Hmac constructors when their key is a CryptoKey
+    // (DEP0203, scr_lib.c); scr_wasm.c boxes its handles and promises
+    // through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.hmacNewDyn",
+      "crypto.hmacNewAny",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      // crypto.fips reports DEP0093 once per process on its first read.
+      "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      "crypto.signOneshotCb",
+      "crypto.verifyOneshotCb",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) and
       // fs.promises.rmdir's DEP0147 report defer through this unit's
       // warning queue.
@@ -1835,6 +1861,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      // A native Proxy converts and forwards Get through the invoke unit's
+      // Object.prototype table (scr_dyn_inherited_member_hook).
+      "dyn.proxyNew",
       "buffer.prototypeMember",
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
@@ -2055,6 +2084,11 @@ const RUNTIME_FEATURE_RULES = {
       ...ABORT_SIGNAL_LIB_FNS,
     ],
     prefixes: ["event."],
+    // spawn's `signal` option registers through addAbortListener. A call
+    // keeps the slot (the lowering always passes fifteen arguments); an IR
+    // fixture may spell fewer, and an absent one means no signal.
+    libCall: (node) =>
+      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
@@ -2324,14 +2358,19 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
+  /** A Dirent row converted to dyn carries Node's Symbol(type) key
    * (scr_dyn_dirent_finish, defined in scr_symbol.c), a callback read
    * builds its Dirent there, and a mkdtempDisposable record keys its
-   * dispose member with Symbol.dispose or Symbol.asyncDispose. */
+   * dispose member with Symbol.dispose or Symbol.asyncDispose. A native
+   * Proxy's conversion reads Symbol.toPrimitive and Symbol.toStringTag
+   * through its get trap, which the unit makes
+   * (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
     fns: [
       ...SYMBOL_LIB_FNS,
       "dir.readCb",
+      "dyn.proxyNew",
       "fs.mkdtempDisposableSync",
       "fs.mkdtempDisposableSyncChk",
       "fsp.mkdtempDisposable",
@@ -2474,6 +2513,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Fingerprint256",
       "crypto.x509Fingerprint512",
       "crypto.x509InfoAccess",
+      "crypto.x509KeyUsage",
       "crypto.x509Issuer",
       "crypto.x509Raw",
       "crypto.x509RawDer",

@@ -427,6 +427,10 @@ bool scr_process_deprecation_flag_on(int which);
  * listeners run. scr_warning_new builds the string form's warning value
  * (borrows; +1). */
 void scr_warning_emit_deferred(ScrDyn *warning);
+/* The same tail for the deprecations Node emits through
+ * getDeprecationWarningEmitter, whose fourth argument (the deprecation
+ * constructor) is undefined (DEP0203). */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *warning);
 ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code);
 /* fs.promises.rmdir(path, options): validateRmdirOptions, the once-per-
  * process DEP0147 report of the recursive form (through the deferral

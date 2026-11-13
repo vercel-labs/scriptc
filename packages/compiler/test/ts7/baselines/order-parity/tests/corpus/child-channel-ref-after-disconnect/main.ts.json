@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-channel-ref-after-disconnect/main.ts"
+ ],
+ "diags": []
+}

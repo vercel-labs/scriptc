@@ -1585,6 +1585,12 @@
  },
  {
   "file": "scr_pki.c",
+  "function": "sp_encode",
+  "message": "encoding that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
   "function": "sp_stream_fence",
   "message": "This Sign or Verify stream member has no lowering when called through an untyped value",
   "code": "SC2020"
@@ -2349,6 +2355,12 @@
   "file": "scr_json.c",
   "function": "scr_dyn_key_set",
   "message": "Checked array growth exceeds the native allocation limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_check_fail",
+  "message": " (a native Proxy keeps its traps only in an untyped value or a dictionary: declare the value 'any', or a Record<string, T>)",
   "code": "SC2020"
  },
  {

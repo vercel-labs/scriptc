@@ -47,8 +47,10 @@ ScrSym *scr_sym_retain(ScrSym *s) {
 static const ScrSymEventOps scr_sym_event_ops_table = {
   &scr_sym_retain, &scr_sym_release, &scr_dyn_new_symbol, &scr_sym_to_string,
 };
+static void scr_sym_well_known_make(const char *name, size_t len);
 __attribute__((constructor)) static void scr_sym_event_install(void) {
   scr_sym_event_ops = &scr_sym_event_ops_table;
+  scr_sym_well_known_make_hook = scr_sym_well_known_make;
 }
 
 void scr_sym_release(ScrSym *s) {
@@ -145,6 +147,14 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
     scr_dyn_release(key);
   }
   return symbol;
+}
+
+/* scr_sym_well_known_make_hook (scr_dyn.h): scr_json.c makes the symbols a
+ * Proxy conversion reads through its get trap. */
+static void scr_sym_well_known_make(const char *name, size_t len) {
+  ScrStr *text = scr_str_new(name, len);
+  scr_sym_release(scr_sym_well_known(text));
+  scr_str_release(text);
 }
 
 static void scr_sym_registry_cleanup(void) {

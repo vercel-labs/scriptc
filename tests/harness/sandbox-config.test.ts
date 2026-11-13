@@ -25,6 +25,7 @@ test("runner settings are read after loading the sandbox environment", () => {
       SCRIPTC_LOCAL_TEST_WORKERS: "3",
       SCRIPTC_LOCAL_CASE_SHARDS: "4",
       SCRIPTC_SANDBOX_TIMEOUT: "90m",
+      SCRIPTC_SANDBOX_NATIVE_TIMEOUT: "25m",
     }),
   ).toEqual({
     vcpus: "16",
@@ -33,6 +34,8 @@ test("runner settings are read after loading the sandbox environment", () => {
     localCaseShards: "4",
     sandboxTimeout: "90m",
     sandboxTimeoutMs: 5_400_000,
+    nativeTimeout: "25m",
+    nativeTimeoutMs: 1_500_000,
   });
 });
 
@@ -42,8 +45,14 @@ test("runner settings retain their documented defaults", () => {
     testWorkers: "4",
     localTestWorkers: "2",
     localCaseShards: "2",
-    sandboxTimeout: "45m",
-    sandboxTimeoutMs: 2_700_000,
+    // A lane prepares a managed image and runs a shard that includes the
+    // sanitized self-hosting bootstrap (about 56 minutes alone).
+    sandboxTimeout: "90m",
+    sandboxTimeoutMs: 5_400_000,
+    // One native preparation step: the runtime pack took 6m10s at 8 vCPUs
+    // on Nov 13 and longer when a whole wave prepares at once.
+    nativeTimeout: "20m",
+    nativeTimeoutMs: 1_200_000,
   });
 });
 
@@ -63,6 +72,20 @@ test("the local command deadline follows the configured Sandbox duration", () =>
       "positive duration",
     );
   }
+});
+
+test("each native preparation step has its own, larger limit", () => {
+  expect(sandboxRunnerConfig({ SCRIPTC_SANDBOX_NATIVE_TIMEOUT: "30 s" }).nativeTimeoutMs).toBe(
+    30_000,
+  );
+  for (const duration of ["0s", "-5m", "20 minutes", "1.5h", "999999999h"]) {
+    expect(() => sandboxRunnerConfig({ SCRIPTC_SANDBOX_NATIVE_TIMEOUT: duration })).toThrow(
+      "SCRIPTC_SANDBOX_NATIVE_TIMEOUT must be a positive duration",
+    );
+  }
+  expect(() => sandboxRunnerConfig({ SCRIPTC_SANDBOX_TIMEOUT: "bad" })).toThrow(
+    "SCRIPTC_SANDBOX_TIMEOUT must be a positive duration",
+  );
 });
 
 test("the managed Sandbox image is the default", () => {
@@ -191,13 +214,28 @@ test("OIDC authentication wins and supplies its own Sandbox scope", () => {
   });
   expect(
     sandboxVercelEnvironment(config, {
+      VERCEL_AUTH_TOKEN: "stale-access-token",
       VERCEL_OIDC_TOKEN: "header.payload.signature",
       VERCEL_TOKEN: "legacy-token",
     }),
   ).toEqual({
-    VERCEL_AUTH_TOKEN: "header.payload.signature",
     VERCEL_OIDC_TOKEN: "header.payload.signature",
   });
+});
+
+test("an access token stays the only credential the CLI sees", () => {
+  const config = sandboxVercelConfig({
+    VERCEL_PROJECT_ID: "prj_example",
+    VERCEL_TEAM_ID: "team_example",
+    VERCEL_TOKEN: "legacy-token",
+  });
+  expect(config.oidc).toBe(false);
+  expect(
+    sandboxVercelEnvironment(config, {
+      VERCEL_OIDC_TOKEN: "stale-oidc-token",
+      VERCEL_TOKEN: "legacy-token",
+    }),
+  ).toEqual({ VERCEL_AUTH_TOKEN: "legacy-token" });
 });
 
 test("OIDC scope wins over complete or partial legacy environment scope", () => {

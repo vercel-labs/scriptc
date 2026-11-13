@@ -241,13 +241,17 @@ Environment:
   SCRIPTC_SANDBOX_NATIVE_REFERENCE  Optional built checkout inside the snapshot; its LLVM helper
                             and runtime pack are reused when their inputs are identical
   SCRIPTC_SANDBOX_VCPUS     vCPUs per sandbox (default: 8)
-  SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 45m)
+  SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 90m)
+  SCRIPTC_SANDBOX_NATIVE_TIMEOUT  limit for one native preparation step, the LLVM helper,
+                            the runtime pack, or the libnode pack (default: 20m)
   SCRIPTC_TEST_WORKERS      Vitest workers per sandbox (default: 4)
   SCRIPTC_LOCAL_TEST_WORKERS Vitest workers per local lane (default: 2)
   SCRIPTC_LOCAL_CASE_SHARDS local shards per external suite lane (default: 2)
-  SCRIPTC_LIBNODE           Optional libnode pack inside the Sandbox (for example
-                            /vercel/sandbox/libnode-pack) that the lane exports, so the
-                            Node island tests run there as they do in CI`);
+  SCRIPTC_LIBNODE           Libnode pack inside the Sandbox for the Node island tests.
+                            Defaults to the pinned development pack this runner fetches
+                            into /tmp/scriptc-libnode-pack; set it to name a pack inside
+                            a prepared snapshot instead, so the lane exports that one
+                            and the pack is not fetched again`);
   process.exit(0);
 }
 
@@ -256,8 +260,28 @@ const nativeReference = sandboxNativeReference();
 const bootstrapCommand = sandboxBootstrapCommand(sourceConfig.prepared);
 const vercelConfig = sandboxVercelConfig();
 const vercelProcessEnv = sandboxVercelEnvironment(vercelConfig);
-const { vcpus, testWorkers, localTestWorkers, localCaseShards, sandboxTimeout, sandboxTimeoutMs } =
-  sandboxRunnerConfig();
+const {
+  vcpus,
+  testWorkers,
+  localTestWorkers,
+  localCaseShards,
+  sandboxTimeout,
+  sandboxTimeoutMs,
+  nativeTimeoutMs,
+} = sandboxRunnerConfig();
+
+// The remote lanes run with CI=1, where the Node island tests require a
+// libnode pack instead of skipping (tests/harness/libnode.ts, as CI's
+// .github/actions/libnode provides). A pack named here lives inside a
+// prepared snapshot; without one the runner fetches the pinned development
+// pack into the Sandbox during preparation, so the managed image runs those
+// tests as well.
+const configuredLibnode = process.env.SCRIPTC_LIBNODE?.trim() ?? "";
+const libnodePack = configuredLibnode || "/tmp/scriptc-libnode-pack";
+// The native steps print a line per flavor, not per translation unit. The
+// longest silent phase measured on Nov 13 is the PGO speed flavor at 116
+// seconds; five minutes of silence still means a stuck build.
+const nativeIdleTimeoutMs = Math.min(nativeTimeoutMs, 5 * 60_000);
 
 if (!["plain", "san", "both"].includes(values.lane)) {
   throw new Error(`--lane must be plain, san, or both (got ${values.lane})`);
@@ -879,19 +903,39 @@ try {
         // Resetting the source tree removes dist but preserves node_modules,
         // including TypeScript's incremental metadata. Rebuild both together.
         await execIn(worker, "pnpm", ["build:fresh"], {}, "", 2 * 60_000);
+        if (!configuredLibnode) {
+          await execIn(
+            worker,
+            "node",
+            ["packages/libnode-common/fetch-dev-pack.mjs", "--out", libnodePack],
+            {},
+            "libnode pack",
+            nativeTimeoutMs,
+            "/workspace",
+            nativeIdleTimeoutMs,
+          );
+        }
         // Workspace builds deliberately do not rebuild packaged native artifacts.
         // Every remote lane needs the Linux helper and runtime from this worktree,
         // built from its sources or reused from a reference checkout whose
         // native inputs are identical.
-        await execIn(worker, ...nativeArtifactCommand("llvm"), {}, "LLVM helper", 5 * 60_000);
+        await execIn(
+          worker,
+          ...nativeArtifactCommand("llvm"),
+          {},
+          "LLVM helper",
+          nativeTimeoutMs,
+          "/workspace",
+          nativeIdleTimeoutMs,
+        );
         await execIn(
           worker,
           ...nativeArtifactCommand("runtime"),
           { CC: "zig", AR: "zig" },
           "runtime pack",
-          5 * 60_000,
+          nativeTimeoutMs,
           "/workspace",
-          3 * 60_000,
+          nativeIdleTimeoutMs,
         );
         // Keep Zig available to the portable compiler bootstrap and entropy
         // contract, without expanding the conditional cross-target cache tests.
@@ -917,7 +961,7 @@ try {
 
     await allWorkers("Testing", async (worker) => {
       const sharedTestEnv = {
-        ...sandboxLaneEnv(worker.lane),
+        ...sandboxLaneEnv(worker.lane, { ...process.env, SCRIPTC_LIBNODE: libnodePack }),
         // Platform artifact contracts run against the native host below.
         // Remote lanes retain every portable behavior assertion.
         SCRIPTC_PORTABLE_ONLY: "1",

@@ -7580,6 +7580,46 @@ static ScrDyn *sf_rejected(void) {
   return out;
 }
 
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * over the fetch unit's web streams, which Node exposes as ordinary
+ * ReadableStream, WritableStream and TransformStream instances: a body
+ * answers a ReadableStream's kIs* getters (its state is "readable" until
+ * the close drains the queue or an error arrives), the transform's
+ * writable side answers a WritableStream's (kIsErrored at ERRORED, never
+ * ERRORING; kIsWritable only while WRITABLE), and the pair itself, its
+ * readers and writers answer as an object with no booleans. Every web
+ * stream is a non-Node stream, so isDestroyed answers null, and the side a
+ * class does not have answers null. */
+static ScrDyn *sf_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
+  int w = (int)which;
+  if (tag == SCR_DYNH_WEB_STREAM) {
+    SfStream *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->error != NULL);
+      case 2: return scr_dyn_new_bool(s->disturbed);
+      case 3: return scr_dyn_new_bool(!s->closed && s->error == NULL);
+      default: return scr_dyn_new_null();
+    }
+  }
+  if (tag == SCR_DYNH_WEB_WRITABLE) {
+    SfTransform *t = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(t->state == SFW_ERRORED);
+      case 2: return scr_dyn_new_bool(false);
+      case 3: return scr_dyn_new_null();
+      default: return scr_dyn_new_bool(t->state == SFW_WRITABLE);
+    }
+  }
+  switch (w) {
+    case 0:
+    case 3:
+    case 4: return scr_dyn_new_null();
+    default: return scr_dyn_new_bool(false);
+  }
+}
+
 static const ScrDynHandleOps sf_signal_ops = {
     "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
@@ -7596,18 +7636,20 @@ static const ScrDynHandleOps sf_stream_ops = {
 #endif
     .methods = sf_stream_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_reader_ops = {
     "ReadableStreamDefaultReader", &sf_reader_handle_retain_v,
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
     &sf_no_set, NULL, .methods = sf_reader_methods,
     .invalid_this =
         "Value of \"this\" must be of type ReadableStreamDefaultReader",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
-    &sf_no_set, NULL};
+    &sf_no_set, NULL, .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_request_ops = {
     "Request", &sf_request_retain_v, &sf_request_release_v,
     &sf_request_invoke, &sf_request_get, &sf_no_set, NULL,
@@ -7623,20 +7665,23 @@ static const ScrDynHandleOps sf_headers_ops = {
 
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,
-    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL};
+    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writable_ops = {
     "WritableStream", &sf_transform_retain_v, &sf_transform_release_v,
     &sf_writable_invoke, &sf_writable_get, &sf_no_set, NULL,
     .methods = sf_writable_methods,
     .invalid_this = "Value of \"this\" must be of type WritableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writer_ops = {
     "WritableStreamDefaultWriter", &sf_writer_handle_retain_v,
     &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
     &sf_no_set, NULL, .methods = sf_writer_methods,
     .invalid_this =
         "Value of \"this\" must be of type WritableStreamDefaultWriter",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 
 static void sf_teardown(void) {
   while (sf_live) {

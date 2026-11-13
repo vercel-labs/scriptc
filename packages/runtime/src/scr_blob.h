@@ -31,13 +31,14 @@ bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
 /* fs.openAsBlob's Blob (scr_blob.c): one file part of `size` bytes from the
  * path's start, read lazily at every read, which re-stats the file and
  * fails with a NotReadableError when its size or mtime nanoseconds differ
- * from the snapshot the caller took (libuv's FdEntry check); on POSIX the
- * device and inode (`dev`, `ino`) must match the snapshot too, so a
- * substitute that copied the visible metadata is refused. `type` is stored
- * verbatim; the Blob is marked not cloneable, as Node marks the direct
- * result. Answers +1; borrows both strings. */
-ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec, double dev,
-                           double ino);
+ * from the snapshot the caller took (libuv's FdEntry check). The device and
+ * inode (`dev`, `ino`) must match the snapshot too, so a substitute that
+ * copied the visible metadata is refused; `has_identity` is false when
+ * creation could not open the file, and such a Blob refuses every read.
+ * `type` is stored verbatim; the Blob is marked not cloneable, as Node
+ * marks the direct result. Answers +1; borrows both strings. */
+ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec,
+                           bool has_identity, uint64_t dev, uint64_t ino);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

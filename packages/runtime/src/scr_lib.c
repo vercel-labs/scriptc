@@ -6738,6 +6738,9 @@ double scr_stats_gid(ScrStats *s) { return (double)s->fields[SCR_STATS_GID]; }
 double scr_stats_rdev(ScrStats *s) { return (double)s->fields[SCR_STATS_RDEV]; }
 double scr_stats_blksize(ScrStats *s) { return (double)s->fields[SCR_STATS_BLKSIZE]; }
 double scr_stats_ino(ScrStats *s) { return (double)s->fields[SCR_STATS_INO]; }
+uint64_t scr_stats_dev_raw(ScrStats *s) { return s->fields[SCR_STATS_DEV]; }
+uint64_t scr_stats_ino_raw(ScrStats *s) { return s->fields[SCR_STATS_INO]; }
+bool scr_stats_has_identity(ScrStats *s) { return s->has_identity; }
 double scr_stats_size(ScrStats *s) { return (double)s->fields[SCR_STATS_SIZE]; }
 double scr_stats_blocks(ScrStats *s) { return (double)s->fields[SCR_STATS_BLOCKS]; }
 
@@ -7069,6 +7072,7 @@ static ScrStats *scr_stats_of_path(const ScrStr *path, const char *op,
   s->is_file = !is_link && (have_standard ? !standard.Directory : !is_dir);
   s->is_dir = !is_link && (have_standard ? standard.Directory : is_dir);
   s->is_symlink = is_link;
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
   s->fields[SCR_STATS_MODE] = scr_stats_win_mode(
     is_link ? SCR_STATS_IFLNK : s->is_dir ? SCR_STATS_IFDIR : SCR_STATS_IFREG,
@@ -7103,6 +7107,7 @@ static ScrStats *scr_stats_of_fd_win(int fd, const struct stat *st) {
   if (os_handle == INVALID_HANDLE_VALUE) return out;
   BY_HANDLE_FILE_INFORMATION basic;
   if (GetFileInformationByHandle(os_handle, &basic)) {
+    out->has_identity = true;
     out->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
     out->fields[SCR_STATS_INO] = ((uint64_t)basic.nFileIndexHigh << 32) | basic.nFileIndexLow;
     out->fields[SCR_STATS_NLINK] = basic.nNumberOfLinks;
@@ -7135,6 +7140,7 @@ static ScrStats *scr_stats_of(const struct stat *st) {
   s->is_file = S_ISREG(st->st_mode);
   s->is_dir = S_ISDIR(st->st_mode);
   s->is_symlink = S_ISLNK(st->st_mode);
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = (uint64_t)st->st_dev;
   s->fields[SCR_STATS_MODE] = (uint64_t)st->st_mode;
   s->fields[SCR_STATS_NLINK] = (uint64_t)st->st_nlink;
@@ -7207,6 +7213,7 @@ static ScrStats *scr_stats_of_statx(const ScrStatx *sx) {
   s->is_file = type == SCR_STATS_IFREG;
   s->is_dir = type == SCR_STATS_IFDIR;
   s->is_symlink = type == SCR_STATS_IFLNK;
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = scr_stats_makedev(sx->dev_major, sx->dev_minor);
   s->fields[SCR_STATS_MODE] = sx->mode;
   s->fields[SCR_STATS_NLINK] = sx->nlink;

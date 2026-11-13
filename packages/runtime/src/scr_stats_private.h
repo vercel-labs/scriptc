@@ -37,6 +37,11 @@ struct ScrStats {
   bool is_file;
   bool is_dir;
   bool is_symlink; /* lstat only — a followed stat never sees one */
+  /* Whether DEV and INO name the object: a POSIX stat always does, a
+   * Windows one only when it came from a handle (GetFileInformationByHandle
+   * reports the volume serial number and file index; the CRT stat reports
+   * neither). Identity checks refuse a snapshot without one. */
+  bool has_identity;
   uint64_t fields[SCR_STATS_FIELDS]; /* blocks counts 512-byte units */
   int64_t sec[4];
   int64_t nsec[4];

@@ -610,6 +610,13 @@ bool scr_stats_is_dir(ScrStats *s);
 bool scr_stats_is_symlink(ScrStats *s); /* lstat snapshots only */
 double scr_stats_dev(ScrStats *s);
 double scr_stats_ino(ScrStats *s);
+/* The same two fields as the full integers the snapshot holds: identity
+ * checks compare these (Node's Stats members are doubles, as they are). */
+uint64_t scr_stats_dev_raw(ScrStats *s);
+uint64_t scr_stats_ino_raw(ScrStats *s);
+/* Whether DEV and INO name the object: always on POSIX, on Windows only for
+ * a snapshot taken through a handle. */
+bool scr_stats_has_identity(ScrStats *s);
 double scr_stats_size(ScrStats *s);
 double scr_stats_blocks(ScrStats *s); /* allocated size in 512-byte units */
 double scr_stats_nlink(ScrStats *s);

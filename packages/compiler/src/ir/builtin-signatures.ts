@@ -1972,7 +1972,7 @@ function buildLibFnSignatures() {
      * union (null = spawn failure or signal death, type-directed
      * construction in the backend like process.envGet); stdout/stderr are
      * +1 strings. */
-    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING)], result: SPAWNRES_T },
+    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING), STRING], result: SPAWNRES_T },
     // spawnSync's options form: timeout, killSignal name ("" = SIGTERM),
     // and the three stdio modes.
     /** spawnSync with options (scr_child.c): the cp.spawnSync core plus the
@@ -1986,13 +1986,13 @@ function buildLibFnSignatures() {
      * call site's `Signals | null` union (null = exited normally or spawn
      * failure), constructed type-directedly like spawnRes.status. */
     "cp.spawnSyncOpts": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
      * pairs replace the child's environment (recordToEnvPairs). */
     "cp.spawnSyncEnv": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING), STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
@@ -2001,7 +2001,7 @@ function buildLibFnSignatures() {
      * maps the value to the three modes. Args (cmd, argv, timeout,
      * killSignal, stdio). Never throws, like the other spawnSync forms. */
     "cp.spawnSyncStdioStr": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING, STRING],
       result: SPAWNRES_T,
     },
     /** spawnSync with the `cwd`, `input`, and `shell` options (the
@@ -2016,7 +2016,20 @@ function buildLibFnSignatures() {
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        BOOL,
+        STRING,
+      ],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -2035,6 +2048,7 @@ function buildLibFnSignatures() {
         BOOL,
         BOOL,
         arrayOf(STRING),
+        STRING,
       ],
       result: SPAWNRES_T,
     },
@@ -3340,13 +3354,13 @@ function buildLibFnSignatures() {
      * parameter, Node's event object. */
     "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, encoding —
      * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
      * (+ captured stderr) on non-zero exit or signal death, "spawnSync
      * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
      * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
-     * and stderr properties (Buffer outputs when buffers is set: no
-     * encoding option). Result is the captured utf8 stdout (+1). */
+     * and stderr properties (decoded strings: the encoding option's name).
+     * Result is the captured stdout decoded with that encoding (+1). */
     "cp.execSync": {
       argTypes: [
         STRING,
@@ -3360,9 +3374,30 @@ function buildLibFnSignatures() {
         F64,
         F64,
         F64,
-        BOOL,
+        STRING,
       ],
       result: STRING,
+    },
+    /** The unencoded execFileSync/execSync form (cp.execSyncBytes): the
+     * same call with Node's Buffer result and Buffer error outputs. Args:
+     * cmd, argv, shell, input, hasInput, cwd, hasEnv, envPairs, timeoutMs,
+     * stdoutMode, stderrMode. THROWS Node's exact errors, with the
+     * status/signal/output/pid/stdout/stderr properties. */
+    "cp.execSyncBytes": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        BOOL,
+        STRING,
+        BOOL,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+      ],
+      result: BYTES_U8,
     },
     /** The promisified-execFile/exec capture (args: cmd, argv, shell, cwd,
      * hasEnv, envPairs, timeoutMs; shell marks exec's /bin/sh -c argv, as
@@ -3469,6 +3504,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
       result: CHILD_T,
     },
+    /** The callback slice with `env`, `timeout` and `killSignal` (the
+     * SCR_CHILD_CP_OPTIONS build): (cmd, argv, callback, shell, cwd,
+     * hasEnv, envPairs, timeoutMs, killSignal). cwd "" = inherit;
+     * envPairs REPLACES the environment when hasEnv (an empty list with
+     * hasEnv is Node's `env: {}`); timeoutMs 0 = no deadline; killSignal
+     * "" = the SIGTERM default, otherwise a signal name resolved by the
+     * runtime. Throws Node's option errors synchronously (validateTimeout's
+     * ERR_OUT_OF_RANGE, sanitizeKillSignal's ERR_UNKNOWN_SIGNAL) before the
+     * child starts. The callback contract is cp.execFile's. */
+    "cp.execFileOpts": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
+      result: CHILD_T,
+    },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).
@@ -3495,6 +3543,34 @@ function buildLibFnSignatures() {
         BOOL,
         arrayOf(STRING),
         STRING,
+      ],
+      result: CHILD_T,
+    },
+    /** spawn's options form with `timeout`, `killSignal` and `signal`
+     * (the SCR_CHILD_CP_OPTIONS build): cp.spawnOpts' arguments, then
+     * timeoutMs (0 = no timer), killSignal and signal as checked-dynamic
+     * values (undefined = absent; killSignal may be a name, matched
+     * without case, or a signal number). Node's launch checks run in its
+     * order — validateTimeout, validateAbortSignal, sanitizeKillSignal —
+     * before the child starts, so unlike cp.spawnOpts this call can throw
+     * synchronously. */
+    "cp.spawnArmed": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+        F64,
+        F64,
+        BOOL,
+        BOOL,
+        BOOL,
+        arrayOf(STRING),
+        STRING,
+        F64,
+        DYN,
+        DYN,
       ],
       result: CHILD_T,
     },
@@ -3716,8 +3792,15 @@ function buildLibFnSignatures() {
     "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
+    /** ChildProcess[Symbol.dispose](): Node's dispose sends SIGTERM only
+     * while `killed` is false. */
+    "child.dispose": { argTypes: [CHILD_T], result: VOID },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
     "child.ref": { argTypes: [CHILD_T], result: VOID },
+    /** subprocess.channel: the checked-dynamic Control handle (undefined
+     * without an IPC channel, null after a disconnect); the lowering
+     * supplies its DYN type. */
+    "child.channel": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
     /* The Buffer captures (spawnSync without an encoding option): the same

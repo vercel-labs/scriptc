@@ -79,6 +79,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childResume",
   "stream.childIsPaused",
   "stream.childFlowing",
+  // subprocess.channel answers the child's IPC state: undefined when it
+  // never had a channel, null once it closed, else a handle over the
+  // child. The island path reads the island ChildProcess's `channel`
+  // data property, which Node assigns as a field; neither path runs an
+  // accessor, a coercion or a callback.
+  "child.channel",
   // Builds the flags object once from constants and retains it.
   "process.features",
   // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the

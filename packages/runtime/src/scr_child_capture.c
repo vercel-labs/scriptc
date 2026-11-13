@@ -90,14 +90,14 @@ static void scr_spawn_capture_buffers_sweep(void) {
  * references an optional one (the unit tests and the pack's own archive
  * link that set alone). */
 ScrBytes *scr_spawn_res_stdout_bytes(ScrSpawnRes *r) {
-  ScrStr *capture = scr_spawn_res_stdout(r); /* +1 */
+  ScrStr *capture = scr_spawn_res_stdout_raw(r); /* +1, undecoded */
   ScrBytes *bytes = scr_spawn_res_capture_bytes(capture);
   scr_str_release(capture);
   return bytes;
 }
 
 ScrBytes *scr_spawn_res_stderr_bytes(ScrSpawnRes *r) {
-  ScrStr *capture = scr_spawn_res_stderr(r); /* +1 */
+  ScrStr *capture = scr_spawn_res_stderr_raw(r); /* +1, undecoded */
   ScrBytes *bytes = scr_spawn_res_capture_bytes(capture);
   scr_str_release(capture);
   return bytes;

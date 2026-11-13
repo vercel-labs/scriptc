@@ -11454,14 +11454,15 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1361-spawn-events.ts",
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/1525-child-exit-signal.ts",
           "tests/corpus/1565-spawn-pipe-streams.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
           "tests/corpus/2895-child-stdin-write-after-end.ts",
-          "tests/corpus/2896-child-stdin-write-after-finish.ts",
           "tests/corpus/2897-child-stdin-destroy.ts",
-          "tests/corpus/2898-child-stdin-spawn-failure.ts",
           "tests/corpus/2911-execfile-callback.ts",
           "tests/corpus/2939-child-shell-text.ts",
           "tests/corpus/2946-child-fork-ipc/main.ts",
@@ -11469,10 +11470,37 @@
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
           "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/5060-child-fork-exit-after-messages/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/5062-child-fork-message-before-eof/main.ts",
           "tests/corpus/5627-exec-callback.ts",
+          "tests/corpus/5636-child-error-props.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
+          "tests/corpus/8722-child-spawn-error-fields.cjs",
           "tests/corpus/8921-child-max-buffer-sync.js",
           "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/9475-child-signal-start-state.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-detached-session.mjs",
+          "tests/corpus/child-exec-env-timeout.cjs",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-execfile-env-timeout.ts",
+          "tests/corpus/child-execfile-option-order.ts",
+          "tests/corpus/child-execfile-timeout-overflow.ts",
+          "tests/corpus/child-kill-signal-case.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
+          "tests/corpus/child-stdin-pipe-interface.ts",
+          "tests/corpus/child-stdio-options/main.ts",
+          "tests/corpus/child-stdio-stream-types.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs",
+          "tests/corpus/child-symbol-dispose/main.ts",
           "tests/corpus/compat-child-process-handle.ts",
           "tests/fixtures/node-types/child-exec.ts",
           "tests/harness/project-config.test.ts"
@@ -11549,7 +11577,9 @@
         "tests": [
           "tests/corpus/5627-exec-callback.ts",
           "tests/fixtures/node-types/child-exec.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/child-exec-env-timeout.cjs",
+          "tests/corpus/child-kill-signal-case.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11575,7 +11605,11 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.child_process.execFile",
         "tests": [
-          "tests/corpus/2911-execfile-callback.ts"
+          "tests/corpus/2911-execfile-callback.ts",
+          "tests/corpus/child-execfile-env-timeout.ts",
+          "tests/corpus/child-execfile-timeout-overflow.ts",
+          "tests/corpus/child-kill-signal-case.ts",
+          "tests/corpus/child-execfile-option-order.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11601,7 +11635,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.child_process.fork",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11635,7 +11671,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11658,9 +11701,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.options.detached",
         "tests": [
+          "tests/corpus/child-detached-session.mjs",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -11684,8 +11728,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.options.stdio",
+        "tests": [
+          "tests/corpus/child-stdio-options/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -11741,7 +11788,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11775,7 +11829,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11809,7 +11870,14 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
+          "tests/corpus/child-spawn-timeout.ts",
+          "tests/corpus/child-spawn-signal.ts",
+          "tests/corpus/child-spawn-timeout-overflow.ts",
+          "tests/corpus/child-spawn-options-dynamic.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -11832,11 +11900,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.maxBuffer",
         "tests": [
           "tests/corpus/8921-child-max-buffer-sync.js",
-          "tests/corpus/8922-child-max-buffer-async.ts"
+          "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11931,7 +12000,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.ChildProcess",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11954,10 +12024,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.disconnect",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11980,10 +12052,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.kill",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12006,9 +12080,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess",
         "tests": [
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs",
           "tests/corpus/2844-node-disposable-resources.ts"
         ]
       },
@@ -12032,10 +12108,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.ref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-detached-session.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -12061,7 +12139,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.send",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5060-child-fork-exit-after-messages/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12084,10 +12163,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.subprocess.unref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1471-child-unref.ts",
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-detached-session.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -12110,8 +12191,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.channel",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -12133,8 +12217,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.ref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12156,8 +12243,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.unref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12179,10 +12269,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.connected",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12205,10 +12296,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.exitCode",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12231,10 +12323,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.killed",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1470-child-lifecycle.ts",
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-symbol-dispose-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -12257,9 +12351,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.pid",
         "tests": [
+          "tests/corpus/1470-child-lifecycle.ts",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12283,9 +12378,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.signalCode",
         "tests": [
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12309,7 +12406,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.spawnargs",
         "tests": [
           "tests/corpus/child-spawnfile-spawnargs.ts"
@@ -12335,7 +12432,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.spawnfile",
         "tests": [
           "tests/corpus/child-spawnfile-spawnargs.ts"
@@ -12361,11 +12458,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stderr",
         "tests": [
           "tests/corpus/1565-spawn-pipe-streams.ts",
-          "tests/corpus/2939-child-shell-text.ts"
+          "tests/corpus/child-stdio-stream-types.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12388,15 +12485,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stdin",
         "tests": [
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
           "tests/corpus/2895-child-stdin-write-after-end.ts",
-          "tests/corpus/2896-child-stdin-write-after-finish.ts",
           "tests/corpus/2897-child-stdin-destroy.ts",
-          "tests/corpus/2898-child-stdin-spawn-failure.ts"
+          "tests/corpus/child-stdin-pipe-interface.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12420,7 +12516,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "evidence": "compiler-feature:child_process.stdio"
       },
       "anchorSource": "ancestor"
     },
@@ -12442,11 +12538,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.stdout",
         "tests": [
           "tests/corpus/1565-spawn-pipe-streams.ts",
-          "tests/corpus/2939-child-shell-text.ts"
+          "tests/corpus/child-stdio-stream-types.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12469,11 +12565,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'close'",
         "tests": [
-          "tests/corpus/2939-child-shell-text.ts",
-          "tests/corpus/3131-child-rest-listeners.js"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/3131-child-rest-listeners.js",
+          "tests/corpus/child-symbol-dispose/main.ts",
+          "tests/corpus/child-stdio-options/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12496,10 +12595,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'disconnect'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/5061-child-fork-local-disconnect/main.ts",
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12522,9 +12623,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'error'",
         "tests": [
+          "tests/corpus/5636-child-error-props.ts",
+          "tests/corpus/8722-child-spawn-error-fields.cjs",
           "tests/corpus/compat-child-process-handle.ts"
         ]
       },
@@ -12548,10 +12651,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'exit'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/1525-child-exit-signal.ts",
+          "tests/corpus/8412-child-off-signalcode.ts",
+          "tests/corpus/child-symbol-dispose/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12577,7 +12682,10 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'message'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/5062-child-fork-message-before-eof/main.ts",
+          "tests/corpus/6421-process-send-presence-fork/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12600,10 +12708,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.'spawn'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/9475-child-signal-start-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87200,8 +87309,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:readline.InterfaceConstructor"
       },
       "anchorSource": "exact"
     },

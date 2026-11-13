@@ -1822,8 +1822,17 @@ static int scr_signal_by_name(const char *name) {
 #ifdef SIGBREAK
       {"SIGBREAK", SIGBREAK},
 #endif
+#ifdef SIGSTKFLT
+      {"SIGSTKFLT", SIGSTKFLT},
+#endif
+#ifdef SIGPWR
+      {"SIGPWR", SIGPWR},
+#endif
 #ifdef SIGIO
       {"SIGIO", SIGIO},
+#endif
+#ifdef SIGPOLL
+      {"SIGPOLL", SIGPOLL},
 #endif
 #ifdef SIGINFO
       {"SIGINFO", SIGINFO},
@@ -1839,6 +1848,24 @@ static int scr_signal_by_name(const char *name) {
  * one signal-name story): the resolved number, or -1 for unknown names. */
 int scr_signal_from_name(const ScrStr *signal) {
   return strlen(signal->data) == signal->len ? scr_signal_by_name(signal->data) : -1;
+}
+
+/* The same table for the places Node matches a signal name
+ * case-insensitively: convertToValidSignal (internal/util) uppercases the
+ * string before the lookup, so child.kill("sigkill") and a killSignal of
+ * "SigTerm" resolve like the uppercase spelling. process.on's event names
+ * are matched as written, so they keep scr_signal_from_name. Signal names
+ * are a handful of bytes, so the uppercase copy lives on the stack; -1 for
+ * an unknown name or one longer than the table's longest. */
+int scr_signal_from_name_ci(const ScrStr *signal) {
+  char buf[16];
+  if (signal->len >= sizeof buf) return -1;
+  for (size_t i = 0; i < signal->len; i++) {
+    char ch = signal->data[i];
+    buf[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 'a' + 'A') : ch;
+  }
+  buf[signal->len] = '\0';
+  return scr_signal_by_name(buf);
 }
 
 /* The reverse walk, for spawnSync's result.signal: the FIRST name with
@@ -1870,6 +1897,9 @@ const char *scr_signal_name(int sig) {
       {"SIGALRM", SIGALRM},
 #endif
       {"SIGTERM", SIGTERM},
+#ifdef SIGSTKFLT
+      {"SIGSTKFLT", SIGSTKFLT},
+#endif
 #ifdef SIGCHLD
       {"SIGCHLD", SIGCHLD}, {"SIGCONT", SIGCONT},     {"SIGSTOP", SIGSTOP},
       {"SIGTSTP", SIGTSTP}, {"SIGTTIN", SIGTTIN},     {"SIGTTOU", SIGTTOU},
@@ -1877,6 +1907,9 @@ const char *scr_signal_name(int sig) {
       {"SIGVTALRM", SIGVTALRM}, {"SIGPROF", SIGPROF},
 #endif
       {"SIGWINCH", SIGWINCH},
+#ifdef SIGPWR
+      {"SIGPWR", SIGPWR},
+#endif
 #ifdef SIGSYS
       {"SIGSYS", SIGSYS},
 #endif
@@ -1885,6 +1918,9 @@ const char *scr_signal_name(int sig) {
 #endif
 #ifdef SIGIO
       {"SIGIO", SIGIO},
+#endif
+#ifdef SIGPOLL
+      {"SIGPOLL", SIGPOLL},
 #endif
 #ifdef SIGINFO
       {"SIGINFO", SIGINFO},

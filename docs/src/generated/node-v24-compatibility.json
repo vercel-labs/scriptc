@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3764,
+    "matrixRows": 3763,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 125,
+      "not-applicable": 126,
       "chapters": 6
     }
   },
@@ -290,8 +290,8 @@
     {
       "slug": "readline",
       "title": "Readline",
-      "entries": 43,
-      "apiEntries": 43
+      "entries": 42,
+      "apiEntries": 42
     },
     {
       "slug": "repl",
@@ -8749,7 +8749,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8772,9 +8772,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -8864,7 +8864,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8910,7 +8910,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8933,7 +8933,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8956,7 +8956,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -8979,7 +8979,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9025,7 +9025,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9048,9 +9048,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9071,9 +9071,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9094,9 +9094,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9117,7 +9117,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9140,7 +9140,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9163,7 +9163,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9186,7 +9186,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9209,7 +9209,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9232,7 +9232,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9255,7 +9255,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9278,7 +9278,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9301,7 +9301,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9325,8 +9325,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -9347,7 +9347,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9370,7 +9370,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9393,7 +9393,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9416,7 +9416,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9439,7 +9439,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -9485,7 +9485,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -56177,7 +56177,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -56620,29 +56620,6 @@
       }
     },
     {
-      "id": "readline:cdf3ee503158",
-      "chapter": "readline",
-      "kind": "class",
-      "name": "InterfaceConstructor",
-      "signature": "Class: `InterfaceConstructor`",
-      "label": "InterfaceConstructor",
-      "apiSymbol": "InterfaceConstructor",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-interfaceconstructor",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "readline:7f16c47dd206",
       "chapter": "readline",
       "kind": "method",
@@ -56650,7 +56627,7 @@
       "signature": "`rl.close()`",
       "label": "rl.close()",
       "apiSymbol": "rl.close",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlclose",
       "nodeStability": {
@@ -56673,7 +56650,7 @@
       "signature": "`rl[Symbol.dispose]()`",
       "label": "rl[Symbol.dispose]()",
       "apiSymbol": "rl",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsymboldispose",
       "nodeStability": {
@@ -56696,7 +56673,7 @@
       "signature": "`rl.pause()`",
       "label": "rl.pause()",
       "apiSymbol": "rl.pause",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlpause",
       "nodeStability": {
@@ -56719,7 +56696,7 @@
       "signature": "`rl.prompt([preserveCursor])`",
       "label": "rl.prompt([preserveCursor])",
       "apiSymbol": "rl.prompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlpromptpreservecursor",
       "nodeStability": {
@@ -56742,7 +56719,7 @@
       "signature": "`rl.resume()`",
       "label": "rl.resume()",
       "apiSymbol": "rl.resume",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlresume",
       "nodeStability": {
@@ -56765,7 +56742,7 @@
       "signature": "`rl.setPrompt(prompt)`",
       "label": "rl.setPrompt(prompt)",
       "apiSymbol": "rl.setPrompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsetpromptprompt",
       "nodeStability": {
@@ -56788,7 +56765,7 @@
       "signature": "`rl.getPrompt()`",
       "label": "rl.getPrompt()",
       "apiSymbol": "rl.getPrompt",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlgetprompt",
       "nodeStability": {
@@ -56811,7 +56788,7 @@
       "signature": "`rl.write(data[, key])`",
       "label": "rl.write(data[, key])",
       "apiSymbol": "rl.write",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlwritedata-key",
       "nodeStability": {
@@ -56834,7 +56811,7 @@
       "signature": "`rl[Symbol.asyncIterator]()`",
       "label": "rl[Symbol.asyncIterator]()",
       "apiSymbol": "rl",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlsymbolasynciterator",
       "nodeStability": {
@@ -56857,7 +56834,7 @@
       "signature": "`rl.getCursorPos()`",
       "label": "rl.getCursorPos()",
       "apiSymbol": "rl.getCursorPos",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "rlgetcursorpos",
       "nodeStability": {
@@ -56880,7 +56857,7 @@
       "signature": "`line` Type: {string}",
       "label": "line",
       "apiSymbol": "line",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "class-interfaceconstructor",
       "nodeStability": {
@@ -56903,7 +56880,7 @@
       "signature": "`cursor` Type: {number|undefined}",
       "label": "cursor",
       "apiSymbol": "cursor",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "class-interfaceconstructor",
       "nodeStability": {
@@ -56926,7 +56903,7 @@
       "signature": "Event: `'close'`",
       "label": "'close'",
       "apiSymbol": "'close'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-close",
       "nodeStability": {
@@ -56949,7 +56926,7 @@
       "signature": "Event: `'error'`",
       "label": "'error'",
       "apiSymbol": "'error'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-error",
       "nodeStability": {
@@ -56972,7 +56949,7 @@
       "signature": "Event: `'line'`",
       "label": "'line'",
       "apiSymbol": "'line'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-line",
       "nodeStability": {
@@ -56995,7 +56972,7 @@
       "signature": "Event: `'history'`",
       "label": "'history'",
       "apiSymbol": "'history'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-history",
       "nodeStability": {
@@ -57018,7 +56995,7 @@
       "signature": "Event: `'pause'`",
       "label": "'pause'",
       "apiSymbol": "'pause'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-pause",
       "nodeStability": {
@@ -57041,7 +57018,7 @@
       "signature": "Event: `'resume'`",
       "label": "'resume'",
       "apiSymbol": "'resume'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-resume",
       "nodeStability": {
@@ -57064,7 +57041,7 @@
       "signature": "Event: `'SIGCONT'`",
       "label": "'SIGCONT'",
       "apiSymbol": "'SIGCONT'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigcont",
       "nodeStability": {
@@ -57087,7 +57064,7 @@
       "signature": "Event: `'SIGINT'`",
       "label": "'SIGINT'",
       "apiSymbol": "'SIGINT'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigint",
       "nodeStability": {
@@ -57110,7 +57087,7 @@
       "signature": "Event: `'SIGTSTP'`",
       "label": "'SIGTSTP'",
       "apiSymbol": "'SIGTSTP'",
-      "depth": 2,
+      "depth": 1,
       "scope": "api",
       "anchor": "event-sigtstp",
       "nodeStability": {

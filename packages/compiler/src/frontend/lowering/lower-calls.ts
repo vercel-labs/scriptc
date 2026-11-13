@@ -199,6 +199,7 @@ import {
   lowerChildStreamMethodCall,
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
+import { lowerChildDisposeCall } from "./builtins/child-process.js";
 import {
   heldLoaderMemberThrow,
   isDirectOnlyResolveCallee,
@@ -2306,6 +2307,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (timersDispose) return timersDispose;
     const symbolMethod = lowerClassSymbolMethodCall(lowerer, expr);
     if (symbolMethod) return symbolMethod;
+    const childDispose = lowerChildDisposeCall(lowerer, expr);
+    if (childDispose) return childDispose;
     const readlineDispose = lowerReadlineDisposeCall(lowerer, expr);
     if (readlineDispose) return readlineDispose;
     const dirDispose = lowerDirDisposeCall(lowerer, expr);

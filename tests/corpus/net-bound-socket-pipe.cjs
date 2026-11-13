@@ -41,6 +41,12 @@ attempt("exclusive null", () => new net.BoundSocket({ path: socketPath, reusePor
 const longDir = path.join(dir, "d".repeat(40));
 fs.mkdirSync(longDir, { recursive: true });
 attempt("exclusive long", () => new net.BoundSocket({ path: path.join(longDir, "server.sock"), port: 0 }));
+// errors.js then cuts the inspected tail at 128 UTF-16 code units and
+// appends "...", so a directory long enough to push the rendering past that
+// loses the properties after the path.
+const longestDir = path.join(dir, "e".repeat(80));
+fs.mkdirSync(longestDir, { recursive: true });
+attempt("exclusive longest", () => new net.BoundSocket({ path: path.join(longestDir, "server.sock"), port: 0 }));
 attempt("null path", () => new net.BoundSocket({ path: null }));
 attempt("long path", () => new net.BoundSocket({ path: path.join(dir, "x".repeat(120)) }));
 attempt("empty path", () => {

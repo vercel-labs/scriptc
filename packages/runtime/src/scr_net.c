@@ -3721,6 +3721,29 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
   }
 }
 
+/* ERR_INVALID_ARG_VALUE's Received tail: inspect the value and, as
+ * errors.js does, keep the first 128 UTF-16 code units of that rendering
+ * and append "..." when it runs longer. The cut is part of the message, so
+ * an object broken one property per line can lose the properties after the
+ * first when a path makes the lines long. */
+static void scr_net_received_tail_into(const ScrDyn *v, ScrJsonBuf *b, int max_depth) {
+  ScrJsonBuf tail;
+  scr_jb_init(&tail);
+  scr_net_inspect_into(v, &tail, 0, max_depth);
+  ScrStr *text = scr_jb_finish(&tail);
+  if (scr_str_utf16_len(text) > 128) {
+    ScrStr *head = scr_str_slice(text, 0, 128);
+    ScrStr *dots = scr_str_new("...", 3);
+    ScrStr *cut = scr_str_concat(head, dots);
+    scr_str_release(head);
+    scr_str_release(dots);
+    scr_str_release(text);
+    text = cut;
+  }
+  scr_jb_write(b, text->data, text->len);
+  scr_str_release(text);
+}
+
 /* ERR_INVALID_ARG_VALUE over a runtime option bag. */
 static void scr_net_throw_arg_value(const char *name, const ScrDyn *v, const char *reason) {
   ScrJsonBuf b;
@@ -3731,7 +3754,7 @@ static void scr_net_throw_arg_value(const char *name, const ScrDyn *v, const cha
   scr_jb_puts(&b, "' ");
   scr_jb_puts(&b, reason != NULL ? reason : "is invalid");
   scr_jb_puts(&b, ". Received ");
-  scr_net_inspect_into(v, &b, 0, 2); /* inspect()'s default depth */
+  scr_net_received_tail_into(v, &b, 2); /* inspect()'s default depth */
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
   scr_str_release(msg);
@@ -6827,7 +6850,7 @@ static void scr_net_bound_mutual_exclusion(const ScrDyn *options) {
   scr_jb_init(&b);
   scr_jb_puts(&b, "The argument 'options' path is mutually exclusive with host, port, ipv6Only, "
                   "and reusePort. Received ");
-  scr_net_inspect_into(options, &b, 0, 2); /* util.inspect's rendering, line breaks included */
+  scr_net_received_tail_into(options, &b, 2); /* util.inspect's rendering, line breaks included */
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
   scr_str_release(msg);

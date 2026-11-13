@@ -10055,7 +10055,12 @@ void scr_child_channel_ref(ScrChild *c) {
                 scr_dyn_release(channel);
                 return);
   bool before = scr_child_liveness(c);
-  if (c->ipc != NULL && !c->settled) c->channel_reffed = true;
+  /* Node's Control holds the pipe handle only while the channel is
+   * connected: on disconnect the handle is dropped, and ref() on a saved
+   * control object does nothing, so a disconnected channel never rejoins
+   * the loop's keep-alive set. */
+  if (c->ipc != NULL && c->ipc->connected && !c->settled)
+    c->channel_reffed = true;
   scr_child_liveness_apply(c, before);
 }
 

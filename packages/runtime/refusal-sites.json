@@ -1800,12 +1800,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_stream.c",
-  "function": "scr_stream_util_is_value",
-  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
@@ -1989,12 +1983,6 @@
   "file": "scr_util_compare.c",
   "function": "util_deep_refused",
   "message": " is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_util_promisify.c",
-  "function": "scr_util_promisify",
-  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
   "code": "SC2020"
  },
  {

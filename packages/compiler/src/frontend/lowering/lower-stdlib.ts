@@ -2764,7 +2764,8 @@ function lowerStaticNamespaceImport(
     let resolved: IrExpr;
     if (resolveValue !== undefined) resolved = resolveValue();
     else if (ns.kind === "moduleNs")
-      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc };
+      // An import's namespace value is the ES module namespace object.
+      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc, esmNamespace: true };
     else
       throw new InternalCompilerError(
         "lowerer bug: static import target has no namespace or value",

@@ -124,6 +124,7 @@ export const DIAGNOSTIC_CODES = {
   SC6103: "performance: shape inference overlay report",
   SC6104: "localized failure: slot held as a checked-dynamic value",
   SC6105: "performance: InlineArray field kept as an ordinary array",
+  SC6106: "performance: parallel call runs its chunks one after another",
   SC6201: "start-up failure that Node reports for the same program",
   SC7001: "NoThrow contract on an async function or generator",
   SC7002: "Int32 contract value not provably int32",

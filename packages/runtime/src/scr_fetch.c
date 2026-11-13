@@ -700,6 +700,26 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* util.transferableAbortSignal(signal): node checks the argument and
+ * answers the same signal. The transfer marking it leaves on the signal is
+ * read only by structuredClone/postMessage, which copy any AbortSignal the
+ * same way, so the same box (+1) is the whole observable behavior. */
+ScrDyn *scr_util_transferable_abort_signal(ScrDyn *signal) {
+  if (signal == NULL) signal = scr_dyn_undefined();
+  if (signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
+  return scr_dyn_retain(signal);
+}
+
+/* util.transferableAbortController(): an ordinary AbortController (+1),
+ * whose signal carries the same (unobserved) transfer marking. */
+ScrDyn *scr_util_transferable_abort_controller(void) {
+  return scr_fetch_abort_controller_new();
+}
+
 static ScrDyn *sf_abort_controller_invoke(
     void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
     size_t argc, const char *what) {
@@ -7113,6 +7133,44 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   return result;
 }
 
+#ifdef SCR_WEB_BODIES
+/* fetch() of an object URL (URL.createObjectURL's "blob:nodedata:<uuid>"):
+ * the registered Blob or File answers 200 OK with its bytes, its size as
+ * Content-Length and its type as Content-Type (an empty value when the
+ * Blob carries none), like undici's blob: response. The request URL is
+ * already serialized without its fragment; only GET reaches here. */
+static ScrDyn *sf_object_url_response(ScrStr *url) {
+  ScrDyn *blob = scr_url_lookup_object_url(url);
+  if (!blob) { sf_type_error("fetch failed"); return NULL; }
+  ScrBytes *bytes = NULL;
+  ScrStr *type = NULL;
+  bool ok = sf_blob_body(blob, &bytes, &type);
+  scr_dyn_release(blob);
+  if (!ok) { sf_type_error("fetch failed"); return NULL; }
+  size_t size = bytes->len;
+  ScrDyn *body = scr_dyn_new_bytes(bytes); scr_bytes_release(bytes);
+  ScrDyn *headers = scr_dyn_new_obj();
+  char length_text[32];
+  int length_len = snprintf(length_text, sizeof length_text, "%zu", size);
+  ScrStr *length_value = scr_str_new(length_text, (size_t)length_len);
+  scr_dyn_obj_set(headers, "content-length", 14, scr_dyn_new_str(length_value));
+  scr_str_release(length_value);
+  ScrStr *mime = type ? type : scr_str_new("", 0);
+  scr_dyn_obj_set(headers, "content-type", 12, scr_dyn_new_str(mime));
+  scr_str_release(mime);
+  ScrDyn *init = scr_dyn_new_obj(); scr_dyn_obj_set(init, "headers", 7, headers);
+  ScrStr *ok_text = scr_str_new("OK", 2);
+  scr_dyn_obj_set(init, "statusText", 10, scr_dyn_new_str(ok_text)); scr_str_release(ok_text);
+  ScrDyn *result = scr_fetch_response_new(body, init); scr_dyn_release(body); scr_dyn_release(init);
+  if (result) {
+    SfResponse *response = result->v.handle.ptr;
+    scr_str_release(response->url); response->url = scr_str_new(url->data, url->len);
+    response->headers->immutable = true;
+  }
+  return result;
+}
+#endif
+
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (init && init->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(init);
@@ -7335,7 +7393,8 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
   bool https = sf_eq_ci(u->scheme, "https");
   bool data_url = sf_eq_ci(u->scheme, "data");
-  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url) {
+  bool object_url = sf_eq_ci(u->scheme, "blob");
+  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url && !object_url) {
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
     scr_str_release(method);
@@ -7428,6 +7487,28 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     return promise;
   }
 
+  /* An object URL resolves in-process to the registered blob's bytes;
+   * like undici's blob: scheme only GET is implemented — any other method
+   * is a "fetch failed" rejection. Without a Blob in the program the
+   * registry is necessarily empty (createObjectURL accepts only a Blob),
+   * so every lookup misses. */
+  if (object_url) {
+#ifdef SCR_WEB_BODIES
+    ScrDyn *response = NULL;
+    if (method->len == 3 && memcmp(method->data, "GET", 3) == 0) {
+      ScrStr *request_url = sf_url_serialize(u);
+      response = sf_object_url_response(request_url);
+      scr_str_release(request_url);
+    }
+#else
+    ScrDyn *response = NULL;
+#endif
+    scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
+    if (response) { scr_promise_resolve_dyn(promise, response); }
+    else return sf_reject_now(promise, "fetch failed");
+    return promise;
+  }
+
   SfTransfer *t = calloc(1, sizeof *t);
   if (!t) sf_oom();
   t->rc = 1; /* registry */
@@ -7499,6 +7580,54 @@ static ScrDyn *sf_rejected(void) {
   return out;
 }
 
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * over the fetch unit's web streams, which Node exposes as ordinary
+ * ReadableStream, WritableStream and TransformStream instances: a body
+ * answers a ReadableStream's kIs* getters (its state is "readable" until
+ * the close drains the queue or an error arrives), the transform's
+ * writable side answers a WritableStream's (kIsErrored at ERRORED, never
+ * ERRORING; kIsWritable only while WRITABLE), and the pair itself, its
+ * readers and writers answer as an object with no booleans. Every web
+ * stream is a non-Node stream, so isDestroyed answers null, and the side a
+ * class does not have answers null. */
+static ScrDyn *sf_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
+  int w = (int)which;
+  if (tag == SCR_DYNH_WEB_STREAM) {
+    SfStream *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->error != NULL);
+      case 2:
+#ifdef SCR_HANDLE_CLASSES
+        /* A read, cancel or pipe started on the body's web view disturbs
+         * it before its pull reaches this stream, as it does for
+         * bodyUsed. */
+        if (s->web_view && scr_web_stream_bridge && scr_web_stream_bridge->disturbed(s->web_view))
+          return scr_dyn_new_bool(true);
+#endif
+        return scr_dyn_new_bool(s->disturbed);
+      case 3: return scr_dyn_new_bool(!s->closed && s->error == NULL);
+      default: return scr_dyn_new_null();
+    }
+  }
+  if (tag == SCR_DYNH_WEB_WRITABLE) {
+    SfTransform *t = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(t->state == SFW_ERRORED);
+      case 2: return scr_dyn_new_bool(false);
+      case 3: return scr_dyn_new_null();
+      default: return scr_dyn_new_bool(t->state == SFW_WRITABLE);
+    }
+  }
+  switch (w) {
+    case 0:
+    case 3:
+    case 4: return scr_dyn_new_null();
+    default: return scr_dyn_new_bool(false);
+  }
+}
+
 static const ScrDynHandleOps sf_signal_ops = {
     "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
@@ -7515,18 +7644,20 @@ static const ScrDynHandleOps sf_stream_ops = {
 #endif
     .methods = sf_stream_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_reader_ops = {
     "ReadableStreamDefaultReader", &sf_reader_handle_retain_v,
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
     &sf_no_set, NULL, .methods = sf_reader_methods,
     .invalid_this =
         "Value of \"this\" must be of type ReadableStreamDefaultReader",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
-    &sf_no_set, NULL};
+    &sf_no_set, NULL, .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_request_ops = {
     "Request", &sf_request_retain_v, &sf_request_release_v,
     &sf_request_invoke, &sf_request_get, &sf_no_set, NULL,
@@ -7542,20 +7673,23 @@ static const ScrDynHandleOps sf_headers_ops = {
 
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,
-    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL};
+    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writable_ops = {
     "WritableStream", &sf_transform_retain_v, &sf_transform_release_v,
     &sf_writable_invoke, &sf_writable_get, &sf_no_set, NULL,
     .methods = sf_writable_methods,
     .invalid_this = "Value of \"this\" must be of type WritableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writer_ops = {
     "WritableStreamDefaultWriter", &sf_writer_handle_retain_v,
     &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
     &sf_no_set, NULL, .methods = sf_writer_methods,
     .invalid_this =
         "Value of \"this\" must be of type WritableStreamDefaultWriter",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 
 static void sf_teardown(void) {
   while (sf_live) {

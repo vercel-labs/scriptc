@@ -691,7 +691,10 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
   ScrStr *type = scr_dyn_typeof(object);
   bool is_object = type->len == 6 && memcmp(type->data, "object", 6) == 0;
   scr_str_release(type);
-  if (!is_object || object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_ARR) {
+  /* Node's validateObject rejects an array, including the live capsule a
+   * compiled array crosses an untyped boundary as. */
+  if (!is_object || object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_ARR ||
+      scr_dyn_ref_is_array(object)) {
     scr_dyn_arg_type_fail("pathObject", "of type object", object);
     return NULL;
   }

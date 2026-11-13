@@ -28,6 +28,10 @@ bool scr_blob_is(const ScrDyn *value, double kind);
  * cannot be read answers true with *bytes NULL and the NotReadableError
  * pending. */
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
+/* The Blob's or File's size in bytes: the snapshot length recorded at
+ * construction, still answerable when a file part can no longer be read.
+ * 0 for every other value. */
+size_t scr_blob_size_bytes(const ScrDyn *value);
 /* fs.openAsBlob's Blob (scr_blob.c): one file part of `size` bytes from the
  * path's start, read lazily at every read, which re-stats the file and
  * fails with a NotReadableError when its size or mtime nanoseconds differ

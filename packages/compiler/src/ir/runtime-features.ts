@@ -2046,8 +2046,12 @@ const RUNTIME_FEATURE_RULES = {
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
    * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+   * byte for byte. `fs.openAsBlob` answers one without a `blob.*` call, and
+   * `URL.createObjectURL` registers one under an id the program fetches. */
+  webBodies: rule({
+    prefixes: ["blob."],
+    fns: ["fs.openAsBlobChk", "url.createObjectURL"],
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same

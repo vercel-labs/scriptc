@@ -7156,17 +7156,38 @@ static ScrDyn *sf_data_response(ScrStr *url) {
  * the registered Blob or File answers 200 OK with its bytes, its size as
  * Content-Length and its type as Content-Type (an empty value when the
  * Blob carries none), like undici's blob: response. The request URL is
- * already serialized without its fragment; only GET reaches here. */
+ * already serialized without its fragment; only GET reaches here. A
+ * file-backed Blob whose file changed or disappeared still resolves that
+ * response — its headers are the snapshot's — and consuming the body
+ * rejects with the Blob's NotReadableError, the way undici errors the
+ * blob's stream instead of failing the fetch itself. */
 static ScrDyn *sf_object_url_response(ScrStr *url) {
   ScrDyn *blob = scr_url_lookup_object_url(url);
   if (!blob) { sf_type_error("fetch failed"); return NULL; }
   ScrBytes *bytes = NULL;
   ScrStr *type = NULL;
   bool ok = sf_blob_body(blob, &bytes, &type);
+  if (!ok) { scr_dyn_release(blob); sf_type_error("fetch failed"); return NULL; }
+  size_t size = bytes ? bytes->len : scr_blob_size_bytes(blob);
+  ScrDyn *body = NULL;
+  if (bytes) {
+    body = scr_dyn_new_bytes(bytes);
+    scr_bytes_release(bytes);
+  } else {
+    /* The file part cannot be read any more: the read left the Blob's
+     * NotReadableError pending. It becomes the body stream's reason, so a
+     * read rejects with it rather than the response construction throwing. */
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *reason = caught ? scr_caught_to_dyn(caught)
+                            : scr_dyn_retain(scr_dyn_undefined());
+    scr_caught_release(caught);
+    SfStream *errored = sf_stream_new_native();
+    sf_stream_error(errored, reason);
+    scr_dyn_release(reason);
+    body = scr_dyn_new_handle(errored, SCR_DYNH_WEB_STREAM);
+    sf_stream_release(errored);
+  }
   scr_dyn_release(blob);
-  if (!ok) { sf_type_error("fetch failed"); return NULL; }
-  size_t size = bytes->len;
-  ScrDyn *body = scr_dyn_new_bytes(bytes); scr_bytes_release(bytes);
   ScrDyn *headers = scr_dyn_new_obj();
   char length_text[32];
   int length_len = snprintf(length_text, sizeof length_text, "%zu", size);

@@ -604,14 +604,23 @@ static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
 
 /* extractBody's Blob/File arm: the body is the blob's bytes, not the
  * "[object Blob]" string the USVString fallback would send. A file part
- * that cannot be read leaves the NotReadableError pending with *bytes
- * NULL: the caller aborts the request. */
+ * that cannot be read leaves the NotReadableError pending with *bytes NULL:
+ * the caller rejects the request, or makes it the body stream's reason when
+ * the response still constructs. */
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type) {
   ScrBlob *b = scr_blob_of(value);
   if (!b) return false;
   *bytes = scr_blob_copy_bytes(b);
   *type = b->type ? scr_str_retain(b->type) : NULL;
   return true;
+}
+
+/* The snapshot length the Blob recorded when it was built (0 for anything
+ * that is not a Blob or File): a caller that reports the body's length keeps
+ * answering it when a file part can no longer be read. */
+size_t scr_blob_size_bytes(const ScrDyn *value) {
+  ScrBlob *b = scr_blob_of(value);
+  return b ? b->len : 0;
 }
 
 /* Settled `p` seen `turns` microtask turns later (consumes p). */

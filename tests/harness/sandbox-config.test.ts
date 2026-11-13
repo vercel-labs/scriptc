@@ -45,10 +45,10 @@ test("runner settings retain their documented defaults", () => {
     testWorkers: "4",
     localTestWorkers: "2",
     localCaseShards: "2",
-    // A lane prepares a managed image and runs a shard that includes the
-    // sanitized self-hosting bootstrap (about 56 minutes alone).
-    sandboxTimeout: "90m",
-    sandboxTimeoutMs: 5_400_000,
+    // A lane's clock starts at Sandbox creation: preparation, the barrier
+    // until the last Sandbox is ready, and then its corpus step.
+    sandboxTimeout: "150m",
+    sandboxTimeoutMs: 9_000_000,
     // One native preparation step: the runtime pack took 6m10s at 8 vCPUs
     // on Nov 13 and longer when a whole wave prepares at once.
     nativeTimeout: "20m",

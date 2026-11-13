@@ -241,7 +241,9 @@ Environment:
   SCRIPTC_SANDBOX_NATIVE_REFERENCE  Optional built checkout inside the snapshot; its LLVM helper
                             and runtime pack are reused when their inputs are identical
   SCRIPTC_SANDBOX_VCPUS     vCPUs per sandbox (default: 8)
-  SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 90m)
+  SCRIPTC_SANDBOX_TIMEOUT   sandbox lifetime (default: 150m) and the wall limit of
+                            commands that are not a native preparation step
+                            (a test command is capped at 90m)
   SCRIPTC_SANDBOX_NATIVE_TIMEOUT  limit for one native preparation step, the LLVM helper,
                             the runtime pack, or the libnode pack (default: 20m)
   SCRIPTC_TEST_WORKERS      Vitest workers per sandbox (default: 4)
@@ -298,6 +300,11 @@ const sandboxLaneTestEnv = (lane) => ({
 // longest silent phase measured on Nov 13 is the PGO speed flavor at 116
 // seconds; five minutes of silence still means a stuck build.
 const nativeIdleTimeoutMs = Math.min(nativeTimeoutMs, 5 * 60_000);
+// One test command keeps a tighter wall limit than the Sandbox's lifetime: a
+// command that keeps printing must not be allowed to run for the whole lane,
+// while the Sandbox itself has to stay alive through the preparation barrier
+// and its shard.
+const testStepTimeoutMs = Math.min(sandboxTimeoutMs, 90 * 60_000);
 
 if (!["plain", "san", "both"].includes(values.lane)) {
   throw new Error(`--lane must be plain, san, or both (got ${values.lane})`);
@@ -1040,6 +1047,7 @@ try {
             SCRIPTC_LLVM_TEST_MODE: "dev",
           },
           "cases",
+          testStepTimeoutMs,
         );
       const files = () =>
         execIn(
@@ -1066,6 +1074,7 @@ try {
             SCRIPTC_TEST_WORKERS: fileWorkers,
           },
           "files",
+          testStepTimeoutMs,
         );
       const cacheCases = () =>
         execIn(
@@ -1082,6 +1091,7 @@ try {
             SCRIPTC_TEST_WORKERS: "1",
           },
           "cache",
+          testStepTimeoutMs,
         );
       // The corpus owns the remaining pool while file/cache processes share
       // the reserved side slots (serially when only one slot is available).
@@ -1113,8 +1123,8 @@ try {
             ...nativeBuildFiles,
           ],
           { ...sandboxLaneTestEnv(worker.lane), SCRIPTC_TEST_WORKERS: "1" },
-          "native bootstrap",
-          sandboxTimeoutMs,
+          "bootstrap",
+          testStepTimeoutMs,
         );
       },
       nativeWorkers.length,
@@ -1144,6 +1154,7 @@ try {
           SCRIPTC_TEST_WORKERS: fileWorkers,
         },
         "host artifact contracts",
+        testStepTimeoutMs,
       );
     }
   })();

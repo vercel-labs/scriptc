@@ -34,12 +34,14 @@ function sandboxDuration(source, name, fallback) {
 export function sandboxRunnerConfig(env) {
   loadLocalEnv();
   const source = env ?? process.env;
-  // The default has to cover a whole lane: it prepares a managed image from
-  // scratch (~8 minutes at 8 vCPUs on Nov 13) and then runs a corpus shard
-  // that includes the sanitized self-hosting bootstrap, which alone takes
-  // about 56 minutes on 32 vCPUs. At 45 minutes a healthy lane was killed
-  // mid-suite.
-  const sandboxTimeout = sandboxDuration(source, "SCRIPTC_SANDBOX_TIMEOUT", "90m");
+  // The default has to cover a whole lane, and a lane's clock starts when its
+  // Sandbox is created: preparation takes about 13 minutes per wave, all
+  // Sandboxes then wait for the last wave before testing begins (about 30
+  // minutes for 18 Sandboxes at the preparation concurrency), and the corpus
+  // shard itself runs for an hour or more. At 45 minutes a healthy lane was
+  // killed mid-suite, and at 90 minutes the first wave still ran out during
+  // its corpus step.
+  const sandboxTimeout = sandboxDuration(source, "SCRIPTC_SANDBOX_TIMEOUT", "150m");
   // Building the Linux LLVM helper and runtime pack from source takes about
   // 7 minutes at 8 vCPUs for one Sandbox alone and longer when a whole wave
   // of shards builds at once, so the native steps get their own, much larger

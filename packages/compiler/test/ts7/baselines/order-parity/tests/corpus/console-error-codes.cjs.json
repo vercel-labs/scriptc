@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/console-error-codes.cjs"
+ ],
+ "diags": []
+}

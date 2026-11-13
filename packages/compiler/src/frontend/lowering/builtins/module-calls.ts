@@ -52,6 +52,7 @@ import {
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import {
   lowerFsWatchCall,
   lowerFsReaddirTypesCall,
@@ -551,6 +552,10 @@ export function lowerBuiltinModuleCall(
   }
   const required = fn.params.length - (fn.defaults?.length ?? undefinedTail);
   const hasSpread = expr.arguments.nodes.some(ts.isSpreadElement);
+  // Node's os functions read the parameters they declare and ignore the
+  // rest; a JavaScript caller still evaluates the extras, in order.
+  const ignoredSurplus =
+    bi.module === "os" && !hasSpread ? expr.arguments.nodes.slice(fn.params.length) : [];
   if (
     bi.module === "url" &&
     ["fileURLToPath", "fileURLToPathBuffer", "pathToFileURL"].includes(bi.member)
@@ -570,7 +575,8 @@ export function lowerBuiltinModuleCall(
   }
   if (
     !hasSpread &&
-    (expr.arguments.nodes.length < required || expr.arguments.nodes.length > fn.params.length)
+    (expr.arguments.nodes.length < required ||
+      (expr.arguments.nodes.length > fn.params.length && ignoredSurplus.length === 0))
   ) {
     lowerer.noLowering(
       `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
@@ -636,11 +642,13 @@ export function lowerBuiltinModuleCall(
     );
     args = lowerer.completeArgs(expr.arguments.nodes, shapes, loc, expr);
   } else {
-    args = expr.arguments.nodes.map((a, i) =>
-      isFsPathParam(bi.module, bi.member, i)
-        ? lowerFsPath(lowerer, a)
-        : lowerer.lowerExprExpecting(a, fn.params[i]),
-    );
+    args = expr.arguments.nodes
+      .slice(0, fn.params.length)
+      .map((a, i) =>
+        isFsPathParam(bi.module, bi.member, i)
+          ? lowerFsPath(lowerer, a)
+          : lowerer.lowerExprExpecting(a, fn.params[i]),
+      );
     for (let i = args.length; i < fn.params.length; i++) {
       if (!fn.defaults) {
         args.push(dynUndefinedExpr(loc));
@@ -650,5 +658,11 @@ export function lowerBuiltinModuleCall(
       args.push({ kind: "strLit", value: dflt, type: STRING, loc });
     }
   }
-  return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+  return withIgnoredArguments(lowerer, args, ignoredSurplus, (staged) => ({
+    kind: "libCall",
+    fn: fn.fn,
+    args: staged,
+    type: fn.result,
+    loc,
+  }));
 }

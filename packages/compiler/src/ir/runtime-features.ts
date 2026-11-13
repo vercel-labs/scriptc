@@ -122,12 +122,17 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackGlob",
   "fs.callbackValue",
   "process.deprecationFlag",
+  // process.finalization reports its ExperimentalWarnings through this
+  // unit's deferred warning queue.
+  "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.offMultipleResolves",
   "process.offRejectionHandled",
   "process.offUncaughtException",
   "process.offUnhandledRejection",
   "process.offWarning",
+  "process.onMultipleResolves",
   "process.onRejectionHandled",
   "process.onUncaughtException",
   "process.prependUncaughtException",
@@ -135,6 +140,10 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onWarning",
   "process.setDeprecationFlag",
   "process.setEmitWarning",
+  // The uncaught-exception capture callback rides the same dispatch and
+  // teardown machinery as the uncaughtException listeners.
+  "process.hasUncaughtCapture",
+  "process.setUncaughtCapture",
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
@@ -506,6 +515,7 @@ export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.channel",
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
@@ -562,6 +572,9 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
+  // process.ref/unref read the nodejs.ref / nodejs.unref symbols.
+  "process.ref",
+  "process.unref",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -833,10 +846,14 @@ function mentionsTextDecoder(t: IrType, tables: TypeTables): boolean {
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
  * process signal/exit listeners and the piped-stdin surface. */
 const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.offBeforeExit",
   "process.offExit",
   "process.offSignal",
+  "process.finalization",
+  "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",
+  "process.prependBeforeExit",
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",

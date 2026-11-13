@@ -3668,27 +3668,79 @@ static int sp_x931_hash_id(mbedtls_md_type_t md) {
   }
 }
 
-/* OpenSSL's X9.31 encoding of a digest in a `bytes`-long block: 0x6B, a
- * run of 0xBB filler, 0xBA, the digest, its hash identifier byte and 0xCC.
+/* OpenSSL's X9.31 encoding of a digest in a `bytes`-long block: the digest
+ * followed by its hash identifier byte, wrapped in 0x6B || 0xBB... || 0xBA
+ * ... 0xCC, or in a bare 0x6A ... 0xCC when the block is exactly three
+ * bytes longer than the digest (RSA_padding_add_X931's j == 0 form).
  * Answers false with Node's error when the block cannot hold it. */
 static bool sp_x931_encode(mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
                            unsigned char *em, size_t bytes) {
   int id = sp_x931_hash_id(md);
-  if (bytes <= hash_len) {
+  if (bytes < hash_len + 1) {
     sp_throw_openssl("1C8000AB", "Provider routines", "key size too small", "ERR_OSSL_KEY_SIZE_TOO_SMALL", true);
     return false;
   }
-  if (id < 0 || bytes < hash_len + 4) {
+  if (id < 0 || bytes < hash_len + 3) {
     sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
     return false;
   }
-  em[0] = 0x6B;
-  memset(em + 1, 0xBB, bytes - hash_len - 4);
-  em[bytes - hash_len - 3] = 0xBA;
-  memcpy(em + bytes - hash_len - 2, hash, hash_len);
+  size_t j = bytes - hash_len - 3;
+  if (j == 0) {
+    em[0] = 0x6A;
+    memcpy(em + 1, hash, hash_len);
+  } else {
+    em[0] = 0x6B;
+    memset(em + 1, 0xBB, j - 1);
+    em[j] = 0xBA;
+    memcpy(em + j + 1, hash, hash_len);
+  }
   em[bytes - 2] = (unsigned char)id;
   em[bytes - 1] = 0xCC;
   return true;
+}
+
+/* OpenSSL's RSA_padding_check_X931 plus the rsa_ossl_public_decrypt
+ * quirk that applies before it: when the recovered block's low nibble is
+ * not 0xC, the block is replaced by the modulus complement, which is how
+ * the legacy code handles a negated BIGNUM. The block must then carry the
+ * X9.31 header, the digest followed by its hash identifier byte, and the
+ * 0xCC trailer. Answers whether it does. */
+static bool sp_x931_check(mbedtls_rsa_context *rsa, mbedtls_md_type_t md, const unsigned char *hash,
+                          size_t hash_len, unsigned char *em, size_t bytes) {
+  int id = sp_x931_hash_id(md);
+  if (id < 0 || bytes < 3) return false;
+  if ((em[bytes - 1] & 0x0F) != 0x0C) {
+    /* em = rsa->N - em, byte-for-byte through the MPI. */
+    mbedtls_mpi block, modulus, complement;
+    mbedtls_mpi_init(&block);
+    mbedtls_mpi_init(&modulus);
+    mbedtls_mpi_init(&complement);
+    int r = mbedtls_mpi_read_binary(&block, em, bytes);
+    if (r == 0) r = mbedtls_mpi_copy(&modulus, &rsa->MBEDTLS_PRIVATE(N));
+    if (r == 0) r = mbedtls_mpi_sub_mpi(&complement, &modulus, &block);
+    if (r == 0) r = mbedtls_mpi_write_binary(&complement, em, bytes);
+    mbedtls_mpi_free(&block);
+    mbedtls_mpi_free(&modulus);
+    mbedtls_mpi_free(&complement);
+    if (r != 0) return false;
+  }
+  const unsigned char *content;
+  size_t length;
+  if (em[0] == 0x6A) {
+    length = bytes - 2;
+    content = em + 1;
+  } else if (em[0] == 0x6B) {
+    size_t filler = bytes - 3;
+    size_t i = 0;
+    while (i < filler && em[1 + i] == 0xBB) i++;
+    if (i == 0 || i == filler || em[1 + i] != 0xBA) return false;
+    length = filler - i;
+    content = em + 2 + i;
+  } else {
+    return false;
+  }
+  return em[bytes - 1] == 0xCC && length == hash_len + 1 && content[length - 1] == (unsigned char)id &&
+         memcmp(content, hash, hash_len) == 0;
 }
 
 /* Applies the RSA padding of a signature operation. */
@@ -3869,6 +3921,17 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
   return sp_dyn_buffer(sig, sig_len);
 }
 
+/* The signature as the modulus-long block OpenSSL recovers it from:
+ * RSA_public_decrypt reads the value with BN_bin2bn, so a signature whose
+ * leading zero bytes were dropped still verifies, and one longer than the
+ * modulus does not. */
+static bool sp_rsa_sig_block(const unsigned char *sig, size_t sig_len, size_t bytes, unsigned char *block) {
+  if (sig_len > bytes) return false;
+  memset(block, 0, bytes);
+  memcpy(block + bytes - sig_len, sig, sig_len);
+  return true;
+}
+
 /* Verifies a digest against a signature; false for a signature that does
  * not verify or does not parse. */
 static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
@@ -3883,29 +3946,34 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
   if (!sp_rsa_padding(key, md)) return false;
   if (sp_is_rsa(key->key) && key->padding == 6) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
-    if (sig_len != mbedtls_rsa_get_len(rsa)) return false;
+    size_t bytes = mbedtls_rsa_get_len(rsa);
+    unsigned char block[MBEDTLS_MPI_MAX_SIZE];
+    if (!sp_rsa_sig_block(sig, sig_len, bytes, block)) return false;
     int salt;
     if (!sp_pss_salt(key, hash_len, sp_rsa_max_salt(rsa, hash_len), false, &salt)) return false;
+    bool ok;
     if (key->mgf1 != MBEDTLS_MD_NONE && key->mgf1 != md)
-      return sp_pss_verify_mgf1(rsa, md, key->mgf1, hash, hash_len, salt, sig, sig_len);
-    int any = salt < 0 ? MBEDTLS_RSA_SALT_LEN_ANY : salt;
-    return mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, any, sig) == 0;
+      ok = sp_pss_verify_mgf1(rsa, md, key->mgf1, hash, hash_len, salt, block, bytes);
+    else {
+      int any = salt < 0 ? MBEDTLS_RSA_SALT_LEN_ANY : salt;
+      ok = mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, any, block) == 0;
+    }
+    mbedtls_platform_zeroize(block, sizeof block);
+    return ok;
   }
   if (sp_is_rsa(key->key) && key->padding == 5) {
-    /* X9.31: recover the encoding and check its header, filler, digest,
-     * hash identifier and trailer. */
+    /* X9.31: recover the block, take its modulus complement when OpenSSL
+     * would, and check the header, filler, digest, hash identifier and
+     * trailer. */
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
     if (!sp_x931_digest(md)) return false;
-    if (sig_len != bytes) return false;
-    int id = sp_x931_hash_id(md);
+    unsigned char block[MBEDTLS_MPI_MAX_SIZE];
+    if (!sp_rsa_sig_block(sig, sig_len, bytes, block)) return false;
     unsigned char em[MBEDTLS_MPI_MAX_SIZE];
-    if (mbedtls_rsa_public(rsa, sig, em) != 0) return false;
-    bool ok = id >= 0 && bytes >= hash_len + 4 && em[0] == 0x6B && em[bytes - hash_len - 3] == 0xBA &&
-              em[bytes - 2] == (unsigned char)id && em[bytes - 1] == 0xCC &&
-              memcmp(em + bytes - hash_len - 2, hash, hash_len) == 0;
-    for (size_t i = 1; ok && i < bytes - hash_len - 3; i++) ok = em[i] == 0xBB;
+    bool ok = mbedtls_rsa_public(rsa, block, em) == 0 && sp_x931_check(rsa, md, hash, hash_len, em, bytes);
     mbedtls_platform_zeroize(em, sizeof em);
+    mbedtls_platform_zeroize(block, sizeof block);
     return ok;
   }
   if (sp_is_ec(key->key) && key->p1363) {

@@ -185,6 +185,58 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  // The scriptc export condition points the compiled program at the code
+  // the package ships for it. Node.js has no such condition, so the same
+  // program loads the node branch there: the divergence is the point, and
+  // the native answer is asserted against the package's map directly.
+  test("the scriptc export condition selects its branch before node and default", async () => {
+    const dir = mkdtempSync("/tmp/scriptc-export-condition-");
+    try {
+      const pkg = join(dir, "node_modules", "platform-choice");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "platform-choice",
+          version: "1.0.0",
+          type: "module",
+          // scriptc sits after node and default: it is still selected.
+          exports: {
+            ".": {
+              types: "./index.d.ts",
+              node: "./node.js",
+              default: "./default.js",
+              scriptc: "./scriptc.js",
+            },
+          },
+        }),
+      );
+      writeFileSync(join(pkg, "index.d.ts"), "export declare const value: string;\n");
+      for (const flavor of ["node", "default", "scriptc"])
+        writeFileSync(join(pkg, `${flavor}.js`), `export const value = "${flavor}";\n`);
+      const entry = join(dir, "main.mjs");
+      writeFileSync(entry, 'import { value } from "platform-choice";\nconsole.log(value);\n');
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["platform-choice"],
+        sanitize,
+        outDir: join(dir, "out"),
+        outPath: join(dir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(reference.stdout.toString("utf8")).toBe("node\n");
+      expect(native.stdout.toString("utf8")).toBe("scriptc\n");
+      expect(native.exitCode).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // A tsconfig path that maps a name onto an opted-in package's JavaScript
   // is a project edge of whichever program file spells it. The package
   // ships no declarations, so only its JavaScript types the import, and
@@ -1002,6 +1054,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each([
     'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
     'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',
+    'import { Console } from "node:console"; new Console({ stdout: process.stdout }).table([1, 2]);',
     'import { assert } from "node:console"; declare const message: unknown; assert(false, message);',
   ])("unsupported console members retain a use-site diagnostic: %s", (source) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-console-import-"));

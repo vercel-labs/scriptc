@@ -33,6 +33,7 @@ const RUNTIME_SOURCES = [
   "scr_path.c",
   "scr_json.c",
   "scr_async.c",
+  "scr_context.c",
   "scr_child.c",
   "scr_cycle.c",
   "scr_alloc.c",

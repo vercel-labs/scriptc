@@ -127,10 +127,20 @@ console.log("setPrivateKey null", fresh.getPublicKey("hex", "compressed"));
 // bytes each encoding round-trips to, and by the secrets two parties agree
 // on.
 const prime = crypto.getDiffieHellman("modp2").getPrime();
+// 2 ** private mod the modp2 prime for the two fixed private keys below.
+const DA_PUBLIC =
+  "b0ffe37fcd2f26a1ee6f97f07c1806e9af8fe0034ea41920a627fc2beca6564d15f3ac5d1e1e9f37d2330e5310b58b3730a48b97ac86975faad413ac360367d0a908eb1e1e15b8c1b39c58cf5921fac88039b8527ed9814ccd32ce84a5bf1ab7b6918f1099e256fac9be71066c0a04f58b35971c1ad9fd8577d9b52066538824";
+const DB_PUBLIC =
+  "a3eb68b69321d2ab48d479d9649c94de99d04ac16f09ecfd2c16dfca1e83f4446b61dd88fed6420f880dffc8832d020e653b4872abe96cac21124ec7e10f82d4368bf826be9514c453cc332ed20c8fd41c6ec7825f72bed6010d6f512378c2b7f1c33e812706e6f8f47172ce5e1cd1c827c43b52c7f8ccb4f6f396e4d41acefe";
 const da = crypto.createDiffieHellman(prime, 2);
 const db = crypto.createDiffieHellman(prime, 2);
-da.generateKeys();
-db.generateKeys();
+// Fixed private keys and their public keys, so the byte lengths and the
+// secret are the same on every run: a generated key's leading zero would
+// make the lengths vary, and the two sides generate independently.
+da.setPrivateKey(Buffer.from("0123456789abcdef".repeat(8), "hex"));
+da.setPublicKey(Buffer.from(DA_PUBLIC, "hex"));
+db.setPrivateKey(Buffer.from("fedcba9876543210".repeat(8), "hex"));
+db.setPublicKey(Buffer.from(DB_PUBLIC, "hex"));
 const daPublic: Buffer = da.getPublicKey();
 const dbPublic: Buffer = db.getPublicKey();
 const daPrivate: Buffer = da.getPrivateKey();
@@ -219,14 +229,21 @@ console.log(
   Buffer.from(dhSecretStringLatin1, "hex").equals(secret),
 );
 
-// generateKeys replaces the key, so a throwaway handle answers it.
+// generateKeys replaces the key, so each answer is compared with the handle
+// it came from rather than printed: a generated public key's byte length
+// varies with its leading zero.
 const throwaway = crypto.createDiffieHellman(prime, 2);
 const dhGenNull: Buffer = throwaway.generateKeys(null);
+const dhGenNullOk = Buffer.isBuffer(dhGenNull) && dhGenNull.equals(throwaway.getPublicKey());
 const dhGenBuffer: Buffer = throwaway.generateKeys("buffer");
+const dhGenBufferOk = Buffer.isBuffer(dhGenBuffer) && dhGenBuffer.equals(throwaway.getPublicKey());
 const dhGenEmpty: Buffer = throwaway.generateKeys("");
+const dhGenEmptyOk = Buffer.isBuffer(dhGenEmpty) && dhGenEmpty.equals(throwaway.getPublicKey());
 const dhGenHex: string = throwaway.generateKeys("hex");
+const dhGenHexOk = typeof dhGenHex === "string" && dhGenHex === throwaway.getPublicKey("hex");
 const dhGenUtf16le: string = throwaway.generateKeys("utf16le");
-console.log("dh generateKeys", dhGenNull.length, dhGenBuffer.length, dhGenEmpty.length, dhGenHex.length, dhGenUtf16le.length);
+const dhGenUtf16leOk = typeof dhGenUtf16le === "string" && dhGenUtf16le === throwaway.getPublicKey("utf16le");
+console.log("dh generateKeys", dhGenNullOk, dhGenBufferOk, dhGenEmptyOk, dhGenHexOk, dhGenUtf16leOk);
 
 for (const name of ["hex", "buffer", "", "none", "base64url"]) {
   const encoding = encodingOf(name);

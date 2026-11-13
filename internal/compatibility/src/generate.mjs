@@ -750,6 +750,29 @@ function publicDetail(tier) {
     if (source === "compiler-feature:process.allowedNodeEnvironmentFlags") {
       return "One stable set answers the compatibility target's NODE_OPTIONS flag names for exact spellings; Node's Set subclass also accepts undashed, underscored, and =value spellings in has(), and its add, delete, and clear do nothing.";
     }
+    if (
+      /^compiler-feature:process\.process\.(?:setuid|seteuid|setgid|setegid|setgroups|initgroups)$/.test(
+        source,
+      )
+    ) {
+      return "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.";
+    }
+    if (
+      /^compiler-feature:process\.process\.(?:hasUncaughtExceptionCaptureCallback|setUncaughtExceptionCaptureCallback)$/.test(
+        source,
+      )
+    ) {
+      return "The capture callback is stored once per process, still runs uncaughtExceptionMonitor first, takes precedence over uncaughtException listeners, and a second callback throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET.";
+    }
+    if (/^compiler-feature:process\.process\.(?:ref|unref)$/.test(source)) {
+      return "Reads the nodejs.ref / nodejs.unref symbol on the argument (running its getter), falls back to the ref / unref member, and calls a callable result with the argument as receiver; null, undefined, primitives and non-callable members are no-ops.";
+    }
+    if (source === "compiler-feature:process.debugPort") {
+      return "Starts at 9229; a write converts with ToInt32, accepts 0 or 1024 to 65535, and throws ERR_OUT_OF_RANGE while keeping the previous value otherwise.";
+    }
+    if (source === "compiler-feature:process.sourceMapsEnabled") {
+      return "Reads as a boolean, false until setSourceMapsEnabled stores a validated boolean; other values throw ERR_INVALID_ARG_TYPE and leave the flag unchanged.";
+    }
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
@@ -868,12 +891,106 @@ function publicDetail(tier) {
     ) {
       return "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.";
     }
+    if (source === "compiler-feature:process.'exit'") {
+      return "Runs the exit listeners in registration order when the program ends, passing the status it is leaving with; a listener that assigns process.exitCode selects the final status.";
+    }
+    if (
+      source === "compiler-feature:process.'uncaughtExceptionMonitor'" ||
+      source === "compiler-feature:process.'uncaughtException'"
+    ) {
+      return "An uncaught exception runs the monitor listeners first and then the uncaughtException listeners that keep the program alive; with no listener the error is reported and the program exits nonzero.";
+    }
+    if (source === "compiler-feature:process.'unhandledRejection'") {
+      return "An unhandled promise rejection reaches the listeners with the rejection value and the promise once the microtask queue drains, before the program's remaining work continues.";
+    }
+    if (source === "compiler-feature:process.SIGINT, SIGHUP, etc.") {
+      return "Signal listeners keep the event loop alive and receive the signal's name and number; process.kill sends by name or number, and an unknown name throws ERR_UNKNOWN_SIGNAL.";
+    }
+    if (
+      source === "compiler-feature:process.process.send" ||
+      source === "compiler-feature:process.process.disconnect" ||
+      source === "compiler-feature:process.connected" ||
+      source === "compiler-feature:process.'message'" ||
+      source === "compiler-feature:process.'disconnect'"
+    ) {
+      return "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.";
+    }
+    if (source === "compiler-feature:process.getBuiltinModule") {
+      return "Returns the same builtin namespace object as a node: import for a builtin name, undefined for a name that is not builtin, and ERR_INVALID_ARG_TYPE for a non-string id.";
+    }
+    if (source === "compiler-feature:process.loadEnvFile") {
+      return "Parses a dotenv file into process.env with plain, quoted and export-prefixed assignments and no variable expansion; a missing file answers ENOENT and a non-string path ERR_INVALID_ARG_TYPE.";
+    }
+    if (source === "compiler-feature:process.'beforeExit'") {
+      return "Runs the 'beforeExit' listeners each time the loop runs out of ref'd work, passing the code the process would exit with, and re-emits while a listener schedules ref'd work; an exit code set in a listener is the one a later emission and the process exit see.";
+    }
+    if (source === "compiler-feature:process.'multipleResolves'") {
+      return "A promise settled a second time reports its type, promise and value to the 'multipleResolves' listeners on the nextTick queued at that settle, warning DEP0160 once per process when a delivery reaches a listener.";
+    }
+    if (source === "compiler-feature:process.'rejectionHandled'") {
+      return "A promise whose rejection was already reported reaches the 'rejectionHandled' listeners once with the promise when a handler is attached afterward.";
+    }
+    if (
+      source === "compiler-feature:process.channel" ||
+      source === "compiler-feature:process.process.channel.ref" ||
+      source === "compiler-feature:process.process.channel.unref"
+    ) {
+      return "A forked child's process.channel is the channel object while connected, undefined when the process never had one, and null after process.disconnect(); ref() and unref() return undefined, and unref() lets the child exit with the channel open.";
+    }
     if (/^compiler-feature:process\.(?:no|throw)Deprecation$/.test(source)) {
       return "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.";
     }
+    if (source === "compiler-feature:console.console.trace")
+      return "Prints Node's Trace heading (Trace, or Trace: <formatted message>) and the frames below the call site; V8's module-loader frames have no native counterpart.";
+    if (/^compiler-feature:console\.console\.(?:log|info|debug|error|warn)$/.test(source))
+      return "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.";
+    if (source === "compiler-feature:console.console.assert")
+      return "Writes Node's Assertion failed line to stderr only for a falsy value, with the remaining arguments formatted after it.";
+    if (/^compiler-feature:console\.console\.(?:count|countReset)$/.test(source))
+      return "Keeps per-label counters and prints Node's label: count lines, reporting a missing label with Node's warning text.";
+    if (/^compiler-feature:console\.console\.(?:group|groupCollapsed|groupEnd)$/.test(source))
+      return "Prints group labels like log and indents the following output by two spaces per open group, including after embedded newlines.";
+    if (/^compiler-feature:console\.console\.(?:dir|dirxml)$/.test(source))
+      return "dir inspects one value with its options resolved at compile time (custom inspection off by default); dirxml prints its arguments the way log does.";
+    if (source === "compiler-feature:console.console.table")
+      return "Renders arrays of records and plain objects as Node's bordered table, with the tested headers and index column.";
+    if (/^compiler-feature:console\.console\.time(?:End|Log)?$/.test(source))
+      return "Times each label on the native monotonic clock and prints Node's label: <duration> lines, with Node's warning for a duplicate or missing label.";
+    if (/^compiler-feature:console\.console\.(?:profile|profileEnd|timeStamp)$/.test(source))
+      return "Accepts the inspector-only calls and their arguments; without an inspector session they write nothing, as in Node.";
+    if (source === "compiler-feature:console.console.clear")
+      return "Clears a terminal stdout the way Node does and writes nothing to a pipe or a dumb terminal.";
     if (source === "compiler-feature:console.Console") {
       return "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.";
     }
+    if (/^compiler-feature:process\.process\.(?:exit)$/.test(source))
+      return "Ends the program with the exit status setter's conversions: integer strings parse, null and undefined clear the status, and an out-of-range or wrong-typed value throws Node's error catchably while the program keeps running.";
+    if (source === "compiler-feature:process.exitCode")
+      return "The setter converts with Node's rules (integer strings, wrapping, null and undefined clearing) and reports an out-of-range number or a non-convertible value with Node's catchable error; the getter reads the stored value.";
+    if (source === "compiler-feature:process.env")
+      return "The process.env proxy converts values and computed keys with Node's rules, reads a symbol key as undefined, and ignores a symbol key on writes and deletes.";
+    if (source === "compiler-feature:process.title")
+      return "The setter converts its value to a string with Node's ToString and the getter returns the title last written.";
+    if (source === "compiler-feature:process.process.kill")
+      return "Sends numeric and named signals with Node's loose pid check, its argument coercions, and ERR_UNKNOWN_SIGNAL for an unknown name.";
+    if (source === "compiler-feature:process.process.umask")
+      return "Reads the mask and sets it from integers or octal strings with Node's uint32, octal-string and type errors.";
+    if (/^compiler-feature:process\.process\.(?:cpuUsage|threadCpuUsage)$/.test(source))
+      return "Samples process or thread CPU time and subtracts a validated previous record, reading each field again after the clock sample the way Node's returned object literal does.";
+    if (/^compiler-feature:process\.process\.(?:cwd|chdir)$/.test(source))
+      return "Reads and changes the working directory, with chdir's string-only validation and the platform's ENOENT and ENOTDIR failures.";
+    if (
+      /^compiler-feature:process\.process\.(?:memoryUsage(?:\.rss)?|resourceUsage|uptime|availableMemory|constrainedMemory)$/.test(
+        source,
+      )
+    )
+      return "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.";
+    if (/^compiler-feature:process\.process\.get(?:uid|euid|gid|egid|groups)$/.test(source))
+      return "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.";
+    if (source === "compiler-feature:process.process.getActiveResourcesInfo")
+      return "Lists the loop resources the native runtime models as live handles (armed and firing Timeout, Immediate and tick callbacks); resources it does not model as handles are absent, as SEMANTICS.md records.";
+    if (source === "compiler-feature:process.process.nextTick")
+      return "Queues the callback ahead of timers, forwards extra arguments, and reports a non-function callback with Node's synchronous type error.";
     if (source.startsWith("compiler-feature:webstreams.streamConsumers.")) {
       return "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.";
     }
@@ -970,6 +1087,60 @@ function publicDetail(tier) {
     }
     if (source === "compiler-feature:crypto.crypto.diffieHellman") {
       return "Derives the shared secret a private KeyObject and a public KeyObject agree on for the supported curves and X25519, in its synchronous and callback forms, with Node's key-type, curve and key checks.";
+    }
+    if (
+      source === "compiler-feature:os.os.availableParallelism" ||
+      /^compiler-feature:os\.(?:os\.(?:arch|endianness|freemem|hostname|loadavg|machine|platform|release|totalmem|type|uptime|version)|EOL|devNull)$/.test(
+        source,
+      )
+    ) {
+      return "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.";
+    }
+    if (source === "compiler-feature:os.os.networkInterfaces") {
+      return "Enumerates the network interfaces with Node's row shape, including the per-family fields, the MAC, the netmask-derived cidr and the IPv6 scopeid.";
+    }
+    if (source === "compiler-feature:os.constants") {
+      return "Answers Node's null-prototype constant groups with the platform's signal, errno, priority, dlopen and libuv values.";
+    }
+    if (source === "compiler-feature:os.os.cpus") {
+      return "Enumerates the host's logical CPUs with Node's model, speed, and times fields; JavaScript reads them through an intermediate binding too.";
+    }
+    if (
+      source === "compiler-feature:os.os.getPriority" ||
+      source === "compiler-feature:os.os.setPriority"
+    ) {
+      return "Reads and sets process scheduling priorities with Node's default pid, one-argument shift, range checks, and argument errors.";
+    }
+    if (source === "compiler-feature:os.os.userInfo") {
+      return "Reads the passwd entry with Node's encoding options (Buffer and string encodings); an argument that is not an object answers the utf8 record.";
+    }
+    if (source === "compiler-feature:os.os.homedir" || source === "compiler-feature:os.os.tmpdir") {
+      return "Reads the environment first (HOME, or Node's TMPDIR/TMP/TEMP cascade with its single trailing-slash trim) and falls back to the passwd entry or the platform default.";
+    }
+    if (/^compiler-feature:process\.(?:arch|platform|version)$/.test(source)) {
+      return "Answers the compiled binary's architecture and platform in Node's own spellings, and process.version as `v` plus process.versions.node (the pinned compatibility release).";
+    }
+    if (source === "compiler-feature:process.versions") {
+      return "One stable object whose node entry is the pinned compatibility release and whose openssl entry says crypto is available; build components a compiled binary does not link (v8, uv, modules and the rest) are absent, and entries the program defines itself persist.";
+    }
+    if (source === "compiler-feature:process.pid" || source === "compiler-feature:process.ppid") {
+      return "Reads the operating system's process id, or its parent's, as a positive integer.";
+    }
+    if (source === "compiler-feature:process.release") {
+      return "One stable object with the compatibility target's name, LTS line and download URLs, built from the same release process.versions.node reports.";
+    }
+    if (/^compiler-feature:process\.(?:argv|argv0|execPath|execArgv)$/.test(source)) {
+      return "Reads the compiled binary's argument surface: argv keeps Node's positions in one mutable array, argv0 is the name the binary was invoked as, execPath its resolved path, and execArgv the runtime flags (empty for a compiled binary).";
+    }
+    if (source === "compiler-feature:process.fd") {
+      return "Reads a standard stream's descriptor number: 0 for stdin, 1 for stdout and 2 for stderr.";
+    }
+    if (
+      /^compiler-feature:process\.(?:cached_builtins|debug|inspector|ipv6|require_module|tls|tls_alpn|tls_ocsp|tls_sni|typescript|uv)$/.test(
+        source,
+      )
+    ) {
+      return "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.";
     }
     return "Implemented for the documented scriptc module-loader subset.";
   }

@@ -1,0 +1,17 @@
+userinfo-encoding-accessors.ts:10:3 - error SC2020: 'userInfo with a runtime encoding' is part of the standard library types but has no scriptc lowering yet
+
+   9 | const pair = os.userInfo({
+  10 |   get encoding() {
+     |   ^~~~~~~~~~~~~~~~
+  11 |     return "buffer" as const;
+
+  hint: the encoding must be the literal 'buffer' or a non-buffer string literal in an options object spelled at the call site
+
+userinfo-encoding-accessors.ts:18:3 - error SC2020: 'userInfo with a runtime encoding' is part of the standard library types but has no scriptc lowering yet
+
+  17 | const getterOnly = os.userInfo({
+  18 |   get encoding() {
+     |   ^~~~~~~~~~~~~~~~
+  19 |     return "utf8" as const;
+
+  hint: the encoding must be the literal 'buffer' or a non-buffer string literal in an options object spelled at the call site

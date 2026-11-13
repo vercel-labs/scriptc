@@ -1881,8 +1881,8 @@ static bool insp_mark_cwd_into(InspBuf *b, const char *line, size_t len, const c
 /* formatError's colored stack: the "Name: message" header stays plain, and
  * each frame line is dim when it names a builtin module, else marked by
  * markNodeModules and markCwd (retried with the working directory's
- * file:// href). The caller adds the indentation, as Node's final
- * replaceAll does. +1. */
+ * file:// href, percent-encoded as pathToFileURL spells it). The caller
+ * adds the indentation, as Node's final replaceAll does. +1. */
 static ScrStr *insp_colored_stack(const ScrStr *stack) {
   size_t start = SIZE_MAX;
   for (size_t i = 0; i + 7 <= stack->len; i++)
@@ -1899,15 +1899,23 @@ static ScrStr *insp_colored_stack(const ScrStr *stack) {
   char cwd_buf[4096];
   const char *cwd = getcwd(cwd_buf, sizeof cwd_buf);
   size_t cwd_len = cwd ? strlen(cwd) : 0;
-  char *href = NULL;
-  size_t href_len = 0;
+  /* Node retries with pathToFileURL(cwd).href, which percent-encodes the
+   * directory (a space, '#', '%' and the rest of the path set). Building
+   * the href from scr_url_from_path answers the same string; the raw
+   * "file://" + cwd spelling only matches a directory needing no escapes. */
+  ScrStr *href = NULL;
   if (cwd) {
-    href = malloc(cwd_len + 8);
-    if (!href) insp_oom();
-    memcpy(href, "file://", 7);
-    memcpy(href + 7, cwd, cwd_len);
-    href[cwd_len + 7] = '\0';
-    href_len = cwd_len + 7;
+    ScrStr *cwd_value = scr_str_new(cwd, cwd_len);
+    ScrUrl *cwd_url = scr_url_from_path(cwd_value);
+    scr_str_release(cwd_value);
+    if (cwd_url) {
+      href = scr_url_href(cwd_url);
+      scr_url_release(cwd_url);
+    } else {
+      /* pathToFileURL throws only for a win32 UNC malformation, which a
+       * cwd cannot be: drop the cell nothing will observe. */
+      scr_exc_clear();
+    }
   }
   size_t pos = start + 1;
   for (;;) {
@@ -1923,14 +1931,15 @@ static ScrStr *insp_colored_stack(const ScrStr *stack) {
       insp_mark_node_modules_into(&marked, line, len);
       ScrStr *modules = ib_take(&marked);
       if (!insp_mark_cwd_into(&out, modules->data, modules->len, cwd, cwd_len) &&
-          !insp_mark_cwd_into(&out, modules->data, modules->len, href, href_len))
+          !insp_mark_cwd_into(&out, modules->data, modules->len, href ? href->data : NULL,
+                              href ? href->len : 0))
         ib_bytes(&out, modules->data, modules->len);
       scr_str_release(modules);
     }
     if (line_end >= stack->len) break;
     pos = line_end + 1;
   }
-  free(href);
+  scr_str_release(href);
   return ib_take(&out);
 }
 

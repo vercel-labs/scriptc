@@ -1806,12 +1806,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_stream.c",
-  "function": "scr_stream_util_is_value",
-  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",

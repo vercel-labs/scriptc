@@ -125,6 +125,7 @@ for (const [name, title] of [
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
   ["console-values", "console and its output methods as values under @types/node"],
   ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
+  ["x509-issuer-certificate", "X509Certificate's issuerCertificate under @types/node"],
   ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
   ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
   [

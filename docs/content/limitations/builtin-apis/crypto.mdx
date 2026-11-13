@@ -49,6 +49,8 @@
   Ed25519 signing, verification, and private keys link when a string literal in the program names `ed25519` (in any case); without one they throw a coded SC2020 error, while Ed25519 public keys still import and export.
   X509Certificate supports `publicKey`, `verify()`, `checkIssued()`, `checkPrivateKey()`, `checkHost()`, `checkEmail()`, `checkIP()`, `toLegacyObject()`, `toString()`, and `toJSON()`, and `String()`, template literals, and `+` give its PEM text as `toString()` does.
   `publicKey`, `verify()`, and `checkPrivateKey()` are refused in wasm32-wasi builds, and an Ed25519 certificate's `verify()` needs the `ed25519` literal like the other Ed25519 operations.
+  `issuerCertificate` is `undefined` for every certificate a program builds, as Node answers for one made from PEM or DER: scriptc's certificates carry no issuer chain and the read is typed `X509Certificate | undefined`.
+  Since Node keeps every certificate member on the prototype, `in` finds the declared fields, `issuerCertificate`, and the methods, while `Object.hasOwn()` finds none of them.
   Own-key walks over a certificate (`Object.keys()`, `Object.entries()`, spread, `for...in`, and `hasOwnProperty`) are refused, since Node keeps its fields as prototype getters.
   `JSON.stringify()` and `console.log()` of a certificate, a certificate stored in an `unknown` or `any` slot, and its methods on a union-typed value are also refused.
   `Certificate` (the SPKAC class) supports `verifySpkac()`, `exportChallenge()`, and `exportPublicKey()` as statics and instance methods over a string or the bytes of a Buffer, typed array, DataView, or ArrayBuffer, and `new Certificate()` answers the stateless instance Node's does.

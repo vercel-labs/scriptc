@@ -27,9 +27,24 @@ const undefinedVerdict: boolean = crypto.verify("sha256", data, publicKey, synch
 console.log("verify undefined callback", undefinedVerdict);
 
 let deferred = 0;
+// The deferred verify is issued from the sign callback: both calls complete
+// on the thread pool, and Node prints whichever completes first, so starting
+// them together would make the printed order a race. One call at a time
+// keeps the two answers (the synchronous return and the callback) pinned.
+function verifyDeferred(): void {
+  const deferredVerdict: boolean | void = crypto.verify(
+    "sha256",
+    data,
+    publicKey,
+    synchronous,
+    maybeVerifyCallback,
+  );
+  console.log("deferred verify", typeof deferredVerdict === "boolean", deferredVerdict);
+}
 const callback = (err: Error | null, signature: Buffer): void => {
   deferred += 1;
   console.log("sign callback", err, signature.length, deferred);
+  verifyDeferred();
 };
 const notified: void = crypto.sign("sha256", data, privateKey, callback);
 console.log("sign async answers", notified);
@@ -53,14 +68,6 @@ console.log("maybe verify", typeof maybeVerdict === "boolean", maybeVerdict);
 maybeVerifyCallback = (err: Error | null, result: boolean): void => {
   console.log("verify callback", err, result);
 };
-const deferredVerdict: boolean | void = crypto.verify(
-  "sha256",
-  data,
-  publicKey,
-  synchronous,
-  maybeVerifyCallback,
-);
-console.log("deferred verify", typeof deferredVerdict === "boolean", deferredVerdict);
 
 // Arguments past the callback position still leave the synchronous answer.
 const long: Buffer | void = crypto.sign("sha256", data, privateKey, undefined, "surplus", 1);

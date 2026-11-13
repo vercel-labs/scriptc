@@ -14016,9 +14016,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59006,8 +59006,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59029,8 +59029,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59052,8 +59052,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59075,8 +59075,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59144,8 +59144,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59512,8 +59512,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59535,8 +59535,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59558,8 +59558,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59581,8 +59581,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -59650,8 +59650,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Answers for the node:stream classes and their subclasses in every lifecycle state, for the web stream classes, their readers and writers and a Response body, and for any other value by the state members Node's duck typing reads.",
         "verification": "test-backed"
       }
     },
@@ -60846,8 +60846,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60869,8 +60869,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60892,8 +60892,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60915,8 +60915,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60938,8 +60938,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60961,8 +60961,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -60984,8 +60984,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -61007,8 +61007,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -61030,8 +61030,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -61053,8 +61053,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },
@@ -61076,8 +61076,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Runs the operator over a readable's chunks with Node's concurrency, highWaterMark, signal and AbortSignal options, written inline or passed as a value, settling, rejecting and cleaning up as Node does.",
         "verification": "test-backed"
       }
     },

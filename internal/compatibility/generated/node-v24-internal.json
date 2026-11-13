@@ -19809,6 +19809,7 @@
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/x509-issuer-certificate.ts",
           "tests/corpus/x509-key-usage.ts",
           "tests/fixtures/node-types/cipher.ts",
           "tests/fixtures/node-types/crypto-constants-object.ts",
@@ -19816,6 +19817,7 @@
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
+          "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
           "tests/harness/npm-static.test.ts"
         ]
@@ -24906,8 +24908,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.issuerCertificate",
+        "tests": [
+          "tests/corpus/x509-issuer-certificate.ts",
+          "tests/fixtures/node-types/x509-issuer-certificate.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -90433,6 +90439,10 @@
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-operators-option-values.ts",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
+          "tests/corpus/stream-web-predicates.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -90822,9 +90832,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isDestroyed",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -90850,9 +90863,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isErrored",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -90878,9 +90894,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isReadable",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -90906,9 +90925,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isWritable",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -90992,9 +91014,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.Readable.isDisturbed",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -91501,9 +91526,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isDestroyed",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -91529,9 +91557,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isErrored",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -91557,9 +91588,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isReadable",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -91585,9 +91619,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.isWritable",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -91671,9 +91708,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.Readable.isDisturbed",
         "tests": [
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
           "tests/corpus/compat-stream-predicates-inherits.cjs"
@@ -93325,9 +93365,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.map",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93354,9 +93395,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.filter",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93383,9 +93425,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.forEach",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93412,9 +93455,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.toArray",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93441,9 +93485,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.some",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93470,9 +93515,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.find",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93499,9 +93545,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.every",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93528,9 +93575,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.flatMap",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93557,9 +93605,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.drop",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93586,9 +93635,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.take",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
@@ -93615,9 +93665,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.reduce",
         "tests": [
+          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",

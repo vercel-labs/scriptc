@@ -210,6 +210,27 @@ static ScrError *op_unsupported(const char *what) {
 static ScrDyn *op_get(const ScrDyn *obj, const char *key) {
   if (!obj) return NULL;
   size_t n = strlen(key);
+  if (obj->kind == SCR_DYN_TYPED_REF) {
+    /* A program class instance reaches the operator as the capsule over
+     * its layout. Node reads the instance's own fields and its class's
+     * accessors, so follow the keyed-read protocol: the capsule's own fast
+     * members first, else the property read on its materialized view. */
+    ScrStr *k = scr_str_new(key, n);
+    ScrDyn *v = scr_dyn_typed_ref_key_get(obj, k);
+    scr_str_release(k);
+    if (!v) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(obj);
+      if (!view) return NULL;
+      v = scr_dyn_obj_read(view, key, n);
+      scr_dyn_release(view);
+    }
+    if (v && v->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+      scr_dyn_release(v);
+      return view;
+    }
+    return v;
+  }
   if (obj->kind == SCR_DYN_OBJ) {
     ScrDyn *v = scr_dyn_obj_get(obj, key, n);
     return v ? scr_dyn_retain(v) : NULL;
@@ -231,7 +252,10 @@ static bool op_nullish(const ScrDyn *v) {
  * ERR_INVALID_ARG_TYPE pending. */
 static bool op_check_options(const ScrDyn *options) {
   if (op_nullish(options)) return true;
-  if ((options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_HANDLE) &&
+  /* A checked-dynamic class instance is an object to Node's
+   * validateObject, which only rejects primitives and functions. */
+  if ((options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_HANDLE ||
+       options->kind == SCR_DYN_TYPED_REF) &&
       !scr_dyn_is_callable(options)) {
     return true;
   }
@@ -244,12 +268,21 @@ static bool op_check_options(const ScrDyn *options) {
 static ScrDyn *op_signal(const ScrDyn *options, bool *ok) {
   *ok = true;
   ScrDyn *s = op_get(options, "signal");
+  if (!s && scr_exc_pending()) {
+    *ok = false;
+    return NULL;
+  }
   if (op_nullish(s)) {
     if (s) scr_dyn_release(s);
     return NULL;
   }
   ScrDyn *aborted = NULL;
   if (s->kind == SCR_DYN_OBJ || s->kind == SCR_DYN_HANDLE) aborted = op_get(s, "aborted");
+  if (!aborted && scr_exc_pending()) {
+    scr_dyn_release(s);
+    *ok = false;
+    return NULL;
+  }
   if (!aborted) {
     scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", s);
     scr_dyn_release(s);
@@ -3124,6 +3157,7 @@ static void op_fn_next(OpFn *a) {
 static bool op_map_options(const ScrDyn *options, double *concurrency, double *hwm) {
   *concurrency = 1;
   ScrDyn *c = op_get(options, "concurrency");
+  if (!c && scr_exc_pending()) return false;
   if (!op_nullish(c)) {
     double n = scr_dyn_number_coerce(c);
     if (scr_exc_pending()) {
@@ -3135,6 +3169,7 @@ static bool op_map_options(const ScrDyn *options, double *concurrency, double *h
   if (c) scr_dyn_release(c);
   *hwm = *concurrency - 1;
   ScrDyn *h = op_get(options, "highWaterMark");
+  if (!h && scr_exc_pending()) return false;
   if (!op_nullish(h)) {
     double n = scr_dyn_number_coerce(h);
     if (scr_exc_pending()) {

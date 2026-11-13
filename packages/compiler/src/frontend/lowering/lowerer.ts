@@ -134,7 +134,7 @@ import {
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
-import { sharedDynConversion } from "./expressions/narrowing.js";
+import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -148,6 +148,7 @@ import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import { lowerCertificateCall } from "./builtins/certificate.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
 import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
@@ -760,6 +761,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  cryptoConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -3215,6 +3217,11 @@ export class Lowerer {
   /** Arguments and const initializers whose array or record layout the
    * lowering kept instead of copying (divergences.ts reports no copy there). */
   readonly layoutKeptNodes = new Set<ts.Node>();
+  /** fs.statSync/lstatSync/fstatSync calls lowered to the run-time options
+   * ladder: the value is a checked-dynamic Stats, BigIntStats or undefined
+   * (bigint selects the member table at run time), so a binding initialized
+   * with one holds the box instead of the checker's static stats union. */
+  readonly dynStatCalls = new Set<ts.Node>();
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -6049,6 +6056,7 @@ export class Lowerer {
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
+      checkedTable("dynStatCalls", () => this.dynStatCalls.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
       checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
@@ -17516,6 +17524,11 @@ export class Lowerer {
         const projected = consoleInto(this, expr, expected, expr.loc);
         if (projected) return projected;
       }
+      // A Stats object the stat calls' run-time options ladder answered:
+      // its member table is checked-dynamic, so a typed slot reads it
+      // through the snapshot extraction (statsDynConversion).
+      const stats = statsDynConversion(this, expr, expected, expr.loc);
+      if (stats) return stats;
       if (
         canDynCheckTo(
           expected,
@@ -22596,6 +22609,7 @@ export class Lowerer {
       lowerWebCryptoCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerX509Call(this, expr) ??
+      lowerCertificateCall(this, expr) ??
       lowerEcdhCall(this, expr) ??
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
@@ -23237,6 +23251,13 @@ export class Lowerer {
       if (imported?.module === "fs" && imported.member === "realpathSync") {
         return { module: "fs", member: "realpathSync.native" };
       }
+      // Node's fs.realpath and fs.realpath.native are the same C++ binding
+      // (the native spelling skips JS's normalization, which realpath(3)
+      // already does), so the callback member maps onto the same dispatcher
+      // op.
+      if (imported?.module === "fs" && imported.member === "realpath") {
+        return { module: "fs", member: "realpath.native" };
+      }
     }
     // timers/promises scheduler.wait / scheduler.yield: methods of the
     // module's scheduler object, dispatched as module members.
@@ -23474,6 +23495,13 @@ export class Lowerer {
     if (bi.module === "crypto" && bi.member === "webcrypto") {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     }
+    // crypto.fips is getFips() behind a once-per-process DEP0093 report:
+    // the exports object (require() or a default import) owns it as a
+    // getter. The ES module namespace does not export it — a TypeScript
+    // read there is refused by name, and a JavaScript read is undefined.
+    if (bi.module === "crypto" && bi.member === "fips") {
+      return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
+    }
     // Members that are global objects (`require("stream/web").ReadableStream
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.
@@ -23485,6 +23513,8 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
     // `zlib.constants` as a value: the module's singleton record.
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
+    // `crypto.constants` as a value: the same story over the OpenSSL table.
+    if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23592,6 +23622,7 @@ export class Lowerer {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
+    if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     return null;
   }
 
@@ -23599,6 +23630,9 @@ export class Lowerer {
    * function the runtime dispatches every argument through, carrying Node's
    * own name and length for the member. */
   lowerFsCallbackValue(member: string, loc: SrcLoc): IrExpr {
+    // fs.realpath.native is the realpath binding itself in Node, so the
+    // runtime folds the spelling into the realpath op and leaves its name
+    // empty.
     return {
       kind: "libCall",
       fn: "fs.callbackValue",

@@ -624,15 +624,31 @@ function cleanupCall(
       async: false,
     };
   }
-  if (value.type.kind === "child") {
+  if (value.type.kind === "netServer") {
+    /* Server.prototype defines only [Symbol.asyncDispose]: closing waits
+     * for 'close', and a server that never listened resolves at once. */
+    if (!awaited)
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        "synchronous 'using' with an async-only net.Server (use 'await using')",
+      );
     return {
       call: {
         kind: "libCall",
-        fn: "child.kill",
-        args: [value, { kind: "strLit", value: "SIGTERM", type: STRING, loc }],
-        type: BOOL,
+        fn: "net.serverAsyncDispose",
+        args: [value],
+        type: { kind: "promise", inner: VOID },
         loc,
       },
+      async: true,
+    };
+  }
+  if (value.type.kind === "child") {
+    /* ChildProcess[Symbol.dispose]: SIGTERM only while `killed` is false,
+     * and the method answers nothing. */
+    return {
+      call: { kind: "libCall", fn: "child.dispose", args: [value], type: VOID, loc },
       async: false,
     };
   }
@@ -7764,6 +7780,18 @@ export function lowerVarDecl(
       isCollectionPrototypeRead(lowerer, decl.initializer)
     )
       g.type = DYN;
+    // A file-scope statSync/lstatSync/fstatSync call lowered to the run-time
+    // options ladder answers a checked-dynamic Stats, BigIntStats or
+    // undefined (the options pick the member table and the missing-entry
+    // policy at the call), so an unannotated binding holds that box instead
+    // of the checker's static stats union (lowerVarDecl's local rule).
+    if (
+      !decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      raw.type.kind === "dyn" &&
+      lowerer.dynStatCalls.has(withoutParentheses(decl.initializer))
+    )
+      g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
     // A module const keeps its initializer's record or array layout, as a
     // function's const does (keepsInitializerLayout). An annotated module
@@ -7999,6 +8027,18 @@ export function lowerVarDecl(
     const constructed = mixinInstantiationNewType(lowerer, decl);
     if (constructed && typeEquals(constructed, init.type)) type = constructed;
   }
+  // A statSync/lstatSync/fstatSync call lowered to the run-time options
+  // ladder answers a checked-dynamic Stats, BigIntStats or undefined (the
+  // options pick the member table and the missing-entry policy at the call),
+  // so an unannotated binding holds that box instead of the checker's static
+  // stats union.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    init.type.kind === "dyn" &&
+    lowerer.dynStatCalls.has(withoutParentheses(decl.initializer))
+  )
+    type = DYN;
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
@@ -15504,7 +15544,11 @@ function lowerForOfClassIterator(
   }
   const isLet = list !== null && (list.flags & ts.NodeFlags.Let) !== 0;
   const decl = list ? list.declarations.nodes[0]! : null;
-  if (decl && !ts.isIdentifier(decl.name)) lowerer.unsupported("SC1031", decl.name);
+  // A DESTRUCTURING loop variable (`for (const [name, value] of pairs)`,
+  // `for (const { name, value } of attrs)`) binds from the yielded value
+  // exactly as a `const [name, value] = value` declaration does, so the
+  // pattern runs over the `%vof` hidden local below.
+  const pattern = decl !== null && !ts.isIdentifier(decl.name) ? decl.name : null;
   const loc = locOf(stmt);
   lowerer.scopes.push(new Map());
   try {
@@ -15529,17 +15573,22 @@ function lowerForOfClassIterator(
             },
           ]
         : [];
-    const varTarget = exprTarget ?? (decl ? forOfVarTarget(lowerer, decl) : null);
-    const x = varTarget
-      ? lowerer.declareHiddenLocal("%vof", cit.valueT)
-      : lowerer.declareLocal(
-          decl!.name as ts.Identifier,
-          (decl!.name as ts.Identifier).text,
-          cit.valueT,
-          isLet,
-        );
+    const varTarget =
+      exprTarget ?? (decl !== null && pattern === null ? forOfVarTarget(lowerer, decl) : null);
+    const x =
+      varTarget || pattern
+        ? lowerer.declareHiddenLocal("%vof", cit.valueT)
+        : lowerer.declareLocal(
+            decl!.name as ts.Identifier,
+            (decl!.name as ts.Identifier).text,
+            cit.valueT,
+            isLet,
+          );
     const xRef: IrExpr = { kind: "varRef", localId: x.id, type: cit.valueT, loc };
     const blame: ts.Node = decl?.name ?? exprTargetNode ?? stmt.initializer;
+    const patternBind: IrStmt[] = [];
+    if (pattern !== null)
+      lowerer.lowerBindingPattern(pattern, () => xRef, cit.valueT, isLet, patternBind);
     const head: IrStmt[] = [
       ...setDone(true),
       {
@@ -15595,6 +15644,11 @@ function lowerForOfClassIterator(
           ]
         : []),
       ...setDone(false),
+      // A destructuring loop variable binds from the value just read, in
+      // the body's own control flow: an abrupt completion there (a trapping
+      // position read, a throwing default) closes the iterator like the
+      // rest of the body does.
+      ...patternBind,
     ];
     const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement), labels);
     const loop: IrStmt = {

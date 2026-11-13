@@ -57,6 +57,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
+  // scr_dns_resolver_is compares the value's kind and handle tag.
+  "dns.resolverIs",
+  // scr_dns_get_servers_default builds the server array from the default
+  // resolver's list; the list was read when that resolver was created, and
+  // turning it into strings cannot raise.
+  "dns.promisesGetServers",
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
@@ -79,6 +85,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childResume",
   "stream.childIsPaused",
   "stream.childFlowing",
+  // subprocess.channel answers the child's IPC state: undefined when it
+  // never had a channel, null once it closed, else a handle over the
+  // child. The island path reads the island ChildProcess's `channel`
+  // data property, which Node assigns as a field; neither path runs an
+  // accessor, a coercion or a callback.
+  "child.channel",
   // Builds the flags object once from constants and retains it.
   "process.features",
   // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the
@@ -139,12 +151,19 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // of memory ends the process.
   "net.serverListeners",
   "http.serverListeners",
+  // scr_net_is_bound_socket reads a dyn value's tag and handle pointer: a
+  // value of another kind answers false. It runs no code.
+  "net.isBoundSocket",
   // scr_record_source_has_key asks the record's kept view whether it holds
   // an own key: no accessor runs, and a record without a view answers false.
   "record.sourceHasKey",
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // scr_crypto_x509_key_usage reads the certificate's extended key usage
+  // extension: a certificate without one answers undefined and a malformed
+  // extension is skipped, so no program-visible error is raised.
+  "crypto.x509KeyUsage",
   // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
   // timer the handle names: the loop's clear, or the mock's own entry
   // removal when the program mocks timers. Neither throws nor runs a
@@ -165,6 +184,19 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // The autoSelectFamily default is plain storage in the core unit: the
+  // getter answers the stored boolean and runs nothing else.
+  "net.getDefaultAutoSel",
+  // scr_net_sock_on_attempt adds the listener to the socket's attempt list
+  // (or drops it past 'close'); no listener runs.
+  "net.sockOnAttempt",
+  // scr_net_sock_buffer_size and scr_net_sock_attempted_addresses read the
+  // socket's write buffer and attempted-address list: no accessor runs.
+  "net.sockBufferSize",
+  "net.sockAttemptedAddresses",
+  // scr_net_server_async_dispose allocates the promise, adds a close
+  // listener and starts the close; a later close failure is a rejection.
+  "net.serverAsyncDispose",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -144,7 +145,11 @@ static size_t scr_fs_write_data_len(const ScrBytes *bytes) {
  * A local copy of scr_fs_flags.c's check keeps this gated unit free of
  * that one's symbols (see scr_fs_bytes_write_mode_ok above). */
 static bool scr_fs_bytes_write_encoding_ok(ScrStr *encoding) {
-  if (encoding->len == 0 || scr_bytes_is_encoding(encoding)) return true;
+  /* "buffer" passes assertEncoding; the string writer rejects it at
+   * Buffer.from (ERR_UNKNOWN_ENCODING), while byte data never decodes. */
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) ||
+      (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0))
+    return true;
   ScrDyn *value = scr_dyn_new_str(encoding);
   scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
   scr_dyn_release(value);
@@ -214,6 +219,28 @@ void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *e
   if (!scr_fs_write_data_arg(data, &arg)) return;
   if (arg.str) scr_fs_append_file_options(path, arg.str, encoding, mode, flags);
   else scr_fs_append_file_bytes_options(path, arg.bytes, encoding, mode, flags);
+}
+
+/* The same checked-data option writes with a mode and/or a flag whose static
+ * type the call site did not pin down: the string and byte writers in
+ * scr_fs_flags.c parse them through parseFileMode's and stringToFlags'
+ * ladders, after the encoding and the data kind, as Node validates them. */
+void scr_fs_write_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                             const ScrDyn *mode, const ScrDyn *flags) {
+  if (!scr_fs_bytes_write_encoding_ok(encoding)) return;
+  ScrFsWriteData arg;
+  if (!scr_fs_write_data_arg(data, &arg)) return;
+  if (arg.str) scr_fs_write_file_options_dyn_mode(path, arg.str, encoding, mode, flags);
+  else scr_fs_write_file_bytes_options_dyn_mode(path, arg.bytes, encoding, mode, flags);
+}
+
+void scr_fs_append_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags) {
+  if (!scr_fs_bytes_write_encoding_ok(encoding)) return;
+  ScrFsWriteData arg;
+  if (!scr_fs_write_data_arg(data, &arg)) return;
+  if (arg.str) scr_fs_append_file_options_dyn_mode(path, arg.str, encoding, mode, flags);
+  else scr_fs_append_file_bytes_options_dyn_mode(path, arg.bytes, encoding, mode, flags);
 }
 
 /* writeFileSync(fd, data): the descriptor form over the checked data. The

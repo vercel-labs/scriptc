@@ -1399,6 +1399,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Node's own message shape).
       realpathSync: { fn: "fs.realpathSync", params: [STRING], result: STRING },
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
+      // fs.realpath.native is Node's same realpath binding as fs.realpath
+      // (the native spelling just skips JS normalization); the callback
+      // lowering maps both onto the one dispatcher op.
+      "realpath.native": { fn: "fs.callbackCall", params: [], result: DYN },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
       // closeSync). Both forms take an optional creation mode as the third
@@ -1719,12 +1723,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
-      createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
-      createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+      createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
+      createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
       generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
       sign: { fn: "crypto.signOneshot", params: [], result: DYN },
       verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+      publicEncrypt: { fn: "crypto.publicEncrypt", params: [], result: DYN },
+      privateDecrypt: { fn: "crypto.privateDecrypt", params: [], result: DYN },
+      privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
+      publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
@@ -1759,6 +1767,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Checked-dynamic arguments, the result converted to the call site's
       // type (lowerPrimeCall).
       getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
+      // Node's message and error for every engine but "dynamic".
+      setEngine: { fn: "crypto.setEngine", params: [], result: VOID },
       checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
       generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
       generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -2261,9 +2271,11 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // table entries have a home, and so the "recognized module, unlowered
     // member" fence wording applies.
     net: {
-      // The process-wide happy-eyeballs attempt budget: one runtime double
-      // in the core unit (never links scr_net.c by itself), default 250ms
-      // like Node's.
+      // The process-wide autoSelectFamily setting and its attempt-timeout
+      // budget: runtime state in the core unit (never links scr_net.c by
+      // itself), true and 250ms by default like Node's.
+      getDefaultAutoSelectFamily: { fn: "net.getDefaultAutoSel", params: [], result: BOOL },
+      setDefaultAutoSelectFamily: { fn: "net.setDefaultAutoSel", params: [DYN], result: VOID },
       getDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.getAutoSelTimeout",
         params: [],
@@ -2271,7 +2283,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       },
       setDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.setAutoSelTimeout",
-        params: [F64],
+        params: [DYN],
         result: VOID,
       },
       // Node's IPv4Reg / IPv6Reg tests over String(input).
@@ -2500,8 +2512,21 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
-    // Inline numeric O_* flags use a target-neutral runtime entry point.
-    openSync: ["fs.openNumericSync"],
+    // Every flag and mode spelling the lowering selects: inline numeric O_*
+    // flags (the target-neutral mask), raw open(2) bits, the octal-string
+    // creation mode, and the forms whose flags or mode only the runtime
+    // knows.
+    openSync: [
+      "fs.openNumericSync",
+      "fs.openStrModeSync",
+      "fs.openNativeSync",
+      "fs.openDynSync",
+      "fs.openModeDynSync",
+      "fs.openNativeStrSync",
+      "fs.openNativeDynSync",
+      "fs.openNumericStrSync",
+      "fs.openNumericDynSync",
+    ],
     // The Buffer path: the typed entry point for a statically typed one
     // (fs.existsSyncBytes), and the value form when only the runtime knows
     // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
@@ -2512,6 +2537,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFileSyncBuf",
       "fs.readFileSyncBytes",
       "fs.readFileSyncDyn",
+      "fs.readFileSyncStrOpts",
+      "fs.readFileSyncBytesOpts",
       "fs.readFileEncoded",
       "fs.readFdEncoded",
       "fs.readFdSync",
@@ -2542,6 +2569,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.writeFileDataOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.writeFileDataOptionsDynModeSync",
     ],
     // The data forms (bytes, and the checked argument whose type the call
     // site did not pin down) and the { encoding, mode, flag } option-record
@@ -2552,6 +2582,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -2573,22 +2606,50 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamClose",
       "fs.fsStreamCloseCb",
     ],
-    // The utf8 string overload; the table row is the Buffer-window form.
-    writeSync: ["fs.writeStrSync"],
+    // The utf8 string overload and the run-time-checked argument forms;
+    // the table row is the Buffer-window form.
+    writeSync: ["fs.writeStrSync", "fs.writeSyncArgs"],
     // The form whose arguments Node checks at run time.
-    readSync: ["fs.readSyncDyn"],
-    // The { recursive, mode } option lowerings.
-    mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
+    readSync: ["fs.readSyncArgs"],
+    // The same run-time ladder over a descriptor the call site did not pin
+    // down.
+    readvSync: ["fs.readvSyncDyn"],
+    writevSync: ["fs.writevSyncDyn"],
+    ftruncateSync: ["fs.ftruncateSyncDyn"],
+    closeSync: ["fs.closeSyncDyn"],
+    fsyncSync: ["fs.fsyncSyncDyn"],
+    fdatasyncSync: ["fs.fdatasyncSyncDyn"],
+    fchownSync: ["fs.fchownSyncDyn"],
+    // The bare mode, the { recursive, mode } option lowerings, the forms
+    // keeping Node's first-created-directory answer, and the runtime-ladder
+    // form for an options value the compiler cannot read.
+    mkdirSync: [
+      "fs.mkdirModeSync",
+      "fs.mkdirModeStrSync",
+      "fs.mkdirRecursiveSync",
+      "fs.mkdirRecursiveModeSync",
+      "fs.mkdirObjSync",
+      "fs.mkdirObjStrSync",
+      "fs.mkdirObjVoidSync",
+      "fs.mkdirObjStrVoidSync",
+      "fs.mkdirModeValueSync",
+      "fs.mkdirModeStrValueSync",
+      "fs.mkdirDynSync",
+      "fs.mkdirDynVoidSync",
+    ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
     readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
-    // The { throwIfNoEntry } probe form.
-    statSync: ["fs.statProbeSync"],
+    // The { throwIfNoEntry } probe form and the run-time option ladder
+    // (bigint and throwIfNoEntry read off a value only the runtime knows).
+    statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
     // realpathSync and realpathSync.native read as function values.
     realpathSync: ["fs.realpathValue"],
     "realpathSync.native": ["fs.realpathValue"],
-    lstatSync: ["fs.lstatProbeSync"],
+    lstatSync: ["fs.lstatProbeSync", "fs.lstatSyncDyn"],
+    // The run-time option ladder over options the compiler cannot read.
+    fstatSync: ["fs.fstatSyncDyn"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
@@ -2597,7 +2658,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // callers fence per site); the ladder runs the REAL lchmod on APPLE,
     // so the chmod fence witnesses it — fencing one spelling fences the
     // operation.
-    chmodSync: ["fs.lchmodSyncChk"],
+    // The octal-string and run-time-checked mode forms (lowerFsModeSyncCall).
+    chmodSync: ["fs.lchmodSyncChk", "fs.chmodSyncStr", "fs.chmodSyncDyn"],
+    fchmodSync: ["fs.fchmodSyncStr", "fs.fchmodSyncDyn"],
     // The two-argument listener form.
     watch: ["fs.watchCb"],
   },
@@ -2632,6 +2695,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomBytesToString",
       "crypto.randomBytesCb",
       "crypto.randomBytesPromise",
+      // Node's own argument checks for the sizes, callbacks and surplus
+      // arguments the declared overloads do not describe.
+      "crypto.randomBytesAny",
+      "crypto.randomBytesAnyCb",
     ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
@@ -2649,8 +2716,24 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     getRandomValues: ["crypto.getRandomValuesDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
+    randomInt: [
+      "crypto.randomIntMax",
+      "crypto.randomIntCb",
+      "crypto.randomIntPromise",
+      // Node's own checks for the bounds and callback forms the declared
+      // overloads do not describe.
+      "crypto.randomIntAny",
+      "crypto.randomIntAnyCb",
+    ],
     randomUUID: ["crypto.randomUUIDOpts"],
+    // A callback only the dynamic checker can see takes the function gate
+    // before the deferred call.
+    generateKey: ["crypto.checkCallback"],
+    // A sign or verify callback of a type the checker cannot prove is a
+    // function may be undefined at run time, where Node answers
+    // synchronously; a function takes the asynchronous entry point.
+    sign: ["crypto.signOneshotCb", "crypto.signOneshotMaybe"],
+    verify: ["crypto.verifyOneshotCb", "crypto.verifyOneshotMaybe"],
   },
   tty: {
     isatty: ["process.isTTYValue"],
@@ -3650,6 +3733,7 @@ export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefin
   writev: 4,
   readlink: 3,
   realpath: 3,
+  "realpath.native": 3,
   rename: 3,
   stat: 1,
   lstat: 1,
@@ -3777,14 +3861,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
-    ...Object.fromEntries(
-      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
-        m,
-        "RSA encryption has no lowering — the asymmetric crypto surface is " +
-          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
-          "createSign, createVerify, createECDH, and createDiffieHellman",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",

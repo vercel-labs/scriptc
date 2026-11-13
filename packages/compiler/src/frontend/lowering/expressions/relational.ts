@@ -38,6 +38,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
 import { builtinModuleHasMember } from "../builtin-module-members.js";
@@ -476,6 +477,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  // `x instanceof dns.Resolver` / `dns.promises.Resolver`: the stub
+  // resolver's own handle tag (scr_dns_resolve.c).
+  const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
+  if (resolverTest !== null) return resolverTest;
   const rightClass = builtinClassRefOf(lowerer, expr.right);
   if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 

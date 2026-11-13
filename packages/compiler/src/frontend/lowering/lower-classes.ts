@@ -247,6 +247,7 @@ import {
   usesStaticReceiver,
 } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
+import { lowerDnsResolverNew } from "./lower-dgram.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import {
@@ -552,6 +553,23 @@ function jsCheckedDynamicArrayElement(lowerer: Lowerer, expression: ts.Expressio
   return (
     stored.type.kind === "dyn" || (stored.type.kind === "array" && stored.type.elem.kind === "dyn")
   );
+}
+
+/** The class body and member that declare `priv`: the nearest enclosing
+ * class declaring the name, static or not, as JavaScript scoping resolves
+ * a private name. Null when no enclosing class declares it. */
+export function privateNameDeclaration(
+  priv: ts.PrivateIdentifier,
+): { cls: ts.ClassLikeDeclaration; member: ts.ClassElement } | null {
+  for (let node: ts.Node | undefined = priv.parent; node; node = node.parent) {
+    if (!ts.isClassDeclaration(node) && !ts.isClassExpression(node)) continue;
+    const member = node.members.nodes.find((candidate) => {
+      const name = (candidate as { name?: ts.PropertyName }).name;
+      return name !== undefined && ts.isPrivateIdentifier(name) && name.text === priv.text;
+    });
+    if (member) return { cls: node, member };
+  }
+  return null;
 }
 
 /** The expression a cast that erases the value's type wraps: `as any`,
@@ -1285,6 +1303,37 @@ const ERROR_CLASS_VALUES: ReadonlySet<string> = new Set([
   "%URIError",
 ]);
 
+/**
+ * `RUNTIME_ERROR_PREFIX_FIELDS` mirrors scr_error.h's `ScrError` field for
+ * field (after its `rc` and `vt` header), because a subclass's struct puts
+ * its own fields right after that prefix: a header field missing here hands
+ * its bytes to the subclass's first field. */
+export const RUNTIME_ERROR_PREFIX_FIELDS: readonly { name: string; type: IrType }[] = [
+  { name: "name", type: STRING },
+  { name: "message", type: STRING },
+  { name: "%code", type: STRING },
+  { name: "%cause", type: DYN },
+  { name: "%causeEnumerable", type: BOOL },
+  { name: "%messagePresent", type: BOOL },
+  { name: "%messageEnumerable", type: BOOL },
+  { name: "%namePresent", type: BOOL },
+  { name: "%nameEnumerable", type: BOOL },
+  { name: "%stackFrames", type: STRING },
+  { name: "%stack", type: STRING },
+  { name: "%systemErrno", type: F64 },
+  { name: "%systemCall", type: STRING },
+  { name: "%systemPath", type: STRING },
+  { name: "%systemDest", type: STRING },
+  { name: "%systemMessage", type: STRING },
+  { name: "%systemCode", type: STRING },
+  { name: "%nativePlain", type: BOOL },
+  { name: "%errnoOrder", type: BOOL },
+  // scr_error.h's own `errno` that reads undefined (a DNSException). The
+  // layout must mirror the header exactly: a subclass's first field lands
+  // on this byte, so a bool field would otherwise set it.
+  { name: "%errnoUndefined", type: BOOL },
+];
+
 /** The builtin Error hierarchy
  * as eagerly-registered ClassInfos: mapType names them the moment a lib
  * Error type appears, so the infos must exist before any lowering. They
@@ -1310,27 +1359,7 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
         // READ has its own `string | undefined` lowering (error.code),
         // never a plain-string field access. `%cause` is the following
         // owned dyn slot; NULL means absent, dyn undefined means present.
-        fields: [
-          { name: "name", type: STRING },
-          { name: "message", type: STRING },
-          { name: "%code", type: STRING },
-          { name: "%cause", type: DYN },
-          { name: "%causeEnumerable", type: BOOL },
-          { name: "%messagePresent", type: BOOL },
-          { name: "%messageEnumerable", type: BOOL },
-          { name: "%namePresent", type: BOOL },
-          { name: "%nameEnumerable", type: BOOL },
-          { name: "%stackFrames", type: STRING },
-          { name: "%stack", type: STRING },
-          { name: "%systemErrno", type: F64 },
-          { name: "%systemCall", type: STRING },
-          { name: "%systemPath", type: STRING },
-          { name: "%systemDest", type: STRING },
-          { name: "%systemMessage", type: STRING },
-          { name: "%systemCode", type: STRING },
-          { name: "%nativePlain", type: BOOL },
-          { name: "%errnoOrder", type: BOOL },
-        ],
+        fields: [...RUNTIME_ERROR_PREFIX_FIELDS],
         loc,
       },
       fields: new Map([
@@ -2041,6 +2070,13 @@ function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration)
   const symbol = lowerer.collectDeferring(
     () => declSymbolOf(lowerer, decl),
     () => {
+      // flushDeferred runs this collector again when a reference reaches
+      // the class. Another reference may have collected it in the meantime:
+      // the table then already holds its ClassInfo, and collecting again
+      // would replace the entry while pushing a second one onto the base's
+      // subclasses — both copies then reach the dynamic dispatch, which
+      // generates each %class.view helper twice (SC9001).
+      if (lowerer.classes.has(lowerer.classNamer(decl))) return;
       // A forward type reference can demand this class before collection
       // reaches its earlier base declaration. Collect that dependency first;
       // a later same-file base remains subject to the runtime order boundary.
@@ -8951,6 +8987,10 @@ export function lowerClassValueProperty(
   if (recvT?.kind !== "classval") return null;
   const loc = locOf(expr);
   const member = expr.name.text;
+  // A private name is never a property key: it reads the declaring class's
+  // own storage after the brand rules below, never a public property of
+  // the same spelling that the class object's table may hold.
+  const privateName = ts.isPrivateIdentifier(expr.name);
   const info = lowerer.classes.get(recvT.className);
   // A runtime-provided class value answers `.name` from its class object;
   // its other statics (`Error.stackTraceLimit`) keep their own lowerings.
@@ -8961,8 +9001,8 @@ export function lowerClassValueProperty(
   // reads its own storage, as it would without the hook.
   if (
     info &&
+    !privateName &&
     ((hasRuntimeStatics(info) &&
-      !member.startsWith("#") &&
       !storedMember?.field &&
       (!storedMember || runtimeStaticDefines(lowerer, info, member))) ||
       (info.callableBase && !storedMember))
@@ -8982,6 +9022,7 @@ export function lowerClassValueProperty(
   // a member the table does not hold.
   if (
     info &&
+    !privateName &&
     (lowerer.typeOf(expr.expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 &&
     classStaticsSubtreeReadable(lowerer, info)
   )
@@ -9065,8 +9106,18 @@ export function lowerClassValueProperty(
   // other receiver). The direct class-name spelling resolved in
   // lowerStaticFieldRead, so a private reaching here is a
   // classval-typed binding.
-  if (member.startsWith("#")) {
-    if (!classValueIsExactlyOwn(lowerer, expr.expression, info)) {
+  if (privateName) {
+    // The checker resolves the name against the receiver's type, which a
+    // cast erases (`(ctor as any).#x`): JavaScript resolves it lexically,
+    // so the class whose body declares it must be the receiver's class.
+    if (privateNameDeclaration(expr.name)?.cls !== info.decl) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `reading the private name '${member}' through a class value whose class did not declare it (JS resolves a private name in the enclosing class body — spell the declaring class's name)`,
+      );
+    }
+    if (!classValueIsExactlyOwn(lowerer, recvNode, info)) {
       lowerer.unsupported(
         "SC1090",
         expr,
@@ -12554,6 +12605,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
   }
+  // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
+  // the module's Resolver class builds a stub-resolver handle value.
+  {
+    const resolver = lowerDnsResolverNew(lowerer, expr);
+    if (resolver) return resolver;
+  }
   // `new url.URL(input)` / `new url.URLSearchParams(init?)`: the node:url
   // member names the same class the named import does, so both take the
   // class's own lowering (including its argument diagnostics).
@@ -12965,6 +13022,42 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
       return x509RecordCall(lowerer, data, t, loc);
+    }
+  }
+  // `new crypto.Certificate()` — the SPKAC class. Its instance holds no
+  // state (Node's methods read their argument), so the value is the empty
+  // record that mapType interns for the class; builtins/certificate.ts
+  // lowers the three methods against the argument alone.
+  {
+    const callee = expr.expression;
+    const isCertificate =
+      (ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "Certificate" &&
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
+      (ts.isIdentifier(callee) &&
+        (() => {
+          const bi = lowerer.builtinImportOf(callee);
+          return bi?.module === "crypto" && bi.member === "Certificate";
+        })());
+    if (isCertificate) {
+      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
+      const value = { kind: "recordLit" as const, fields: [], type: t, loc };
+      if (args.length === 0) return value;
+      // Node's constructor ignores its arguments, but still evaluates
+      // them; keep that so a throwing argument throws here too.
+      return {
+        kind: "seqExpr",
+        stmts: args.map((a) => ({
+          kind: "exprStmt" as const,
+          expr: lowerer.lowerExpr(a),
+          loc: locOf(a),
+        })),
+        result: value,
+        type: t,
+        loc,
+      };
     }
   }
   if (
@@ -14505,6 +14598,7 @@ function x509RecordHelper(
     subject: () => call("crypto.x509Subject", STRING),
     subjectAltName: (type) => optionalText("san", "crypto.x509SubjectAltName", type),
     infoAccess: (type) => optionalText("access", "crypto.x509InfoAccess", type),
+    keyUsage: (type) => optionalArray("keyusage", "crypto.x509KeyUsage", type),
     issuer: () => call("crypto.x509Issuer", STRING),
     raw: () => raw,
     serialNumber: () => call("crypto.x509SerialNumber", STRING),
@@ -14555,6 +14649,44 @@ function x509RecordHelper(
         loc,
       },
       else_: { kind: "unionWrap", unionId: type.unionId, tag: stringTag, value: text, type, loc },
+      type,
+      loc,
+    };
+  }
+  /** A string[] | undefined field: the runtime's dynamic array, or undefined
+   * when the extension is absent. */
+  function optionalArray(local: string, fn: IrLibFn, type: IrType): IrExpr {
+    if (type.kind !== "union")
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field type");
+    const def = lowerer.unions.get(type.unionId);
+    const arrayTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
+    const undefinedTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+    if (arrayTag < 0 || undefinedTag < 0)
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field arms");
+    const arrayType = def!.arms[arrayTag] as IrType & { kind: "array" };
+    const id = `${local}.0`;
+    locals.push({ id, name: local, type: DYN, mutable: false });
+    decls.push({ kind: "varDecl", localId: id, init: call(fn, DYN), loc });
+    const value: IrExpr = { kind: "varRef", localId: id, type: DYN, loc };
+    return {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "array", value, type: BOOL, loc },
+      then: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: arrayTag,
+        value: { kind: "dynCheck", value, type: arrayType, loc },
+        type,
+        loc,
+      },
+      else_: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: undefinedTag,
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+        loc,
+      },
       type,
       loc,
     };

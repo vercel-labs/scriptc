@@ -4195,9 +4195,15 @@ static void scr_dir_deliver_op(ScrDirOp *op) {
   scr_dyn_release(arguments);
 }
 
-/* dir.close(callback): a closed Dir reports ERR_DIR_CLOSED on a next tick;
- * otherwise the handle closes now and the callback follows on the loop. */
+/* dir.close(callback): the callback is validated before anything else
+ * (Node's validateFunction runs ahead of its closed check), a closed Dir
+ * reports ERR_DIR_CLOSED on a next tick, and otherwise the handle closes
+ * now and the callback follows on the loop. */
 void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
   ScrDirOp *op = scr_dir_op_new(d, true);
   op->callback = scr_dyn_retain(callback);
   if (d->closed) {
@@ -6269,6 +6275,10 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool kids = scr_loop_children != NULL && scr_loop_children->pending();
   bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
   bool kids_failed = scr_loop_children != NULL && scr_loop_children->failed_pending();
+  /* exec/execFile's timeout: Node's setTimeout timer keeps the loop alive
+   * and wakes it, even for an unref'd child. */
+  double kids_deadline =
+      scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
   bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
   bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
   bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
@@ -6293,11 +6303,11 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   /* jobs this thread completed during the turn: delivered next turn */
   bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
 #ifdef SCR_NODE_ISLANDS
-  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
-              renames || crypto || deferred || workers || islands;
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers || islands;
 #else
-  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
-              renames || crypto || deferred || workers;
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers;
 #endif
   /* Queued deferred callbacks keep the poll from sleeping (their work is
    * done; only the delivery waits for the next turn). */
@@ -6372,6 +6382,11 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
 #endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
+  /* exec/execFile's timeout deadline caps the sleep, as Node's timer does. */
+  if (kids_deadline >= 0) {
+    double wait = kids_deadline - scr_now_ms();
+    scr_hosted_io_cap(st, wait > 0 ? wait : 0);
+  }
 }
 
 /* The end of one runtime macrotask inside a dispatch station: the throw
@@ -6722,6 +6737,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       bool held =
           scr_reffed_timers > 0 || scr_reffed_immediates > 0 ||
           scr_loop_children->reffed_pending() ||
+          /* a pending exec/execFile timeout keeps the loop turning */
+          scr_loop_children->next_deadline() >= 0 ||
           /* spawn failures settle regardless: their 'error' is a
            * next-tick event, delivered even on an unref'd child */
           scr_loop_children->failed_pending() ||
@@ -6749,6 +6766,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* never wait once Node's loop does */
     bool kids = scr_loop_children != NULL && scr_loop_children->pending();
     bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+    /* exec/execFile's timeout: the deadline keeps the loop alive and wakes
+     * it, like Node's setTimeout timer. */
+    double kids_deadline =
+        scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
@@ -6772,9 +6793,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
 #ifdef SCR_NODE_ISLANDS
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) {
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) {
 #else
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) {
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) {
 #endif
       /* Out of ref'd work: Node emits 'beforeExit' here — the per-thread
        * loop's exhaustion, so a worker's own loop emits it too — with
@@ -6818,6 +6839,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * - timers only: plain nanosleep to the deadline. */
     double now = scr_now_ms();
     double due = scr_ntimers > 0 ? scr_timers[0].deadline_ms : now + SCR_IO_POLL_MS;
+    /* The earliest exec/execFile timeout wakes the loop exactly there. */
+    if (kids_deadline >= 0 && kids_deadline < due) due = kids_deadline;
     /* The worker pool's wake ends the sleep when a job completes: its pipe
      * joins the poll(2) set on POSIX, and the Windows sleeps wait on its
      * event. Without one (a failed pipe or event, or a child wait that

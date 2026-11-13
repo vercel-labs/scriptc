@@ -1772,15 +1772,19 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
 
 /* A runtime-built warning while a replacement is installed: Node's modules
  * call process.emitWarning(message, type, code), so the replacement sees
- * those arguments; nothing is reported. A throw stays pending. */
-static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
-  ScrDyn *args[3];
+ * those arguments; nothing is reported. A throw stays pending.
+ * `undefined_ctor` adds Node's fourth argument (the deprecation
+ * constructor) as undefined, which getDeprecationWarningEmitter's callers
+ * pass that way (DEP0203). */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code, bool undefined_ctor) {
+  ScrDyn *args[4];
   size_t argc = 0;
   args[argc++] = scr_dyn_new_str(message);
   ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
   args[argc++] = scr_dyn_new_str(type ? type : fallback);
   scr_str_release(fallback);
   if (code) args[argc++] = scr_dyn_new_str(code);
+  if (undefined_ctor) args[argc++] = scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
   scr_dyn_release(r);
   for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
@@ -1790,12 +1794,12 @@ static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *cod
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
-void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+static void scr_emit_warning_impl(const char *name, const char *code, ScrStr *message) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
     ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
-    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_emit_warning_replaced(message, type_text, code_text, false);
     scr_str_release(type_text);
     scr_str_release(code_text);
     return;
@@ -1806,6 +1810,38 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   scr_str_release(code_text);
   scr_warning_dispatch(w);
   scr_dyn_release(w);
+}
+
+void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+  scr_emit_warning_impl(name, code, message);
+}
+
+/* DEP0203: node:crypto converting a CryptoKey key argument is deprecated.
+ * Node reports it once per process through
+ * getDeprecationWarningEmitter('DEP0203'), so a replacement sees it at the
+ * call (with the emitter's four arguments) and the default report comes on
+ * the next tick, dropped while process.noDeprecation is set and thrown
+ * while process.throwDeprecation is set, as for the other runtime
+ * deprecations. Every program that can hold a CryptoKey links this unit:
+ * the WebCrypto calls that produce one settle through an awaited or
+ * then-reaction value that selects it. */
+static SCR_TL bool scr_dep0203_emitted = false;
+
+static void scr_dep0203(void) {
+  if (scr_dep0203_emitted) return;
+  scr_dep0203_emitted = true;
+  static const char text[] = "Passing a CryptoKey to node:crypto functions is deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0203", sizeof "DEP0203" - 1);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred_undefined_ctor(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+__attribute__((constructor)) static void scr_dep0203_install(void) {
+  scr_crypto_deprecate_crypto_key = scr_dep0203;
 }
 
 /* Node's emitWarning tail for runtime-built warnings: deprecations are
@@ -1831,18 +1867,21 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
   scr_next_tick(c);
 }
 
-void scr_warning_emit_deferred(ScrDyn *w) {
+static void scr_warning_emit_deferred_impl(ScrDyn *w, bool undefined_ctor) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
     const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
     ScrStr *name = scr_warning_name(w);
     ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
-    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL,
+                              undefined_ctor);
     scr_str_release(message);
     scr_str_release(name);
     return;
   }
+#else
+  (void)undefined_ctor;
 #endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
@@ -1852,6 +1891,15 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+void scr_warning_emit_deferred(ScrDyn *w) { scr_warning_emit_deferred_impl(w, false); }
+
+/* The same, for a deprecation Node emits through getDeprecationWarningEmitter:
+ * a replacement sees its fourth argument (the deprecation constructor) as
+ * undefined. */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *w) {
+  scr_warning_emit_deferred_impl(w, true);
 }
 
 static SCR_TL bool scr_punycode_loaded = false;

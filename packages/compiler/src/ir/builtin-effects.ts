@@ -59,6 +59,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.dhGroupNew",
   // Node's nameOrNid and options errors.
   "crypto.getCipherInfo",
+  // Reading the deprecated crypto.fips reports DEP0093 through
+  // process.emitWarning, whose replacement may throw.
+  "crypto.fipsGet",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
@@ -387,9 +390,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
+  "net.sockSetEncodingDyn",
+  // setKeepAlive's positional coercions and its object form run ToNumber
+  // (~~), which calls a value's valueOf/toString.
+  "net.sockSetKeepAlive",
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
+  "fs.statSyncDyn",
+  "fs.lstatSyncDyn",
+  "fs.fstatSyncDyn",
+  "fs.readFileSyncStrOpts",
+  "fs.readFileSyncBytesOpts",
   "fs.readFileEncoded",
   "fs.readFdEncoded",
   // tls/https runtime options records: the walks throw the catchable
@@ -748,14 +760,25 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
+  // child.dispose sends SIGTERM through the same kill path; a Node-island
+  // child's kill may emit the synchronous 'error' that path can raise.
+  "child.dispose",
   // The caller's lookup runs synchronously inside the connect call — a
   // throw there propagates like Node's.
   "net.connectLookup",
   "net.connectLookupDyn",
   "cp.execSync",
+  // The unencoded form throws the same spawn, maxBuffer and command errors.
+  "cp.execSyncBytes",
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
+  // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
+  // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
+  "cp.execFileOpts",
+  // spawn's own: the same validateTimeout and sanitizeKillSignal, plus
+  // validateAbortSignal's ERR_INVALID_ARG_TYPE, before the child starts.
+  "cp.spawnArmed",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).
@@ -1134,6 +1157,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.newChecked",
   "fs.statSync",
   "fs.statProbeSync",
+  // The checked-dynamic Stats extraction: a value outside the Stats type
+  // throws the checked conversion's TypeError.
+  "fs.statsFromDyn",
+  "fs.statsFromDynOpt",
   "crypto.randomBytesToString",
   "crypto.randomBytes",
   "crypto.hashDigestStr",
@@ -1164,6 +1191,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestDyn",
   "crypto.hmacDigestDyn",
   "crypto.hashOneshot",
+  // The checked-dynamic constructors and the callback pbkdf2 run Node's
+  // argument validation and can raise catchable TypeErrors; the callback
+  // form also runs program code.
+  "crypto.hashNewAny",
+  "crypto.hmacNewAny",
+  "crypto.hashOneshotAny",
+  "crypto.pbkdf2Any",
+  "crypto.pbkdf2AnyCb",
+  "crypto.hkdfAny",
+  "crypto.hkdfAnyCb",
+  "crypto.scryptAny",
+  "crypto.scryptAnyCb",
   "crypto.timingSafeEqual",
   "crypto.timingSafeEqualDyn",
   "crypto.randomFill",
@@ -1182,10 +1221,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createSecretKey",
   "crypto.generateKeySync",
   "crypto.generateKeyCb",
+  "crypto.checkCallback",
   "crypto.keyObjectInput",
   "crypto.randomUUIDv7",
   "crypto.pbkdf2",
   "crypto.randomBytesCb",
+  "crypto.randomBytesAny",
+  "crypto.randomBytesAnyCb",
+  "crypto.randomIntAny",
+  "crypto.randomIntAnyCb",
   "crypto.pbkdf2Cb",
   "crypto.hkdf",
   "crypto.hkdfCb",
@@ -1229,8 +1273,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
-  "net.connectOptsChk",
+  "net.connectDyn",
+  "net.connectDynCb",
   "net.setAutoSelTimeout",
+  "net.setDefaultAutoSel",
   "error.argTypeThrow",
   "error.propTypeThrow",
   "array.foreignThrow",
@@ -1289,6 +1335,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.promisesLookup",
   "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
+  // The stub resolver's checks (ERR_INVALID_ARG_TYPE/VALUE for a name,
+  // callback, options or rrtype; ERR_INVALID_IP_ADDRESS and
+  // ERR_SOCKET_BAD_PORT for setServers' entries; ERR_OUT_OF_RANGE for a
+  // Resolver's options), and reverse's synchronous EINVAL for an address
+  // c-ares cannot parse.
+  "dns.resolveChk",
+  "dns.resolvePromise",
+  "dns.resolveRrChk",
+  "dns.resolveRrPromise",
+  "dns.resolverNew",
+  "dns.setServers",
+  "dns.promisesSetServers",
   "net.connect",
   "net.connectCb",
   "net.connectPath",
@@ -1314,9 +1372,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // before it binds, so a 'newListener' handler can throw out of the call
   // and the server does not listen.
   "net.listenCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen(port) and listen(path) on a server that is already listening
+  // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
+  // catchable), so every listen entry point can leave an exception.
+  "net.listen",
+  "net.listenDyn",
+  "net.listenPath",
+  "net.listenOpts",
+  "net.listenOptsReusePort",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",
@@ -1332,6 +1400,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",
+  // BoundSocket's option checks and bind errors, and listen(bound)'s
+  // already-listening and already-adopted errors (Node throws both
+  // synchronously).
+  "net.boundSocketNew",
+  "net.listenBound",
+  "net.listenBoundCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
@@ -1403,6 +1477,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The wider sync fs slice: same catchable errno throws as the rest.
   "fs.unlinkSync",
   "fs.chmodSync",
+  "fs.chmodSyncStr",
+  "fs.chmodSyncDyn",
+  "fs.fchmodSyncStr",
+  "fs.fchmodSyncDyn",
   "fs.chownSync",
   "fs.lchownSync",
   "fs.fchownSync",
@@ -1421,6 +1499,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.readSync",
   "dir.readCb",
   "dir.closeSync",
+  // close(callback) validates the callback before the closed check, so a
+  // non-function argument throws synchronously.
+  "dir.closeCb",
   // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
   // while an operation is queued.
   "dir.dispose",
@@ -1455,14 +1536,45 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.appendFileBytesOptionsSync",
   "fs.writeFileDataOptionsSync",
   "fs.appendFileDataOptionsSync",
+  "fs.writeFileOptionsDynModeSync",
+  "fs.appendFileOptionsDynModeSync",
+  "fs.writeFileBytesOptionsDynModeSync",
+  "fs.appendFileBytesOptionsDynModeSync",
+  "fs.writeFileDataOptionsDynModeSync",
+  "fs.appendFileDataOptionsDynModeSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
+  "fs.mkdirModeStrSync",
+  "fs.mkdirObjSync",
+  "fs.mkdirObjStrSync",
+  "fs.mkdirDynSync",
+  "fs.mkdirDynVoidSync",
+  "fs.mkdirModeValueSync",
+  "fs.mkdirModeStrValueSync",
+  "fs.mkdirObjVoidSync",
+  "fs.mkdirObjStrVoidSync",
   "fs.openSync",
   "fs.openNumericSync",
+  "fs.openNumericStrSync",
+  "fs.openNumericDynSync",
+  "fs.openStrModeSync",
+  "fs.openNativeSync",
+  "fs.openDynSync",
+  "fs.openModeDynSync",
+  "fs.openNativeStrSync",
+  "fs.openNativeDynSync",
   "fs.readSync",
-  "fs.readSyncDyn",
+  "fs.readSyncArgs",
   "fs.writeSync",
   "fs.writeStrSync",
+  "fs.writeSyncArgs",
+  "fs.readvSyncDyn",
+  "fs.writevSyncDyn",
+  "fs.ftruncateSyncDyn",
+  "fs.closeSyncDyn",
+  "fs.fsyncSyncDyn",
+  "fs.fdatasyncSyncDyn",
+  "fs.fchownSyncDyn",
   "fs.closeSync",
   "fs.watch",
   "fs.watchCb",
@@ -1481,7 +1593,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
+  "crypto.signOneshotMaybe",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.verifyOneshotMaybe",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.setEngine",
   "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
@@ -1495,6 +1616,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // Certificate's SPKAC argument errors, and the key parse behind
+  // verifySpkac and exportPublicKey.
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
@@ -1519,7 +1645,6 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodChk",
   "fs.readChk",
   "fs.streamOptsChk",
-  "net.connectOptsChk",
   "tls.caCertsChk",
   "sea.getAsset",
   "sea.getRawAsset",

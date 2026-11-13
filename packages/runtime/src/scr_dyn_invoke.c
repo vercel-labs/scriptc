@@ -836,8 +836,6 @@ static bool dyn_fn_own_protocol_member(ScrDyn *recv, const char *method, ScrDyn 
 }
 #endif
 
-static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key);
-
 /* Object.prototype.isPrototypeOf is inherited by every value whose own
  * chain does not define the name — primitives included, through the wrapper
  * object ToObject makes — and a call reads the callee before its arguments
@@ -847,7 +845,7 @@ static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key);
 static ScrDyn *dyn_inherited_prototype_method(ScrDyn *recv, const char *method) {
   if (method[0] != 'i' || strcmp(method, "isPrototypeOf") != 0) return NULL;
   ScrStr *key = scr_str_new(method, strlen(method));
-  ScrDyn *member = dyn_inherited_member(recv, key);
+  ScrDyn *member = scr_dyn_inherited_member(recv, key);
   scr_str_release(key);
   return member;
 }

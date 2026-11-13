@@ -4885,6 +4885,12 @@ ScrBytes *scr_bytes_concat(const ScrArr *list) {
  * "1e+_300"); everything else is the shortest-roundtrip number. Shared
  * with the fs/net option-ladder validators (scr_num_received). */
 size_t scr_num_received(double v, char out[48]) {
+  /* Node renders received numbers with inspect's spelling, which keeps
+   * the sign of negative zero (String(-0) would print "0"). */
+  if (v == 0 && signbit(v)) {
+    memcpy(out, "-0", 3);
+    return 2;
+  }
   char plain[32];
   size_t n = scr_f64_to_str(v, plain);
   if (!(isfinite(v) && trunc(v) == v && fabs(v) > 4294967296.0)) {

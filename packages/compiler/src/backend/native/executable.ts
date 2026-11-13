@@ -161,6 +161,9 @@ function linksDynPromiseUnit(opts: CcOptions): boolean {
     opts.fileHandle === true ||
     // Fetch settles its promises through the unit.
     opts.fetch === true ||
+    // The dns resolve family settles its promise results through the unit
+    // (scr_dns_resolve.c).
+    opts.dnsResolve === true ||
     // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
     opts.nodeIsland === true ||
     // t.waitFor polls a dyn condition and returns a dyn promise
@@ -362,7 +365,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
-  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
+  // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
+  // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
+  unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
@@ -472,6 +477,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.http2, "scr_http2.c"),
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsResolve, "scr_dns_resolve.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),

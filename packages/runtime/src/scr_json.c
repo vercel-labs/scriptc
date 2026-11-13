@@ -222,6 +222,26 @@ bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
 }
 
+static SCR_TL ScrDyn *scr_dispose_symbol;
+
+static void scr_dispose_symbol_cleanup(void) {
+  scr_dyn_release(scr_dispose_symbol);
+  scr_dispose_symbol = NULL;
+}
+
+/* Symbol.dispose, registered by the symbol unit when the program first
+ * names it, for handle classes outside that unit (a net.BoundSocket). */
+void scr_dyn_install_dispose_symbol(ScrDyn *key) {
+  if (scr_dispose_symbol) return;
+  scr_dispose_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_dispose_symbol_cleanup);
+}
+
+bool scr_dyn_is_dispose_symbol(const ScrDyn *key) {
+  return scr_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_dispose_symbol->v.symbol.value;
+}
+
 /* Symbol.for('nodejs.util.inspect.custom'), installed by the symbol unit
  * when the program creates it: the key util.inspect reads custom inspect
  * functions under. */
@@ -13138,8 +13158,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
     if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   } else {
-    /* errno rides fs errors (with syscall) and zlib errors (without). */
-    if (e->system_call || e->system_errno != 0)
+    /* errno rides fs errors (with syscall) and zlib errors (without); a
+     * DNSException presents it first, reading undefined. */
+    if (e->errno_undefined)
+      scr_dyn_obj_set(d, "errno", 5, scr_dyn_undefined());
+    else if (e->system_call || e->system_errno != 0)
       scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
     if (e->code) {
       scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
@@ -22174,6 +22197,9 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_array_buffer_methods,
 #endif
+    /* No own enumerable properties: JSON.stringify(ab) is "{}" (the TLSA
+     * record's data is an ArrayBuffer). */
+    .json_empty_object = true,
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
@@ -22181,6 +22207,7 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_shared_array_buffer_methods,
 #endif
+    .json_empty_object = true,
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

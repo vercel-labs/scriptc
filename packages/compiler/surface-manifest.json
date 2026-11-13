@@ -1845,6 +1845,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.net.getDefaultAutoSelectFamily",
+      "kind": "node-builtin",
+      "name": "net.getDefaultAutoSelectFamily",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.net.getDefaultAutoSelectFamilyAttemptTimeout",
       "kind": "node-builtin",
       "name": "net.getDefaultAutoSelectFamilyAttemptTimeout",
@@ -1866,6 +1872,12 @@
       "id": "node-builtin.net.isIPv6",
       "kind": "node-builtin",
       "name": "net.isIPv6",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.net.setDefaultAutoSelectFamily",
+      "kind": "node-builtin",
+      "name": "net.setDefaultAutoSelectFamily",
       "status": "static"
     },
     {

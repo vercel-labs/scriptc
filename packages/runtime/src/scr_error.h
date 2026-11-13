@@ -118,6 +118,8 @@ typedef struct ScrError {
   ScrStr *system_code;
   bool native_plain; /* a native binding's coded Error: "Name: message", no "[code]" */
   bool errno_order;  /* ErrnoException key order: errno, code, path, syscall */
+  bool errno_undefined; /* an own `errno` that reads undefined, ahead of code
+                         * (Node's DNSException: c-ares codes are strings) */
 } ScrError;
 
 enum {
@@ -166,6 +168,7 @@ typedef struct ScrDomException {
   ScrStr *system_code;
   bool native_plain;
   bool errno_order;
+  bool errno_undefined; /* the ScrError prefix's slot, kept for the upcast's layout */
   double dom_code; /* the WebIDL legacy code (0 when the name is off-table) */
   bool has_cause;  /* the options form carried a `cause` member */
   struct ScrDyn *cause; /* owned; NULL when has_cause is false */

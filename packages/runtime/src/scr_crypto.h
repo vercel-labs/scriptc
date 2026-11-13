@@ -189,17 +189,9 @@ void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */
  * a NULL value calls it with the error alone. Every argument is moved. The
  * executable lane's checked-dynamic pbkdf2 reaches it from scr_lib.c;
  * library mode leaves this unit (and the loop it defers on) out and refuses
- * that callback form at SC4005. A caller that must link without this unit
- * defines SCR_OPTIONAL_UNIT_REFS before including this header and provides
- * the weak fallback definition (scr_lib.c's note). */
-#if defined(SCR_OPTIONAL_UNIT_REFS)
-extern void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
-                                          ScrDyn *value /* moves, may be NULL */)
-    __attribute__((weak));
-#else
+ * that callback form at SC4005. */
 void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
                                    ScrDyn *value /* moves, may be NULL */);
-#endif
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,

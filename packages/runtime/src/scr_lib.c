@@ -14,35 +14,9 @@
  *   pending checks after every fs call (the MAY_THROW_LIB_FNS seed).
  *   scr_fs_exists never throws, like Node's existsSync.
  */
-/* Optional units: this file reaches into the inspect unit (process.kill's
- * offending-signal rendering) and the crypto async unit (the checked-dynamic
- * callback completion), and must still link when neither is linked: a runtime
- * unit test links this object on its own. Their headers declare those
- * references weak under SCR_OPTIONAL_UNIT_REFS, and the fallbacks below are
- * weak definitions, so a linked unit's strong definition overrides them and a
- * link without the unit keeps the fallback instead of an undefined symbol. A
- * weak declaration alone is enough on ELF, but Mach-O's linker rejects an
- * undefined weak import, so the fallbacks are definitions. */
-#define SCR_OPTIONAL_UNIT_REFS 1
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
 #include "scr_dir_private.h"
-
-#if !defined(SCR_LIB)
-__attribute__((weak)) ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
-  /* No inspect unit: the caller keeps its plain String() form. */
-  (void)d;
-  (void)depth;
-  return NULL;
-}
-__attribute__((weak)) void scr_crypto_defer_dyn_callback(ScrDyn *callback, ScrDyn *error,
-                                                        ScrDyn *value) {
-  /* No async unit: nothing defers, and the moved arguments are released. */
-  scr_dyn_release(callback);
-  scr_dyn_release(error);
-  if (value != NULL) scr_dyn_release(value);
-}
-#endif
 
 #include <ctype.h>
 #ifdef SCR_WORKERS
@@ -2050,12 +2024,29 @@ static void scr_kill_unknown_signal_text(const char *text, size_t len) {
  * reference global, so an optional runtime unit's symbol must not reach the
  * archive's link surface (the embedder's link would carry a dangling
  * scr_ prefix). The archive renders the plain String() form instead, the
- * same narrowing the census reference above takes.
- *
- * The weak declaration lives in scr_inspect.h (SCR_OPTIONAL_UNIT_REFS) and
- * the fallback definition at the top of this file answers NULL, so a link
- * without the inspect unit calls the fallback and keeps the plain String()
- * form; a linked unit's strong definition overrides it. */
+ * same narrowing the census reference above takes. */
+#if !defined(SCR_LIB)
+/* The %s rendering Node's message formatter gives the offending signal:
+ * util.format's %s, which inspects an object without a custom toString.
+ * The inspect unit renders it exactly when the program links that unit
+ * (any program that prints does); a program without it keeps the plain
+ * String() form. NULL with an exception pending when a hook throws. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak *reference* in an executable, and the
+ * runtime C tests link scr_lib.c without the inspect unit. A weak
+ * DEFINITION satisfies that link: the inspect unit's strong definition
+ * replaces it in every program that links the unit, and the NULL answer
+ * selects the plain String() form otherwise, exactly as the absent symbol
+ * does elsewhere. */
+__attribute__((weak)) ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
+  (void)d;
+  (void)depth;
+  return NULL;
+}
+#else
+extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
+#endif
 static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
 #if !defined(SCR_LIB)
   /* util.format's %s inspects an object only when its toString is a
@@ -4574,6 +4565,23 @@ static SCR_TL double scr_net_autosel_timeout_ms = 250;
 
 double scr_net_get_autosel_timeout(void) { return scr_net_autosel_timeout_ms; }
 
+/* net's process-wide autoSelectFamily default (Node's
+ * getDefaultAutoSelectFamily pair, true like Node's). The connect paths
+ * read it when a dial resolves more than one address; the setter runs
+ * Node's validateBoolean over the checked-dynamic argument. */
+static SCR_TL bool scr_net_default_autosel = true;
+
+bool scr_net_get_default_autosel(void) { return scr_net_default_autosel; }
+
+void scr_net_set_default_autosel(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("value", "of type boolean",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_default_autosel = value->v.b;
+}
+
 /* Node's setDefaultAutoSelectFamilyAttemptTimeout: validateInt32(value,
  * 'value', 1), then the sub-10ms floor (Node clamps small budgets to
  * 10ms). Throws ERR_OUT_OF_RANGE catchably. */
@@ -4594,6 +4602,19 @@ void scr_net_set_autosel_timeout(double ms) {
     return;
   }
   scr_net_autosel_timeout_ms = ms < 10 ? 10 : ms;
+}
+
+/* The checked-dynamic entry: Node's validateNumber first (a non-number
+ * throws ERR_INVALID_ARG_TYPE; NaN passes the type gate and lands in the
+ * integer rendering the double form gives it), then the same validateInt32
+ * ladder. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("value", "of type number",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_set_autosel_timeout(value->v.num);
 }
 
 /* ── fs error formatting ─────────────────────────────────────────────
@@ -12944,13 +12965,30 @@ ScrBytes *scr_crypto_random_bytes(double n) {
 }
 
 /* The checked-dynamic completion lives in scr_crypto_async.c, a unit the
- * runtime unit tests do not link beside scr_lib.c. The header declares it
- * weak and the fallback at the top of this file defines it, so a test binary
- * that links scr_lib.c on its own still links; an executable's link features
- * always select the defining unit for a program that reaches it. Library
- * builds drop the reference entirely (#ifndef SCR_LIB at its uses), so
- * nothing of that unit reaches a library archive, which SC4005 guarantees
- * first. */
+ * runtime unit tests do not link beside scr_lib.c. Declared weak, before
+ * its first use, so a test binary that links scr_lib.c on its own still
+ * links; an executable's link features always select the defining unit for
+ * a program that reaches it. Library builds drop the reference entirely
+ * (#ifndef SCR_LIB at its uses), so nothing of that unit reaches a library
+ * archive, which SC4005 guarantees first. */
+#ifndef SCR_LIB
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak reference in an executable, and the
+ * runtime C tests link scr_lib.c without this unit. A weak DEFINITION
+ * satisfies that link, the same way the inspect reference beside
+ * scr_kill_signal_text does: the async unit's strong definition replaces it
+ * in every program that links the unit, and otherwise the moved arguments
+ * are released without deferring anything. */
+__attribute__((weak)) void scr_crypto_defer_dyn_callback(ScrDyn *callback, ScrDyn *error,
+                                                         ScrDyn *value) {
+  scr_dyn_release(callback);
+  scr_dyn_release(error);
+  if (value != NULL) scr_dyn_release(value);
+}
+#else
+extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
+#endif
+#endif
 
 /* randomBytes and randomInt over any values: Node's checks in its order,
  * then a Buffer or a number, or the callback with (null, value) in a later

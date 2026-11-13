@@ -411,9 +411,7 @@ const memberWriteTarget = (node: ts.Node): boolean => {
  * reflective definition such as `Object.defineProperty(o, name, …)` or
  * `Reflect.set(o, name, v)`), or an object literal argument with a member
  * of that name (`Object.assign(C.prototype, { name() {} })`). A write
- * through a computed key the source does not spell is not seen. The
- * answers live on the program's analysis, so they last exactly as long as
- * the snapshot they were read from. */
+ * through a computed key the source does not spell is not seen. */
 const methodNameWritten = (program: ts.Program, name: string): boolean => {
   const names = program.analysis.methodNameWrites;
   const known = names.get(name);

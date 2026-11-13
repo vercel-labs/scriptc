@@ -474,6 +474,21 @@ static void scr_dgram_unregister(ScrDgramSocket *s) {
   }
 }
 
+/* Whether a poll key still names a socket of this unit. The dns queries
+ * share this poller and free their keys from inside a drain
+ * (scr_dnsq_finish), so a copied batch can name a key that owns nothing any
+ * more: the dispatch must not read it as a socket. The drain order is not a
+ * guard by itself — epoll appends expired timers after the socket events,
+ * but kqueue copies the kernel's order, where a timeout that exhausts a
+ * query can come before that query's readiness. Every socket with an armed
+ * read is registered (bind/connect/send register it), and settlement happens
+ * in the sweep before the next drain, so membership is stable for a batch. */
+static bool scr_dgram_key_is_socket(const void *udata) {
+  for (ScrDgramSocket *s = scr_dgram_socks; s != NULL; s = s->next)
+    if ((const void *)s == udata) return true;
+  return false;
+}
+
 /* ── the surface ─────────────────────────────────────────────────────── */
 
 ScrDgramSocket *scr_dgram_create(bool reuse_addr) {
@@ -1909,8 +1924,9 @@ static void scr_dgram_dispatch(void) {
        * memory. */
       continue;
     }
+    if (!scr_dgram_key_is_socket(evs[i].udata)) continue; /* a query's key, already freed */
     ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
-    if (!s || s->fd < 0) continue; /* closed earlier in this batch */
+    if (s->fd < 0) continue; /* closed earlier in this batch */
     scr_dgram_read(s);
     if (scr_exc_pending()) return;
   }

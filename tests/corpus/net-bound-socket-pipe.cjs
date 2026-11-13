@@ -36,6 +36,11 @@ attempt("directory", () => new net.BoundSocket({ path: dir }));
 attempt("nul", () => new net.BoundSocket({ path: "a\u0000b" }));
 attempt("exclusive", () => new net.BoundSocket({ path: socketPath, port: 0 }));
 attempt("exclusive null", () => new net.BoundSocket({ path: socketPath, reusePort: null }));
+// A long directory pushes the Received tail past util.inspect's break
+// length, so the message lays its properties out one per line.
+const longDir = path.join(dir, "d".repeat(40));
+fs.mkdirSync(longDir, { recursive: true });
+attempt("exclusive long", () => new net.BoundSocket({ path: path.join(longDir, "server.sock"), port: 0 }));
 attempt("null path", () => new net.BoundSocket({ path: null }));
 attempt("long path", () => new net.BoundSocket({ path: path.join(dir, "x".repeat(120)) }));
 attempt("empty path", () => {
@@ -58,17 +63,21 @@ closing.close();
 console.log("closing unlinked", fs.existsSync(closedPath));
 attempt("closed address", () => closing.address());
 
-const abstractPath = "\u0000scriptc-bound-" + process.pid;
-const abstractBound = new net.BoundSocket({ path: abstractPath });
-console.log("abstract", abstractBound.address() === abstractPath, abstractBound.isPipe, fs.existsSync(abstractPath));
-attempt("abstract duplicate", () => new net.BoundSocket({ path: abstractPath }));
-abstractBound.close();
-attempt("abstract reused", () => {
-  const again = new net.BoundSocket({ path: abstractPath });
-  const shown = again.address();
-  again.close();
-  return shown === abstractPath;
-});
+// Abstract (name-less) socket paths are a Linux feature: elsewhere the bind
+// is refused by Node, so the section only runs where it exists.
+if (process.platform === "linux") {
+  const abstractPath = "\u0000scriptc-bound-" + process.pid;
+  const abstractBound = new net.BoundSocket({ path: abstractPath });
+  console.log("abstract", abstractBound.address() === abstractPath, abstractBound.isPipe, fs.existsSync(abstractPath));
+  attempt("abstract duplicate", () => new net.BoundSocket({ path: abstractPath }));
+  abstractBound.close();
+  attempt("abstract reused", () => {
+    const again = new net.BoundSocket({ path: abstractPath });
+    const shown = again.address();
+    again.close();
+    return shown === abstractPath;
+  });
+}
 
 const server = net.createServer((socket) => {
   socket.on("data", (chunk) => socket.write(`echo:${chunk}`));

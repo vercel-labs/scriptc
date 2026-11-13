@@ -3615,6 +3615,51 @@ static bool scr_net_validate_abort_signal(const ScrDyn *v, const char *name) {
  * object form in ERR_INVALID_IP_ADDRESS. `max_depth` mirrors inspect's
  * depth option: values at or below it are expanded, deeper ones print as
  * their constructor name ("[Object]", "[Array]"). */
+static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int max_depth);
+
+/* inspect's length test counts characters, not bytes. */
+static size_t scr_net_display_len(const char *s, size_t n) {
+  size_t chars = 0;
+  for (size_t i = 0; i < n; i++)
+    if (((unsigned char)s[i] & 0xc0) != 0x80) chars++;
+  return chars;
+}
+
+/* The inside of a container — "k: v, k2: v2" or "1, 2" — with `sep`
+ * between entries, so one-line and broken layouts share the entry code. */
+static void scr_net_inspect_body(const ScrDyn *v, bool arr, ScrDyn *keys, double n, ScrJsonBuf *b,
+                                 int depth, int max_depth, const char *sep) {
+  for (double i = 0; i < n; i++) {
+    if (i > 0) scr_jb_puts(b, sep);
+    if (arr) {
+      ScrDyn *item = scr_dyn_arr_at(v, i);
+      scr_net_inspect_into(item, b, depth + 1, max_depth);
+      scr_dyn_release(item);
+      continue;
+    }
+    ScrDyn *key = scr_dyn_arr_at(keys, i);
+    if (key->kind == SCR_DYN_STR) {
+      bool ident = key->v.str->len > 0;
+      for (size_t c = 0; c < key->v.str->len && ident; c++) {
+        unsigned char ch = (unsigned char)key->v.str->data[c];
+        ident = ch == '_' || ch == '$' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (c > 0 && ch >= '0' && ch <= '9');
+      }
+      if (ident) {
+        scr_jb_write(b, key->v.str->data, key->v.str->len);
+      } else {
+        ScrStr *q = scr_str_inspect_quoted(key->v.str, false);
+        scr_jb_write(b, q->data, q->len);
+        scr_str_release(q);
+      }
+      scr_jb_puts(b, ": ");
+      const ScrDyn *val = scr_dyn_obj_get(v, key->v.str->data, key->v.str->len);
+      scr_net_inspect_into(val != NULL ? val : scr_dyn_undefined(), b, depth + 1, max_depth);
+    }
+    scr_dyn_release(key);
+  }
+}
+
 static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int max_depth) {
   switch (v->kind) {
   case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
@@ -3641,38 +3686,32 @@ static void scr_net_inspect_into(const ScrDyn *v, ScrJsonBuf *b, int depth, int 
     }
     ScrDyn *keys = arr ? NULL : scr_dyn_obj_keys(v);
     double n = arr ? scr_dyn_arr_len(v) : (keys ? scr_dyn_arr_len(keys) : 0);
+    if (!arr && depth == 0 && n > 0) {
+      /* util.inspect keeps a container on one line while that line fits
+       * breakLength (80 by default, less the room it reserves), and an
+       * object whose single-line form reaches 72 characters breaks, one
+       * entry per line. Node prints ERR_INVALID_ARG_VALUE's Received tail
+       * with inspect, so the break is part of the message. */
+      ScrJsonBuf line;
+      scr_jb_init(&line);
+      scr_jb_puts(&line, "{ ");
+      scr_net_inspect_body(v, arr, keys, n, &line, depth, max_depth, ", ");
+      scr_jb_puts(&line, " }");
+      ScrStr *flat = scr_jb_finish(&line);
+      if (scr_net_display_len(flat->data, flat->len) >= 72) {
+        scr_jb_puts(b, "{\n  ");
+        scr_net_inspect_body(v, arr, keys, n, b, depth, max_depth, ",\n  ");
+        scr_jb_puts(b, "\n}");
+      } else {
+        scr_jb_write(b, flat->data, flat->len);
+      }
+      scr_str_release(flat);
+      scr_dyn_release(keys);
+      return;
+    }
     scr_jb_putc(b, arr ? '[' : '{');
     if (n > 0) scr_jb_putc(b, ' ');
-    for (double i = 0; i < n; i++) {
-      if (i > 0) scr_jb_puts(b, ", ");
-      if (arr) {
-        ScrDyn *item = scr_dyn_arr_at(v, i);
-        scr_net_inspect_into(item, b, depth + 1, max_depth);
-        scr_dyn_release(item);
-        continue;
-      }
-      ScrDyn *key = scr_dyn_arr_at(keys, i);
-      if (key->kind == SCR_DYN_STR) {
-        bool ident = key->v.str->len > 0;
-        for (size_t c = 0; c < key->v.str->len && ident; c++) {
-          unsigned char ch = (unsigned char)key->v.str->data[c];
-          ident = ch == '_' || ch == '$' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                  (c > 0 && ch >= '0' && ch <= '9');
-        }
-        if (ident) {
-          scr_jb_write(b, key->v.str->data, key->v.str->len);
-        } else {
-          ScrStr *q = scr_str_inspect_quoted(key->v.str, false);
-          scr_jb_write(b, q->data, q->len);
-          scr_str_release(q);
-        }
-        scr_jb_puts(b, ": ");
-        const ScrDyn *val = scr_dyn_obj_get(v, key->v.str->data, key->v.str->len);
-        scr_net_inspect_into(val != NULL ? val : scr_dyn_undefined(), b, depth + 1,
-                             max_depth);
-      }
-      scr_dyn_release(key);
-    }
+    scr_net_inspect_body(v, arr, keys, n, b, depth, max_depth, ", ");
     if (n > 0) scr_jb_putc(b, ' ');
     scr_jb_putc(b, arr ? ']' : '}');
     scr_dyn_release(keys);
@@ -6780,41 +6819,6 @@ static void scr_net_bound_throw_bind(int err, const char *host, double port) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, text, len, scr_net_errname(err));
 }
 
-/* util.inspect's single-quoted string form (strEscape), for the values the
- * "Received" tails print: paths stay whole, unlike inspect-lite's cap. */
-static void scr_net_bound_put_string(ScrJsonBuf *b, const ScrStr *s) {
-  scr_jb_putc(b, '\'');
-  for (size_t i = 0; i < s->len; i++) {
-    unsigned char c = (unsigned char)s->data[i];
-    switch (c) {
-    case '\\': scr_jb_puts(b, "\\\\"); break;
-    case '\'': scr_jb_puts(b, "\\'"); break;
-    case '\n': scr_jb_puts(b, "\\n"); break;
-    case '\t': scr_jb_puts(b, "\\t"); break;
-    case '\r': scr_jb_puts(b, "\\r"); break;
-    case '\b': scr_jb_puts(b, "\\b"); break;
-    case '\f': scr_jb_puts(b, "\\f"); break;
-    case '\v': scr_jb_puts(b, "\\v"); break;
-    default: {
-      if (c < 0x20 || c == 0x7f) {
-        char esc[8];
-        snprintf(esc, sizeof esc, "\\x%02X", c);
-        scr_jb_puts(b, esc);
-      } else {
-        scr_jb_putc(b, (char)c);
-      }
-    }
-    }
-  }
-  scr_jb_putc(b, '\'');
-}
-
-static void scr_net_bound_put_key(ScrJsonBuf *b, const char *key, size_t len) {
-  ScrStr *s = scr_str_new(key, len);
-  scr_net_bound_put_string(b, s);
-  scr_str_release(s);
-}
-
 /* The ERR_INVALID_ARG_VALUE for a path bound with any TCP option: Node
  * prints the options object with util.inspect, so the "Received" tail is
  * a shallow one-level rendering of it. */
@@ -6823,41 +6827,7 @@ static void scr_net_bound_mutual_exclusion(const ScrDyn *options) {
   scr_jb_init(&b);
   scr_jb_puts(&b, "The argument 'options' path is mutually exclusive with host, port, ipv6Only, "
                   "and reusePort. Received ");
-  if (options->kind != SCR_DYN_OBJ) {
-    char shown[64];
-    scr_jb_puts(&b, scr_dyn_inspect_lite(options, shown, sizeof shown));
-  } else {
-    scr_jb_putc(&b, '{');
-    bool first = true;
-    for (size_t i = 0; i < scr_dyn_obj_count(options); i++) {
-      ScrDynProp prop = scr_dyn_obj_prop_at(options, i);
-      if (!prop.enumerable) continue;
-      scr_jb_puts(&b, first ? " " : ", ");
-      first = false;
-      bool ident = prop.key_len > 0 &&
-                   ((prop.key[0] >= 'A' && prop.key[0] <= 'Z') ||
-                    (prop.key[0] >= 'a' && prop.key[0] <= 'z') ||
-                    prop.key[0] == '_' || prop.key[0] == '$');
-      for (size_t k = 1; ident && k < prop.key_len; k++) {
-        char c = prop.key[k];
-        ident = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-                c == '_' || c == '$';
-      }
-      if (ident) {
-        scr_jb_write(&b, prop.key, prop.key_len);
-      } else {
-        scr_net_bound_put_key(&b, prop.key, prop.key_len);
-      }
-      scr_jb_puts(&b, ": ");
-      if (prop.value->kind == SCR_DYN_STR) {
-        scr_net_bound_put_string(&b, prop.value->v.str);
-      } else {
-        char shown[64];
-        scr_jb_puts(&b, scr_dyn_inspect_lite(prop.value, shown, sizeof shown));
-      }
-    }
-    scr_jb_puts(&b, first ? "}" : " }");
-  }
+  scr_net_inspect_into(options, &b, 0, 2); /* util.inspect's rendering, line breaks included */
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
   scr_str_release(msg);
@@ -7034,9 +7004,14 @@ static ScrDyn *scr_net_bound_new_pipe(const ScrDyn *options, const ScrDyn *path)
   size_t skip = abstract ? 1 : 0;
   if (p->len > skip && memchr(p->data + skip, '\0', p->len - skip) != NULL) err = EINVAL;
 #ifndef _WIN32
-  /* uv_pipe_bind2: a path longer than sun_path is EINVAL, not
-   * ENAMETOOLONG (the kernel's own answer for a bound socket). */
+  /* uv_pipe_bind's answers: a path longer than sun_path is EINVAL rather
+   * than the kernel's ENAMETOOLONG, and an empty name is EINVAL on darwin
+   * (bind(2) there says EACCES). Linux binds an empty name to an unnamed
+   * socket and Node accepts it, so there the bind below stays in charge. */
   else if (p->len > sizeof(((struct sockaddr_un *)0)->sun_path)) err = EINVAL;
+#if !defined(__linux__)
+  else if (p->len == 0) err = EINVAL;
+#endif
   else {
     struct sockaddr_un sa;
     memset(&sa, 0, sizeof sa);

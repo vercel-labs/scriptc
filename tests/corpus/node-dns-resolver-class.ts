@@ -140,6 +140,18 @@ async function run(server: string, port: number): Promise<void> {
     });
   });
 
+  // A source this host does not own: c-ares binds the query's socket to the
+  // configured address and a failed bind fails the query, which Node reports
+  // as ECONNREFUSED even though the responder below would answer (macOS has
+  // no 127.0.0.2; 192.0.2.1 is TEST-NET-1 everywhere).
+  r.setLocalAddress("192.0.2.1");
+  await new Promise<void>((resolve) => {
+    r.resolve4("a.test", (err, addrs) => {
+      console.log("unowned source", err === null ? JSON.stringify(addrs) : err.code, lastSource);
+      resolve();
+    });
+  });
+
   // A failing query calls back with the error alone: an untyped callback sees
   // Node's one-argument call, and a typed result parameter takes the same
   // placeholder a statically typed dns call supplies.

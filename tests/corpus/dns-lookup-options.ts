@@ -48,16 +48,22 @@ await lookup("callback/negative", { hints: -1 });
 await lookup("callback/passive", { hints: 1 });
 await lookup("callback/string", { hints: "1" as unknown as number });
 
-// The all: true shape reaches getaddrinfo with the same flags.
-dns.lookup("localhost", { hints: dns.V4MAPPED, all: true }, (err, addresses) => {
-  console.log("callback/v4mapped", err, addresses.length, addresses[0].address);
-});
-dns.lookup("localhost", { hints: dns.ALL, all: true }, (err, addresses) => {
-  console.log("callback/all", err, addresses.length, addresses[0].address);
-});
-dns.lookup("localhost", { hints: dns.ADDRCONFIG | dns.V4MAPPED, all: true }, (err, addresses) => {
-  console.log("callback/combo", err, addresses.length, addresses[0].address);
-});
+// The all: true shape reaches getaddrinfo with the same flags. One at a
+// time: fired together, these three callbacks settle in whichever order the
+// threadpool finishes, and the two runs' orders could differ (the awaited
+// lookups below are already ordered by their awaits).
+function lookupAll(label: string, hints: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    dns.lookup("localhost", { hints, all: true }, (err, addresses) => {
+      console.log(label, err, addresses.length, addresses[0].address);
+      resolve();
+    });
+  });
+}
+
+await lookupAll("callback/v4mapped", dns.V4MAPPED);
+await lookupAll("callback/all", dns.ALL);
+await lookupAll("callback/combo", dns.ADDRCONFIG | dns.V4MAPPED);
 
 await lookupPromise("promise/default", { hints: dns.ADDRCONFIG });
 await lookupPromise("promise/zero", { hints: 0 });

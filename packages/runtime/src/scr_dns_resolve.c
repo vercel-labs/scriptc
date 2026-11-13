@@ -1324,26 +1324,27 @@ static bool scr_dnsq_set_nonblock(int fd) {
 
 /* setLocalAddress bound the query sockets: the address of the server's
  * family, when one was given ("::1" in the ipv4 slot counts as the v6
- * one). A bind the kernel refuses leaves the attempt to fail as c-ares
- * would report it. */
-static void scr_dnsq_bind_local(int fd, const ScrDnsResolver *r, int family) {
+ * one). False when the kernel refuses the bind: c-ares fails the query
+ * with ECONNREFUSED rather than sending from another source, which is what
+ * Node reports when the configured source is not on the host. */
+static bool scr_dnsq_bind_local(int fd, const ScrDnsResolver *r, int family) {
   const char *local = family == 4 ? r->local_v4 : r->local_v6;
-  if (local[0] == '\0') return;
+  if (local[0] == '\0') return true;
   struct sockaddr_storage ss;
   socklen_t slen;
   memset(&ss, 0, sizeof ss);
   if (family == 4) {
     struct sockaddr_in *in = (struct sockaddr_in *)&ss;
     in->sin_family = AF_INET;
-    if (inet_pton(AF_INET, local, &in->sin_addr) != 1) return;
+    if (inet_pton(AF_INET, local, &in->sin_addr) != 1) return true;
     slen = (socklen_t)sizeof *in;
   } else {
     struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&ss;
     in6->sin6_family = AF_INET6;
-    if (inet_pton(AF_INET6, local, &in6->sin6_addr) != 1) return;
+    if (inet_pton(AF_INET6, local, &in6->sin6_addr) != 1) return true;
     slen = (socklen_t)sizeof *in6;
   }
-  (void)bind(fd, (struct sockaddr *)&ss, slen);
+  return bind(fd, (struct sockaddr *)&ss, slen) == 0;
 }
 
 static void scr_dnsq_arm_timer(ScrDnsqQuery *q) {
@@ -1385,7 +1386,11 @@ static void scr_dnsq_start_attempt(ScrDnsqQuery *q) {
       return;
     }
     scr_dnsq_set_nonblock(fd);
-    scr_dnsq_bind_local(fd, r, server->family);
+    if (!scr_dnsq_bind_local(fd, r, server->family)) {
+      scr_dnsq_close_fd(fd);
+      scr_dnsq_finish(q, "ECONNREFUSED", NULL);
+      return;
+    }
     q->fd = fd;
     int rc = connect(fd, (struct sockaddr *)&ss, slen);
     if (rc != 0) {
@@ -1415,7 +1420,11 @@ static void scr_dnsq_start_attempt(ScrDnsqQuery *q) {
     return;
   }
   scr_dnsq_set_nonblock(fd);
-  scr_dnsq_bind_local(fd, r, server->family);
+  if (!scr_dnsq_bind_local(fd, r, server->family)) {
+    scr_dnsq_close_fd(fd);
+    scr_dnsq_finish(q, "ECONNREFUSED", NULL);
+    return;
+  }
   q->fd = fd;
   (void)connect(fd, (struct sockaddr *)&ss, slen); /* connected UDP: ICMP errors surface */
   ssize_t sent = send(fd, (const char *)q->pkt, q->pkt_len, 0);

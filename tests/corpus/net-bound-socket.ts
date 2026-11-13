@@ -55,12 +55,19 @@ const stringPort = new net.BoundSocket({ port: "0", host: "127.0.0.1" });
 console.log("string port", (stringPort.address() as any).port > 0);
 stringPort.close();
 
-const reuseA = new net.BoundSocket({ port: 0, host: "127.0.0.1", reusePort: true });
-const reusePort = (reuseA.address() as any).port;
-const reuseB = new net.BoundSocket({ port: reusePort, host: "127.0.0.1", reusePort: true });
-console.log("reusePort", (reuseB.address() as any).port === reusePort);
-reuseA.close();
-reuseB.close();
+// SO_REUSEPORT is not available on every platform: macOS's bind answers
+// ENOTSUP, which Node reports by throwing. Report the outcome instead of
+// dying uncaught there.
+try {
+  const reuseA = new net.BoundSocket({ port: 0, host: "127.0.0.1", reusePort: true });
+  const reusePort = (reuseA.address() as any).port;
+  const reuseB = new net.BoundSocket({ port: reusePort, host: "127.0.0.1", reusePort: true });
+  console.log("reusePort", (reuseB.address() as any).port === reusePort);
+  reuseA.close();
+  reuseB.close();
+} catch (err) {
+  console.log("reusePort threw", (err as NodeJS.ErrnoException).code);
+}
 
 {
   using disposable = new net.BoundSocket({ port: 0, host: "127.0.0.1" });

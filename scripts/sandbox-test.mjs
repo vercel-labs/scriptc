@@ -240,7 +240,8 @@ Environment:
   SCRIPTC_SANDBOX_SNAPSHOT  Optional prepared snapshot with the pinned toolchain (exclusive with IMAGE)
   SCRIPTC_SANDBOX_NATIVE_REFERENCE  Optional built checkout inside the snapshot; its LLVM helper
                             and runtime pack are reused when their inputs are identical
-  SCRIPTC_SANDBOX_VCPUS     vCPUs per sandbox (default: 8)
+  SCRIPTC_SANDBOX_VCPUS     vCPUs per corpus sandbox (default: 8)
+  SCRIPTC_SANDBOX_NATIVE_VCPUS  vCPUs per native bootstrap sandbox (default: 32, 64 GB)
   SCRIPTC_SANDBOX_TIMEOUT   sandbox lifetime (default: 150m) and the wall limit of
                             commands that are not a native preparation step
                             (a test command is capped at 90m)
@@ -264,6 +265,7 @@ const vercelConfig = sandboxVercelConfig();
 const vercelProcessEnv = sandboxVercelEnvironment(vercelConfig);
 const {
   vcpus,
+  nativeVcpus,
   testWorkers,
   localTestWorkers,
   localCaseShards,
@@ -358,6 +360,10 @@ const nativeWorkers = lanes.map((lane) => ({
   label: `${lane} native`,
   name: `scriptc-${lane}-native-${nonce}`,
   native: true,
+  // The sanitized emitter peaks near 13 GB and then has clang compile the
+  // result; a 16 GB Sandbox with the same swapfile CI uses was still killed
+  // in rebuild-emit, and a 64 GB one completes it.
+  vcpus: nativeVcpus,
 }));
 const allSandboxes = [...workers, ...nativeWorkers];
 const created = new Set();
@@ -731,7 +737,7 @@ async function createWorker(worker) {
     "--timeout",
     sandboxTimeout,
     "--vcpus",
-    vcpus,
+    worker.vcpus ?? vcpus,
     "--non-persistent",
   ];
   // Sandbox creation is rate limited per team in vCPUs per minute, so a

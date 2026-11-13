@@ -50,6 +50,9 @@ export function sandboxRunnerConfig(env) {
   const nativeTimeout = sandboxDuration(source, "SCRIPTC_SANDBOX_NATIVE_TIMEOUT", "20m");
   return {
     vcpus: source.SCRIPTC_SANDBOX_VCPUS ?? "8",
+    // The native bootstrap Sandboxes need the memory the sanitized emitter
+    // peaks at; each vCPU adds 2 GB.
+    nativeVcpus: source.SCRIPTC_SANDBOX_NATIVE_VCPUS ?? "32",
     testWorkers: source.SCRIPTC_TEST_WORKERS ?? "4",
     localTestWorkers: source.SCRIPTC_LOCAL_TEST_WORKERS ?? "2",
     localCaseShards: source.SCRIPTC_LOCAL_CASE_SHARDS ?? "2",

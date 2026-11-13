@@ -81,6 +81,7 @@ import {
 import type { ConstructorReturnPlan } from "./constructor-returns.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
 import { lowerThreadSlotsCall, lowerThreadSlotsNew, threadSlotsType } from "./thread-slots.js";
+import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
@@ -2203,6 +2204,13 @@ function lowerToIrWithIslands(
   }
   if (resultLowerer.typeClaimSites.length > 0)
     result = { ...result, typeClaims: resultLowerer.typeClaimSites };
+  // Parallel calls that stay sequential (SC6106): performance notes that
+  // name the expression which kept the chunks on one thread.
+  if (resultLowerer.parallelWarnings.length > 0)
+    result = {
+      ...result,
+      performance: [...(result.performance ?? []), ...resultLowerer.parallelWarnings],
+    };
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
   // Acyclic object types name the IR unit the program lowered them to; a
@@ -6050,6 +6058,7 @@ export class Lowerer {
       checkedTable("rejectedGroups", () => this.rejectedGroups.size),
       checkedTable("lenientPieces", () => this.lenientPieces.size),
       checkedTable("dynamicSlots", () => this.dynamicSlots.length),
+      checkedTable("parallelWarnings", () => this.parallelWarnings.length),
       checkedTable("retriedSymbols", () => this.retriedSymbols.size),
       checkedTable("skippedBodies", () => this.skippedBodies.size),
       checkedTable("retriedDeclarations", () => this.retriedDeclarations.length),
@@ -6623,6 +6632,9 @@ export class Lowerer {
   readonly partialHits: Set<number>[] = [];
   /** The dynamic slots the commit points created: one SC6104 each. */
   readonly dynamicSlots: DynamicSlot[] = [];
+  /** Parallel calls whose chunks run one after another: one SC6106 each
+   * (lowering/parallel-loops.ts). */
+  readonly parallelWarnings: ScrDiagnostic[] = [];
   /** Declarations retryDeferred registered. */
   readonly retriedSymbols = new Set<ts.Symbol>();
   /** LowererMode.retriedSymbols. */
@@ -22519,6 +22531,7 @@ export class Lowerer {
       lowerLifetimeRegionCall(this, expr) ??
       lowerInternTableCall(this, expr) ??
       lowerThreadSlotsCall(this, expr) ??
+      lowerParallelCall(this, expr) ??
       lowerFfiCall(this, expr) ??
       lowerFetchCall(this, expr) ??
       lowerStaticFetchCompanionCall(this, expr) ??

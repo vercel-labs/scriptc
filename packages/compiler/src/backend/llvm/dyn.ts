@@ -48,6 +48,7 @@ import {
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
   isPerfEntryShape,
+  isPerfNodeTimingShape,
   boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -2555,6 +2556,14 @@ export class LlDyn {
           readable = B.tmp();
           B.line(`${proxy} = icmp eq i32 ${kind}, ${DYN_KIND.PROXY}`);
           B.line(`${readable} = or i1 ${isObj}, ${proxy}`);
+          // A native handle (a URL, a MIMEType, a Set) is a JavaScript
+          // object: Node answers its members through the handle's getters,
+          // so a record shape matches it like a plain object.
+          const handle = B.tmp();
+          const withHandle = B.tmp();
+          B.line(`${handle} = icmp eq i32 ${kind}, ${DYN_KIND.HANDLE}`);
+          B.line(`${withHandle} = or i1 ${readable}, ${handle}`);
+          readable = withHandle;
           if (this.islandReads()) {
             const island = this.isIslandValue(B);
             const objectOrProxy = readable;
@@ -4095,15 +4104,21 @@ export class LlDyn {
           const kind = this.kindOf(B, "%d"),
             object = B.tmp(),
             proxy = B.tmp(),
-            readable = B.tmp();
+            handle = B.tmp(),
+            readable = B.tmp(),
+            withHandle = B.tmp();
           B.line(`${object} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
           B.line(`${proxy} = icmp eq i32 ${kind}, ${DYN_KIND.PROXY}`);
+          // A native handle is a JavaScript object whose members its getters
+          // answer, so a record shape checks it like a plain object.
+          B.line(`${handle} = icmp eq i32 ${kind}, ${DYN_KIND.HANDLE}`);
           B.line(`${readable} = or i1 ${object}, ${proxy}`);
-          let accepts = readable;
+          B.line(`${withHandle} = or i1 ${readable}, ${handle}`);
+          let accepts = withHandle;
           if (this.islandReads()) {
             const island = this.isIslandValue(B);
             accepts = B.tmp();
-            B.line(`${accepts} = or i1 ${readable}, ${island}`);
+            B.line(`${accepts} = or i1 ${withHandle}, ${island}`);
           }
           const ok = B.newLabel("dcr.object"),
             fail = B.newLabel("dcr.fail");
@@ -5323,7 +5338,7 @@ export class LlDyn {
         // names (PerformanceMark or PerformanceMeasure, inheriting
         // PerformanceEntry), so instanceof and util.inspect answer like
         // Node's.
-        if (isPerfEntryShape(shape)) {
+        if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
           host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
           B.line(`call void @scr_dyn_perf_entry_finish(ptr ${d})`);
         }

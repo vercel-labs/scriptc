@@ -99,9 +99,12 @@ const KNOWN: Record<string, Known> = {
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
-  // The exports identities and every parse line match Node; the program
-  // stops at `mime.toJSON === mime.toString`, a method read as a value.
-  "node24-mime": { run: "'MIMEType.prototype.toJSON' as a value is not supported yet" },
+  // The exports identities, every parse line and the shape line (the class's
+  // method values, aliased `toJSON`/`toString` and `[Symbol.iterator]`/
+  // `entries` included) match Node; the program stops at the descriptor read.
+  "node24-mime": {
+    run: "'Object.getOwnPropertyDescriptor' is part of the standard library types but has no scriptc lowering yet",
+  },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   // The dynamic `__proto__` writes in the args loop now match Node, so the

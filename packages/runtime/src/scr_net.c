@@ -3994,6 +3994,11 @@ void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
   scr_net_ls_add(&s->drain_ls, cb, NULL, once);
 }
 
+void scr_net_sock_off_drain(ScrNetSocket *s, ScrClosure *cb /*borrowed*/) {
+  if (s == NULL || cb == NULL) return;
+  scr_net_ls_remove_last(&s->drain_ls, cb);
+}
+
 void scr_net_sock_end(ScrNetSocket *s) {
   if (s->adopted_by != NULL) {
     scr_net_sock_end(s->adopted_by);

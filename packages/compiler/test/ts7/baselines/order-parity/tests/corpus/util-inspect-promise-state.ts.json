@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-inspect-promise-state.ts"
+ ],
+ "diags": []
+}

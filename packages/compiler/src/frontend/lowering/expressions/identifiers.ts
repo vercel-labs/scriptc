@@ -910,7 +910,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         ? builtinConstantsEsmNamespace(lowerer, loc)
         : builtinConstantsObject(lowerer, loc);
     const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
-    return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
+    // Only the ES module spelling's value is a module namespace OBJECT;
+    // require()/default-import/named-import spellings answer the module's
+    // CommonJS exports object (util.types.isModuleNamespaceObject says so).
+    return {
+      kind: "moduleNsRef",
+      moduleId: type.moduleId,
+      type,
+      loc,
+      ...(builtinShape.flavor === "esm" ? { esmNamespace: true as const } : {}),
+    };
   }
   // A binding of a SINGLE-VALUE module used as a bare value: Node's
   // require answers module.exports, so the read IS that value (the same

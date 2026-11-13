@@ -81,9 +81,16 @@ export const INSPECT_CUSTOM_DESCRIPTION = "nodejs.util.inspect.custom";
 /** The method slot of a class's `[util.inspect.custom]` member. */
 export const INSPECT_CUSTOM_MEMBER = `${FIELD_PREFIX}Symbol(${INSPECT_CUSTOM_DESCRIPTION})`;
 
-/** `inspect.custom` over node:util's inspect: a named import, `util.inspect`
- * or the CommonJS `util_1.inspect`. */
-export function isInspectCustomAccess(lowerer: Lowerer, expr: ts.Expression): boolean {
+/** The registry name util.promisify.custom denotes. */
+export const PROMISIFY_CUSTOM_DESCRIPTION = "nodejs.util.promisify.custom";
+
+/** `.custom` over one of node:util's functions: a named import, the module
+ * namespace (`util.<member>`) or the CommonJS `util_1.<member>`. */
+function isUtilFunctionCustomAccess(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  member: string,
+): boolean {
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
   if (!ts.isIdentifier(expr.name) || expr.name.text !== "custom") return false;
@@ -94,7 +101,19 @@ export function isInspectCustomAccess(lowerer: Lowerer, expr: ts.Expression): bo
     : ts.isPropertyAccessExpression(target) && !target.questionDotToken
       ? lowerer.builtinMemberOf(target)
       : null;
-  return bi?.module === "util" && bi.member === "inspect";
+  return bi?.module === "util" && bi.member === member;
+}
+
+/** `inspect.custom` over node:util's inspect: a named import, `util.inspect`
+ * or the CommonJS `util_1.inspect`. */
+export function isInspectCustomAccess(lowerer: Lowerer, expr: ts.Expression): boolean {
+  return isUtilFunctionCustomAccess(lowerer, expr, "inspect");
+}
+
+/** `promisify.custom` over node:util's promisify: a named import,
+ * `util.promisify` or the CommonJS `util_1.promisify`. */
+export function isPromisifyCustomAccess(lowerer: Lowerer, expr: ts.Expression): boolean {
+  return isUtilFunctionCustomAccess(lowerer, expr, "promisify");
 }
 
 export function classSymbolKeyOf(lowerer: Lowerer, key: ts.Expression): ClassSymbolKey | null {

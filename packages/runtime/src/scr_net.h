@@ -295,6 +295,10 @@ bool scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
 double scr_net_sock_writable_length(ScrNetSocket *s);
 bool scr_net_sock_writable_need_drain(ScrNetSocket *s);
 void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* Unregisters a 'drain' listener the caller registered (borrowed): the
+ * runtime's own bridge leaves when its message settles, so a socket that
+ * never drains keeps nothing of the exchange. */
+void scr_net_sock_off_drain(ScrNetSocket *s, ScrClosure *cb /*borrowed*/);
 void scr_net_sock_end(ScrNetSocket *s);
 void scr_net_sock_end_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
 void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);

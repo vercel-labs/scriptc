@@ -1167,12 +1167,19 @@ struct ScrHttpRes {
   bool need_drain;
   bool drain_queued;
   bool drain_armed; /* the one-shot socket-drain listener is registered */
+  /* The closure registered on the socket's 'drain' list while armed (+1).
+   * Its other reference belongs to the socket; this one lets a settle
+   * unregister it, so a message that needed no socket drain does not stay
+   * alive on a keep-alive connection. */
+  ScrClosure *sock_drain_cb;
 };
 
 ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
 }
+
+static void scr_http_res_drain_disarm(ScrHttpRes *r);
 
 void scr_http_res_release(ScrHttpRes *r) {
   if (!r || r->rc == SIZE_MAX) return;
@@ -1198,6 +1205,7 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_net_ls_drop(&r->endcb_ls);
     scr_net_ls_drop(&r->wcb_ls);
     scr_net_ls_drop(&r->drain_ls);
+    scr_http_res_drain_disarm(r);
     free(r->cork_buf);
     free(r->held_head);
     if (r->max_requests_per_socket) scr_dyn_release(r->max_requests_per_socket);
@@ -1817,15 +1825,18 @@ static bool scr_http_name_is(const ScrStr *name, const char *lower) {
   return true;
 }
 
-/* Informational response heads are written with Node's `ascii` encoding.
- * The header validator allows Latin-1 obs-text; collapse its UTF-8 C2/C3
- * spelling back to one wire byte. */
+/* Informational response heads are written with Node's `latin1` encoding.
+ * The header validator allows Latin-1 obs-text (U+0080..U+00FF); collapse
+ * its UTF-8 C2/C3 spelling back to one wire byte. Both lead-byte bits
+ * below bit 5 carry the code point: dropping one maps U+0080..U+00BF onto
+ * 0x00..0x3F and so turns U+008D into a bare CR, which would end the
+ * header line early. */
 static void scr_http_buf_header_value(ScrHttpBuf *b, const ScrStr *s) {
   for (size_t i = 0; i < s->len; i++) {
     unsigned char ch = (unsigned char)s->data[i];
     if ((ch == 0xc2 || ch == 0xc3) && i + 1 < s->len) {
       unsigned char next = (unsigned char)s->data[++i];
-      char byte = (char)(((ch & 1) << 6) | (next & 0x3f));
+      char byte = (char)(((ch & 3) << 6) | (next & 0x3f));
       scr_http_buf_append(b, &byte, 1);
     } else {
       scr_http_buf_append(b, s->data + i, 1);
@@ -2572,8 +2583,26 @@ bool scr_http_res_writable_need_drain_get(ScrHttpRes *r) {
 static void scr_http_res_drain_listener(ScrClosure *cb) {
   ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
   r->drain_armed = false;
+  if (r->sock_drain_cb == cb) {
+    /* fired: the socket dropped its own reference, ours goes too */
+    ScrClosure *held = r->sock_drain_cb;
+    r->sock_drain_cb = NULL;
+    scr_closure_release(held);
+  }
   scr_http_res_queue_drain(r);
   scr_http_res_release(r);
+}
+
+/* The response settled before the socket's 'drain' arrived: the bridge
+ * leaves the socket's list, so the closure (and through it the response)
+ * does not outlive the exchange on a keep-alive connection. */
+static void scr_http_res_drain_disarm(ScrHttpRes *r) {
+  ScrClosure *cb = r->sock_drain_cb;
+  if (cb == NULL) return;
+  r->sock_drain_cb = NULL;
+  r->drain_armed = false;
+  if (r->sock != NULL) scr_net_sock_off_drain(r->sock, cb);
+  scr_closure_release(cb);
 }
 
 static void scr_http_res_drain_arm(ScrHttpRes *r) {
@@ -2582,6 +2611,7 @@ static void scr_http_res_drain_arm(ScrHttpRes *r) {
   ScrClosure *cb = scr_closure_new((void *)&scr_http_res_drain_listener, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
+  r->sock_drain_cb = scr_closure_retain(cb);
   scr_net_sock_on_drain(r->sock, cb, true);
 }
 
@@ -3586,6 +3616,9 @@ static void scr_http_proto_sweep(void) {
       if (!res->close_emitted) {
         res->close_emitted = true;
         res->destroyed = true; /* Node: destroyed reads true inside 'close' */
+        /* a keep-alive exchange that never needed a socket drain keeps no
+         * bridge on the socket: the closure would hold this response */
+        scr_http_res_drain_disarm(res);
         res->socket_detached = true;
         scr_net_fire0_this(&res->close_ls, res, SCR_DYNH_HTTP_RES);
         /* the persistent listener lists settle with the response: a
@@ -3626,6 +3659,13 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&req->close_ls);
         scr_net_ls_drop(&req->timeout_ls);
         scr_net_ls_drop(&req->aborted_ls);
+        /* The message's signal settles with it: an 'abort' listener that
+         * captured the message is the request→signal→listener→request
+         * cycle, and no further abort can fire past 'close'. A program
+         * that kept the signal still reads the same object and its
+         * aborted/reason state. */
+        if (req->signal != NULL && scr_dyn_signal_sever_fn != NULL)
+          scr_dyn_signal_sever_fn(req->signal);
       }
       break;
     }

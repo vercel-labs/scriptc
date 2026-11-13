@@ -37,12 +37,10 @@ import { win32 } from "path";
 openAsBlob("x");
 console.log(EventEmitter.captureRejections);
 console.log(win32.sep);
-/* URL getters and serialization lower under @types/node, but object-URL
- * registry operations still fence by member name with the supported
- * list; searchParams and its method surface lower under
- * @types/node's declarations (provenance-mapped like URL itself). */
+/* URL getters, serialization, the object-URL registry and searchParams'
+ * method surface all lower under @types/node's declarations
+ * (provenance-mapped like URL itself). */
 const u = new URL("https://example.com/x?a=1");
-console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
 /* The one-shot zlib/raw/gzip and Brotli codecs take Node's options (the
  * deflateSync and brotliCompressSync calls lower). */
@@ -68,8 +66,8 @@ http2.createSecureServer({ allowHTTP1: true, cert: "pem", key: "pem", streamRese
 http2.connect("https://localhost");
 /* The crypto surface beyond the lowered slice (randomness, the hash
  * chain, the introspection statics): RSA encryption names the lowered
- * asymmetric surface, symmetric ciphers the missing cipher stack, the
- * secure heap the generic hint, and setFips the FIPS truth (getFips() lowers to 0). */
+ * asymmetric surface, symmetric ciphers the missing cipher stack, and
+ * setFips the FIPS truth (getFips() lowers to 0); secureHeapUsed() lowers. */
 import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
 publicEncrypt("key", Buffer.alloc(1));
 createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });

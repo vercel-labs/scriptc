@@ -197,6 +197,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // the stub resolver's Resolver classes need.
   ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
   ["scr_util_timing.c", "utilTiming"],
+  // util.markPromiseAsHandled boxes and describes its argument through the
+  // checked-dynamic units.
+  ["scr_util_mark_handled.c", all("utilMarkPromiseAsHandled", "dynAsync")],
+  ["scr_util_trace_sigint.c", "utilTraceSigInt"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
   // the Worker env option compares against worker_threads.SHARE_ENV.
@@ -209,10 +213,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util.c", "parseArgs"],
   // Utility objects must only reference runtime families selected with them.
   ["scr_util_compare.c", all("parseArgs", "symbol")],
-  ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  ["scr_util_style.c", "inspect"],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   // util.promisify over an untyped function creates dyn promises and calls.
   ["scr_util_promisify.c", all("utilPromisify", "dynAsync", "dynInvoke")],
+  // The custom-function protocol both promisify lowerings share.
+  ["scr_util_promisify_custom.c", "utilPromisify"],
   // Untyped EventEmitter and stream constructor values call listeners
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
@@ -439,6 +448,14 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // util.isDeepStrictEqual's ArrayBuffer and SharedArrayBuffer arm asks the
+  // mutable-buffers registry whether either side is detached, and Node throws
+  // V8's construct TypeError when both report length 0 (scr_util_compare.c).
+  // The registry's ScrJsBufferOps table exists only in the object model build,
+  // so the unit's check needs that build: a program with the object model
+  // links this twin, and every other program keeps the default object, byte
+  // for byte.
+  if (source === "scr_util_compare.c") withJsObjectModel(variants);
   // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
   // object model build: its tables and the ScrJsBufferOps contract it fills
   // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build

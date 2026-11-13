@@ -670,6 +670,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Buffer.prototype as a value registers Symbol(nodejs.util.inspect.custom)
   // through the symbol unit's Symbol.for, which only these programs install.
   const usesBufferPrototypeObject = runtimeFeatures.bufferPrototypeObject;
+  // util.inspect as a value carries Symbol.for('nodejs.util.inspect.custom')
+  // as `custom`, and util.promisify reads and marks with
+  // Symbol.for('nodejs.util.promisify.custom'), so those programs install the
+  // symbol unit's Symbol.for too.
+  const usesSymbolFor =
+    usesBufferPrototypeObject ||
+    runtimeFeatures.inspectFunctionValue ||
+    runtimeFeatures.utilPromisify;
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
@@ -743,7 +751,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
-  if (usesBufferPrototypeObject) emitter.declare(`declare void @scr_sym_for_install()`);
+  if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
   if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
 
   if (usesNodeTest) {
@@ -819,11 +827,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // the out-of-line scr_exc_pending call; per-call checks inline the
   // test (pendingTestLines).
   if (entryMayThrow || runsLoop) emitter.declare(`declare zeroext i1 @scr_exc_pending()`);
+  // A synchronous program that reads the loop milestones marks the loop's
+  // start and end around its exit listeners (main's epilogue below); a
+  // program that runs the loop marks the start before it and the loop's
+  // exit hook marks the end.
+  if (emitter.readsLoopMetrics()) {
+    emitter.declare(`declare void @scr_perf_loop_mark()`);
+    if (!runsLoop) emitter.declare(`declare void @scr_perf_loop_end()`);
+  }
   if (runsLoop) {
     emitter.declare(`declare zeroext i1 @scr_loop_run(ptr)`);
     if (emitter.mod.commonJsEntry === true)
       emitter.declare(`declare void @scr_loop_commonjs_entry()`);
-    if (emitter.readsLoopMetrics()) emitter.declare(`declare void @scr_perf_loop_mark()`);
     emitter.declare(`declare zeroext i1 @scr_report_unhandled_rejections()`);
     emitter.declare(`declare void @scr_discard_unhandled_rejections()`);
   }
@@ -1532,7 +1547,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
-    ...(usesBufferPrototypeObject ? [`  call void @scr_sym_for_install()`] : []),
+    ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
@@ -1637,6 +1652,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
               ]
             : []),
         ]
+      : []),
+    // A synchronous program never runs the loop, but Node's loop starts and
+    // stops before a normal exit's listeners do, so the milestones read there
+    // are set. An exit from inside the body (process.exit, an uncaught throw)
+    // returns through another epilogue and leaves them at -1, as Node does.
+    ...(emitter.readsLoopMetrics() && !runsLoop
+      ? [`  call void @scr_perf_loop_mark()`, `  call void @scr_perf_loop_end()`]
       : []),
     ...exitListenerLines("xn"),
     ...globalReleases,

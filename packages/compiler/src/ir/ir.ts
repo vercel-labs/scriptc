@@ -2042,6 +2042,40 @@ export function isPerfEntryShape(shape: IrRecordShape): boolean {
   );
 }
 
+/** The hidden field that marks performance.nodeTiming's row (type-mapper's
+ * perfNodeTimingShape). Unlike an entry, Node keeps its fields as own
+ * enumerable properties, so key walks and spreads see them; only the class
+ * (inspect, the dyn prototype, toJSON's dropped uvMetricsInfo) is special. */
+export const PERF_NODE_TIMING_MARKER = "%perfNodeTiming";
+
+/** performance.nodeTiming's row: the marker names the shape, and a dyn
+ * conversion takes the PerformanceNodeTiming prototype. */
+export function isPerfNodeTimingShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_NODE_TIMING_MARKER)
+  );
+}
+
+/** PerformanceNodeTiming.prototype.toJSON's fields, in toJSON's order.
+ * `JSON.stringify` of the value serializes this list (the runtime's
+ * scr_dyn_perf_node_timing_to_json writes the same one, and uvMetricsInfo
+ * is in neither): Node's toJSON answers an object without the metrics. */
+export const PERF_NODE_TIMING_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "bootstrapComplete",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "idleTime",
+];
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {
@@ -3134,8 +3168,13 @@ export type IrExpr =
    * for every program that held its numbers. */
   | { kind: "numLit"; value: number; spelling?: string; type: IrType; loc: SrcLoc }
   | { kind: "strLit"; value: string; type: IrType; loc: SrcLoc }
-  /** The singleton namespace token for one compiled or builtin module. */
-  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc }
+  /** The singleton namespace token for one compiled or builtin module.
+   * `esmNamespace` marks a builtin namespace that the ES module spelling
+   * (`import * as ns`, `await import("node:path")`) answers: the value is a
+   * module namespace OBJECT, while a require()/default-import/named-import
+   * value of the same module is its CommonJS exports object. Node brands
+   * only the former as a module namespace (util.types.isModuleNamespaceObject). */
+  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc; esmNamespace?: true }
   | { kind: "boolLit"; value: boolean; type: IrType; loc: SrcLoc }
   /** An `undefined` or `null` literal; `type` is the matching unit kind.
    * Valid ONLY as the immediate value of a `unionWrap` (the frontend's slot

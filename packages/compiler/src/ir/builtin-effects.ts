@@ -308,6 +308,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   // A getter the walk invokes renders its result, and that rendering can
   // refuse (SC2020) exactly like the walk's own.
   "insp.accessorValue",
@@ -319,6 +320,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
   "insp.dynS",
+  // %s converts its argument with String(value) or renders it, and both can
+  // throw (a program conversion, an inspect refusal): the NULL answer with
+  // the exception pending must not be read as text.
+  "insp.dynFormatS",
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
@@ -806,12 +811,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.extend",
   "util.signalExitCode",
   "util.diff",
+  // Any non-promise argument throws ERR_INVALID_ARG_TYPE.
+  "util.markPromiseAsHandled",
+  // Any non-signal argument throws ERR_INVALID_ARG_TYPE.
+  "util.transferableAbortSignal",
   "util.debounce",
   "util.throttle",
   "mime.typeNew",
   "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
+  // The typed promisify's custom protocol: a truthy non-function throws
+  // ERR_INVALID_ARG_TYPE, and defining the key can throw on a non-extensible
+  // function.
+  "util.promisifyCustom",
+  "util.promisifyMark",
   "util.debuglog",
   // The URI codecs throw the spec's URIError: decoding on bad hex/invalid
   // UTF-8 octets, encoding (and querystring.escape) on a lone surrogate.
@@ -1041,6 +1055,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "url.new",
   "url.newBase",
+  // ERR_INVALID_ARG_TYPE when the argument is not a Blob or File.
+  "url.createObjectURL",
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",

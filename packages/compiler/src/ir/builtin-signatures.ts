@@ -739,8 +739,12 @@ function buildLibFnSignatures() {
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
      * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
      * eldPercentile expects Node's validated range; eldStat(which) reads
-     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. loopExit is when
+     * the loop ended (-1 until then, Node's PerformanceNodeTiming.loopExit),
+     * loopCount the number of loop turns taken. */
     "perf.loopStart": { argTypes: [], result: F64 },
+    "perf.loopExit": { argTypes: [], result: F64 },
+    "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
     "perf.eldNew": { argTypes: [F64], result: F64 },
     "perf.eldEnable": { argTypes: [F64], result: BOOL },
@@ -1391,9 +1395,17 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
-    /** URL.revokeObjectURL(id): the id arrives already converted. A
-     * compiled program registers no blob URLs, so Node's registry lookup
-     * always misses and the call answers undefined. Never throws. */
+    /** URL.createObjectURL(blob): the argument arrives as a checked
+     * dynamic value and must be a Blob or File handle — any other value
+     * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. A registered blob
+     * answers a fresh "blob:nodedata:<uuid v4>" id. */
+    "url.createObjectURL": { argTypes: [DYN], result: STRING },
+    /** URL.revokeObjectURL(id): the id arrives already converted. The
+     * runtime parses it as a URL and drops the registration whose id is
+     * the pathname text between its first and second colon, so a query or
+     * fragment on the id still revokes it. Unparsable input, a pathname
+     * with no colon or a second colon, and ids that were never registered
+     * (or were revoked) miss. Never throws. */
     "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },
@@ -1581,6 +1593,10 @@ function buildLibFnSignatures() {
     "util.signalExitCode": { argTypes: [DYN], result: F64 },
     "util.aborted": { argTypes: [DYN, DYN], result: DYN },
     "util.diff": { argTypes: [DYN, DYN], result: DYN },
+    "util.markPromiseAsHandled": { argTypes: [DYN], result: VOID },
+    "util.transferableAbortSignal": { argTypes: [DYN], result: DYN },
+    "util.transferableAbortController": { argTypes: [], result: DYN },
+    "util.setTraceSigInt": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
@@ -1595,6 +1611,12 @@ function buildLibFnSignatures() {
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
     "util.promisifyDyn": { argTypes: [DYN], result: DYN },
+    /** The custom-function protocol the typed promisify lowering runs over
+     * the boxed original: the custom function (+1), or the undefined value
+     * (+1) when absent or falsy; the static wrapper's marking by the same
+     * key takes the wrapper and the original (+1, the same wrapper). */
+    "util.promisifyCustom": { argTypes: [DYN], result: DYN },
+    "util.promisifyMark": { argTypes: [DYN, DYN], result: DYN },
     "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
     "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
     "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
@@ -4489,6 +4511,11 @@ function buildLibFnSignatures() {
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    /** A module namespace built from its export values as a JavaScript
+     * source takes one (scr_module_namespace_copy_value): the module id and
+     * the object holding the values. One marked object per module, so the
+     * namespace keeps its identity. Never throws. */
+    "module.namespaceCopy": { argTypes: [STRING, DYN], result: DYN },
     /** A primitive wrapper object (scr_js_wrapper_new): the kind
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */
@@ -4639,6 +4666,10 @@ function buildLibFnSignatures() {
      * (URLSearchParams names/values). Borrowed dyn; +1 string. May-throw. */
     "dyn.toStringCoerce": { argTypes: [DYN], result: STRING },
     "dyn.stringConstructor": { argTypes: [DYN], result: STRING },
+    /** Registers a class's compiled String(instance) (the conversion method
+     * its instances run) under the class's instance-capsule type key, for
+     * the untyped conversion. */
+    "dyn.registerClassToString": { argTypes: [STRING, DYN], result: VOID },
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
@@ -5830,6 +5861,7 @@ function buildLibFnSignatures() {
      * count: the runtime reads the options and renders the checked-dynamic
      * view. */
     "insp.inspect": { argTypes: [DYN, DYN, DYN, DYN, F64], result: STRING },
+    "insp.inspectDir": { argTypes: [DYN, DYN, F64], result: STRING },
     /** A [util.inspect.custom] method's call: whether ctx.customInspect is
      * set, its depth argument (the remaining depth at recursion r of depth
      * d), its options object and util.inspect, then its result rendered: a

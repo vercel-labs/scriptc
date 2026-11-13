@@ -2329,6 +2329,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_check_fail",
+  "message": " (a native Proxy keeps its traps only in an untyped value or a dictionary: declare the value 'any', or a Record<string, T>)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_sc_clone",
   "message": "stack",
   "code": "SC2020"

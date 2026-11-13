@@ -7410,14 +7410,13 @@ function armAddsInstanceBehavior(arm: ClassInfo, typed: ClassInfo): boolean {
  * compiler resolves against the typed class cannot follow it. */
 function armShadowedStatic(arm: ClassInfo, typed: ClassInfo): string | null {
   for (let current: ClassInfo | null = arm; current && current !== typed; current = current.base) {
-    const own = new Set<string>([
-      ...(current.declaredStatics ?? []),
-      ...current.staticFields.map((field) => field.name),
-      ...[...(current.staticMethods?.keys() ?? [])].map((key) =>
-        key.startsWith("get:") || key.startsWith("set:") ? key.slice(4) : key,
-      ),
-      ...(current.genericStatics?.keys() ?? []),
-    ]);
+    const own: string[] = [];
+    if (current.declaredStatics) for (const name of current.declaredStatics) own.push(name);
+    for (const field of current.staticFields) own.push(field.name);
+    if (current.staticMethods)
+      for (const key of current.staticMethods.keys())
+        own.push(key.startsWith("get:") || key.startsWith("set:") ? key.slice(4) : key);
+    if (current.genericStatics) for (const name of current.genericStatics.keys()) own.push(name);
     for (const name of own) if (staticDeclarerOf(typed, name) !== null) return name;
   }
   return null;

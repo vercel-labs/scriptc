@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/x509-key-usage-large-arcs.ts"
+ ],
+ "diags": []
+}

@@ -289,24 +289,83 @@ static const uint8_t *scr_x509_ext(const ScrX509Parts *parts, const uint8_t *oid
   return NULL;
 }
 
-/* An OID's dotted text (OBJ_obj2txt with no_name). */
+/* One OID subidentifier as decimal digits, least significant first, with
+ * no truncation: an arc longer than 64 bits must keep its own value, or a
+ * distinct arc could render as a recognized one. Three digits per input
+ * byte leaves room above base-128's rate of about 2.11; the count of
+ * digits used is returned. */
+static size_t scr_x509_dec_arc(char *digits, size_t cap, const uint8_t *p, size_t n) {
+  size_t len = 1;
+  digits[0] = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned carry = p[i] & 0x7f;
+    for (size_t d = 0; d < len; d++) {
+      unsigned t = (unsigned char)digits[d] * 128u + carry;
+      digits[d] = (char)(t % 10u);
+      carry = t / 10u;
+    }
+    while (carry) {
+      if (len == cap) scr_trap("scriptc: out of memory\n");
+      digits[len++] = (char)(carry % 10u);
+      carry /= 10u;
+    }
+  }
+  while (len > 1 && digits[len - 1] == 0) len--;
+  return len;
+}
+
+/* Append `len` decimal digits held least significant first. */
+static void scr_x509_put_dec(ScrX509Buf *b, const char *digits, size_t len) {
+  char tmp[32];
+  char *out = len < sizeof tmp ? tmp : malloc(len);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < len; i++) out[i] = (char)('0' + digits[len - 1 - i]);
+  scr_x509_put(b, out, len);
+  if (out != tmp) free(out);
+}
+
+/* Subtract `sub` (below 100) from a decimal accumulator. */
+static void scr_x509_dec_sub(char *digits, size_t *len, unsigned sub) {
+  unsigned borrow = 0;
+  for (size_t i = 0; i < *len && (sub || borrow); i++) {
+    unsigned take = sub % 10 + borrow;
+    sub /= 10;
+    unsigned t = (unsigned char)digits[i];
+    if (t < take) {
+      digits[i] = (char)(t + 10 - take);
+      borrow = 1;
+    } else {
+      digits[i] = (char)(t - take);
+      borrow = 0;
+    }
+  }
+  while (*len > 1 && digits[*len - 1] == 0) (*len)--;
+}
+
+/* An OID's dotted text (OBJ_obj2txt with no_name), rendered exactly: the
+ * arcs are not bounded to a fixed-width integer. */
 static void scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
-  char tmp[24];
-  uint64_t v = 0;
+  size_t cap = n * 3 + 1;
+  char *digits = malloc(cap);
+  if (!digits) scr_trap("scriptc: out of memory\n");
+  size_t start = 0;
   bool first = true;
   for (size_t i = 0; i < n; i++) {
-    v = (v << 7) | (oid[i] & 0x7f);
     if (oid[i] & 0x80) continue;
+    size_t len = scr_x509_dec_arc(digits, cap, oid + start, i + 1 - start);
+    start = i + 1;
     if (first) {
-      unsigned top = v < 40 ? 0 : v < 80 ? 1 : 2;
-      snprintf(tmp, sizeof tmp, "%u.%llu", top, (unsigned long long)(v - top * 40));
+      unsigned low = (unsigned char)digits[0];
+      unsigned value = len == 1 ? low : len == 2 ? low + 10u * (unsigned char)digits[1] : 80u;
+      unsigned top = value < 40 ? 0 : value < 80 ? 1 : 2;
+      if (top) scr_x509_dec_sub(digits, &len, top * 40);
+      scr_x509_putc(b, (char)('0' + top));
       first = false;
-    } else {
-      snprintf(tmp, sizeof tmp, ".%llu", (unsigned long long)v);
     }
-    scr_x509_puts(b, tmp);
-    v = 0;
+    scr_x509_putc(b, '.');
+    scr_x509_put_dec(b, digits, len);
   }
+  free(digits);
 }
 
 typedef struct {

@@ -278,6 +278,22 @@ const {
 // tests as well.
 const configuredLibnode = process.env.SCRIPTC_LIBNODE?.trim() ?? "";
 const libnodePack = configuredLibnode || "/tmp/scriptc-libnode-pack";
+
+/** The environment every remote test command of one lane receives. */
+const sandboxLaneTestEnv = (lane) => ({
+  ...sandboxLaneEnv(lane, { ...process.env, SCRIPTC_LIBNODE: libnodePack }),
+  // Platform artifact contracts run against the native host; remote lanes
+  // retain every portable behavior assertion.
+  SCRIPTC_PORTABLE_ONLY: "1",
+  ...(lane === "san"
+    ? {
+        // Match the macOS shipping lane: Apple ASan has no LeakSanitizer,
+        // while scriptc's RC audit owns leak detection (including its
+        // intentional-abandonment rules).
+        ASAN_OPTIONS: "detect_leaks=0",
+      }
+    : {}),
+});
 // The native steps print a line per flavor, not per translation unit. The
 // longest silent phase measured on Nov 13 is the PGO speed flavor at 116
 // seconds; five minutes of silence still means a stuck build.
@@ -324,6 +340,19 @@ const workers = lanes.flatMap((lane) =>
     };
   }),
 );
+// The native bootstrap builds the compiler with the compiler. CI runs it as
+// its own job, never beside the corpus, and gives the sanitized emitter a
+// swapfile because instrumenting and then compiling the compiler needs more
+// memory than a test runner has. Each lane gets its own Sandbox for it:
+// co-scheduled with the corpus workers it competes for the same memory and is
+// killed in its seed build.
+const nativeWorkers = lanes.map((lane) => ({
+  lane,
+  label: `${lane} native`,
+  name: `scriptc-${lane}-native-${nonce}`,
+  native: true,
+}));
+const allSandboxes = [...workers, ...nativeWorkers];
 const created = new Set();
 const children = new Set();
 let cleanupPromise;
@@ -764,13 +793,13 @@ async function uploadArchive(worker, archive) {
   }
 }
 
-async function allWorkers(phase, task, concurrency = workers.length) {
+async function allWorkers(phase, task, concurrency = workers.length, group = workers) {
   const started = Date.now();
-  console.log(`\n${phase} (${workers.length} sandboxes)...`);
+  console.log(`\n${phase} (${group.length} sandboxes)...`);
   const results = [];
-  for (let offset = 0; offset < workers.length; offset += concurrency) {
+  for (let offset = 0; offset < group.length; offset += concurrency) {
     results.push(
-      ...(await Promise.allSettled(workers.slice(offset, offset + concurrency).map(task))),
+      ...(await Promise.allSettled(group.slice(offset, offset + concurrency).map(task))),
     );
   }
   const failures = results.filter((result) => result.status === "rejected");
@@ -844,18 +873,28 @@ let failure;
 try {
   await preflight();
   console.log(
-    `Running ${lanes.join("+")} corpus lanes in ${workers.length} ${vcpus}-vCPU sandboxes from ${sourceConfig.reference} (${shardCount} shards/lane).`,
+    `Running ${lanes.join("+")} corpus lanes in ${workers.length} ${vcpus}-vCPU sandboxes from ${sourceConfig.reference} (${shardCount} shards/lane), plus ${nativeWorkers.length} native bootstrap sandboxes.`,
   );
   console.log("Packing the exact tracked + untracked, non-ignored worktree...");
   await createArchive(archive);
 
   const remote = (async () => {
-    await allWorkers("Creating", async (worker) => {
-      created.add(worker.name);
-      await createWorker(worker);
-    });
+    await allWorkers(
+      "Creating",
+      async (worker) => {
+        created.add(worker.name);
+        await createWorker(worker);
+      },
+      allSandboxes.length,
+      allSandboxes,
+    );
 
-    await allWorkers("Uploading worktree", (worker) => uploadArchive(worker, archive), 8);
+    await allWorkers(
+      "Uploading worktree",
+      (worker) => uploadArchive(worker, archive),
+      8,
+      allSandboxes,
+    );
 
     await allWorkers(
       "Preparing worktree",
@@ -955,25 +994,39 @@ try {
           "runtime toolchain cleanup",
           60_000,
         );
+        if (worker.native) {
+          // CI backs the sanitized emitter with a 24 GB swapfile. The seed
+          // build emits the compiler under AddressSanitizer and then has
+          // clang compile the result, which needs more than the Sandbox's
+          // memory; without swap it is killed.
+          await execIn(
+            worker,
+            "sh",
+            [
+              "-c",
+              [
+                "set -eu",
+                "sudo swapoff -a || true",
+                "sudo rm -f /mnt/swapfile",
+                "sudo fallocate -l 24G /mnt/swapfile",
+                "sudo chmod 600 /mnt/swapfile",
+                "sudo mkswap /mnt/swapfile >/dev/null",
+                "sudo swapon /mnt/swapfile",
+                "free -h",
+              ].join("\n"),
+            ],
+            {},
+            "native swap",
+            nativeTimeoutMs,
+          );
+        }
       },
-      sourceConfig.prepared ? workers.length : 8,
+      sourceConfig.prepared ? allSandboxes.length : 8,
+      allSandboxes,
     );
 
-    await allWorkers("Testing", async (worker) => {
-      const sharedTestEnv = {
-        ...sandboxLaneEnv(worker.lane, { ...process.env, SCRIPTC_LIBNODE: libnodePack }),
-        // Platform artifact contracts run against the native host below.
-        // Remote lanes retain every portable behavior assertion.
-        SCRIPTC_PORTABLE_ONLY: "1",
-        ...(worker.lane === "san"
-          ? {
-              // Match the macOS shipping lane: Apple ASan has no
-              // LeakSanitizer, while scriptc's RC audit owns leak
-              // detection (including its intentional-abandonment rules).
-              ASAN_OPTIONS: "detect_leaks=0",
-            }
-          : {}),
-      };
+    const corpusTesting = allWorkers("Testing", async (worker) => {
+      const sharedTestEnv = sandboxLaneTestEnv(worker.lane);
       const workerCaseFiles = [
         ...laneCaseShardedFiles,
         ...(worker.lane === onceLane ? invariantCaseShardedFiles : []),
@@ -1040,8 +1093,24 @@ try {
           },
           "cache",
         );
-      const nativeBuild = () =>
-        execIn(
+      // The corpus owns the remaining pool while file/cache processes share
+      // the reserved side slots (serially when only one slot is available).
+      const sideTasks = [files, ...(runCacheCases ? [cacheCases] : [])];
+      if (sideConcurrency === 0) {
+        await cases();
+        await runTaskQueue(sideTasks, 1);
+      } else {
+        await Promise.all([cases(), runTaskQueue(sideTasks, sideConcurrency)]);
+      }
+    });
+
+    // The native bootstrap builds the compiler with the compiler, in a
+    // Sandbox of its own per lane: CI runs it as its own job, and beside the
+    // corpus it is killed in its seed build. It runs while the shards test.
+    const nativeTesting = allWorkers(
+      "Testing native bootstrap",
+      async (worker) => {
+        await execIn(
           worker,
           "sh",
           [
@@ -1053,23 +1122,15 @@ try {
             "--reporter=dot",
             ...nativeBuildFiles,
           ],
-          { ...sharedTestEnv, SCRIPTC_TEST_WORKERS: "1" },
+          { ...sandboxLaneTestEnv(worker.lane), SCRIPTC_TEST_WORKERS: "1" },
           "native bootstrap",
+          sandboxTimeoutMs,
         );
-      // The corpus owns the remaining pool while file/cache processes share
-      // the reserved side slots (serially when only one slot is available).
-      const sideTasks = [
-        ...(worker.shard === 1 ? [nativeBuild] : []),
-        files,
-        ...(runCacheCases ? [cacheCases] : []),
-      ];
-      if (sideConcurrency === 0) {
-        await cases();
-        await runTaskQueue(sideTasks, 1);
-      } else {
-        await Promise.all([cases(), runTaskQueue(sideTasks, sideConcurrency)]);
-      }
-    });
+      },
+      nativeWorkers.length,
+      nativeWorkers,
+    );
+    await Promise.all([corpusTesting, nativeTesting]);
 
     if (hostSchedule.remoteArtifactContracts) {
       const contractWorker = workers.find(

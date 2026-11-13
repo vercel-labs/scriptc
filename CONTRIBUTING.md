@@ -40,6 +40,8 @@ Each Sandbox builds the Linux LLVM helper and runtime pack from the uploaded wor
 
 A lane also needs `SCRIPTC_SANDBOX_TIMEOUT` to cover preparing the image and running the shard. The sanitized lane's self-hosting bootstrap alone takes about 56 minutes on 32 vCPUs, so the default is `90m`; lower it only for lanes that skip that bootstrap.
 
+The native bootstrap that builds the compiler with the compiler gets its own Sandbox per lane, as CI gives it its own `bootstrap` jobs, and that Sandbox carries a 24 GB swapfile like those jobs. Beside the corpus workers it competes for the same memory and is killed in its seed build, because the sanitized emitter alone peaks near 13 GB and then has clang compile the result. The two extra Sandboxes run while the shards test, so they do not lengthen a run.
+
 The Node island tests require a libnode pack rather than skipping in the lanes, which run with `CI=1`. A Sandbox from a prepared snapshot can name the pack it already carries in `SCRIPTC_LIBNODE`; otherwise the runner fetches the pinned development pack that CI falls back to into `/tmp/scriptc-libnode-pack` and exports it to every lane.
 
 ### Local fallback

@@ -274,6 +274,84 @@ async function main(): Promise<void> {
       reducerSignals.join(","),
     );
   }
+
+  // A class instance is an object to Node's validateObject, and its fields
+  // and accessors are the options, inherited ones included.
+  {
+    class BaseOptions {
+      highWaterMark = 4;
+    }
+    class ClassOptions extends BaseOptions {
+      concurrency = 2;
+      get signal(): AbortSignal | undefined {
+        return undefined;
+      }
+    }
+    const classOptions = new ClassOptions();
+    const mapped = await Readable.from(["a", "b", "c", "d"])
+      .map((value: string) => value.toUpperCase(), classOptions)
+      .toArray();
+    const taken = await Readable.from(["a", "b", "c"]).take(2, classOptions).toArray();
+    console.log("class options", mapped.join(","), "|", taken.join(","));
+  }
+
+  // A primitive is not an object to validateObject, so Node's type error is
+  // the one that answers before any member is read.
+  {
+    try {
+      // @ts-expect-error the options argument is a record
+      Readable.from(["a"]).map((value: string) => value, 5);
+      console.log("primitive options ok");
+    } catch (error) {
+      console.log("primitive options", (error as Error & { code?: string }).code);
+    }
+  }
+
+  // A class's option accessor is read, and answers with the instance as
+  // its receiver, exactly as Node reads it.
+  {
+    class GetterOptions {
+      base = 2;
+      get concurrency(): number {
+        return this.base;
+      }
+      get highWaterMark(): number {
+        return this.base + 1;
+      }
+    }
+    const values = await Readable.from(["a", "b", "c"])
+      .map((value: string) => value.toUpperCase(), new GetterOptions())
+      .toArray();
+    console.log("class getter options", values.join(","));
+
+    class ZeroOptions {
+      get concurrency(): number {
+        return 0;
+      }
+    }
+    try {
+      Readable.from(["a"]).map((value: string) => value, new ZeroOptions());
+      console.log("class zero options ok");
+    } catch (error) {
+      console.log("class zero options", (error as Error & { code?: string }).code);
+    }
+  }
+
+  // A class instance whose option accessor throws throws Node's answer for
+  // reading it, not a rejection for the options themselves.
+  {
+    class ThrowingOptions {
+      get concurrency(): number {
+        throw new Error("concurrency boom");
+      }
+    }
+    try {
+      Readable.from(["a"]).map((value: string) => value, new ThrowingOptions());
+      console.log("class option throw", "no throw");
+    } catch (error) {
+      console.log("class option throw", (error as Error).message);
+    }
+  }
 }
 
 void main();

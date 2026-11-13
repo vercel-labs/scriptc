@@ -7597,7 +7597,15 @@ static ScrDyn *sf_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
     switch (w) {
       case 0: return scr_dyn_new_null();
       case 1: return scr_dyn_new_bool(s->error != NULL);
-      case 2: return scr_dyn_new_bool(s->disturbed);
+      case 2:
+#ifdef SCR_HANDLE_CLASSES
+        /* A read, cancel or pipe started on the body's web view disturbs
+         * it before its pull reaches this stream, as it does for
+         * bodyUsed. */
+        if (s->web_view && scr_web_stream_bridge && scr_web_stream_bridge->disturbed(s->web_view))
+          return scr_dyn_new_bool(true);
+#endif
+        return scr_dyn_new_bool(s->disturbed);
       case 3: return scr_dyn_new_bool(!s->closed && s->error == NULL);
       default: return scr_dyn_new_null();
     }

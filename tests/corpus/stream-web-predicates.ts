@@ -194,6 +194,33 @@ async function main(): Promise<void> {
     console.log("response text", text, flags(body));
   }
 
+  // A body piped to a backpressured sink is disturbed as the pipe starts,
+  // before its first read reaches the body.
+  {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1]));
+          controller.enqueue(new Uint8Array([2]));
+          controller.close();
+        },
+      }),
+    );
+    const body = response.body!;
+    const sink = new WritableStream(
+      {
+        async write() {
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        },
+      },
+      { highWaterMark: 1 },
+    );
+    const pipe = body.pipeTo(sink);
+    console.log("piped body during", flags(body), "|", response.bodyUsed);
+    await pipe;
+    console.log("piped body after", flags(body), "|", response.bodyUsed);
+  }
+
   // Untyped values take the same answers.
   {
     const values: unknown[] = [

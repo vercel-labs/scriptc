@@ -9936,7 +9936,10 @@ static int scr_su_dyn_destroyed(const ScrDyn *value, bool *pending) {
 
 /* Node's isErrored(stream): the first of readableErrored, writableErrored,
  * _readableState.errorEmitted, _writableState.errorEmitted,
- * _readableState.errored and _writableState.errored that is not nullish. */
+ * _readableState.errored and _writableState.errored that is not nullish.
+ * Node reads each state property only when its turn comes, once for the
+ * errorEmitted test and again for the errored test, so a state getter
+ * that throws is reached only where Node reaches it. */
 static bool scr_su_dyn_errored(const ScrDyn *value, bool *pending) {
   *pending = false;
   if (!scr_dyn_truthy(value)) return false;
@@ -9952,36 +9955,32 @@ static bool scr_su_dyn_errored(const ScrDyn *value, bool *pending) {
     scr_dyn_release(p);
     if (!nullish) return answer;
   }
-  ScrDyn *r = scr_su_read(value, "_readableState");
-  if (!r) {
-    *pending = true;
-    return false;
-  }
-  ScrDyn *w = scr_su_read(value, "_writableState");
-  if (!w) {
-    scr_dyn_release(r);
-    *pending = true;
-    return false;
-  }
-  static const char *const nested[] = {"errorEmitted", "errorEmitted", "errored", "errored"};
-  const ScrDyn *states[2] = {r, w};
-  bool answer = false;
+  static const char *const states[] = {"_readableState", "_writableState",
+                                       "_readableState", "_writableState"};
+  static const char *const nested[] = {"errorEmitted", "errorEmitted",
+                                       "errored", "errored"};
   for (size_t i = 0; i < 4; i++) {
-    const ScrDyn *state = states[i % 2];
-    if (!scr_dyn_truthy(state)) continue;
+    ScrDyn *state = scr_su_read(value, states[i]);
+    if (!state) {
+      *pending = true;
+      return false;
+    }
+    if (!scr_dyn_truthy(state)) {
+      scr_dyn_release(state);
+      continue;
+    }
     ScrDyn *p = scr_su_read(state, nested[i]);
+    scr_dyn_release(state);
     if (!p) {
       *pending = true;
-      break;
+      return false;
     }
     bool nullish = scr_dyn_is_nullish(p);
-    answer = scr_dyn_truthy(p);
+    bool answer = scr_dyn_truthy(p);
     scr_dyn_release(p);
-    if (!nullish) break;
+    if (!nullish) return answer;
   }
-  scr_dyn_release(r);
-  scr_dyn_release(w);
-  return answer;
+  return false;
 }
 
 /* Node's isReadable(stream). *no_side is set when `readable` is not a

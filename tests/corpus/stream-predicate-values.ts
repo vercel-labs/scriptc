@@ -152,6 +152,52 @@ async function main(): Promise<void> {
     attempt("throw errored", () => stream.isErrored(erroring));
   }
 
+  // isErrored reads each state only when its turn comes, and each state
+  // property once per test it appears in: a state getter a later turn would
+  // read is never touched once an earlier member answers.
+  {
+    const emitted: unknown = {
+      _readableState: { errorEmitted: true },
+      get _writableState(): unknown {
+        throw new Error("writable state read");
+      },
+    };
+    attempt("errored answered before the writable state", () => stream.isErrored(emitted));
+
+    const lateThrow: unknown = {
+      _readableState: { errorEmitted: undefined, errored: undefined },
+      get _writableState(): unknown {
+        throw new Error("writable state read");
+      },
+    };
+    attempt("errored reads the writable state", () => stream.isErrored(lateThrow));
+
+    const falsy: unknown = {
+      _readableState: { errorEmitted: 0, errored: true },
+      get _writableState(): unknown {
+        throw new Error("writable state read");
+      },
+    };
+    attempt("errored stops at a falsy errorEmitted", () => stream.isErrored(falsy));
+
+    let readableReads = 0;
+    let writableReads = 0;
+    const counted: unknown = {
+      get _readableState() {
+        readableReads += 1;
+        return {};
+      },
+      get _writableState() {
+        writableReads += 1;
+        return {};
+      },
+    };
+    console.log("errored state reads", stream.isErrored(counted), readableReads, writableReads);
+
+    const nullReadable: unknown = { _readableState: null, _writableState: { errored: 1 } };
+    console.log("errored null readable", stream.isErrored(nullReadable));
+  }
+
   // Node streams report their state through the same predicates: a readable
   // is not readable once it ends or is destroyed, a writable once it finishes,
   // and a transform's readable side follows the writable side's end.

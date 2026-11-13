@@ -416,6 +416,15 @@ void scr_process_chdir_dyn(const ScrDyn *dir);
  * the core unit so the knob never links scr_net.c. Never throw. */
 double scr_net_get_autosel_timeout(void);
 void scr_net_set_autosel_timeout(double ms);
+/* The checked-dynamic form: a non-number throws Node's ERR_INVALID_ARG_TYPE
+ * ("The \"value\" argument must be of type number. Received type string
+ * ('x')"), then the double form's validateInt32 ladder runs. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value);
+/* net's process-wide autoSelectFamily default (true, Node's). The setter
+ * takes Node's validateBoolean over a checked-dynamic argument and throws
+ * ERR_INVALID_ARG_TYPE catchably. */
+bool scr_net_get_default_autosel(void);
+void scr_net_set_default_autosel(const ScrDyn *value);
 
 /* Synchronous fs, utf8-only (paths and contents are ScrStr bytes). All
  * ScrStr arguments are BORROWED; string/array results return +1. On

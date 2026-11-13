@@ -141,6 +141,11 @@ ScrSym *scr_sym_well_known(ScrStr *name) {
     scr_dyn_install_async_dispose_symbol(key);
     scr_dyn_release(key);
   }
+  if (name->len == 7 && !memcmp(name->data, "dispose", 7)) {
+    ScrDyn *key = scr_dyn_new_symbol(symbol);
+    scr_dyn_install_dispose_symbol(key);
+    scr_dyn_release(key);
+  }
   if (name->len == 11 && !memcmp(name->data, "toPrimitive", 11)) {
     ScrDyn *key = scr_dyn_new_symbol(symbol);
     scr_dyn_install_to_primitive_symbol(key);

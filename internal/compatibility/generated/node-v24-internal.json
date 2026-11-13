@@ -31842,15 +31842,20 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
           "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts",
           "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts",
           "tests/corpus/dns-promises-untyped.cjs",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolver-class.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -31896,8 +31901,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.Resolver",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31919,8 +31930,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.cancel",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31942,8 +31959,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.getServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31965,11 +31988,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.lookup",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31992,11 +32016,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.lookupService",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32019,8 +32044,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32042,8 +32074,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve4",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32065,8 +32104,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolve6",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32088,8 +32134,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveAny",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32111,8 +32164,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveCaa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32134,8 +32194,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveCname",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32157,8 +32224,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveMx",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32180,8 +32254,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveNaptr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32203,8 +32284,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveNs",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32226,8 +32314,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolvePtr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32249,8 +32344,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveSoa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32272,8 +32374,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveSrv",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32295,8 +32404,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveTlsa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32318,8 +32434,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.resolveTxt",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32341,8 +32464,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.reverse",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32364,8 +32494,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.setDefaultResultOrder",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32387,11 +32523,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.getDefaultResultOrder",
         "tests": [
           "tests/corpus/dns-promises-lookup.ts",
-          "tests/corpus/dns-promises-untyped.cjs"
+          "tests/corpus/dns-promises-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32414,8 +32551,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dnsPromises.setServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32483,8 +32626,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32506,12 +32655,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookup",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32534,10 +32684,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.Resolver",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32560,8 +32713,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.Resolver",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32583,8 +32742,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.cancel",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32606,8 +32771,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.resolver.setLocalAddress",
+        "tests": [
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32629,12 +32800,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.getServers",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32657,12 +32829,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookup",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32708,12 +32881,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.lookupService",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32736,8 +32910,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32759,8 +32939,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve4",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32782,8 +32968,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolve6",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32805,8 +32997,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveAny",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32828,8 +33026,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveCname",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32851,8 +33055,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveCaa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32874,8 +33084,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveMx",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32897,8 +33113,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveNaptr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32920,8 +33142,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveNs",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32943,8 +33171,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolvePtr",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32966,8 +33200,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveSoa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -32989,8 +33229,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveSrv",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33012,8 +33258,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveTlsa",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33035,8 +33287,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.resolveTxt",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33058,8 +33316,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.reverse",
+        "tests": [
+          "tests/corpus/node-dns-resolve-records.cjs",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33081,12 +33345,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.setDefaultResultOrder",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -33109,12 +33374,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.getDefaultResultOrder",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
           "tests/corpus/5649-dns-service-servers.ts",
-          "tests/corpus/5650-dns-lookup-errors-untyped.cjs"
+          "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
+          "tests/corpus/dns-lookup-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -33137,8 +33403,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dns"
+        "status": "supported",
+        "evidence": "compiler-feature:dns.dns.setServers",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -33868,6 +34140,8 @@
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
@@ -38033,8 +38307,12 @@
       "anchor": "err_invalid_ip_address",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS",
+        "tests": [
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/node-dns-resolver-class.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57045,6 +57323,7 @@
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-dispose-http.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
@@ -58772,10 +59051,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.server",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/net-server-dispose-http.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66521,12 +66800,12 @@
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-dispose-http.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/net-socket-write-rejected.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -66657,10 +66936,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:https.server",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/net-server-dispose-http.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74791,15 +75070,29 @@
           "tests/corpus/2597-dgram-send-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/5647-net-is-ip.ts",
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
           "tests/corpus/compat-net-server-socket.ts",
           "tests/corpus/compat-net-socket-members.mjs",
           "tests/corpus/compat-net-socket-members.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-is-ip-inputs.ts",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
+          "tests/corpus/net-server-dispose-drop.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
+          "tests/corpus/net-socket-chaining-dyn.cjs",
+          "tests/corpus/net-socket-chaining.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
+          "tests/corpus/net-socket-tos-keepalive.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
@@ -74855,10 +75148,11 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:net.BlockList",
         "tests": [
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -75217,8 +75511,11 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.PRIVATE_RANGES",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75235,7 +75532,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.rules",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75257,7 +75554,7 @@
       "anchor": "class-netblocklist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.size",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75279,10 +75576,11 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:net.SocketAddress",
         "tests": [
           "tests/corpus/5659-net-blocklist-socketaddress.ts",
+          "tests/corpus/compat-net-socket-members.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -75323,7 +75621,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.address",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75345,7 +75643,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.family",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75367,7 +75665,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.flowlabel",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75389,7 +75687,7 @@
       "anchor": "class-netsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.port",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75411,10 +75709,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Server",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75460,17 +75760,12 @@
       "anchor": "serverclosecallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-server-dispose-drop.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75488,8 +75783,11 @@
       "anchor": "serversymbolasyncdispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.server",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75506,10 +75804,12 @@
       "anchor": "servergetconnectionscallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.getConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75527,17 +75827,14 @@
       "anchor": "serverlisten",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75583,17 +75880,14 @@
       "anchor": "serverlistenoptions-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75611,17 +75905,14 @@
       "anchor": "serverlistenpath-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75639,17 +75930,14 @@
       "anchor": "serverlistenport-host-backlog-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:net.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-listen-dynamic-arguments.cjs",
+          "tests/corpus/net-listen-argument-shapes.ts",
+          "tests/corpus/net-listen-untyped-arguments.cjs",
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/compat-net-server-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -75667,10 +75955,12 @@
       "anchor": "serverref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.ref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75688,10 +75978,12 @@
       "anchor": "serverunref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.unref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75709,10 +76001,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.listening",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75730,10 +76024,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.maxConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75751,8 +76047,11 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.dropMaxConnection",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75769,10 +76068,12 @@
       "anchor": "event-close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75790,10 +76091,12 @@
       "anchor": "event-connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connection'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75811,7 +76114,7 @@
       "anchor": "event-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -75833,10 +76136,12 @@
       "anchor": "event-listening",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'listening'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75854,8 +76159,11 @@
       "anchor": "event-drop",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'drop'",
+        "tests": [
+          "tests/corpus/net-server-dispose-drop.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75872,10 +76180,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Socket",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76044,7 +76354,7 @@
       "anchor": "socketdestroysoon",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.destroySoon",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76143,7 +76453,7 @@
       "anchor": "socketresetanddestroy",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.resetAndDestroy",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76221,10 +76531,12 @@
       "anchor": "socketsetkeepalive",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76242,8 +76554,11 @@
       "anchor": "socketsetkeepaliveoptions",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.setKeepAlive",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76260,10 +76575,12 @@
       "anchor": "socketsetkeepaliveenable-initialdelay-interval-count",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76281,10 +76598,12 @@
       "anchor": "socketsetnodelaynodelay",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setNoDelay",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76330,8 +76649,11 @@
       "anchor": "socketgettypeofservice",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.getTypeOfService",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76348,8 +76670,11 @@
       "anchor": "socketsettypeofservicetos",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.setTypeOfService",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76415,8 +76740,11 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.autoSelectFamilyAttemptedAddresses",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76438,8 +76766,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.bufferSize",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76456,10 +76787,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesRead",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76477,10 +76810,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesWritten",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76498,10 +76833,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.connecting",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76519,10 +76856,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.destroyed",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76540,7 +76879,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localAddress",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76562,10 +76901,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localPort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76583,7 +76924,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localFamily",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76605,7 +76946,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.pending",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76627,10 +76968,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remoteAddress",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76648,7 +76991,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remoteFamily",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76670,10 +77013,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remotePort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76691,8 +77036,11 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.server",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -76732,10 +77080,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.readyState",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76753,10 +77103,12 @@
       "anchor": "event-close_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76774,10 +77126,12 @@
       "anchor": "event-connect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connect'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76795,8 +77149,11 @@
       "anchor": "event-connectionattempt",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttempt'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76813,8 +77170,11 @@
       "anchor": "event-connectionattemptfailed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttemptFailed'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76831,8 +77191,11 @@
       "anchor": "event-connectionattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'connectionAttemptTimeout'",
+        "tests": [
+          "tests/corpus/net-attempt-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76849,10 +77212,12 @@
       "anchor": "event-data",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'data'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76870,7 +77235,7 @@
       "anchor": "event-drain",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'drain'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76892,10 +77257,12 @@
       "anchor": "event-end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'end'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76913,10 +77280,12 @@
       "anchor": "event-error_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76934,8 +77303,11 @@
       "anchor": "event-lookup",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.'lookup'",
+        "tests": [
+          "tests/corpus/6443-net-lookup-http-close-text.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -76952,7 +77324,7 @@
       "anchor": "event-ready",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'ready'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76974,7 +77346,7 @@
       "anchor": "event-timeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'timeout'",
         "tests": [
           "tests/corpus/compat-net-socket-members.mjs",
@@ -76996,8 +77368,12 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.BoundSocket",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77014,8 +77390,12 @@
       "anchor": "boundsocketaddress",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.address",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77032,8 +77412,12 @@
       "anchor": "boundsocketfd",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.fd",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77050,8 +77434,12 @@
       "anchor": "boundsocketclose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket.close",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77068,8 +77456,12 @@
       "anchor": "boundsocketsymboldispose",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.boundSocket",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77086,8 +77478,12 @@
       "anchor": "class-netboundsocket",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.isPipe",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -77104,17 +77500,14 @@
       "anchor": "netconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77160,17 +77553,14 @@
       "anchor": "netconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77188,17 +77578,14 @@
       "anchor": "netconnectport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77216,17 +77603,14 @@
       "anchor": "netcreateconnection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77272,17 +77656,14 @@
       "anchor": "netcreateconnectionpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77300,17 +77681,14 @@
       "anchor": "netcreateconnectionport-host-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-attempt-events.ts",
+          "tests/corpus/6443-net-lookup-http-close-text.ts",
+          "tests/corpus/2596-net-arg-ladders.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77356,8 +77734,11 @@
       "anchor": "netgetdefaultautoselectfamily",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.getDefaultAutoSelectFamily",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77374,8 +77755,11 @@
       "anchor": "netsetdefaultautoselectfamilyvalue",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:net"
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.setDefaultAutoSelectFamily",
+        "tests": [
+          "tests/corpus/net-socket-tos-keepalive.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77392,17 +77776,12 @@
       "anchor": "netgetdefaultautoselectfamilyattempttimeout",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.getDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.getDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77420,17 +77799,12 @@
       "anchor": "netsetdefaultautoselectfamilyattempttimeoutvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.setDefaultAutoSelectFamilyAttemptTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.setDefaultAutoSelectFamilyAttemptTimeout",
         "tests": [
           "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-connect-dynamic-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77448,11 +77822,11 @@
       "anchor": "netisipinput",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIP",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIP",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77470,11 +77844,11 @@
       "anchor": "netisipv4input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIPv4",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIPv4",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77492,11 +77866,11 @@
       "anchor": "netisipv6input",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.net.isIPv6",
+        "status": "supported",
+        "evidence": "compiler-dedicated:net.isIPv6",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs"
+          "tests/corpus/5647-net-is-ip.ts",
+          "tests/corpus/net-is-ip-inputs.ts"
         ]
       },
       "anchorSource": "exact"

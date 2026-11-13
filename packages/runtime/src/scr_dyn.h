@@ -262,9 +262,12 @@ typedef enum {
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
+  Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
+  Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
@@ -1411,6 +1414,7 @@ void scr_dyn_to_primitive_number_install(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_dispose_symbol(ScrDyn *key);
 void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
@@ -1425,6 +1429,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Whether key is Symbol.dispose (registered by the symbol unit when the
+ * program names it). */
+bool scr_dyn_is_dispose_symbol(const ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
 ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *value);
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value);

@@ -2031,7 +2031,21 @@ static void scr_kill_unknown_signal_text(const char *text, size_t len) {
  * The inspect unit renders it exactly when the program links that unit
  * (any program that prints does); a program without it keeps the plain
  * String() form. NULL with an exception pending when a hook throws. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak *reference* in an executable, and the
+ * runtime C tests link scr_lib.c without the inspect unit. A weak
+ * DEFINITION satisfies that link: the inspect unit's strong definition
+ * replaces it in every program that links the unit, and the NULL answer
+ * selects the plain String() form otherwise, exactly as the absent symbol
+ * does elsewhere. */
+__attribute__((weak)) ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
+  (void)d;
+  (void)depth;
+  return NULL;
+}
+#else
 extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
 #endif
 static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
 #if !defined(SCR_LIB)
@@ -4551,6 +4565,23 @@ static SCR_TL double scr_net_autosel_timeout_ms = 250;
 
 double scr_net_get_autosel_timeout(void) { return scr_net_autosel_timeout_ms; }
 
+/* net's process-wide autoSelectFamily default (Node's
+ * getDefaultAutoSelectFamily pair, true like Node's). The connect paths
+ * read it when a dial resolves more than one address; the setter runs
+ * Node's validateBoolean over the checked-dynamic argument. */
+static SCR_TL bool scr_net_default_autosel = true;
+
+bool scr_net_get_default_autosel(void) { return scr_net_default_autosel; }
+
+void scr_net_set_default_autosel(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("value", "of type boolean",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_default_autosel = value->v.b;
+}
+
 /* Node's setDefaultAutoSelectFamilyAttemptTimeout: validateInt32(value,
  * 'value', 1), then the sub-10ms floor (Node clamps small budgets to
  * 10ms). Throws ERR_OUT_OF_RANGE catchably. */
@@ -4571,6 +4602,19 @@ void scr_net_set_autosel_timeout(double ms) {
     return;
   }
   scr_net_autosel_timeout_ms = ms < 10 ? 10 : ms;
+}
+
+/* The checked-dynamic entry: Node's validateNumber first (a non-number
+ * throws ERR_INVALID_ARG_TYPE; NaN passes the type gate and lands in the
+ * integer rendering the double form gives it), then the same validateInt32
+ * ladder. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("value", "of type number",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_set_autosel_timeout(value->v.num);
 }
 
 /* ── fs error formatting ─────────────────────────────────────────────

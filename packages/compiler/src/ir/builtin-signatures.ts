@@ -1058,9 +1058,19 @@ function buildLibFnSignatures() {
     "process.exiting": { argTypes: [], result: BOOL },
     /** net's process-wide happy-eyeballs attempt budget (Node's default
      * 250ms): one runtime double in the core unit, so reading/writing it
-     * never forces the net unit into the link. Never throw. */
+     * never forces the net unit into the link. setDefaultAutoSelectFamily
+     * throws Node's ERR_INVALID_ARG_TYPE for a non-boolean value. */
     "net.getAutoSelTimeout": { argTypes: [], result: F64 },
-    "net.setAutoSelTimeout": { argTypes: [F64], result: VOID },
+    /** setDefaultAutoSelectFamilyAttemptTimeout(value): Node's
+     * validateInt32 ladder runs over the checked-dynamic value, so a
+     * non-number throws ERR_INVALID_ARG_TYPE instead of a lowering
+     * refusal (the validateBoolean twin above). */
+    "net.setAutoSelTimeout": { argTypes: [DYN], result: VOID },
+    /** net.getDefaultAutoSelectFamily()/setDefaultAutoSelectFamily(value):
+     * Node's process-wide boolean (true by default). The value crosses as a
+     * dyn so the runtime can raise the same TypeError Node does. */
+    "net.getDefaultAutoSel": { argTypes: [], result: BOOL },
+    "net.setDefaultAutoSel": { argTypes: [DYN], result: VOID },
     /** realpath(3) with Node's error shape (syscall "lstat" in the message,
      * Node's own spelling for realpathSync failures). +1 fresh string. */
     "fs.realpathSync": { argTypes: [STRING], result: STRING },
@@ -2110,6 +2120,20 @@ function buildLibFnSignatures() {
       argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL, null],
       result: VOID,
     },
+    /** Server.prototype.listen over dynamic arguments: args [server, arg0,
+     * arg1, arg2, fence]. The runtime runs Node's normalizeArgs (a function,
+     * null or undefined port binds an unused one; a pipe-name string is the
+     * path; an object is the option bag), the already-listening check, the
+     * callback registration, the bound-socket adoption, then the bag's
+     * signal, fd, port and path in Node's order (with backlog, ipv6Only and
+     * reusePort). An adopted TCP handle or an unmodeled form reaches the
+     * compiler-rendered fence after its validation. May-throw seed. */
+    "net.listenDyn": { argTypes: [NETSERVER_T, DYN, DYN, DYN, STRING], result: VOID },
+    // The same with a statically function-typed listen callback peeled off.
+    "net.listenDynCb": {
+      argTypes: [NETSERVER_T, DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: VOID,
+    },
     "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
     "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
     /** socket.ref()/unref() and server.ref()/unref(): whether the handle
@@ -2168,13 +2192,21 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    /** net.connect/createConnection over a RUNTIME option bag (computed
-     * keys — the invalid-input probes): Node-order validation (the
-     * objectMode trio's ERR_INVALID_ARG_VALUE, validatePort, host string,
-     * autoSelectFamily boolean, the attempt budget), then the trailing
-     * compiler-rendered fence — ALWAYS THROWS (the error.nodeThrow
-     * polymorphic-result carve-out). May-throw seed. */
-    "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
+    /** net.connect/createConnection over dynamic arguments (a runtime
+     * option bag, or positional values whose kinds only the run decides):
+     * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
+     * — the Socket constructor's option ladder, net.connect's timeout, the
+     * missing-argument check and lookupAndConnect's validation — then dials
+     * with the options it models; a caller-supplied lookup or an adopted
+     * handle reaches the compiler-rendered fence after its validation.
+     * May-throw seed. */
+    "net.connectDyn": { argTypes: [DYN, DYN, DYN, STRING], result: NETSOCKET_T },
+    // The same with a statically function-typed connect listener peeled off
+    // (Node's normalizeArgs takes the last argument as the callback).
+    "net.connectDynCb": {
+      argTypes: [DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: NETSOCKET_T,
+    },
     "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
@@ -2203,12 +2235,12 @@ function buildLibFnSignatures() {
      * divergence), and a lookup error surfaces as the deferred socket
      * 'error'. A synchronous throw INSIDE the lookup propagates out of the
      * connect call (may-throw seed). */
-    "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+    "net.connectLookup": { argTypes: [F64, STRING, null, DYN], result: NETSOCKET_T },
     /** connect({ host, port, lookup }) with a lookup of Node's own type, as
      * a checked-dynamic function: the runtime calls it with { hints, all:
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
-    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN, DYN], result: NETSOCKET_T },
     /** socket.write: Node's Writable answer — false when the writes not yet
      * completely sent, each counted in full, reach the 65536-byte
      * high-water mark ('drain' follows), and on an ended or closed socket. */
@@ -2346,6 +2378,27 @@ function buildLibFnSignatures() {
     "dns.getServers": { argTypes: [], result: DYN },
     "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
     "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
+    /** The stub resolver (scr_dns_resolve.c): the binding names the c-ares
+     * query ("queryA", "getHostByAddr", …), `typed` says the callback's
+     * result parameter cannot take the undefined Node passes on an error,
+     * and the promise forms fulfill with the dyn result. Argument errors
+     * throw synchronously in both forms (Node validates before it queues
+     * the query). */
+    "dns.resolveChk": { argTypes: [STRING, DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolvePromise": { argTypes: [STRING, DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** resolve(hostname, rrtype[, callback]): the rrtype picks the binding
+     * at run time (Node's resolveMap). */
+    "dns.resolveRrChk": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolveRrPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** The Resolver handle (SCR_DYNH_DNS_RESOLVER): the constructor's
+     * options, the instanceof test, and the servers of the module defaults.
+     * A handle's own methods are dyn calls on the handle value, so they need
+     * no entry here. */
+    "dns.resolverNew": { argTypes: [DYN, BOOL], result: DYN },
+    "dns.resolverIs": { argTypes: [DYN, BOOL], result: BOOL },
+    "dns.setServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesSetServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesGetServers": { argTypes: [BOOL], result: DYN },
     // node:test (scr_test.c). Bodies are program-dependent closures (0 or
     // 1 testCtx param, void or Promise<void> result — the spoke pinned the
     // shape): null slots. sub's result is the settled Promise<void> the
@@ -2705,6 +2758,9 @@ function buildLibFnSignatures() {
     "net.sockSetTimeout": { argTypes: [NETSOCKET_T, F64], result: VOID },
     /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings throw the "not supported yet" Error, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
     "net.sockSetEncoding": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+    /** The untyped argument: a missing or undefined encoding means utf8, a
+     * non-string throws Node's argument TypeError (may throw). */
+    "net.sockSetEncodingDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "http.reqSetEncoding": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "net.sockOnTimeout": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2850,7 +2906,9 @@ function buildLibFnSignatures() {
      * the read half ends. */
     "net.sockPause": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
-    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
+    /** setNoDelay(enable): the argument as written (undefined means true);
+     * answers the socket. */
+    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
@@ -2870,7 +2928,13 @@ function buildLibFnSignatures() {
     "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
-    "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+    /** setKeepAlive(enable, initialDelay, interval, count): the arguments
+     * as written (a missing one is the dyn undefined value); answers the
+     * socket. */
+    "net.sockSetKeepAlive": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, DYN],
+      result: NETSOCKET_T,
+    },
     "net.sockOnReady": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
@@ -2882,6 +2946,17 @@ function buildLibFnSignatures() {
      * gets (err, address, family, host) once per resolved address, or once
      * with the lookup error, before the connect. */
     "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+    /** socket.on/once of the happy-eyeballs attempt events: the dyn
+     * listener gets (ip, port, family), plus the error for Failed. `which`
+     * is 0 (connectionAttempt), 1 (Failed) or 2 (Timeout). */
+    "net.sockOnAttempt": { argTypes: [NETSOCKET_T, DYN, F64, BOOL], result: VOID },
+    /** socket.bufferSize: the unsent bytes, or a dyn undefined before the
+     * socket has a handle (Node's deprecated writableLength alias). */
+    "net.sockBufferSize": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.autoSelectFamilyAttemptedAddresses: the "$ip:$port" strings
+     * of a multi-address dial, a dyn undefined when the dial took the
+     * single-address path. */
+    "net.sockAttemptedAddresses": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockOnWriteFlush": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -2907,7 +2982,22 @@ function buildLibFnSignatures() {
     "net.blockListNew": { argTypes: [DYN], result: DYN },
     "net.isBlockList": { argTypes: [DYN], result: BOOL },
     "net.blockListPrivateRanges": { argTypes: [], result: DYN },
+    /** net.BoundSocket: construction validates its options and binds;
+     * server.listen(bound[, cb]) adopts the bound descriptor. */
+    "net.boundSocketNew": { argTypes: [DYN], result: DYN },
+    "net.isBoundSocket": { argTypes: [DYN], result: BOOL },
+    "net.listenBound": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.listenBoundCb": {
+      argTypes: [NETSERVER_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+    /** server[Symbol.asyncDispose](): a void promise that fulfills at
+     * 'close' (at once for a server that never listened). */
+    "net.serverAsyncDispose": {
+      argTypes: [NETSERVER_T],
+      result: { kind: "promise", inner: VOID },
+    },
     "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
     /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out

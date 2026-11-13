@@ -246,6 +246,7 @@ import {
   usesStaticReceiver,
 } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
+import { lowerDnsResolverNew } from "./lower-dgram.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import {
@@ -1251,6 +1252,37 @@ const ERROR_CLASS_VALUES: ReadonlySet<string> = new Set([
   "%URIError",
 ]);
 
+/**
+ * `RUNTIME_ERROR_PREFIX_FIELDS` mirrors scr_error.h's `ScrError` field for
+ * field (after its `rc` and `vt` header), because a subclass's struct puts
+ * its own fields right after that prefix: a header field missing here hands
+ * its bytes to the subclass's first field. */
+export const RUNTIME_ERROR_PREFIX_FIELDS: readonly { name: string; type: IrType }[] = [
+  { name: "name", type: STRING },
+  { name: "message", type: STRING },
+  { name: "%code", type: STRING },
+  { name: "%cause", type: DYN },
+  { name: "%causeEnumerable", type: BOOL },
+  { name: "%messagePresent", type: BOOL },
+  { name: "%messageEnumerable", type: BOOL },
+  { name: "%namePresent", type: BOOL },
+  { name: "%nameEnumerable", type: BOOL },
+  { name: "%stackFrames", type: STRING },
+  { name: "%stack", type: STRING },
+  { name: "%systemErrno", type: F64 },
+  { name: "%systemCall", type: STRING },
+  { name: "%systemPath", type: STRING },
+  { name: "%systemDest", type: STRING },
+  { name: "%systemMessage", type: STRING },
+  { name: "%systemCode", type: STRING },
+  { name: "%nativePlain", type: BOOL },
+  { name: "%errnoOrder", type: BOOL },
+  // scr_error.h's own `errno` that reads undefined (a DNSException). The
+  // layout must mirror the header exactly: a subclass's first field lands
+  // on this byte, so a bool field would otherwise set it.
+  { name: "%errnoUndefined", type: BOOL },
+];
+
 /** The builtin Error hierarchy
  * as eagerly-registered ClassInfos: mapType names them the moment a lib
  * Error type appears, so the infos must exist before any lowering. They
@@ -1276,27 +1308,7 @@ export function registerBuiltinErrorClasses(lowerer: Lowerer): void {
         // READ has its own `string | undefined` lowering (error.code),
         // never a plain-string field access. `%cause` is the following
         // owned dyn slot; NULL means absent, dyn undefined means present.
-        fields: [
-          { name: "name", type: STRING },
-          { name: "message", type: STRING },
-          { name: "%code", type: STRING },
-          { name: "%cause", type: DYN },
-          { name: "%causeEnumerable", type: BOOL },
-          { name: "%messagePresent", type: BOOL },
-          { name: "%messageEnumerable", type: BOOL },
-          { name: "%namePresent", type: BOOL },
-          { name: "%nameEnumerable", type: BOOL },
-          { name: "%stackFrames", type: STRING },
-          { name: "%stack", type: STRING },
-          { name: "%systemErrno", type: F64 },
-          { name: "%systemCall", type: STRING },
-          { name: "%systemPath", type: STRING },
-          { name: "%systemDest", type: STRING },
-          { name: "%systemMessage", type: STRING },
-          { name: "%systemCode", type: STRING },
-          { name: "%nativePlain", type: BOOL },
-          { name: "%errnoOrder", type: BOOL },
-        ],
+        fields: [...RUNTIME_ERROR_PREFIX_FIELDS],
         loc,
       },
       fields: new Map([
@@ -12136,6 +12148,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
+  // the module's Resolver class builds a stub-resolver handle value.
+  {
+    const resolver = lowerDnsResolverNew(lowerer, expr);
+    if (resolver) return resolver;
   }
   // `new url.URL(input)` / `new url.URLSearchParams(init?)`: the node:url
   // member names the same class the named import does, so both take the

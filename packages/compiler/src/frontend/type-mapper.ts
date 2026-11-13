@@ -4878,12 +4878,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
-  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
-  // methods dispatch through the handle.
+  // node:net's SocketAddress, BlockList and BoundSocket (scr_net.c) and
+  // node:util's MIMEType and MIMEParams (scr_mime.c): native handles whose
+  // getters and methods dispatch through the handle.
   if (
     ((psym !== undefined && psymName === "SocketAddress") ||
       (psym !== undefined && psymName === "BlockList") ||
+      (psym !== undefined && psymName === "BoundSocket") ||
       (psym !== undefined && psymName === "MIMEType") ||
       (psym !== undefined && psymName === "MIMEParams")) &&
     psym.declarations.some(
@@ -5708,6 +5709,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "dgramSocket" };
+  }
+  // dns.Resolver / dns/promises.Resolver: one stub-resolver handle, a
+  // checked-dynamic value whose methods are dyn calls (scr_dns_resolve.c).
+  // Each module declares its own class, so the ambient module names it.
+  if (
+    psym !== undefined &&
+    psymName === "Resolver" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "dns") || isDeclaredInAmbientModule(d, "dns/promises")),
+    )
+  ) {
+    return DYN;
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:

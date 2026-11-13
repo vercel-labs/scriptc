@@ -390,6 +390,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
+  "net.sockSetEncodingDyn",
+  // setKeepAlive's positional coercions and its object form run ToNumber
+  // (~~), which calls a value's valueOf/toString.
+  "net.sockSetKeepAlive",
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
@@ -1260,8 +1264,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
-  "net.connectOptsChk",
+  "net.connectDyn",
+  "net.connectDynCb",
   "net.setAutoSelTimeout",
+  "net.setDefaultAutoSel",
   "error.argTypeThrow",
   "error.propTypeThrow",
   "array.foreignThrow",
@@ -1320,6 +1326,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.promisesLookup",
   "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
+  // The stub resolver's checks (ERR_INVALID_ARG_TYPE/VALUE for a name,
+  // callback, options or rrtype; ERR_INVALID_IP_ADDRESS and
+  // ERR_SOCKET_BAD_PORT for setServers' entries; ERR_OUT_OF_RANGE for a
+  // Resolver's options), and reverse's synchronous EINVAL for an address
+  // c-ares cannot parse.
+  "dns.resolveChk",
+  "dns.resolvePromise",
+  "dns.resolveRrChk",
+  "dns.resolveRrPromise",
+  "dns.resolverNew",
+  "dns.setServers",
+  "dns.promisesSetServers",
   "net.connect",
   "net.connectCb",
   "net.connectPath",
@@ -1345,9 +1363,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // before it binds, so a 'newListener' handler can throw out of the call
   // and the server does not listen.
   "net.listenCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen(port) and listen(path) on a server that is already listening
+  // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
+  // catchable), so every listen entry point can leave an exception.
+  "net.listen",
+  "net.listenDyn",
+  "net.listenPath",
+  "net.listenOpts",
+  "net.listenOptsReusePort",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",
@@ -1363,6 +1391,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",
+  // BoundSocket's option checks and bind errors, and listen(bound)'s
+  // already-listening and already-adopted errors (Node throws both
+  // synchronously).
+  "net.boundSocketNew",
+  "net.listenBound",
+  "net.listenBoundCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
@@ -1564,7 +1598,6 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodChk",
   "fs.readChk",
   "fs.streamOptsChk",
-  "net.connectOptsChk",
   "tls.caCertsChk",
   "sea.getAsset",
   "sea.getRawAsset",

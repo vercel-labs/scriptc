@@ -620,6 +620,26 @@ function cleanupCall(
       async: false,
     };
   }
+  if (value.type.kind === "netServer") {
+    /* Server.prototype defines only [Symbol.asyncDispose]: closing waits
+     * for 'close', and a server that never listened resolves at once. */
+    if (!awaited)
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        "synchronous 'using' with an async-only net.Server (use 'await using')",
+      );
+    return {
+      call: {
+        kind: "libCall",
+        fn: "net.serverAsyncDispose",
+        args: [value],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      },
+      async: true,
+    };
+  }
   if (value.type.kind === "child") {
     /* ChildProcess[Symbol.dispose]: SIGTERM only while `killed` is false,
      * and the method answers nothing. */

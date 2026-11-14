@@ -503,6 +503,13 @@ typedef struct ScrChildIslandOps {
   /* ChildProcess.stdio's length on the island's own object (3, or 4 for a
    * fork's IPC slot): read from the object's array, never synthesized. */
   double (*stdio_len)(void *island);
+  /* ChildProcess.stdio's one array per child, as the compiler's cache keeps
+   * it: the island's handle answers whether it stored one, that array (+1)
+   * once it did, and the store itself (retains). The island's own object
+   * keeps Node's array; this is the compiled program's view of it. */
+  bool (*stdio_cached)(void *island);
+  ScrArr *(*stdio_array)(void *island);                /* +1, or NULL */
+  void (*stdio_store)(void *island, ScrArr *array);    /* retains */
 } ScrChildIslandOps;
 /* Defined by the SCR_NODE_ISLANDS build of scr_child.c; set with the first
  * island child a program adopts. */

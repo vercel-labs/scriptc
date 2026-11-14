@@ -12,8 +12,9 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../../../ir/ir.js";
-import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { resultIsDiscarded } from "../call-position.js";
+import { sideEffectFreeOptionValue } from "../surfaces.js";
 import { processHasIpc } from "./process.js";
 
 /** Method calls on ChildProcess receivers: `child.on("exit"|"error", cb)`
@@ -87,7 +88,13 @@ export function ipcDisconnectListener(lowerer: Lowerer, node: ts.Expression): Ir
  * own argument shuffling decides it. A sendHandle has no lowering (the
  * child side would need the transferred socket), so only a nullish one is
  * accepted; `options.keepOpen` is consulted only when a handle is sent, so
- * a literal options record is accepted and has no effect without one. */
+ * a literal options record is accepted and has no effect without one.
+ *
+ * The accepted sendHandle and options values are still EXPRESSIONS Node
+ * evaluates — in argument order, before the callback — so a call or a
+ * `keepOpen` value with side effects keeps them. The message is evaluated
+ * first, then the dropped slots, and the callback last, as Node's own
+ * left-to-right argument evaluation does. */
 export function ipcSendArguments(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -131,6 +138,8 @@ export function ipcSendArguments(
     const nullish =
       type?.kind === "nullT" ||
       type?.kind === "undefinedT" ||
+      // `void e` answers undefined at run time.
+      type?.kind === "void" ||
       (type?.kind === "union" &&
         (lowerer.unions.get(type.unionId)?.arms ?? []).every(
           (arm) => arm.kind === "nullT" || arm.kind === "undefinedT",
@@ -143,12 +152,14 @@ export function ipcSendArguments(
       );
     }
   }
-  if (options !== undefined) {
-    // An explicit nullish options value is an absent one, as in Node.
-    const optionType = lowerer.mapTypeOf(lowerer.typeOf(options));
-    if (optionType?.kind === "nullT" || optionType?.kind === "undefinedT") options = undefined;
-  }
-  if (options !== undefined) {
+  // An explicit nullish options value is an absent one, as in Node. Its
+  // expression is still evaluated (see `drop` below).
+  const optionType = options === undefined ? undefined : lowerer.mapTypeOf(lowerer.typeOf(options));
+  const optionsNullish =
+    optionType?.kind === "nullT" ||
+    optionType?.kind === "undefinedT" ||
+    optionType?.kind === "void";
+  if (options !== undefined && !optionsNullish) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
         "send with a non-literal options value",
@@ -170,8 +181,58 @@ export function ipcSendArguments(
       }
     }
   }
+  // The slots Node evaluates but this lowering does not send: a nullish
+  // sendHandle and the `keepOpen` values of a literal options record. Their
+  // expressions run in argument order (after the message, before the
+  // callback), so their side effects are kept even though the values are
+  // discarded.
+  const dropped: ts.Expression[] = [];
+  const drop = (node: ts.Expression): void => {
+    let value = node;
+    while (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertion(value)
+    )
+      value = value.expression;
+    // `void e` is the nullish value undefined after evaluating `e`. Its
+    // operand is what runs, and in statement position it can be lowered as
+    // itself; the void wrapper only fences in value position.
+    if (ts.isVoidExpression(value)) {
+      if (!sideEffectFreeOptionValue(value.expression)) dropped.push(value.expression);
+      return;
+    }
+    if (!sideEffectFreeOptionValue(value)) dropped.push(node);
+  };
+  if (sendHandle !== undefined) drop(sendHandle);
+  if (options !== undefined && optionsNullish) drop(options);
+  if (options !== undefined && !optionsNullish && ts.isObjectLiteralExpression(options)) {
+    for (const property of options.properties.nodes) {
+      if (ts.isPropertyAssignment(property)) drop(property.initializer);
+    }
+  }
+  const message = ipcJsonMessage(lowerer, args[0]!, loc);
+  const effects: IrStmt[] = dropped.map((node) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(node),
+    loc: locOf(node),
+  }));
   const callback = callbackNode === undefined ? null : ipcSendCallback(lowerer, callbackNode);
-  return { json: ipcJsonMessage(lowerer, args[0]!, loc), callback };
+  if (effects.length === 0) return { json: message, callback };
+  // The message is a value of the call's own argument list, so it is
+  // evaluated before the dropped slots; materializing it keeps that order
+  // when the effects move into a sequence.
+  const messageLocal = lowerer.declareHiddenLocal("%sendMessage", STRING);
+  return {
+    json: {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: messageLocal.id, init: message, loc }, ...effects],
+      result: varRef(messageLocal.id, STRING, loc),
+      type: STRING,
+      loc,
+    },
+    callback,
+  };
 }
 
 export function ipcSendCallback(lowerer: Lowerer, node: ts.Expression): IrExpr {

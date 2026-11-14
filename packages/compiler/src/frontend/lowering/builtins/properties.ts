@@ -319,10 +319,14 @@ export function lowerBuiltinExtraProperty(
       mapped.elem.kind !== "union" ||
       (slotArm(0) === null && slotArm(1) === null)
     ) {
-      lowerer.unsupported(
-        "SC1090",
+      // @types/node's five-tuple declaration has no array form, and neither
+      // does a checked-dynamic stream slot: the member is refused by name,
+      // as every unlowered @types/node surface is, and `.length` on it
+      // must not fold to the declared arity.
+      lowerer.noLowering(
+        "ChildProcess.stdio",
         expr,
-        "child.stdio needs the shipped declarations' (Writable | Readable | null)[] type; @types/node's five-tuple declaration and checked-dynamic stream slots have no array form",
+        "child.stdio is lowered for the shipped declarations' (Writable | Readable | null)[]; @types/node's five-tuple declaration and checked-dynamic stream slots have no array form",
       );
     }
     // One array per child, as Node's ChildProcess keeps: the first read

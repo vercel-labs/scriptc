@@ -9701,13 +9701,18 @@ double scr_child_stdio_len(ScrChild *c) {
  * one: the compiler builds it on the first read and stores it here, and
  * every later read answers that array. The cache owns a reference; the
  * child's release drops it with the child. */
-bool scr_child_stdio_cached(ScrChild *c) { return c->stdio_array != NULL; }
+bool scr_child_stdio_cached(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_cached(c->island));
+  return c->stdio_array != NULL;
+}
 
 ScrArr *scr_child_stdio_cached_array(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_array(c->island));
   return c->stdio_array != NULL ? scr_arr_retain(c->stdio_array) : NULL;
 }
 
 void scr_child_stdio_store(ScrChild *c, ScrArr *array) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->stdio_store(c->island, array); return);
   if (c->stdio_array == NULL) c->stdio_array = scr_arr_retain(array);
 }
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {

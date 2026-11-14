@@ -5068,7 +5068,7 @@
       "kind": "stdlib",
       "name": "RequestInit.cache",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; conversion: WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode); differential evidence: fixture:static-request"
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode); no-store and reload send Pragma: no-cache and Cache-Control: no-cache, no-cache sends Cache-Control: max-age=0, and a default-mode request with a conditional header revalidates like no-store; differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.fetch.request-init.credentials",

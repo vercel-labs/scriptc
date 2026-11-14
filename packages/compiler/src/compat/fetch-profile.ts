@@ -215,7 +215,7 @@ function buildFetchCompatProfile() {
         id: "stdlib.fetch.request-init.cache",
         name: "RequestInit.cache",
         conversion:
-          "WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode)",
+          "WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode); no-store and reload send Pragma: no-cache and Cache-Control: no-cache, no-cache sends Cache-Control: max-age=0, and a default-mode request with a conditional header revalidates like no-store",
         evidence: [fixture("static-request")],
       },
       {

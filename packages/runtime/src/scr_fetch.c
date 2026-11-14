@@ -7141,6 +7141,7 @@ ScrPromise *scr_fetch_input(ScrDyn *input, ScrDyn *init) {
     scr_dyn_obj_set(dictionary, "headers", 7, scr_dyn_new_handle(r->payload->headers, SCR_DYNH_FETCH_HEADERS));
     scr_dyn_obj_set(dictionary, "signal", 6, scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL));
     scr_dyn_obj_set(dictionary, "redirect", 8, scr_dyn_new_str(r->redirect));
+    scr_dyn_obj_set(dictionary, "cache", 5, scr_dyn_new_str(r->cache));
     if (!r->payload->null_body) {
       scr_dyn_obj_set(dictionary, "body", 4, scr_dyn_new_handle(r->payload->body, SCR_DYNH_WEB_STREAM));
       ScrStr *half = scr_str_new("half", 4); scr_dyn_obj_set(dictionary, "duplex", 6, scr_dyn_new_str(half)); scr_str_release(half);
@@ -7289,7 +7290,11 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
   /* fetch constructs a Request from its input and init, so cache and
    * credentials convert (and only-if-cached pairs with mode) before the
-   * transport starts; a rejected value rejects the returned promise. */
+   * transport starts; a rejected value rejects the returned promise. The
+   * cache mode also shapes the request headers below. */
+  bool cache_force_revalidate = false;
+  bool cache_no_cache = false;
+  bool cache_default = false;
   {
     ScrStr *cache_text =
         sf_request_init_string_enum(init, "cache", 5, sf_cache_values, 6,
@@ -7303,6 +7308,10 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
       scr_str_release(cache_text);
       return sf_reject_now(promise, "fetch failed");
     }
+    cache_force_revalidate = sf_name(cache_text->data, cache_text->len, "no-store") ||
+                             sf_name(cache_text->data, cache_text->len, "reload");
+    cache_no_cache = sf_name(cache_text->data, cache_text->len, "no-cache");
+    cache_default = sf_name(cache_text->data, cache_text->len, "default");
     bool invalid = sf_only_if_cached_needs_same_origin(init, cache_text);
     scr_str_release(cache_text);
     scr_str_release(credentials_text);
@@ -7442,6 +7451,21 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     scr_str_release(web_type);
 #endif
     return sf_reject_now(promise, "fetch failed");
+  }
+  /* The Fetch standard's HTTP-network-or-cache fetch headers: no-store and
+   * reload ask for Pragma: no-cache and Cache-Control: no-cache, no-cache
+   * asks for Cache-Control: max-age=0, and a default-mode request carrying
+   * a conditional header revalidates like no-store. A header the program
+   * set itself is kept. */
+  if (cache_default &&
+      (sf_pairs_have(headers, "if-modified-since") || sf_pairs_have(headers, "if-none-match") ||
+       sf_pairs_have(headers, "if-unmodified-since") || sf_pairs_have(headers, "if-match")))
+    cache_force_revalidate = true;
+  if (cache_force_revalidate && !sf_pairs_have(headers, "pragma"))
+    sf_push_header_text(headers, "pragma", "no-cache", 8);
+  if (!sf_pairs_have(headers, "cache-control")) {
+    if (cache_force_revalidate) sf_push_header_text(headers, "cache-control", "no-cache", 8);
+    else if (cache_no_cache) sf_push_header_text(headers, "cache-control", "max-age=0", 9);
   }
 #ifdef SCR_WEB_BODIES
   if (web_type) {

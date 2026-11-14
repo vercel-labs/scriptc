@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cycle-typeof-binding/lib.js",
+  "<repo>/tests/corpus/cycle-typeof-binding/dom.ts",
+  "<repo>/tests/corpus/cycle-typeof-binding/main.ts"
+ ],
+ "diags": []
+}

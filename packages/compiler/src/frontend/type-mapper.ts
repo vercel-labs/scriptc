@@ -121,6 +121,20 @@ export function jsOpenObjectType(
     present[0]!.kind === "bytes"
   )
     return DYN;
+  // A Map or Set parameter whose type arguments are all `any` (a bare
+  // JSDoc `{Map}` or `{Set}`, `{Set<*>}`) accepts a collection of any
+  // element types, and Node passes the caller's collection itself: keep
+  // its runtime storage at the boundary, like an array parameter's.
+  if (
+    parameter &&
+    !parameter.dotDotDotToken &&
+    present?.length === 1 &&
+    ((present[0]!.kind === "map" &&
+      present[0]!.key.kind === "dyn" &&
+      present[0]!.value.kind === "dyn") ||
+      (present[0]!.kind === "set" && present[0]!.elem.kind === "dyn"))
+  )
+    return DYN;
   // An unannotated JavaScript parameter's object default is a fallback,
   // not a closed class contract. Published code routinely passes another
   // implementation of the same protocol through a boxed callable.

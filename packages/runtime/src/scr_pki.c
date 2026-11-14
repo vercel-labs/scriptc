@@ -4571,10 +4571,15 @@ static bool sp_rsa_prepare(const ScrDyn *key_arg, const ScrDyn *buffer, int oper
     }
   }
 
-  const ScrDyn *padding = options ? sp_opt(plain, "padding") : scr_dyn_undefined();
-  const ScrDyn *oaep_hash = options ? sp_opt(plain, "oaepHash") : scr_dyn_undefined();
-  const ScrDyn *mgf1_hash = options ? sp_opt(plain, "mgf1Hash") : scr_dyn_undefined();
-  const ScrDyn *oaep_label = options ? sp_opt(plain, "oaepLabel") : scr_dyn_undefined();
+  /* Node destructures the options before it converts `padding`, and that
+     conversion can run a caller-supplied valueOf, which may delete any of
+     these members from `plain`. Hold our own reference to each value so
+     the conversion cannot free one that is still used below. */
+  ScrDyn *padding = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "padding") : scr_dyn_undefined()));
+  ScrDyn *oaep_hash = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "oaepHash") : scr_dyn_undefined()));
+  ScrDyn *mgf1_hash = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "mgf1Hash") : scr_dyn_undefined()));
+  ScrDyn *oaep_label = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "oaepLabel") : scr_dyn_undefined()));
+  ScrDyn *encoding_hold = scr_dyn_retain((ScrDyn *)encoding);
   bool ok = sp_rsa_padding_of(padding, op->padding, &op->padding);
   /* Node validates the option strings, and converts the label with the
      key's encoding, before it looks at the buffer. */
@@ -4587,14 +4592,14 @@ static bool sp_rsa_prepare(const ScrDyn *key_arg, const ScrDyn *buffer, int oper
     ok = false;
   }
   if (ok && !sp_absent(oaep_label)) {
-    op->label = sp_source_bytes(oaep_label, encoding);
+    op->label = sp_source_bytes(oaep_label, encoding_hold);
     if (!op->label) {
       if (!scr_exc_pending()) scr_dyn_arg_type_fail("key.oaepLabel", sp_rsa_buffer_types, oaep_label);
       ok = false;
     }
   }
   if (ok) {
-    *data = sp_source_bytes(buffer, encoding);
+    *data = sp_source_bytes(buffer, encoding_hold);
     if (!*data) {
       if (!scr_exc_pending()) scr_dyn_arg_type_fail("buffer", sp_rsa_buffer_types, buffer);
       ok = false;
@@ -4625,6 +4630,11 @@ static bool sp_rsa_prepare(const ScrDyn *key_arg, const ScrDyn *buffer, int oper
   } else if (ok) {
     op->mgf1 = op->md;
   }
+  scr_dyn_release(padding);
+  scr_dyn_release(oaep_hash);
+  scr_dyn_release(mgf1_hash);
+  scr_dyn_release(oaep_label);
+  scr_dyn_release(encoding_hold);
   scr_dyn_release(plain);
   if (!ok) {
     if (*data) scr_bytes_release(*data);

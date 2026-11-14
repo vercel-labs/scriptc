@@ -188,6 +188,11 @@ struct SfHeaders {
    * names, trimmed valid UTF-8 values, one combined pair per name except
    * set-cookie. Headers built from wire lines are not (duplicates stay). */
   bool canonical;
+  /* The own-property table (+1), adopted from scr_dyn_handle_props.c and
+   * traced with the native object, so a property that refers back to this
+   * Headers is a cycle the collector can reclaim. NULL until the first
+   * property write. */
+  ScrDyn *props;
 };
 
 struct SfResponse {
@@ -216,6 +221,8 @@ struct SfResponse {
    * -2 for a stream. */
   double light_length;
   ScrArr *light_record;
+  /* The own-property table (+1), adopted and traced (see SfHeaders.props). */
+  ScrDyn *props;
 };
 
 #ifndef SCR_FETCH_SIGNAL_ONLY
@@ -2879,9 +2886,43 @@ static ScrStr *sf_location_to_utf8(const ScrStr *raw) {
   return out;
 }
 
+/* The native characters of a fetch class and the own-property table it
+ * adopted are one node of the cycle graph: the table's references are
+ * edges the collector follows, so an expando that names its own handle
+ * (directly, through an object, or through a closure) is reclaimed with
+ * the handle instead of keeping it alive until the thread exits. The
+ * collector frees the traced table itself; the native release path
+ * releases it (gcfree runs only for a collected node). */
+static void sf_headers_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  SfHeaders *h = ptr;
+  if (h->props) visit(h->props, ctx);
+}
+
+static void sf_headers_gcfree(void *ptr) {
+  SfHeaders *h = ptr;
+  sf_notify_released(h);
+  scr_arr_release(h->pairs);
+  if (h->sorted) scr_arr_release(h->sorted);
+  scr_cyc_free(h);
+}
+
+static void sf_headers_destroy(void *ptr) {
+  SfHeaders *h = ptr;
+  scr_dyn_release(h->props);
+  h->props = NULL;
+  sf_headers_gcfree(h);
+}
+
+static ScrCycType sf_headers_cyc_type = {
+    &sf_headers_trace, &sf_headers_gcfree, SCR_CYC_KIND_NONE, 0};
+
+/* ScrDynHandleOps.adopt_props: the table (+1) is the native object's now. */
+static void sf_headers_adopt_props(void *h, ScrDyn *props) {
+  ((SfHeaders *)h)->props = props;
+}
+
 static SfHeaders *sf_headers_new(ScrArr *pairs, bool immutable) {
-  SfHeaders *h = calloc(1, sizeof *h);
-  if (!h) sf_oom();
+  SfHeaders *h = scr_cyc_alloc(sizeof *h, &sf_headers_cyc_type);
   h->rc = 1;
   h->pairs = pairs;
   h->immutable = immutable;
@@ -2905,11 +2946,13 @@ static SfHeaders *sf_headers_retain(SfHeaders *h) {
 }
 
 static void sf_headers_release(SfHeaders *h) {
-  if (!h || --h->rc > 0) return;
-  sf_notify_released(h);
-  scr_arr_release(h->pairs);
-  if (h->sorted) scr_arr_release(h->sorted);
-  free(h);
+  if (!h) return;
+  if (--h->rc == 0) {
+    scr_cyc_dead(h);
+    scr_rc_destroy(h, sf_headers_destroy);
+  } else {
+    scr_cyc_released(h);
+  }
 }
 
 /* Every change to h->pairs goes through here first. */
@@ -4254,21 +4297,52 @@ static ScrDyn *sf_writer_get(void *ptr, const char *key, size_t len) {
 
 /* ── Response ────────────────────────────────────────────────────── */
 
+static void sf_response_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  SfResponse *r = ptr;
+  if (r->headers) visit(r->headers, ctx);
+  if (r->props) visit(r->props, ctx);
+}
+
+static void sf_response_gcfree(void *ptr) {
+  SfResponse *r = ptr;
+  sf_notify_released(r);
+  scr_weak_dispose_inline(r);
+  sf_stream_release(r->body);
+  scr_str_release(r->url);
+  scr_str_release(r->status_text);
+  scr_arr_release(r->light_record);
+  scr_cyc_free(r);
+}
+
+static void sf_response_destroy(void *ptr) {
+  SfResponse *r = ptr;
+  scr_dyn_release(r->props);
+  r->props = NULL;
+  sf_headers_release(r->headers);
+  r->headers = NULL;
+  sf_response_gcfree(r);
+}
+
+static ScrCycType sf_response_cyc_type = {
+    &sf_response_trace, &sf_response_gcfree, SCR_CYC_KIND_NONE, 0};
+
+static void sf_response_adopt_props(void *h, ScrDyn *props) {
+  ((SfResponse *)h)->props = props;
+}
+
 static SfResponse *sf_response_retain(SfResponse *r) {
   r->rc++;
   return r;
 }
 
 static void sf_response_release(SfResponse *r) {
-  if (!r || --r->rc > 0) return;
-  sf_notify_released(r);
-  scr_weak_dispose_inline(r);
-  sf_stream_release(r->body);
-  sf_headers_release(r->headers);
-  scr_str_release(r->url);
-  scr_str_release(r->status_text);
-  scr_arr_release(r->light_record);
-  free(r);
+  if (!r) return;
+  if (--r->rc == 0) {
+    scr_cyc_dead(r);
+    scr_rc_destroy(r, sf_response_destroy);
+  } else {
+    scr_cyc_released(r);
+  }
 }
 
 static void *sf_response_retain_v(void *p) {
@@ -4348,8 +4422,7 @@ static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
     scr_dyn_release(branches);
   }
 #endif
-  SfResponse *c = calloc(1, sizeof *c);
-  if (!c) sf_oom();
+  SfResponse *c = scr_cyc_alloc(sizeof *c, &sf_response_cyc_type);
   c->rc = 1;
   if (r->null_body) {
     c->body = sf_stream_new_native();
@@ -5927,8 +6000,7 @@ static void sf_on_response(ScrClosure *cb, ScrHttpReq *res) {
   body->response_owner = t;
   t->response_stream = sf_stream_retain(body);
   t->response_socket = scr_http_req_socket(res);
-  SfResponse *response = calloc(1, sizeof *response);
-  if (!response) sf_oom();
+  SfResponse *response = scr_cyc_alloc(sizeof *response, &sf_response_cyc_type);
   response->rc = 1;
   response->body = sf_stream_retain(body);
   response->headers =
@@ -6807,8 +6879,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
     scr_arr_push_ref(header_pairs, scr_str_new(json_type, sizeof json_type));
   }
 
-  SfResponse *response = calloc(1, sizeof *response);
-  if (!response) sf_oom();
+  SfResponse *response = scr_cyc_alloc(sizeof *response, &sf_response_cyc_type);
   response->rc = 1;
   response->body = stream;
   response->headers = sf_headers_new(header_pairs, false);
@@ -6896,20 +6967,53 @@ typedef struct SfRequest {
   ScrStr *cache;
   ScrStr *credentials;
   SfSignal *signal;
+  /* The own-property table (+1), adopted and traced (see SfHeaders.props). */
+  ScrDyn *props;
 } SfRequest;
+
+static void sf_request_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  SfRequest *r = ptr;
+  if (r->payload) visit(r->payload, ctx);
+  if (r->props) visit(r->props, ctx);
+}
+
+static void sf_request_gcfree(void *ptr) {
+  SfRequest *r = ptr;
+  sf_notify_released(r);
+  scr_weak_dispose_inline(r);
+  scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
+  scr_str_release(r->cache); scr_str_release(r->credentials);
+  sf_signal_release(r->signal);
+  scr_cyc_free(r);
+}
+
+static void sf_request_destroy(void *ptr) {
+  SfRequest *r = ptr;
+  scr_dyn_release(r->props);
+  r->props = NULL;
+  sf_response_release(r->payload);
+  r->payload = NULL;
+  sf_request_gcfree(r);
+}
+
+static ScrCycType sf_request_cyc_type = {
+    &sf_request_trace, &sf_request_gcfree, SCR_CYC_KIND_NONE, 0};
+
+static void sf_request_adopt_props(void *h, ScrDyn *props) {
+  ((SfRequest *)h)->props = props;
+}
 
 static void *sf_request_retain_v(void *ptr) {
   SfRequest *r = ptr; r->rc++; return r;
 }
 static void sf_request_release_v(void *ptr) {
   SfRequest *r = ptr;
-  if (--r->rc) return;
-  sf_notify_released(r);
-  scr_weak_dispose_inline(r);
-  sf_response_release(r->payload);
-  scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
-  scr_str_release(r->cache); scr_str_release(r->credentials);
-  sf_signal_release(r->signal); free(r);
+  if (--r->rc == 0) {
+    scr_cyc_dead(r);
+    scr_rc_destroy(r, sf_request_destroy);
+  } else {
+    scr_cyc_released(r);
+  }
 }
 static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   SfRequest *r = ptr;
@@ -6946,8 +7050,7 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
     sf_response_release(payload);
     return NULL;
   }
-  SfRequest *c = calloc(1, sizeof *c);
-  if (!c) sf_oom();
+  SfRequest *c = scr_cyc_alloc(sizeof *c, &sf_request_cyc_type);
   c->rc = 1;
   c->payload = payload;
   c->url = scr_str_retain(r->url);
@@ -7135,7 +7238,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (!redirect_text || !(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
     scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Invalid Request redirect value"); return NULL;
   }
-  SfRequest *r = calloc(1, sizeof *r); if (!r) sf_oom();
+  SfRequest *r = scr_cyc_alloc(sizeof *r, &sf_request_cyc_type);
   r->rc = 1; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
   r->url = scr_url_href(url); scr_url_release(url); r->method = method_text; r->redirect = redirect_text; r->signal = following;
   r->cache = cache_text; r->credentials = credentials_text;
@@ -7847,16 +7950,19 @@ static const ScrDynHandleOps sf_request_ops = {
     "Request", &sf_request_retain_v, &sf_request_release_v,
     &sf_request_invoke, &sf_request_get, &sf_no_set, NULL,
     .methods = sf_body_methods, .attributes = sf_request_attributes,
-    .error_cls = "_Request", .rejected = &sf_rejected};
+    .error_cls = "_Request", .rejected = &sf_rejected,
+    .adopt_props = &sf_request_adopt_props};
 static const ScrDynHandleOps sf_response_ops = {
     "Response", &sf_response_retain_v, &sf_response_release_v,
     &sf_response_invoke, &sf_response_get, &sf_no_set, NULL,
     .methods = sf_body_methods, .attributes = sf_response_attributes,
-    .error_cls = "_Response", .rejected = &sf_rejected};
+    .error_cls = "_Response", .rejected = &sf_rejected,
+    .adopt_props = &sf_response_adopt_props};
 static const ScrDynHandleOps sf_headers_ops = {
     "Headers", &sf_headers_retain_v, &sf_headers_release_v,
     &sf_headers_invoke, &sf_headers_get, &sf_no_set, NULL, NULL,
-    &sf_headers_step, .methods = sf_headers_methods};
+    &sf_headers_step, .methods = sf_headers_methods,
+    .adopt_props = &sf_headers_adopt_props};
 
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,

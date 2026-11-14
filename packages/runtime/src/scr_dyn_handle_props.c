@@ -11,8 +11,10 @@
  * The object carries the handle's integrity state too. The table keeps
  * each handle it describes alive until the thread exits (Date and RegExp
  * frees report no disposal, so the key cannot be weak). The fetch classes
- * are the exception: their units report the release that frees the object,
- * and the table lets the object go with it.
+ * are the exception in both directions: their unit adopts the table into
+ * the native object and traces it, so the cycle collector sees a property
+ * that refers back to its handle and reclaims the two together, and the
+ * unit reports the release that frees the object, which drops the slot.
  *
  * scr_json.c's JavaScript object model build asks this unit, through
  * scr_dyn_handle_props_hooks, about every own-property operation of a
@@ -39,7 +41,9 @@ typedef struct {
   void *ptr;      /* the handle, retained through hp_orig[tag]->retain unless
                      hp_fetch_tag(tag) holds it weakly; NULL = empty slot */
   ScrDynHandleTag tag;
-  ScrDyn *props;  /* owned null-prototype checked object */
+  ScrDyn *props;  /* null-prototype checked object; owned here unless the
+                     native unit adopted it, then borrowed */
+  bool owns_props;
 } ScrHandleProps;
 
 static SCR_TL ScrHandleProps *hp_slots;
@@ -85,7 +89,9 @@ static void hp_cleanup(void) {
   scr_dyn_handle_props_hooks = NULL;
   for (size_t i = 0; i < capacity; i++) {
     if (!slots[i].ptr) continue;
-    scr_dyn_release(slots[i].props);
+    /* A fetch unit adopted its table, and the native object releases it
+     * (the collector frees both when the handle is unreachable). */
+    if (slots[i].owns_props) scr_dyn_release(slots[i].props);
     /* A fetch entry never retained its handle, so there is nothing to
      * release (and the slot's pointer may already name a freed object). */
     if (hp_fetch_tag(slots[i].tag)) continue;
@@ -123,8 +129,10 @@ static ScrDyn *hp_find(const void *ptr) {
 }
 
 /* The released hook (scr_dyn.h): the fetch unit's final release drops the
- * handle's table, so the table never outlives the object it describes. The
- * slot goes before the table is released, because a value in it can release
+ * slot, so it never names a freed object. The fetch unit adopted its table,
+ * so the slot does not own it; the native object released it in the same
+ * teardown (or the collector frees both). A table the slot still owns is
+ * released here after the slot is gone, because a value in it can release
  * another fetch handle. */
 static void hp_released(const void *handle) {
   if (!hp_capacity) return;
@@ -132,8 +140,9 @@ static void hp_released(const void *handle) {
     if (!hp_slots[i].ptr) return;
     if (hp_slots[i].ptr != handle) continue;
     ScrDyn *props = hp_slots[i].props;
+    bool owns = hp_slots[i].owns_props;
     hp_remove_at(i);
-    scr_dyn_release(props);
+    if (owns) scr_dyn_release(props);
     return;
   }
 }
@@ -399,6 +408,11 @@ static ScrDyn *hp_props_of_box(const ScrDyn *handle) {
   hp_slots[i].ptr = hp_fetch_tag(tag) ? h : hp_orig[tag]->retain(h);
   hp_slots[i].tag = tag;
   hp_slots[i].props = props;
+  /* The fetch unit's native object holds and traces the table, so a
+   * property that refers back to its handle is an edge the cycle collector
+   * can follow. Otherwise the slot owns it. */
+  hp_slots[i].owns_props = !(hp_fetch_tag(tag) && hp_orig[tag]->adopt_props);
+  if (!hp_slots[i].owns_props) hp_orig[tag]->adopt_props(h, props);
   hp_count++;
   return props;
 }
@@ -1079,20 +1093,35 @@ void scr_child_on_dyn_hp(ScrChild *child, ScrStr *event, ScrDyn *listener) {
  * each at: an object the graph reaches again would otherwise be walked
  * down every path, and two self-references are 2^64 paths at the depth
  * cap. A later, shallower arrival is still walked, because the depth cap
- * left part of its subtree unsearched the first time. */
+ * left part of its subtree unsearched the first time. Lookups go through
+ * an identity hash: a wide JSON graph visits every element, and a linear
+ * identity scan over the visited set would make the guard quadratic in
+ * its width. */
 #define HP_SEEN_INLINE 32
 typedef struct {
-  const ScrDyn *value;
+  const ScrDyn *value; /* NULL = empty slot */
   int depth;
 } HpSeenItem;
 
 typedef struct {
   HpSeenItem inline_items[HP_SEEN_INLINE];
   HpSeenItem *items;
-  size_t len, cap;
+  size_t len, cap; /* cap: 0 or a power of two, at most half full */
 } HpSeen;
 
+#ifdef SCR_CYC_TESTING
+/* Deterministic regression hook (scr_handle_props_cycle.test.c): the number
+ * of probes hp_seen_add made, which distinguishes the hash lookup's O(1)
+ * from the old linear scan's O(visited). */
+static size_t hp_seen_probes;
+size_t scr_dyn_handle_props_seen_probes(void) { return hp_seen_probes; }
+#define HP_SEEN_PROBE() (hp_seen_probes++)
+#else
+#define HP_SEEN_PROBE() ((void)0)
+#endif
+
 static void hp_seen_init(HpSeen *seen) {
+  memset(seen->inline_items, 0, sizeof seen->inline_items);
   seen->items = seen->inline_items;
   seen->len = 0;
   seen->cap = HP_SEEN_INLINE;
@@ -1102,31 +1131,54 @@ static void hp_seen_free(HpSeen *seen) {
   if (seen->items != seen->inline_items) free(seen->items);
 }
 
+static size_t hp_seen_bucket(const ScrDyn *value, size_t cap) {
+  uintptr_t x = (uintptr_t)value;
+  x ^= x >> 33;
+  x *= UINT64_C(0xff51afd7ed558ccd);
+  x ^= x >> 33;
+  return (size_t)x & (cap - 1);
+}
+
+static void hp_seen_grow(HpSeen *seen) {
+  size_t cap = seen->cap * 2;
+  HpSeenItem *grown = calloc(cap, sizeof *grown);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < seen->cap; i++) {
+    if (!seen->items[i].value) continue;
+    size_t j = hp_seen_bucket(seen->items[i].value, cap);
+    while (grown[j].value) j = (j + 1) & (cap - 1);
+    grown[j] = seen->items[i];
+  }
+  if (seen->items != seen->inline_items) free(seen->items);
+  seen->items = grown;
+  seen->cap = cap;
+}
+
 /* Whether the walk should enter `value` at `depth`. */
 static bool hp_seen_add(HpSeen *seen, const ScrDyn *value, int depth) {
-  for (size_t i = 0; i < seen->len; i++) {
-    if (seen->items[i].value != value) continue;
-    if (seen->items[i].depth <= depth) return false;
-    seen->items[i].depth = depth;
+  if ((seen->len + 1) * 2 > seen->cap) hp_seen_grow(seen);
+  for (size_t i = hp_seen_bucket(value, seen->cap);; i = (i + 1) & (seen->cap - 1)) {
+    HP_SEEN_PROBE();
+    HpSeenItem *item = &seen->items[i];
+    if (!item->value) {
+      item->value = value;
+      item->depth = depth;
+      seen->len++;
+      return true;
+    }
+    if (item->value != value) continue;
+    if (item->depth <= depth) return false;
+    item->depth = depth;
     return true;
   }
-  if (seen->len == seen->cap) {
-    size_t cap = seen->cap * 2;
-    HpSeenItem *grown = malloc(cap * sizeof *grown);
-    if (!grown) scr_trap("scriptc: out of memory\n");
-    memcpy(grown, seen->items, seen->len * sizeof *grown);
-    hp_seen_free(seen);
-    seen->items = grown;
-    seen->cap = cap;
-  }
-  seen->items[seen->len].value = value;
-  seen->items[seen->len].depth = depth;
-  seen->len++;
-  return true;
 }
 
 static bool hp_found(const ScrDyn *value, int depth, HpSeen *seen) {
   if (!value || depth > 64) return false;
+  /* No handle has a property table, so the walk cannot find one. This is
+   * the common case for a fetch-only program, whose serialization guard
+   * must not cost a walk of the value it serializes. */
+  if (hp_count == 0) return false;
   if (value->kind == SCR_DYN_HANDLE) {
     ScrDyn *props = hp_find(value->v.handle.ptr);
     return props && scr_dyn_obj_count(props) > 0;
@@ -1154,6 +1206,7 @@ static void hp_refuse(const ScrStr *consumer) {
 }
 
 ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer) {
+  if (hp_count == 0) return scr_dyn_retain(value);
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = hp_found(value, 0, &seen);
@@ -1163,6 +1216,7 @@ ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer) {
 }
 
 ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer) {
+  if (hp_count == 0) return scr_arr_retain(values);
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = false;
@@ -1178,6 +1232,7 @@ ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer) {
 
 /* The same check for a typed handle argument, boxed only for the check. */
 void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer) {
+  if (hp_count == 0) return;
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = hp_found(value, 0, &seen);

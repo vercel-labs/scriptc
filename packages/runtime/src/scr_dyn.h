@@ -2696,6 +2696,12 @@ typedef struct ScrDynHandleOps {
    * answer). The web stream classes answer Node's symbol getters here;
    * only they set it. */
   ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
+  /* The owning unit takes the own-property table (+1) of a handle whose
+   * properties its native object holds and traces, so the cycle collector
+   * sees the table's references like any other edge of the object (the
+   * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
+   * table. See ScrDynHandlePropsHooks.table. */
+  void (*adopt_props)(void *h, ScrDyn *props);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2705,7 +2711,9 @@ typedef struct ScrDynHandleOps {
  * the handle to the ordinary path. NULL until the program's first
  * handle.propsInstall. */
 typedef struct ScrDynHandlePropsHooks {
-  /* The handle's table (borrowed), or NULL when it has none. */
+  /* The handle's table (borrowed), or NULL when it has none. A table the
+   * owning unit adopted (ScrDynHandleOps.adopt_props) is owned and traced
+   * by that native object; the slot only maps the handle to it. */
   ScrDyn *(*table)(const ScrDyn *handle);
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
@@ -2724,9 +2732,10 @@ typedef struct ScrDynHandlePropsHooks {
   bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
   bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
   /* A handle of a tag whose table does not retain it is being freed: drop
-   * the table now. The owning unit calls it from the release that frees the
-   * object (a fetch Request, Response or Headers list), so the table never
-   * outlives its handle. */
+   * the slot now. The owning unit calls it from the release that frees the
+   * object (a fetch Request, Response or Headers list), so the slot never
+   * names a freed object. A table the unit adopted is released by the
+   * unit itself (the slot does not own it). */
   void (*released)(const void *handle);
   /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
    * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */

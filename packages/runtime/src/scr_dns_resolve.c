@@ -602,22 +602,20 @@ typedef struct ScrDnsqQuery {
 
 static ScrDnsqQuery *scr_dnsq_live; /* doubly linked, in start order */
 
-/* A transaction id from the system CSPRNG, distinct from every other
- * outstanding query's. A counter (a fresh process always starts at the same
- * value) lets an off-path sender predict the answer it has to spoof once it
- * guesses the ephemeral port; c-ares draws random ids for the same reason. */
+/* A transaction id from the system CSPRNG. A counter (a fresh process always
+ * starts at the same value) lets an off-path sender predict the answer it
+ * has to spoof once it guesses the ephemeral port; c-ares draws random ids
+ * for the same reason.
+ *
+ * Only the id's randomness matters, not its uniqueness across queries: every
+ * query owns a socket — scr_dnsq_start_attempt creates one, binds it to an
+ * ephemeral port and connects it to the server — and its responses are read
+ * from that descriptor and matched against that query's own id. A packet on
+ * another query's socket is never compared with this one, so two queries may
+ * carry the same id without ambiguity — and allocation is a single draw that
+ * always finishes, however many queries are outstanding. */
 static void scr_dnsq_pick_id(ScrDnsqQuery *q) {
-  for (;;) {
-    arc4random_buf(q->id, sizeof q->id);
-    bool clash = false;
-    for (const ScrDnsqQuery *o = scr_dnsq_live; o != NULL; o = o->next) {
-      if (o->id[0] == q->id[0] && o->id[1] == q->id[1]) {
-        clash = true;
-        break;
-      }
-    }
-    if (!clash) return;
-  }
+  arc4random_buf(q->id, sizeof q->id);
 }
 
 enum {

@@ -2295,6 +2295,11 @@ bool scr_dyn_truthy(const ScrDyn *d);
 /* Math.max/Math.min(...src) over an untyped iterable; `what` names the
  * source in V8's null/undefined spread TypeError. NaN with it pending. */
 double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what);
+/* Math.max/Math.min/Math.hypot over a call's argument pack, whose spread
+ * operands only the run time knows: every value converts through ToNumber
+ * once, in pack order; mode 0 max, 1 min, 2 hypot. NaN with an exception
+ * pending when a conversion throws. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode);
 int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee);
 /* JS String() over a dyn value (arrays join, [object Object], the error
  * encoding renders "name: message"); borrowed, result +1, never throws. */

@@ -1,19 +1,10 @@
-// A class index signature `[key: string]: any` (or `unknown`) compiles: a
-// name the class does not declare is an own property of the instance
-// (corpus 9361, 9362). What stays refused, by name:
-// a signature whose value type has no `undefined` for an absent property,
-class Labels {
-  title = "t";
-  [key: string]: string;
-}
-// a signature keyed by number,
-class Slots {
-  size = 0;
-  [index: number]: unknown;
-}
-// and instance fields in a subclass of a class with a signature: Node
-// creates them after the properties the base constructor added, and a
-// compiled instance lists declared fields first.
+// A class index signature with a `string` or `number` key compiles: a name
+// the class does not declare is an own property of the instance, and a
+// typed value reads undefined when it is missing (corpus 9361, 9362,
+// class-index-signature-values). What stays refused, by name: instance
+// fields in a subclass of a class with a signature, since Node creates them
+// after the properties the base constructor added, and a compiled instance
+// lists declared fields first.
 class Open {
   id = 1;
   [key: string]: any;
@@ -24,8 +15,6 @@ class Open {
 class Closed extends Open {
   own = 2;
 }
-console.log(new Labels().title);
-console.log(new Slots().size);
 console.log(new Closed().own);
 
 // A write through the signature that can run before the declared fields all

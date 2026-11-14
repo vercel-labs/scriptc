@@ -735,7 +735,22 @@ export function ipcMessageThunkFor(
         `invoke:`,
       );
     }
+    // The message is owned by the callee after this conversion.
     passed = `, ${ty} %value`;
+  }
+  // Node's second listener parameter, the handle sent with the message:
+  // handle transfer is not lowered, so it is always undefined. Only a
+  // listener that declares it receives the value (the callee owns its
+  // parameter), and a listener without it reads through the same
+  // two-argument signature.
+  if (cbT.params[1] !== undefined) {
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+    d.push(
+      `  %handleUnit = call ptr @scr_dyn_undefined()`,
+      `  %handle = call ptr @scr_dyn_retain_v(ptr %handleUnit)`,
+    );
+    passed += `, ptr %handle`;
   }
   d.push(
     `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,

@@ -87,11 +87,18 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -166,6 +173,9 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -173,6 +183,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */

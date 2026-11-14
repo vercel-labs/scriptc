@@ -3473,10 +3473,16 @@ export function lowerStrictEquality(
       if (leftDef && rightDef) {
         const leftValues = leftDef.arms.filter((arm) => !isUnitType(arm));
         const rightValues = rightDef.arms.filter((arm) => !isUnitType(arm));
-        const sameValueArms =
-          leftValues.length === rightValues.length &&
-          leftValues.every((arm) => rightValues.some((candidate) => typeEquals(candidate, arm)));
-        if (sameValueArms) {
+        // One side's value arms may be a SUBSET of the other's (a
+        // `Readable | null` against a `Writable | Readable | null`
+        // element read, the way `child.stdio[1] === child.stdout`
+        // compares them): both sides convert into the common union and
+        // the tag comparison is then the identity test. Two disjoint
+        // value-arm sets still fence.
+        const covers = (superset: IrType[], subset: IrType[]): boolean =>
+          subset.every((arm) => superset.some((candidate) => typeEquals(candidate, arm)));
+        const subsetValueArms = covers(leftValues, rightValues) || covers(rightValues, leftValues);
+        if (subsetValueArms) {
           const arms = [...leftDef.arms];
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);

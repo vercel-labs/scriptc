@@ -285,6 +285,14 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
+ * child (whose entry is null), as Node's own stdio array reports. */
+double scr_child_stdio_len(ScrChild *c);
+/* ChildProcess.stdio's one array per child: the compiler builds it on the
+ * first read, stores it here, and answers it (+1) on every later read. */
+bool scr_child_stdio_cached(ScrChild *c);
+ScrArr *scr_child_stdio_cached_array(ScrChild *c); /* +1, or NULL */
+void scr_child_stdio_store(ScrChild *c, ScrArr *array); /* retains */
 /* subprocess.channel: the Control object (+1), undefined when the child
  * has no IPC channel, null once the channel is disconnected. The handle's
  * methods move the channel's keep-alive state, not the child's. */
@@ -492,6 +500,16 @@ typedef struct ScrChildIslandOps {
   void (*bridge_write)(void *island, ScrStream *stream, ScrBytes *chunk,
                        const ScrChildStreamOps *stream_ops);
   void (*bridge_final)(void *island, ScrStream *stream, const ScrChildStreamOps *stream_ops);
+  /* ChildProcess.stdio's length on the island's own object (3, or 4 for a
+   * fork's IPC slot): read from the object's array, never synthesized. */
+  double (*stdio_len)(void *island);
+  /* ChildProcess.stdio's one array per child, as the compiler's cache keeps
+   * it: the island's handle answers whether it stored one, that array (+1)
+   * once it did, and the store itself (retains). The island's own object
+   * keeps Node's array; this is the compiled program's view of it. */
+  bool (*stdio_cached)(void *island);
+  ScrArr *(*stdio_array)(void *island);                /* +1, or NULL */
+  void (*stdio_store)(void *island, ScrArr *array);    /* retains */
 } ScrChildIslandOps;
 /* Defined by the SCR_NODE_ISLANDS build of scr_child.c; set with the first
  * island child a program adopts. */

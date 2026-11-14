@@ -1564,6 +1564,48 @@ console.log(hash("sha256", data, "buffer").length);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("no-types-node: fetch takes a Request and RequestInit cache and credentials on the fallback declarations", async () => {
+  // The fallback RequestInit carries Node's whole dictionary, and fetch
+  // takes a RequestInfo. The three members a vendored loader passes without
+  // @types/node (cache, credentials, priority) compile: cache and
+  // credentials convert and read back as Node reads them, and priority is
+  // accepted and ignored, as Node ignores it.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-fetch-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const request = new Request("data:text/plain,hello", {
+  method: "GET",
+  cache: "no-store",
+  credentials: "include",
+  priority: "high",
+});
+console.log(request.cache, request.credentials, request.mode, request.redirect);
+const response = await fetch(request);
+console.log(await response.text());
+const direct = await fetch("data:text/plain,world", { cache: "force-cache", credentials: "omit" });
+console.log(await direct.text());
+`,
+  );
+  const outDir = outDirFor("bare-fetch");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("no-types-node: the typed stdin stream surface resolves on the fallback declarations", async () => {
   // The paused-mode stream members (readable events, read(size),
   // readableLength, pause/resume/isPaused) are declared only in the

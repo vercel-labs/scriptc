@@ -11489,6 +11489,7 @@
           "tests/corpus/child-execfile-env-timeout.ts",
           "tests/corpus/child-execfile-option-order.ts",
           "tests/corpus/child-execfile-timeout-overflow.ts",
+          "tests/corpus/child-fork-send-arguments/main.ts",
           "tests/corpus/child-kill-signal-case.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-spawn-signal.ts",
@@ -11497,6 +11498,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
           "tests/corpus/child-stdin-pipe-interface.ts",
+          "tests/corpus/child-stdio-array-general-streams.ts",
+          "tests/corpus/child-stdio-array/main.ts",
           "tests/corpus/child-stdio-options/main.ts",
           "tests/corpus/child-stdio-stream-types.ts",
           "tests/corpus/child-symbol-dispose-js.cjs",
@@ -12140,7 +12143,8 @@
         "evidence": "compiler-feature:child_process.subprocess.send",
         "tests": [
           "tests/corpus/2946-child-fork-ipc/main.ts",
-          "tests/corpus/5060-child-fork-exit-after-messages/main.ts"
+          "tests/corpus/5060-child-fork-exit-after-messages/main.ts",
+          "tests/corpus/child-fork-send-arguments/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12515,8 +12519,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:child_process.stdio"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.stdio",
+        "tests": [
+          "tests/corpus/child-stdio-array/main.ts",
+          "tests/corpus/child-stdio-array-general-streams.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -12685,7 +12693,8 @@
           "tests/corpus/2946-child-fork-ipc/main.ts",
           "tests/corpus/5062-child-fork-message-before-eof/main.ts",
           "tests/corpus/6421-process-send-presence-fork/main.ts",
-          "tests/corpus/child-channel-control/main.ts"
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-fork-send-arguments/main.ts"
         ]
       },
       "anchorSource": "exact"

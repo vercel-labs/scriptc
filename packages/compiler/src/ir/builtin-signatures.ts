@@ -387,6 +387,11 @@ function buildLibFnSignatures() {
      * may-throw seed set. */
     "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
     "dyn.mathFold": { argTypes: [DYN, BOOL, STRING], result: F64 },
+    /** Math.max/Math.min/Math.hypot over an argument list whose spread
+     * operands are only known at run time: the values a call's argument
+     * pack holds, each through ToNumber, folded in the pack's order (mode
+     * 0 max, 1 min, 2 hypot). May throw: ToNumber can run valueOf. */
+    "dyn.mathFoldMany": { argTypes: [DYN, F64], result: F64 },
     "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
     "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
     "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
@@ -3629,6 +3634,15 @@ function buildLibFnSignatures() {
       result: CHILD_T,
     },
     "child.connected": { argTypes: [CHILD_T], result: BOOL },
+    /** child.stdio's length: the child's stdio slot count (3, or 4 for a
+     * fork's IPC slot). A plain read of the child's fixed slot count. */
+    "child.stdioLen": { argTypes: [CHILD_T], result: F64 },
+    /** child.stdio's one array per child: the first read stores the built
+     * array (stdioStore) and every read answers it (stdioCached /
+     * stdioArray, whose result is the call site's array type). */
+    "child.stdioCached": { argTypes: [CHILD_T], result: BOOL },
+    "child.stdioArray": { argTypes: [CHILD_T], result: VOID },
+    "child.stdioStore": { argTypes: [CHILD_T, null], result: VOID },
     "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
     "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },

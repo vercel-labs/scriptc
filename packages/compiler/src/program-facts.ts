@@ -807,6 +807,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "only JavaScript adds properties to handles, so a program without a JavaScript file skips the census",
   ),
   scan(
+    "frontend/lowering/inert-reads.ts#bindingNeverWritten",
+    1,
+    "closed-world",
+    "whether one global binding is written after its declaration; it decides only whether a call that builds a class in an argument may read that name ahead of the class's statics",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#propertyMayBeWritten",
+    1,
+    "closed-world",
+    "whether one property of one receiver's type may be written, by name, by a computed key or through reflection; it decides only whether a call that builds a class in an argument may read that property ahead of the class's statics",
+  ),
+  scan(
     "frontend/lowering/js-collection-types.ts#inferProgram",
     1,
     "inference",

@@ -1565,6 +1565,52 @@ static void check_large_blocks_stats(void) {
   assert(used4 - used3 >= (double)(more - big) && used4 <= total4);
   scr_mem_free(d);
 }
+
+#if defined(__linux__)
+#include <sys/mman.h>
+#if defined(MREMAP_FIXED)
+/* The write permission of the mapping that holds address a. */
+static bool writable_at(uintptr_t a) {
+  FILE *maps = fopen("/proc/self/maps", "r");
+  assert(maps);
+  char line[512], perms[8] = "";
+  bool found = false;
+  while (!found && fgets(line, sizeof line, maps)) {
+    unsigned long lo, hi;
+    if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
+    found = a >= lo && a < hi;
+  }
+  fclose(maps);
+  assert(found);
+  return perms[1] == 'w';
+}
+
+/* mremap with MREMAP_FIXED fails when its source range spans more than one
+ * VMA, and on Linux it unmaps the new range before it does. A run whose pages
+ * a mprotect split grows by copying its contents into a run mapped again: the
+ * copy must not fault, and the old range is mapped again as a move leaves
+ * it. */
+static void check_run_move_failure(void) {
+  size_t have = (size_t)5 << 20, n = (size_t)21 << 20; /* two chunks, then six */
+  unsigned char *p = scr_mem_alloc_ref(have);
+  assert(p && in_window(p));
+  size_t run = scr_mem_block_size(p);
+  assert(run >= have);
+  fill(p, run, 0x6b);
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  assert(mprotect(p + page, page, PROT_READ) == 0);
+  unsigned char *q = scr_mem_realloc_ref(p, n);
+  assert(q && q != p && in_window(q));
+  verify(q, run, 0x6b);
+  /* The old range is mapped again, as the success path leaves it. */
+  assert(writable_at((uintptr_t)p + page));
+  assert(p[page] == 0);
+  fill(q, n, 0x27);
+  verify(q, n, 0x27);
+  scr_mem_free(q);
+}
+#endif
+#endif
 #endif
 
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
@@ -1734,6 +1780,11 @@ int main(int argc, char **argv) {
 #if SCR_SMALL_ALLOC
   check_large_blocks();
   check_large_blocks_stats();
+#ifdef __linux__
+#if defined(MREMAP_FIXED)
+  check_run_move_failure();
+#endif
+#endif
 #endif
 #if SCR_SMALL_ALLOC && defined(__linux__)
   check_chunk_map();

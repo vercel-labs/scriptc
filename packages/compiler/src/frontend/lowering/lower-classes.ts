@@ -62,6 +62,7 @@ import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generati
 import * as ts from "../ts7/adapter.js";
 import { extendsElementOf } from "../heritage-elements.js";
 import { staticsEvaluationStatementOf } from "../class-statics-position.js";
+import { inertReadOf } from "./inert-reads.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -7863,7 +7864,7 @@ export function lowerClassExpressionInfo(
       info.staticFields.length > 0 ||
       (info.staticBlocks?.length ?? 0) > 0)
   ) {
-    if (staticsEvaluationStatementOf(expr) === null) {
+    if (staticsEvaluationStatementOf(expr, inertReadOf(lowerer)) === null) {
       lowerer.unsupported(
         "SC1090",
         expr,

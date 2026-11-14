@@ -41,6 +41,7 @@ import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { type IrType } from "../../ir/ir.js";
 import { staticsArmStatementOf, staticsEvaluationStatementOf } from "../class-statics-position.js";
+import { inertReadOf } from "./inert-reads.js";
 import {
   type ClassInfo,
   builtinStreamInfoOf,
@@ -530,8 +531,9 @@ function instantiateMixinCall(
   // instead (staticsInArm). Anything subtler is a named fence, never a
   // reordering.
   if (info.staticFields.length > 0 || (info.staticBlocks?.length ?? 0) > 0) {
-    const holder = staticsEvaluationStatementOf(call);
-    if (!holder && staticsArmStatementOf(call) !== null) {
+    const inert = inertReadOf(lowerer);
+    const holder = staticsEvaluationStatementOf(call, inert);
+    if (!holder && staticsArmStatementOf(call, inert) !== null) {
       if (info.mixinInstance) info.mixinInstance.staticsInArm = true;
       return info;
     }

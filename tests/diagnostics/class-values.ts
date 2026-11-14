@@ -68,6 +68,19 @@ function consume(first: number, second: unknown) {
 }
 console.log(consume(seen, class Writes { static { seen = 7; } }));
 
+// The callee evaluates before every argument: a callee that runs code must
+// run before the class-building argument's declaration-time code.
+function pickConsumer(): (first: number, second: unknown) => string {
+  console.log("callee first");
+  return consume;
+}
+console.log(pickConsumer()(0, class Late { static x = (console.log("statics second"), 1); }));
+class Plain {}
+function Stamped(B: typeof Plain) {
+  return class extends B { static stamp = (console.log("statics second"), 1); };
+}
+console.log(pickConsumer()(0, Stamped(Plain)));
+
 // Construction through a UNION of class values: narrow or annotate first.
 class Left {
   constructor() {}

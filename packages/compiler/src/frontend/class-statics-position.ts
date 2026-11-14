@@ -8,20 +8,30 @@
  * emitted code runs at the same point in the program as JavaScript's.
  *
  * Anything else — a multi-declarator statement whose earlier declarators
- * could observe the statics, an argument behind one that runs code — is a
- * named fence at the call site, never a reordering.
+ * could observe the statics, an argument behind a callee or an argument that
+ * runs code — is a named fence at the call site, never a reordering.
  */
 import * as ts from "./ts7/adapter.js";
 
+/** Whether evaluating a name or property read runs no code and reads nothing
+ * the program writes, so declaration-time code emitted ahead of it cannot
+ * change what it reads or when anything it runs happens
+ * (lowering/inert-reads.ts). */
+export type InertRead = (expression: ts.Expression) => boolean;
+
 /** The top-level statement whose evaluation IS `expression`'s evaluation
  * point, or null. The path may cross only parens, a conditional's test, an
- * argument position whose earlier arguments evaluate nothing observable, a
+ * argument position whose callee and earlier arguments evaluate nothing
+ * observable (`inertRead` judges a name or property read), a
  * class expression's heritage clause, an enclosing class expression's
  * heritage, a sole-declarator top-level variable statement, a top-level
  * assignment, a bare expression statement, or a top-level class
  * declaration's heritage clause. */
-export function staticsEvaluationStatementOf(expression: ts.Node): ts.Statement | null {
-  return evaluationStatementOf(expression, false);
+export function staticsEvaluationStatementOf(
+  expression: ts.Node,
+  inertRead: InertRead,
+): ts.Statement | null {
+  return evaluationStatementOf(expression, false, inertRead);
 }
 
 /** The top-level statement an expression inside a conditional's ARM
@@ -31,12 +41,19 @@ export function staticsEvaluationStatementOf(expression: ts.Node): ts.Statement 
  * the statement, and only when the condition selects its arm, so code tied
  * to its evaluation must lower where the arm lowers instead of at the
  * statement's position. */
-export function staticsArmStatementOf(expression: ts.Node): ts.Statement | null {
-  if (evaluationStatementOf(expression, false) !== null) return null;
-  return evaluationStatementOf(expression, true);
+export function staticsArmStatementOf(
+  expression: ts.Node,
+  inertRead: InertRead,
+): ts.Statement | null {
+  if (evaluationStatementOf(expression, false, inertRead) !== null) return null;
+  return evaluationStatementOf(expression, true, inertRead);
 }
 
-function evaluationStatementOf(expression: ts.Node, crossArms: boolean): ts.Statement | null {
+function evaluationStatementOf(
+  expression: ts.Node,
+  crossArms: boolean,
+  inertRead: InertRead,
+): ts.Statement | null {
   let n: ts.Node = expression;
   for (let p: ts.Node | undefined = n.parent; p !== undefined; n = p, p = p.parent) {
     if (ts.isParenthesizedExpression(p)) continue;
@@ -55,12 +72,19 @@ function evaluationStatementOf(expression: ts.Node, crossArms: boolean): ts.Stat
     // argument is evaluated, and `const C = class extends mixin(Base) {}`
     // where the initializer is.
     if (ts.isClassExpression(p) && ts.isHeritageClause(n)) continue;
-    // An argument position is the enclosing call's statement, so long as no
-    // argument AHEAD of it does anything the enclosing statement could be
-    // observed by (a literal or a name read cannot).
+    // An argument position is the enclosing call's statement, so long as
+    // nothing evaluated AHEAD of it does anything the emitted code could be
+    // observed by. JavaScript evaluates the callee first (`callee()(0,
+    // M(Base))` runs `callee()` before the mixin call), then the earlier
+    // arguments, so both must evaluate nothing observable.
     if (ts.isCallExpression(p)) {
       const index = p.arguments.nodes.findIndex((argument) => argument === n);
-      if (index >= 0 && p.arguments.nodes.slice(0, index).every(evaluatesNothing)) continue;
+      if (
+        index >= 0 &&
+        inertRead(p.expression) &&
+        p.arguments.nodes.slice(0, index).every((argument) => evaluatesNothing(argument, inertRead))
+      )
+        continue;
     }
     if (
       ts.isVariableDeclaration(p) &&
@@ -86,17 +110,19 @@ function evaluationStatementOf(expression: ts.Node, crossArms: boolean): ts.Stat
   return null;
 }
 
-/** An argument that evaluates nothing observable: a literal. A name read is
- * not one — the declaration-time code emitted ahead of the call can assign
- * the binding the name reads (`static { x = 2 }` in the class an earlier
- * argument builds), and the call would then read the new value where
- * JavaScript reads the old one. */
-export function evaluatesNothing(argument: ts.Expression): boolean {
+/** An argument that evaluates nothing observable: a literal, or a name or
+ * property read `inertRead` accepts. Any other name read is not one: the
+ * declaration-time code emitted ahead of the call can assign the binding
+ * the name reads (`static { x = 2 }` in the class an earlier argument
+ * builds), and the call would then read the new value where JavaScript
+ * reads the old one. */
+export function evaluatesNothing(argument: ts.Expression, inertRead: InertRead): boolean {
   return (
     ts.isStringLiteral(argument) ||
     ts.isNumericLiteral(argument) ||
     argument.kind === ts.SyntaxKind.TrueKeyword ||
     argument.kind === ts.SyntaxKind.FalseKeyword ||
-    argument.kind === ts.SyntaxKind.NullKeyword
+    argument.kind === ts.SyntaxKind.NullKeyword ||
+    inertRead(argument)
   );
 }

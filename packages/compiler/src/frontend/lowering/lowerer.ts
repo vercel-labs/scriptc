@@ -6090,6 +6090,7 @@ export class Lowerer {
       checkedTable("pendingClassExprInits", () => this.pendingClassExprInits.length),
       checkedTable("computedClassBases", () => this.computedClassBases.size),
       checkedTable("computedCallableBases", () => this.computedCallableBases.size),
+      checkedTable("computedHeritageArms", () => this.computedHeritageArms.size),
       checkedTable("mixinInstanceByCall", () => this.mixinInstanceByCall.size),
       checkedTable("mixinCollectingCalls", () => this.mixinCollectingCalls.size),
       checkedTable("mixinOrdinals", () => this.mixinOrdinals.size),
@@ -16293,7 +16294,7 @@ export class Lowerer {
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {
       const receiver =
         node.expression.kind === ts.SyntaxKind.ThisKeyword && this.fnStack.length > 0
-          ? this.resolveThis()?.type
+          ? this.peekThis()?.type
           : this.mapTypeOf(this.checker.getTypeAtLocation(node.expression));
       const checkedThis =
         node.expression.kind === ts.SyntaxKind.ThisKeyword &&
@@ -16320,14 +16321,15 @@ export class Lowerer {
         return this.checker.getUnknownType();
       }
     }
-    // A checked JS method receives its actual call-site receiver. Its
-    // declaration's inferred class type must not turn property reads back
-    // into native field loads when the method is borrowed by another object.
+    // A member lowered over a dynamic receiver (a checked JS method, or a
+    // static member lowered for a class value's property table) receives
+    // its actual call-site receiver. Its declaration's inferred class type
+    // must not turn property reads back into native field loads when the
+    // member runs for another class value.
     if (
       node.kind === ts.SyntaxKind.ThisKeyword &&
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       this.fnStack.length > 0 &&
-      this.resolveThis()?.type.kind === "dyn"
+      this.peekThis()?.type.kind === "dyn"
     )
       return this.checker.getUnknownType();
     // Inside an optional-chain body the guarded receiver is typed by its
@@ -20808,6 +20810,18 @@ export class Lowerer {
   readonly pendingClassExprInits: IrStmt[] = [];
   readonly computedClassBases = new Map<string, { value: IrExpr; classInfo: ClassInfo }>();
   readonly computedCallableBases = new Map<ts.ClassLikeDeclaration, IrExpr>();
+  /** The arms a conditional heritage may select from, by the inheriting
+   * class's name: `arms[0]` when the condition holds, `arms[1]` otherwise.
+   * The class lays out as the one class its type names, but `instanceof`
+   * answers must follow the SELECTED class, so the test reads which arm ran
+   * (`condGlobal`, the condition the class statement evaluated once).
+   * `condGlobal` is absent for a heritage the compiler cannot hold to one
+   * selection (a class expression evaluated again per evaluation). Absent
+   * entirely for a heritage that can select only one class. */
+  readonly computedHeritageArms = new Map<
+    string,
+    { arms: readonly [string, string]; condGlobal?: string }
+  >();
   /** Discovery hook: registers a just-collected expression class's member
    * bodies as worklist units (the units map is otherwise built before
    * lowering starts). Null in the emit pass. */
@@ -21607,6 +21621,21 @@ export class Lowerer {
    * their bodies never see an enclosing method's binding). */
   resolveThis(blame?: ts.Node): IrLocal | null {
     return this.resolveKey(undefined, blame);
+  }
+
+  /** The lexical `this` without threading a capture: the current
+   * context's this-param or the nearest enclosing one an arrow shares.
+   * A plain function boundary with no this-param answers null. Type
+   * queries use this form — asking a `this` expression for its type must
+   * not box the binding and add a capture the body never reads (which
+   * also makes an enclosing `this`←closure cycle). */
+  peekThis(): IrLocal | null {
+    for (let depth = this.fnStack.length - 1; depth >= 0; depth--) {
+      const ctx = this.fnStack[depth]!;
+      if (ctx.thisLocal !== null) return ctx.thisLocal;
+      if (ctx.thisBoundary) return null;
+    }
+    return null;
   }
 
   peekLocal(ident: ts.Identifier): IrLocal | null {

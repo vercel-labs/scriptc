@@ -12,7 +12,12 @@ import { helperLoc, strLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { usesStaticReceiver } from "./static-this.js";
 import type { Lowerer } from "./lowerer.js";
-import { lowerClassStaticRead, lowerStaticMethodCall, type ClassInfo } from "./lower-classes.js";
+import {
+  lowerClassStaticRead,
+  lowerStaticMethodCall,
+  privateNameDeclaration,
+  type ClassInfo,
+} from "./lower-classes.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerCallThroughValue } from "./lower-calls.js";
 
@@ -25,23 +30,16 @@ export type StaticPrivateUse = "read" | "write" | "method";
  * scoping resolves it). Null for an instance private, a function-local or
  * generic class, or a class that was not collected. */
 export function staticPrivateOwner(lowerer: Lowerer, priv: ts.PrivateIdentifier): ClassInfo | null {
-  for (let node: ts.Node | undefined = priv.parent; node; node = node.parent) {
-    if (!ts.isClassDeclaration(node) && !ts.isClassExpression(node)) continue;
-    const member = node.members.nodes.find((candidate) => {
-      const name = (candidate as { name?: ts.PropertyName }).name;
-      return name !== undefined && ts.isPrivateIdentifier(name) && name.text === priv.text;
-    });
-    if (!member) continue;
-    const isStatic =
-      ts.canHaveModifiers(member) &&
-      ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
-    if (!isStatic) return null;
-    for (const info of lowerer.classes.values()) {
-      if (info.decl !== node) continue;
-      if (info.localClass || info.generic || info.genericInstance) return null;
-      return info;
-    }
-    return null;
+  const declared = privateNameDeclaration(priv);
+  if (!declared) return null;
+  const isStatic =
+    ts.canHaveModifiers(declared.member) &&
+    ts.getModifiers(declared.member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
+  if (!isStatic) return null;
+  for (const info of lowerer.classes.values()) {
+    if (info.decl !== declared.cls) continue;
+    if (info.localClass || info.generic || info.genericInstance) return null;
+    return info;
   }
   return null;
 }
@@ -56,6 +54,41 @@ function brandMessage(info: ClassInfo, use: StaticPrivateUse, name: string): str
   // V8 names the class by its own identifier; an anonymous class
   // expression prints ".".
   return `Receiver must be class ${info.decl?.name?.text ?? "."}`;
+}
+
+function typeErrorThrow(message: string, loc: SrcLoc): IrStmt {
+  return {
+    kind: "throw",
+    value: {
+      kind: "libCall",
+      fn: "error.new",
+      args: [strLit(message, loc)],
+      type: { kind: "object", className: "%TypeError" },
+      loc,
+    },
+    loc,
+  };
+}
+
+/** A field read or write on a nullish receiver fails as a property access
+ * does in V8 (`Cannot read properties of null (reading '#x')`), before the
+ * brand; a method use keeps the brand's wording for every receiver. */
+function nullishReceiverThrows(
+  use: StaticPrivateUse,
+  name: string,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (use === "method") return [];
+  const verb = use === "read" ? "reading" : "setting";
+  const action = use === "read" ? "Cannot read properties" : "Cannot set properties";
+  return (["undefined", "null"] as const).map((unit) => ({
+    kind: "if",
+    cond: { kind: "dynTest", test: unit, value, type: BOOL, loc },
+    then: [typeErrorThrow(`${action} of ${unit} (${verb} '${name}')`, loc)],
+    else_: null,
+    loc,
+  }));
 }
 
 /** The brand check of a static private: JavaScript installs static private
@@ -94,17 +127,8 @@ export function staticPrivateBrandCheck(
             loc: at,
           },
           then: [
-            {
-              kind: "throw",
-              value: {
-                kind: "libCall",
-                fn: "error.new",
-                args: [strLit(brandMessage(info, use, name), at)],
-                type: { kind: "object", className: "%TypeError" },
-                loc: at,
-              },
-              loc: at,
-            },
+            ...nullishReceiverThrows(use, name, param, at),
+            typeErrorThrow(brandMessage(info, use, name), at),
           ],
           else_: null,
           loc: at,
@@ -124,23 +148,42 @@ export function staticPrivateBrandCheck(
 /** A static private the native storage does not hold (an accessor, a
  * field without an initializer): a loud refusal, never a string-keyed
  * read of the class object. */
-function unsupportedStaticPrivate(lowerer: Lowerer, node: ts.Node, name: string): never {
+function unsupportedStaticPrivate(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  node: ts.Node,
+  name: string,
+): never {
   return lowerer.unsupported(
     "SC1090",
     node,
-    `the private static '${name}' in this form on a class whose constructor carries runtime statics`,
+    info.runtimeStatics
+      ? `the private static '${name}' in this form on a class whose constructor carries runtime statics`
+      : `the private static '${name}' in this form through a checked-dynamic value`,
   );
+}
+
+/** Whether `node` lowers to a checked-dynamic value (probed, not lowered). */
+function lowersCheckedDynamic(lowerer: Lowerer, node: ts.Expression): boolean {
+  const probed = tryLowerExpression(lowerer, node);
+  if (!probed) return false;
+  return (
+    probed.type.kind === "dyn" || (probed.kind === "dynCheck" && probed.value.type.kind === "dyn")
+  );
+}
+
+/** Whether a static private use on `info` through `node` is this module's
+ * to lower before its member is looked up: always for a class whose
+ * constructor carries runtime statics (its other paths read the table),
+ * and for a native class only through a checked-dynamic receiver, the one
+ * place a private name could otherwise become a property key. */
+function claimsStaticPrivateUse(lowerer: Lowerer, info: ClassInfo, node: ts.Expression): boolean {
+  return info.runtimeStatics !== undefined || lowersCheckedDynamic(lowerer, node);
 }
 
 /** The checked-dynamic value `expr` lowers to, or null. */
 function checkedDynamicReceiver(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
-  const probed = tryLowerExpression(lowerer, node);
-  if (!probed) return null;
-  if (
-    probed.type.kind !== "dyn" &&
-    !(probed.kind === "dynCheck" && probed.value.type.kind === "dyn")
-  )
-    return null;
+  if (!lowersCheckedDynamic(lowerer, node)) return null;
   const value = lowerer.lowerExpr(node);
   if (value.type.kind === "dyn") return value;
   return value.kind === "dynCheck" ? value.value : null;
@@ -148,9 +191,12 @@ function checkedDynamicReceiver(lowerer: Lowerer, node: ts.Expression): IrExpr |
 
 /** `R.#x` / `R.#m` read, where `#x` is a static private of a
  * declaration-level class and `R` is a checked-dynamic value (`this` in a
- * static accessor or method that the constructor object carries): the
- * brand check, then the member's native storage. Null for other reads,
- * which keep their paths (the class's own name reads storage directly). */
+ * static accessor or method that the constructor object carries, or a
+ * cast that erased a class value, `(ctor as any).#x`): the brand check,
+ * then the member's native storage. Null for other reads, which keep their
+ * paths (the class's own name reads storage directly). A private name
+ * never reads a property of the receiver: the class object's table can
+ * hold a public property of the same spelling. */
 export function lowerStaticPrivateRead(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -158,13 +204,13 @@ export function lowerStaticPrivateRead(
 ): IrExpr | null {
   if (!ts.isPrivateIdentifier(expr.name) || expr.questionDotToken) return null;
   const info = staticPrivateOwner(lowerer, expr.name);
-  if (!info || !info.runtimeStatics) return null;
+  if (!info) return null;
   if (lowerer.exactClassOfReceiver(expr.expression) === info) return null;
   const value = checkedDynamicReceiver(lowerer, expr.expression);
   if (!value) return null;
   const name = expr.name.text;
   const found = lowerer.findStaticOn(info, name);
-  if (!found) unsupportedStaticPrivate(lowerer, expr, name);
+  if (!found) unsupportedStaticPrivate(lowerer, info, expr, name);
   const read = lowerClassStaticRead(lowerer, info, name, expr.expression, expr);
   if (!read) return null;
   return {
@@ -189,11 +235,12 @@ export function lowerStaticPrivateCall(
 ): IrExpr | null {
   if (!ts.isPrivateIdentifier(access.name) || access.questionDotToken) return null;
   const info = staticPrivateOwner(lowerer, access.name);
-  if (!info || !info.runtimeStatics) return null;
+  if (!info) return null;
   if (lowerer.exactClassOfReceiver(access.expression) === info) return null;
+  if (!claimsStaticPrivateUse(lowerer, info, access.expression)) return null;
   const name = access.name.text;
   const found = lowerer.findStaticOn(info, name);
-  if (!found) unsupportedStaticPrivate(lowerer, call, name);
+  if (!found) unsupportedStaticPrivate(lowerer, info, call, name);
   const value = checkedDynamicReceiver(lowerer, access.expression);
   if (!value) return null;
   const loc = locOf(call);
@@ -306,11 +353,12 @@ export function lowerStaticPrivateAssignment(
   )
     return null;
   const info = staticPrivateOwner(lowerer, target.name);
-  if (!info || !info.runtimeStatics) return null;
+  if (!info) return null;
   if (lowerer.exactClassOfReceiver(target.expression) === info) return null;
+  if (!claimsStaticPrivateUse(lowerer, info, target.expression)) return null;
   const name = target.name.text;
   const found = lowerer.findStaticOn(info, name);
-  if (!found?.field) unsupportedStaticPrivate(lowerer, expr, name);
+  if (!found?.field) unsupportedStaticPrivate(lowerer, info, expr, name);
   const value = checkedDynamicReceiver(lowerer, target.expression);
   if (!value) return null;
   const loc = locOf(expr);
@@ -351,11 +399,12 @@ export function staticPrivateUpdateTarget(
 ): { brand: IrStmt; target: { id: string; type: IrType } } | null {
   if (!ts.isPrivateIdentifier(access.name) || access.questionDotToken) return null;
   const info = staticPrivateOwner(lowerer, access.name);
-  if (!info || !info.runtimeStatics) return null;
+  if (!info) return null;
   if (lowerer.exactClassOfReceiver(access.expression) === info) return null;
+  if (!claimsStaticPrivateUse(lowerer, info, access.expression)) return null;
   const name = access.name.text;
   const found = lowerer.findStaticOn(info, name);
-  if (!found?.field) unsupportedStaticPrivate(lowerer, access, name);
+  if (!found?.field) unsupportedStaticPrivate(lowerer, info, access, name);
   const value = checkedDynamicReceiver(lowerer, access.expression);
   if (!value) return null;
   return {

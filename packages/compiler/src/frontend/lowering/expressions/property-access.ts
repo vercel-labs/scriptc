@@ -1994,12 +1994,16 @@ export function lowerPropertyAccessExpr(
   // or undefined (JS's own-property answer), throwing JS's TypeError
   // on undefined/null receivers unless an earlier `?.` guards the
   // chain. Scalar-narrowed occurrences bridge via maybeNarrow's
-  // validated dynCheck as usual.
+  // validated dynCheck as usual. A private name is not a property key:
+  // the brand-checked lowerings above claim the ones that resolve, and
+  // the rest keep the refusal below rather than read a public property
+  // of the same spelling.
   if (
-    recvLowered.type.kind === "dyn" ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
-        (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type))))
+    !ts.isPrivateIdentifier(expr.name) &&
+    (recvLowered.type.kind === "dyn" ||
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
+          (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type)))))
   ) {
     const key: IrExpr = {
       kind: "strLit",
@@ -2277,6 +2281,7 @@ export function lowerPropertyAccessExpr(
   // member read (a socket's `server`, a connection's `bufferSize`). The
   // box shares the handle, so it needs no fresh-result restriction.
   if (
+    !ts.isPrivateIdentifier(expr.name) &&
     (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
     DYN_HANDLE_KINDS.has(recvLowered.type.kind)
   ) {
@@ -2318,6 +2323,7 @@ export function lowerPropertyAccessExpr(
   // through any other view of the same object.
   if (
     !expr.questionDotToken &&
+    !ts.isPrivateIdentifier(expr.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     lowerer.jsDynamicMemberTarget(recvLowered.type) &&
     !declaredMemberOf(lowerer, expr.expression, expr.name.text)

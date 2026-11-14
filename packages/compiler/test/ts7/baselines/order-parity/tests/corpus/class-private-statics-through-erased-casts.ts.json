@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-private-statics-through-erased-casts.ts"
+ ],
+ "diags": []
+}

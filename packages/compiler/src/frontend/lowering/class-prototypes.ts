@@ -123,6 +123,7 @@ export function classPrototypeData(
           )
         : null;
     if (info.base && !info.base.builtinError && base === null) return null;
+    const selected = selectedArmPrototype(lowerer, info, loc, metadataOnly);
     const name = `%prototype.data.${info.def.name}`;
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
@@ -158,7 +159,7 @@ export function classPrototypeData(
               kind: "assign",
               localId: globalId,
               value: base
-                ? { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc }
+                ? { kind: "libCall", fn: "dyn.objCreate", args: [selected ?? base], type: DYN, loc }
                 : { kind: "dynObjLit", fields: [], type: DYN, loc },
               loc,
             },
@@ -573,6 +574,27 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   );
 }
 
+/** Whether a bare `C.prototype` read is asserted to `any` or `unknown`
+ * (`(C.prototype as any)`): the cast asks for the value's dynamic form —
+ * the prototype object itself — so a member written through it is an own
+ * property of the prototype, which the instances' checked-dynamic view then
+ * reads. */
+function erasedCastPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  while (
+    ts.isParenthesizedExpression(node.parent) ||
+    ts.isNonNullExpression(node.parent) ||
+    ts.isSatisfiesExpression(node.parent)
+  )
+    node = node.parent;
+  const parent = node.parent;
+  return (
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) &&
+    parent.expression === node &&
+    (lowerer.typeOf(parent).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
+}
+
 /** A module-level JavaScript class named directly (not a class value that
  * may hold a subclass at run time): its prototype has a complete view whose
  * methods accept any receiver. */
@@ -666,6 +688,23 @@ export function lowerClassPrototypeData(
     viewableClass(lowerer, info, expr.expression)
   )
     return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
+  // `(C.prototype as any)`: the prototype object as a dynamic value, the
+  // same one a named prototype write reaches, so a member written through
+  // the cast is what the instances' checked-dynamic view reads.
+  if (name === null && erasedCastPosition(lowerer, expr)) {
+    const value = classPrototypeData(
+      lowerer,
+      info,
+      locOf(expr),
+      info.localClass
+        ? lowerer.lowerExprExpecting(expr.expression, {
+            kind: "classval",
+            className: info.def.name,
+          })
+        : undefined,
+    );
+    if (value !== null) return value;
+  }
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
       "SC1090",
@@ -949,6 +988,35 @@ export function lowerClassPrototypeDescriptors(
       lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
       prototypeProtectedKeys(lowerer, info, target, loc),
     ],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The prototype a class whose heritage was a conditional inherits from: the
+ * prototype of the arm the class statement selected (`%g.<C>.heritageArm`),
+ * so the prototype chain a dynamic `instanceof` walks runs through that arm,
+ * as Node's does. Null when the class extends one fixed class, or when an
+ * arm has no prototype object of its own (the typed base's then stands). */
+function selectedArmPrototype(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+  metadataOnly: boolean,
+): IrExpr | null {
+  const recorded = lowerer.computedHeritageArms.get(info.def.name);
+  if (recorded?.condGlobal === undefined) return null;
+  const prototypes = recorded.arms.map((arm) => {
+    const armInfo = lowerer.classes.get(arm);
+    return armInfo ? classPrototypeData(lowerer, armInfo, loc, undefined, metadataOnly) : null;
+  });
+  const [whenTrue, whenFalse] = prototypes;
+  if (!whenTrue || !whenFalse) return null;
+  return {
+    kind: "ternary",
+    cond: varRef(recorded.condGlobal, BOOL, loc),
+    then: whenTrue,
+    else_: whenFalse,
     type: DYN,
     loc,
   };

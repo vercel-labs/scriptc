@@ -1616,6 +1616,9 @@ function jsDynHoldableInitializer(
   shared = false,
 ): boolean {
   if (init === undefined) return true;
+  // An object literal has checked-object storage even when one inferred
+  // field (for example any[]) prevents mapping the enclosing record.
+  if (ts.isObjectLiteralExpression(init)) return true;
   if (isNativeProxyInitializer(lowerer, init)) return true;
   // The cast the file-system shadow serves for `var v = void 0`
   // (js-void-initializers.ts) holds undefined, as the identifier below does.

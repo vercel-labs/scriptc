@@ -868,6 +868,9 @@ static SCR_TL ScrNetServer *scr_net_servers = NULL; /* registry: +1 each, tail-a
 /* every server that is alive (borrowed), for the exit teardown's listener
  * drop; settled servers leave the registry but keep their close listeners */
 static SCR_TL ScrNetServer *scr_net_all_servers = NULL;
+/* A settled server's persistent 'close' listeners live only until the sweep
+ * that emits its 'close' finishes (see scr_net_close_listeners_age). */
+static SCR_TL bool scr_net_close_aging = false;
 /* the socket registry: +1 each, tail-appended; prev/next and the last
  * pointer make registering and unregistering constant-time */
 static SCR_TL ScrNetSocket *scr_net_socks = NULL;
@@ -9015,8 +9018,10 @@ static void scr_net_ls_drop_holding(ScrNetLs *l, const ScrNetServer *s) {
      * stands for: a dyn listener wraps the real closure in a box, and an
      * adapter names its identity. */
     if (!l->ls[i].once) {
+      ScrClosure *entry = l->ls[i].cb;
       ScrClosure *root = scr_net_listener_root(&l->ls[i]);
-      if (!scr_net_listener_captures_safe(root, s, 8)) {
+      if (!scr_net_listener_captures_safe(root, s, 8) ||
+          !scr_net_listener_captures_safe(entry, s, 8)) {
         scr_closure_release(l->ls[i].cb);
         scr_net_once_release(l->ls[i].shared_once);
         continue;
@@ -9047,6 +9052,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
    * until process exit. The once entries a 'close' listener added here belong
    * to the repeat emission they asked for and are left alone. */
   scr_net_ls_drop_holding(&srv->close_ls, srv);
+  if (srv->close_ls.n > 0) scr_net_close_aging = true;
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
@@ -9262,6 +9268,34 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
 /* Sockets first (a dying connection may drain its server), servers after.
  * Every fire checks for a pending exception and bails — the loop surfaces
  * it as an uncaught throw. */
+/* A settled server keeps its persistent 'close' listeners only until the
+ * sweep that emits the 'close' (and any repeat emission a listener's close()
+ * schedules) finishes. Releasing them there is what keeps a native handle
+ * from outliving its close through a listener that captured it: nothing is
+ * left to capture once the sweep ends, so repeated temporary servers cannot
+ * accumulate. A close() issued in a later turn still reaches its callback —
+ * scr_net_server_close_direct adds it for that emission — but no longer finds
+ * the persistent listeners Node keeps; that bounded window is the price of
+ * the guarantee, and the corpus programs that close from a 'close' listener
+ * (the synchronous shape) keep their emissions. */
+static void scr_net_close_listeners_age(void) {
+  size_t n = 0;
+  for (ScrNetServer *it = scr_net_all_servers; it != NULL; it = it->all_next)
+    if (it->close_emitted && it->reclose_pending == 0 && it->close_ls.n > 0) n++;
+  if (n == 0) return;
+  ScrNetServer **aged = malloc(n * sizeof *aged);
+  if (aged == NULL) scr_net_oom();
+  size_t i = 0;
+  for (ScrNetServer *it = scr_net_all_servers; it != NULL && i < n; it = it->all_next)
+    if (it->close_emitted && it->reclose_pending == 0 && it->close_ls.n > 0)
+      aged[i++] = scr_net_server_retain(it);
+  for (size_t k = 0; k < i; k++) {
+    scr_net_ls_drop(&aged[k]->close_ls);
+    scr_net_server_release(aged[k]);
+  }
+  free(aged);
+}
+
 static void scr_net_sweep(void) {
   scr_net_proto_sweep();
   if (scr_exc_pending()) return;
@@ -9350,7 +9384,16 @@ static void scr_net_sweep(void) {
         repeat = again;
       }
     }
-    if (due == NULL) return;
+    if (due == NULL) {
+      /* Every emission this sweep owed has run: the listeners a settled
+       * server kept for it go now, so a listener that captured the server
+       * cannot keep it alive past its close. */
+      if (scr_net_close_aging) {
+        scr_net_close_aging = false;
+        scr_net_close_listeners_age();
+      }
+      return;
+    }
     scr_net_server_retain(due);
     ScrAlsCtx *prev = scr_als_dispatch_enter(due->close_ctx);
     if (repeat) {
@@ -9361,6 +9404,7 @@ static void scr_net_sweep(void) {
       /* A persistent listener that joined after the settle would form the
        * cycle the collector cannot see: it leaves with this emission. */
       scr_net_ls_drop_holding(&due->close_ls, due);
+      if (due->close_ls.n > 0) scr_net_close_aging = true;
       if (due->reclose_pending == 0) scr_net_server_unregister(due);
     } else {
       scr_net_server_settle(due);

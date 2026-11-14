@@ -265,14 +265,15 @@ static const char *ni_pack_dir(void) {
  *   asks for scr_ni_tree_repair: every file the manifest lists and the
  *   tree lacks is written back from the executable's bytes, one line on
  *   stderr says so, and a module load is repeated once.
- * - A file someone modified is used as it is, as a file under node_modules
- *   is. Code running as the same user can replace the executable too, so
- *   no check here would be a boundary against it.
- * - Beside the executable the build writes the tree's name next to the
- *   modules directory (`<modules>.tree`). A start compares it; when it is
- *   absent or names another tree (a modules directory left from another
- *   build), the content is hashed against the manifest and a tree that
- *   differs is refused. */
+ * - A file someone modified in the installed tree is used as it is, as a
+ *   file under node_modules is. The tree is in the user's own private
+ *   directory, and code running as that user can replace the executable
+ *   too, so no check here would be a boundary against it.
+ * - Beside the executable the modules are files the program was deployed
+ *   with, which others than the user running it may be able to write. A
+ *   start hashes their content against the manifest every time and refuses
+ *   a tree that differs: nothing beside the modules can vouch for them in
+ *   place of their bytes. */
 static const char *ni_manifest = NULL;
 static size_t ni_manifest_len = 0;
 static const unsigned char *ni_modules = NULL;
@@ -777,7 +778,7 @@ static bool ni_links_match(int rootfd) {
 
 /* Whether the tree below `rootfd` holds exactly the manifest's files (by
  * size and digest) and links: the check of a tree the build placed beside
- * the executable when its name file does not vouch for it. */
+ * the executable, on every start. */
 static bool ni_tree_matches(int rootfd) {
   if (ni_tracing())
     fprintf(stderr, "[node-islands] hashing the module tree (%zu files)\n", ni_nfiles);
@@ -907,20 +908,6 @@ static bool ni_set_root(const char *a, const char *b, const char *c) {
 /* Whether ni_root is the installed tree in the cache directory, which the
  * runtime may repair (scr_ni_tree_repair). */
 static bool ni_root_installed = false;
-
-/* Whether the file the build wrote next to a beside tree (`<modules>.tree`)
- * names this program's tree. */
-static bool ni_beside_named(void) {
-  char path[4200];
-  int n = snprintf(path, sizeof path, "%s.tree", ni_root);
-  if (n <= 0 || (size_t)n >= sizeof path) return false;
-  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd < 0) return false;
-  char name[66];
-  ssize_t got = read(fd, name, sizeof name);
-  close(fd);
-  return got >= 64 && memcmp(name, ni_tree_name, 64) == 0 && (got == 64 || name[64] == '\n');
-}
 
 /* The per-user directory the trees are installed in,
  * $XDG_CACHE_HOME/scriptc/node-islands (or ~/.cache/scriptc/node-islands),
@@ -1270,14 +1257,14 @@ static void ni_open_modules(void) {
     if (!absolute || n <= 0 || (size_t)n >= sizeof dir ||
         !ni_set_root(dir, ni_modules_location + sizeof origin - 1, ""))
       ni_fatal("scriptc: cannot locate this program's Node island modules\n");
+    /* The content decides, on every start (see "What a start does"). */
     int fd = open(ni_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    bool ok = fd >= 0 && ni_beside_named();
-    if (fd >= 0 && !ok) {
-      /* No name beside the modules, or another tree's: the content decides. */
+    bool ok = false;
+    if (fd >= 0) {
       ni_manifest_ready();
       ok = ni_tree_matches(fd);
+      close(fd);
     }
-    if (fd >= 0) close(fd);
     if (!ok) {
       char message[8192];
       snprintf(message, sizeof message,

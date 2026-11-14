@@ -1300,7 +1300,7 @@ function manifestTables(modules: IrNodeIslandModules): { files: unknown[]; links
 
 /** The tree's name: 64 hexadecimal digits, the SHA-256 of its files and
  * links as JSON. It names the directory an executable installs its tree
- * in, and the build writes it beside a tree it places itself. */
+ * in. */
 export function nodeIslandTreeName(modules: IrNodeIslandModules): string {
   return sha256(new TextEncoder().encode(JSON.stringify(manifestTables(modules))));
 }
@@ -1343,9 +1343,9 @@ export function readNodeIslandModules(
 }
 
 /** Writes the tree to `target` (replacing it), for `--libnode=beside`, or
- * returns the reason it cannot. The tree's name goes into `<target>.tree`:
- * a start compares it with the name in the executable's manifest and uses
- * the tree without hashing it when they agree (scr_node_island.c). */
+ * returns the reason it cannot. A start hashes the tree against the
+ * executable's manifest (scr_node_island.c), so nothing is written beside
+ * it. */
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
@@ -1366,6 +1366,7 @@ export function placeNodeIslandModules(
       return `the island module tree links outside it ('${entry.path}' to '${entry.target}')`;
   }
   rmSync(target, { recursive: true, force: true });
+  // The name file earlier builds wrote beside the tree; no start reads it.
   rmSync(`${target}.tree`, { force: true });
   mkdirSync(target, { recursive: true });
   let offset = 0;
@@ -1380,7 +1381,5 @@ export function placeNodeIslandModules(
     mkdirSync(dirname(path), { recursive: true });
     symlinkSync(link.target, path);
   }
-  // Last: the name says that the tree beside it is complete.
-  writeFileSync(`${target}.tree`, `${nodeIslandTreeName(modules)}\n`);
   return null;
 }

@@ -136,6 +136,11 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d);
 ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+/* Whether the value is an AbortSignal: the core its listeners live on. The
+ * units whose validation is Node's duck-typed `'aborted' in signal` check
+ * use this before installing a listener, so a value that only looks like a
+ * signal fails the way Node's own install does. */
+bool scr_events_is_abort_signal(const ScrDyn *d);
 /* events.once(target, name) and events.once(target, name, options) over a
  * receiver resolved at runtime: an EventTarget, an EventEmitter (a
  * NodeEventTarget handle, through its own once()) or any other value.

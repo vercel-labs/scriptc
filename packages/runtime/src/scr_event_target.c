@@ -1980,6 +1980,11 @@ static ScrDyn *scr_et_abort_listener_dispose(ScrClosure *clo, ScrDyn *const *arg
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+bool scr_events_is_abort_signal(const ScrDyn *d) {
+  bool aborted = false;
+  return d != NULL && scr_et_signal_core_fn != NULL && scr_et_signal_core_fn(d, &aborted) != NULL;
+}
+
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
   bool aborted = false;
   ScrEventTargetCore *core =

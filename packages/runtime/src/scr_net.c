@@ -4043,9 +4043,14 @@ static ScrDyn *scr_net_sock_abort_thunk(ScrClosure *clo, ScrDyn *const *args, si
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
+/* Arms a connect() abort signal. Node's validateAbortSignal is duck-typed
+ * (an object with an `aborted` member passes), while addAbortListener needs
+ * a real AbortSignal; a value the first lets through and the second rejects
+ * leaves Node's ERR_INVALID_ARG_TYPE pending, and false here says nothing
+ * may be opened for it. */
+static bool scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
                                    ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
-  if (signal->kind == SCR_DYN_UNDEF) return;
+  if (signal->kind == SCR_DYN_UNDEF) return true;
   bool aborted = false;
   const ScrDyn *a = scr_dyn_obj_get(signal, "aborted", 7);
   if (a != NULL) aborted = scr_net_dyn_truthy(a);
@@ -4053,6 +4058,7 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
   listener->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
   scr_box_set_ref(listener->caps[0], scr_net_sock_retain(s));
   ScrDyn *fn = scr_dyn_new_func(listener, scr_net_sock_abort_thunk, 0, "()", "onAbort");
+  bool armed = true;
   if (aborted) {
     /* process.nextTick(onAbort): the destroy lands after the connect call */
     ScrClosure *job = scr_closure_new(scr_net_sock_abort_thunk, 1);
@@ -4060,9 +4066,19 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
     scr_box_set_ref(job->caps[0], scr_net_sock_retain(s));
     scr_next_tick(job);
   } else if (add_abort != NULL) {
+    /* Node's validateAbortSignal is duck-typed (`'aborted' in signal`), and
+     * the listener install then calls signal.addEventListener — a value that
+     * only looks like a signal has no such member. Nothing is opened for it. */
+    if (!scr_events_is_abort_signal(signal)) {
+      scr_throw_error_msg(SCR_ERR_TYPE, "signal.addEventListener is not a function", 41);
+      scr_dyn_release(fn);
+      return false;
+    }
     s->abort_dispose = add_abort((ScrDyn *)signal, fn);
+    armed = s->abort_dispose != NULL;
   }
   scr_dyn_release(fn);
+  return armed;
 }
 
 /* net.connect/createConnection over dynamic arguments (the checked-
@@ -4071,6 +4087,9 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
  * the lowering. A last argument that only turns out to be a function at
  * run time becomes the listener here, as normalizeArgs would read it.
  * The result is +1, or NULL with an exception pending. */
+static ScrNetSocket *scr_net_connect_path_armed(ScrStr *path, const ScrDyn *signal,
+                                                ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *));
+
 ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
                                   ScrClosure *cb /*moves, nullable*/,
                                   ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
@@ -4239,9 +4258,14 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
       scr_dyn_prop_type_fail("options.path", "of type string", path);
       goto fail;
     }
-    ScrNetSocket *ps = scr_net_connect_path(path->v.str, false);
+    ScrNetSocket *ps = scr_net_connect_path_armed(path->v.str, signal, add_abort);
+    if (ps == NULL) {
+      /* the signal install threw: the socket was never dialed or registered */
+      scr_dyn_release(made);
+      if (cb != NULL) scr_closure_release(cb);
+      return NULL;
+    }
     if (timeout_ms > 0) ps->timeout_ms = timeout_ms;
-    if (signal != NULL) scr_net_sock_arm_abort(ps, signal, add_abort);
     if (cb != NULL) scr_net_ls_add(&ps->conn_ls, cb, NULL, true);
     scr_dyn_release(made);
     return ps;
@@ -4384,7 +4408,14 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
   }
-  if (signal != NULL) scr_net_sock_arm_abort(s, signal, add_abort);
+  if (signal != NULL && !scr_net_sock_arm_abort(s, signal, add_abort)) {
+    /* The signal install threw: nothing was opened, and the caller catches
+     * the exception instead of receiving a dialing socket. */
+    scr_net_sock_release(s);
+    scr_dyn_release(made);
+    if (cb != NULL) scr_closure_release(cb);
+    return NULL;
+  }
   scr_net_sock_dial_peer(s);
   scr_net_sock_register(s);
   if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
@@ -4488,11 +4519,19 @@ static bool scr_net_server_arm_abort(ScrNetServer *s, const ScrDyn *signal,
     return true;
   }
   if (add_abort == NULL) return true;
+  if (!scr_events_is_abort_signal(signal)) {
+    /* The duck-typed check let the value through; the install's member call
+     * is what Node fails on, and nothing may be listened on. */
+    scr_throw_error_msg(SCR_ERR_TYPE, "signal.addEventListener is not a function", 41);
+    return false;
+  }
   ScrClosure *listener = scr_net_server_abort_job(s);
   ScrDyn *fn = scr_dyn_new_func(listener, scr_net_server_abort_thunk, 0, "()", "onAbort");
   s->abort_dispose = add_abort((ScrDyn *)signal, fn);
   scr_dyn_release(fn);
-  return true;
+  /* The duck-typed check let a plain object through; the install rejects it
+   * and leaves Node's error pending, so the listen must not go on. */
+  return s->abort_dispose != NULL;
 }
 
 /* Node's toNumber: Number(x) when it is >= 0, else false (0 here). */
@@ -4938,6 +4977,27 @@ static void scr_net_sock_dial_unix(ScrNetSocket *s) {
 /* A client socket for the Unix socket at `path` (borrowed). `deferred`
  * creates it the way scr_net_connect_deferred does: registered and
  * buffering, dialed by scr_net_sock_dial_start. +1. */
+/* The Unix-socket connect with the abort signal armed before the dial: a
+ * signal the listener install rejects leaves nothing open and answers NULL
+ * with the exception pending. */
+static ScrNetSocket *scr_net_connect_path_armed(ScrStr *path, const ScrDyn *signal,
+                                                ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
+  ScrNetSocket *s = scr_net_sock_new();
+  s->unix_path = scr_str_retain(path);
+  s->dial_hook = &scr_net_sock_dial_unix;
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  if (signal != NULL && !scr_net_sock_arm_abort(s, signal, add_abort)) {
+    scr_net_sock_release(s);
+    return NULL;
+  }
+  scr_net_sock_dial_unix(s);
+  scr_net_sock_register(s);
+  return s;
+}
+
 ScrNetSocket *scr_net_connect_path(ScrStr *path, bool deferred) {
   ScrNetSocket *s = scr_net_sock_new();
   s->unix_path = scr_str_retain(path);

@@ -277,6 +277,35 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "fetch-handle-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "functionsUseFetch",
+    source: "ir",
+    scope: "program",
+    setBy: "any fetch libCall in the IR (`fetch.function`, `fetch.requestNew` and the rest)",
+    gates:
+      "%main installs the handle property table, so a write onto a fetch Request, Response or Headers value adds an own property instead of throwing",
+    narrower:
+      "the written value's class, at run time; fetch values are checked-dynamic, so the census of typed handle receivers cannot see the write",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
+    name: "fetch-member-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "fetchAdditions",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "a write, delete or definition of any member name in any implementation file, and a key the walk cannot read (a computed key, a non-literal Object.assign source) which names every member",
+    gates:
+      "a typed `json()`, `text()`, `bytes()` or `arrayBuffer()` call on a Response keeps its native body read only when no write can name that member; otherwise the call takes the checked-dynamic dispatch, whose handle-table lookup answers the own property before the prototype method",
+    narrower:
+      "the written value, at run time: a fetch handle is checked-dynamic in both tiers, so no write can be attributed to one statically",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
     name: "replaceable-methods",
     file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
     symbol: "collectClassMethodMutations",
@@ -800,6 +829,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
+  decides("frontend/lowering/handle-properties.ts#fetchAdditions", 1, "fetch-member-additions"),
   scan(
     "frontend/lowering/handle-properties.ts#programHasJsSource",
     1,

@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/fetch-handle-properties-sloppy.cjs"],
+  "diags": []
+}

@@ -27,7 +27,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
-import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
+import { moduleUsesChildProcess, moduleUsesFetch } from "../../ir/runtime-features.js";
 import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
@@ -555,6 +555,111 @@ export function programAddsHandleProperties(lowerer: Lowerer): boolean {
   return handleAdditions(lowerer).any;
 }
 
+/** The member names the program's own writes and definitions add, and
+ * whether one of them is computed, which can name any member. */
+interface FetchAdditions {
+  readonly written: ReadonlySet<string>;
+  readonly everyName: boolean;
+}
+
+/** The own properties the program's sources can add to a fetch handle. A
+ * fetch Request, Response or Headers value is checked-dynamic in both
+ * tiers, so a write onto one names no handle class for the census above to
+ * see, and the fetch classes take every name without a grant
+ * (scr_dyn_handle_props.c): any write or definition in the program can have
+ * landed on one, whatever the tier and whatever the receiver's declared
+ * type. */
+function fetchAdditions(lowerer: Lowerer): FetchAdditions {
+  const known = lowerer.fetchAdditions;
+  if (known) return known;
+  const written = new Set<string>();
+  let everyName = false;
+  // A member a key expression names: a static property access or a
+  // string-literal key names one, and anything else can name any member.
+  const named = (key: ts.Expression): void => {
+    if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) written.add(key.text);
+    else everyName = true;
+  };
+  const target = (access: ts.PropertyAccessExpression | ts.ElementAccessExpression): void => {
+    if (ts.isPropertyAccessExpression(access)) written.add(access.name.text);
+    else named(access.argumentExpression);
+  };
+  // The members a source of properties names: an object literal names its
+  // keys, and any other value can hold a name the walk cannot read.
+  const propertiesOf = (value: ts.Expression): void => {
+    if (!ts.isObjectLiteralExpression(value)) {
+      everyName = true;
+      return;
+    }
+    for (const property of value.properties.nodes) {
+      const key = property.name;
+      if (
+        key !== undefined &&
+        (ts.isIdentifier(key) || ts.isStringLiteralLike(key) || ts.isNumericLiteral(key))
+      )
+        written.add(key.text);
+      else everyName = true;
+    }
+  };
+  const calls = (node: ts.CallExpression): void => {
+    const callee = node.expression;
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      !ts.isIdentifier(callee.expression) ||
+      (callee.expression.text !== "Object" && callee.expression.text !== "Reflect")
+    )
+      return;
+    const [first, second, ...rest] = node.arguments.nodes;
+    switch (callee.name.text) {
+      case "defineProperty":
+        if (first !== undefined && second !== undefined) named(second);
+        break;
+      case "defineProperties":
+        if (first !== undefined && second !== undefined) propertiesOf(second);
+        break;
+      case "assign":
+        // The target is not an addition; every source is.
+        if (first !== undefined)
+          for (const value of [second, ...rest]) if (value) propertiesOf(value);
+        break;
+    }
+  };
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    walkFile(sf, (node) => {
+      if (
+        ts.isBinaryExpression(node) &&
+        ts.isAssignmentOperator(node.operatorToken.kind) &&
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+      ) {
+        target(node.left);
+      } else if (
+        ts.isDeleteExpression(node) &&
+        (ts.isPropertyAccessExpression(node.expression) ||
+          ts.isElementAccessExpression(node.expression))
+      ) {
+        target(node.expression);
+      } else if (ts.isCallExpression(node)) {
+        calls(node);
+      }
+      return true;
+    });
+  }
+  const frozen = { written, everyName } as FetchAdditions;
+  lowerer.fetchAdditions = frozen;
+  return frozen;
+}
+
+/** Whether the program can add an own property named `member` to a fetch
+ * handle, so a static body read of that member would answer the native
+ * method where Node answers the own property. A call whose member this
+ * answers keeps the checked-dynamic dispatch of lower-stdlib.ts, which asks
+ * the handle's table first. */
+export function fetchMemberMayBeOwn(lowerer: Lowerer, member: string): boolean {
+  const additions = fetchAdditions(lowerer);
+  return additions.everyName || additions.written.has(member);
+}
+
 /** Whether the program's JavaScript writes or defines member `name` of the
  * handle class `receiver` names, so its typed readers and calls reroute
  * through the checked-dynamic box. */
@@ -956,6 +1061,20 @@ function functionsUseChildProcess(functions: IrFunction[]): boolean {
   });
 }
 
+/** The fetch fact over the final functions, before the module's type tables
+ * are assembled. A fetch Request, Response or Headers value is checked-dynamic
+ * in both tiers, so a write onto one is an ordinary dynamic write that names
+ * no handle class: the handle census cannot see it, and a program that uses
+ * fetch installs the table for the classes it can reach. */
+function functionsUseFetch(functions: IrFunction[]): boolean {
+  return moduleUsesFetch({
+    irVersion: 17,
+    sourceFile: "",
+    functions,
+    entry: ENTRY_NAME,
+  });
+}
+
 /** Switches a program that can add properties to handles onto the
  * property-table entries (in place), installs the table in %main, hands the
  * runtime the member names the program shadows, and guards the graph
@@ -969,7 +1088,9 @@ export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[])
   const child =
     (lowerer.writesOntoChildren || childAdditions(lowerer).any) &&
     functionsUseChildProcess(functions);
-  const handle = programAddsHandleProperties(lowerer);
+  // A fetch value's expando writes are untyped, so the census above cannot
+  // see them: any program that uses fetch asks for the table.
+  const handle = programAddsHandleProperties(lowerer) || functionsUseFetch(functions);
   if (!child && !handle) return;
   const renames = new Map<IrLibFn, IrLibFn>(child ? RENAMES : []);
   // Object.defineProperties reads every descriptor before defining any, a

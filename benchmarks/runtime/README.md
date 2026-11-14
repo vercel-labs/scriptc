@@ -63,6 +63,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `startup-modules` | startup | the 240-module program in `benchmarks/startup/modules`: every module's top level runs (classes and instances, Maps and a shared registry filled at load, record tables, strings and regex literals, a regular expression built from a string, constant objects, closures) and the entry prints one line, so the time is module initialization |
 | `startup-unused-tables` | startup | the command-line tool in `benchmarks/startup/unused`, asked for its version: four modules build tables at load (number tables filled by loops, records derived from a smaller table, a catalogue flattened with `Object.entries` and `flatMap`, regular expressions assembled from strings) and the command reads none of them, so the time is what unused module-level tables cost a start |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
+| `request-context` | server | a `node:http` server whose adapter builds a Fetch `Request` for every request and adds an own property to it (`req.context = {}`) at the end of the middleware chain it dispatches through, the shape a bundled framework's adapter has; a build that refuses the write unwinds the chain to the adapter's fallback, so both builds answer every request |
 
 Compare two checkouts (each with a built CLI and native artifacts for the host):
 

@@ -3851,6 +3851,11 @@ export class Lowerer {
    * that can add own properties to a handle, so a typed handle operation of
    * a program without one keeps its own lowering (handle-properties.ts). */
   handleJsSources: boolean | undefined = undefined;
+  /** The member names the program's own writes and definitions add, and
+   * whether one of them is computed (handle-properties.ts). */
+  fetchAdditions:
+    | { readonly written: ReadonlySet<string>; readonly everyName: boolean }
+    | undefined = undefined;
   /** Bindings whose unchecked string arithmetic can produce either a number
    * (NaN for an absent read) or a string. Preserve that result union at bare
    * reads instead of applying the checker-bare string narrowing adapter. */
@@ -6600,6 +6605,7 @@ export class Lowerer {
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
       fixed("handleAdditions", () => this.handleAdditions),
+      fixed("fetchAdditions", () => this.fetchAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
       fixed("globalObjectWrites", () => this.globalObjectWrites),

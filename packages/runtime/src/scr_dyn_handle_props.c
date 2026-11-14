@@ -1,7 +1,8 @@
 /* Own properties that JavaScript adds to runtime handles: a Date, RegExp,
  * Map, Set, WeakMap, WeakSet, ArrayBuffer, SharedArrayBuffer,
- * FinalizationRegistry, WeakRef or ChildProcess (`d.tag = 1`,
- * Object.defineProperty(map, "label", ...), execa's child mixin).
+ * FinalizationRegistry, WeakRef, ChildProcess or a fetch Request, Response or
+ * Headers (`d.tag = 1`, Object.defineProperty(map, "label", ...), execa's
+ * child mixin, `req.context = {}`).
  *
  * A handle crosses into the checked-dynamic tree as a fresh box each time
  * and its identity is the native object, so its properties live in a side
@@ -9,7 +10,11 @@
  * per handle, the representation functions and byte views use for theirs.
  * The object carries the handle's integrity state too. The table keeps
  * each handle it describes alive until the thread exits (Date and RegExp
- * frees report no disposal, so the key cannot be weak).
+ * frees report no disposal, so the key cannot be weak). The fetch classes
+ * are the exception in both directions: their unit adopts the table into
+ * the native object and traces it, so the cycle collector sees a property
+ * that refers back to its handle and reclaims the two together, and the
+ * unit reports the release that frees the object, which drops the slot.
  *
  * scr_json.c's JavaScript object model build asks this unit, through
  * scr_dyn_handle_props_hooks, about every own-property operation of a
@@ -17,11 +22,14 @@
  * which scr_dyn_handle_install keeps installed when the owning unit
  * installs its ops again. A key that names a member of the handle's class
  * is refused unless the compiler routes that member through the box: every
- * child member, and the Date/RegExp/Map/Set/collection member names a
- * program writes or defines (handle.propsGrant; its typed reads, calls and
- * implicit conversions of those names reroute or refuse). Linked only by
- * programs that add properties to a handle (the compiler's
- * handle-properties.ts). */
+ * child member, the Date/RegExp/Map/Set/collection member names a program
+ * writes or defines (handle.propsGrant; its typed reads, calls and
+ * implicit conversions of those names reroute or refuse), and every name
+ * of a fetch class, whose writes are untyped JavaScript's. A write of the
+ * class's prototype accessor (`req.url = ...`) adds no own property: it
+ * takes V8's getter-only TypeError in strict code and is ignored by sloppy
+ * code, as in Node. Linked only by programs that add properties to a handle
+ * or use fetch (the compiler's handle-properties.ts). */
 #include "scr_runtime.h"
 
 #include <stdint.h>
@@ -30,9 +38,12 @@
 #include <string.h>
 
 typedef struct {
-  void *ptr;      /* retained through hp_orig[tag]->retain; NULL = empty slot */
+  void *ptr;      /* the handle, retained through hp_orig[tag]->retain unless
+                     hp_fetch_tag(tag) holds it weakly; NULL = empty slot */
   ScrDynHandleTag tag;
-  ScrDyn *props;  /* owned null-prototype checked object */
+  ScrDyn *props;  /* null-prototype checked object; owned here unless the
+                     native unit adopted it, then borrowed */
+  bool owns_props;
 } ScrHandleProps;
 
 static SCR_TL ScrHandleProps *hp_slots;
@@ -44,6 +55,17 @@ static SCR_TL bool hp_wrapped[SCR_DYNH_CAPACITY];
  * name grant allows one. The child's tag is always open (its compiler side
  * already routes every member through the box). */
 static SCR_TL bool hp_members_open[SCR_DYNH_CAPACITY];
+/* The fetch classes. Their table is the exception to the retention rule
+ * above: scr_fetch.c reports the release that frees a Request, Response or
+ * Headers list through the released hook, so the entry goes with its handle
+ * instead of keeping it alive until the thread exits (a server would leak
+ * one entry per request). Their member names are open too: the writes that
+ * add properties to them come from untyped JavaScript, which no grant
+ * string can census. */
+static bool hp_fetch_tag(ScrDynHandleTag tag) {
+  return tag == SCR_DYNH_FETCH_REQUEST || tag == SCR_DYNH_FETCH_RESPONSE ||
+         tag == SCR_DYNH_FETCH_HEADERS;
+}
 typedef struct {
   ScrDynHandleTag tag;
   char *name; /* owned, NUL-terminated */
@@ -67,7 +89,12 @@ static void hp_cleanup(void) {
   scr_dyn_handle_props_hooks = NULL;
   for (size_t i = 0; i < capacity; i++) {
     if (!slots[i].ptr) continue;
-    scr_dyn_release(slots[i].props);
+    /* A fetch unit adopted its table, and the native object releases it
+     * (the collector frees both when the handle is unreachable). */
+    if (slots[i].owns_props) scr_dyn_release(slots[i].props);
+    /* A fetch entry never retained its handle, so there is nothing to
+     * release (and the slot's pointer may already name a freed object). */
+    if (hp_fetch_tag(slots[i].tag)) continue;
     hp_orig[slots[i].tag]->release(slots[i].ptr);
   }
   free(slots);
@@ -77,11 +104,46 @@ static void hp_cleanup(void) {
   hp_grant_n = hp_grant_cap = 0;
 }
 
+/* Empties slot `i`, then re-inserts the run that the empty slot now ends:
+ * a lookup stops at the first empty slot, so the entries that collided with
+ * `i` have to move to their own first free slot. */
+static void hp_remove_at(size_t i) {
+  hp_slots[i].ptr = NULL;
+  hp_count--;
+  for (size_t j = (i + 1) & (hp_capacity - 1); hp_slots[j].ptr;
+       j = (j + 1) & (hp_capacity - 1)) {
+    ScrHandleProps moved = hp_slots[j];
+    hp_slots[j].ptr = NULL;
+    size_t k = hp_bucket(moved.ptr);
+    while (hp_slots[k].ptr) k = (k + 1) & (hp_capacity - 1);
+    hp_slots[k] = moved;
+  }
+}
+
 static ScrDyn *hp_find(const void *ptr) {
   if (!hp_capacity) return NULL;
   for (size_t i = hp_bucket(ptr);; i = (i + 1) & (hp_capacity - 1)) {
     if (!hp_slots[i].ptr) return NULL;
     if (hp_slots[i].ptr == ptr) return hp_slots[i].props;
+  }
+}
+
+/* The released hook (scr_dyn.h): the fetch unit's final release drops the
+ * slot, so it never names a freed object. The fetch unit adopted its table,
+ * so the slot does not own it; the native object released it in the same
+ * teardown (or the collector frees both). A table the slot still owns is
+ * released here after the slot is gone, because a value in it can release
+ * another fetch handle. */
+static void hp_released(const void *handle) {
+  if (!hp_capacity) return;
+  for (size_t i = hp_bucket(handle);; i = (i + 1) & (hp_capacity - 1)) {
+    if (!hp_slots[i].ptr) return;
+    if (hp_slots[i].ptr != handle) continue;
+    ScrDyn *props = hp_slots[i].props;
+    bool owns = hp_slots[i].owns_props;
+    hp_remove_at(i);
+    if (owns) scr_dyn_release(props);
+    return;
   }
 }
 
@@ -132,13 +194,16 @@ static ScrDyn *hp_read(ScrDyn *props, ScrDyn *self, const char *key, size_t key_
 /* The class's methods as values (`spawned.kill.bind(spawned)`): a function
  * that calls the class's own method on the child it was read from, also
  * after a property of the same name replaces the method. */
-static const char *const hp_methods[] = {
-  "kill", "ref", "unref", "on", "once", "off", "addListener", "removeListener",
+static const ScrDynHandleName hp_methods[] = {
+  SCR_DYN_HANDLE_NAME("kill"), SCR_DYN_HANDLE_NAME("ref"),
+  SCR_DYN_HANDLE_NAME("unref"), SCR_DYN_HANDLE_NAME("on"),
+  SCR_DYN_HANDLE_NAME("once"), SCR_DYN_HANDLE_NAME("off"),
+  SCR_DYN_HANDLE_NAME("addListener"), SCR_DYN_HANDLE_NAME("removeListener"),
 };
 
 static ScrDyn *hp_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   ScrDyn *self = scr_box_get_ref(clo->caps[0]);
-  const char *method = hp_methods[(size_t)scr_box_get_f64(clo->caps[1])];
+  const char *method = hp_methods[(size_t)scr_box_get_f64(clo->caps[1])].name;
   ScrDyn *result = hp_orig[SCR_DYNH_CHILD]->invoke(self->v.handle.ptr, self, method, args, argc, method);
   scr_dyn_release(self);
   return result;
@@ -146,20 +211,21 @@ static ScrDyn *hp_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc)
 
 static ScrDyn *hp_method_value(void *h, const char *key, size_t key_len) {
   for (size_t i = 0; i < sizeof hp_methods / sizeof *hp_methods; i++) {
-    if (strlen(hp_methods[i]) != key_len || memcmp(hp_methods[i], key, key_len)) continue;
+    if (hp_methods[i].len != key_len || memcmp(hp_methods[i].name, key, key_len)) continue;
     ScrClosure *clo = scr_closure_new(NULL, 2);
     clo->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     scr_box_set_ref(clo->caps[0], scr_dyn_new_handle(h, SCR_DYNH_CHILD));
     clo->caps[1] = scr_box_new(SCR_BOX_F64);
     scr_box_set_f64(clo->caps[1], (double)i);
-    return scr_dyn_new_func(clo, &hp_method_call, 0, "(...args)", hp_methods[i]);
+    return scr_dyn_new_func(clo, &hp_method_call, 0, "(...args)", hp_methods[i].name);
   }
   return NULL;
 }
 
 #define HP_TAGS(X) \
   X(DATE) X(REGEXP) X(MAP) X(SET) X(WEAK_MAP) X(WEAK_SET) \
-  X(ARRAY_BUFFER) X(SHARED_ARRAY_BUFFER) X(FINALIZATION_REGISTRY) X(WEAK_REF)
+  X(ARRAY_BUFFER) X(SHARED_ARRAY_BUFFER) X(FINALIZATION_REGISTRY) X(WEAK_REF) \
+  X(FETCH_REQUEST) X(FETCH_RESPONSE) X(FETCH_HEADERS)
 
 static bool hp_accepts(ScrDynHandleTag tag) {
   switch (tag) {
@@ -209,6 +275,50 @@ static ScrDyn *hp_invoke_tag(ScrDynHandleTag tag, void *h, ScrDyn *self, const c
   return result;
 }
 
+static bool hp_is_attribute(const ScrDynHandleOps *ops, const char *key, size_t key_len) {
+  for (const ScrDynHandleName *a = ops->attributes; a && a->name; a++)
+    if (a->len == key_len && memcmp(a->name, key, key_len) == 0) return true;
+  return false;
+}
+
+/* V8's TypeError for a strict write of a prototype accessor with no setter
+ * ("Cannot set property url of #<_Request> which has only a getter"). The
+ * write is noted, so a sloppy-mode write ignores it as Node does. */
+static void hp_throw_getter_only(const ScrDynHandleOps *ops, const char *key, size_t key_len) {
+  static const char head[] = "Cannot set property ";
+  static const char mid[] = " of #<";
+  static const char tail[] = "> which has only a getter";
+  const char *cls = ops->error_cls ? ops->error_cls : ops->cls;
+  size_t cls_len = strlen(cls);
+  size_t len = sizeof head - 1 + key_len + sizeof mid - 1 + cls_len + sizeof tail - 1;
+  char *msg = malloc(len);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  char *p = msg;
+  memcpy(p, head, sizeof head - 1); p += sizeof head - 1;
+  memcpy(p, key, key_len); p += key_len;
+  memcpy(p, mid, sizeof mid - 1); p += sizeof mid - 1;
+  memcpy(p, cls, cls_len); p += cls_len;
+  memcpy(p, tail, sizeof tail - 1);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, len);
+  free(msg);
+  scr_dyn_assign_failure_note();
+}
+
+/* A write of `key` on a handle of `tag`, before the ordinary table write.
+ * An own property of the name is the table's to write (its own writability
+ * and accessors decide); an accessor of the class refuses the write as
+ * getter-only; anything else is the tag's own setter, or an own property. */
+static bool hp_set_tag(ScrDynHandleTag tag, void *h, const char *key, size_t key_len,
+                       const ScrDyn *value) {
+  const ScrDynHandleOps *orig = hp_orig[tag];
+  if (hp_has(hp_find(h), key, key_len)) return false;
+  if (hp_is_attribute(orig, key, key_len)) {
+    hp_throw_getter_only(orig, key, key_len);
+    return true;
+  }
+  return orig->set ? orig->set(h, key, key_len, value) : false;
+}
+
 #define HP_TRAMPOLINES(name) \
   static ScrDyn *hp_get_##name(void *h, const char *k, size_t n) { \
     return hp_get_tag(SCR_DYNH_##name, h, k, n); \
@@ -216,6 +326,9 @@ static ScrDyn *hp_invoke_tag(ScrDynHandleTag tag, void *h, ScrDyn *self, const c
   static ScrDyn *hp_invoke_##name(void *h, ScrDyn *self, const char *m, ScrDyn *const *a, \
                                   size_t c, const char *w) { \
     return hp_invoke_tag(SCR_DYNH_##name, h, self, m, a, c, w); \
+  } \
+  static bool hp_set_##name(void *h, const char *k, size_t n, const ScrDyn *v) { \
+    return hp_set_tag(SCR_DYNH_##name, h, k, n, v); \
   }
 HP_TAGS(HP_TRAMPOLINES)
 #undef HP_TRAMPOLINES
@@ -225,7 +338,7 @@ static ScrDyn *hp_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *cons
                          const char *what);
 static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value);
 
-/* Copies the tag's current ops and points get and invoke at the table. */
+/* Copies the tag's current ops and points get, set and invoke at the table. */
 static void hp_refresh(ScrDynHandleTag tag, const ScrDynHandleOps *current) {
   hp_orig[tag] = current;
   hp_ops[tag] = *current;
@@ -239,6 +352,7 @@ static void hp_refresh(ScrDynHandleTag tag, const ScrDynHandleOps *current) {
 #define HP_SET_OPS(name) \
   case SCR_DYNH_##name: \
     hp_ops[tag].get = &hp_get_##name; \
+    hp_ops[tag].set = &hp_set_##name; \
     hp_ops[tag].invoke = &hp_invoke_##name; \
     break;
   HP_TAGS(HP_SET_OPS)
@@ -291,35 +405,48 @@ static ScrDyn *hp_props_of_box(const ScrDyn *handle) {
   size_t i = hp_bucket(h);
   while (hp_slots[i].ptr) i = (i + 1) & (hp_capacity - 1);
   props = scr_dyn_new_obj_null_proto();
-  hp_slots[i].ptr = hp_orig[tag]->retain(h);
+  hp_slots[i].ptr = hp_fetch_tag(tag) ? h : hp_orig[tag]->retain(h);
   hp_slots[i].tag = tag;
   hp_slots[i].props = props;
+  /* The fetch unit's native object holds and traces the table, so a
+   * property that refers back to its handle is an edge the cycle collector
+   * can follow. Otherwise the slot owns it. */
+  hp_slots[i].owns_props = !(hp_fetch_tag(tag) && hp_orig[tag]->adopt_props);
+  if (!hp_slots[i].owns_props) hp_orig[tag]->adopt_props(h, props);
   hp_count++;
   return props;
 }
 
 static bool hp_object_proto_name(const char *key, size_t len) {
-  static const char *const names[] = {
-    "constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
-    "toString", "valueOf", "__proto__", "__defineGetter__", "__defineSetter__",
-    "__lookupGetter__", "__lookupSetter__",
+  static const ScrDynHandleName names[] = {
+    SCR_DYN_HANDLE_NAME("constructor"), SCR_DYN_HANDLE_NAME("hasOwnProperty"),
+    SCR_DYN_HANDLE_NAME("isPrototypeOf"), SCR_DYN_HANDLE_NAME("propertyIsEnumerable"),
+    SCR_DYN_HANDLE_NAME("toLocaleString"), SCR_DYN_HANDLE_NAME("toString"),
+    SCR_DYN_HANDLE_NAME("valueOf"), SCR_DYN_HANDLE_NAME("__proto__"),
+    SCR_DYN_HANDLE_NAME("__defineGetter__"), SCR_DYN_HANDLE_NAME("__defineSetter__"),
+    SCR_DYN_HANDLE_NAME("__lookupGetter__"), SCR_DYN_HANDLE_NAME("__lookupSetter__"),
   };
   for (size_t i = 0; i < sizeof names / sizeof *names; i++)
-    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return true;
+    if (names[i].len == len && memcmp(names[i].name, key, len) == 0) return true;
   return false;
 }
 
 /* Whether `key` names a member of the handle's class: one of its methods
- * as values, a property its ops model, an inherited prototype member, or
- * an Object.prototype name. A modeled read that throws (a real but
- * unmodeled member) counts as a member. */
+ * as values, one of the accessors its interface declares, a property its
+ * ops model, an inherited prototype member, or an Object.prototype name. A
+ * modeled read that throws (a real but unmodeled member) counts as a
+ * member. */
 static bool hp_is_member(const ScrDyn *handle, const ScrStr *key) {
   if (hp_object_proto_name(key->data, key->len)) return true;
   ScrDynHandleTag tag = handle->v.handle.tag;
   const ScrDynHandleOps *ops = hp_wrapped[tag] ? hp_orig[tag] : hp_current_ops(tag);
   for (const ScrDynHandleMethod *m = ops->methods; m && m->name; m++)
     if (strlen(m->name) == key->len && memcmp(m->name, key->data, key->len) == 0) return true;
-  if (ops->get) {
+  if (ops->attributes) {
+    /* The interface's accessors, asked without the reads' side effects (a
+     * response's headers read materializes it). */
+    if (hp_is_attribute(ops, key->data, key->len)) return true;
+  } else if (ops->get) {
     ScrDyn *value = ops->get(handle->v.handle.ptr, key->data, key->len);
     if (scr_exc_pending()) { scr_exc_clear(); return true; }
     if (value) { scr_dyn_release(value); return true; }
@@ -351,15 +478,22 @@ static ScrDyn *hp_table_of(const ScrDyn *handle) { return hp_find(handle->v.hand
  * keys, and Date.prototype.toJSON reads toISOString. A denied grant keeps
  * the H1 refusal (loud) instead of diverging silently. */
 static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) {
-  static const char *const denied[] = {
-    "constructor", "then", "exec", "lastIndex", "flags", "global", "source",
-    "ignoreCase", "multiline", "dotAll", "sticky", "unicode", "unicodeSets",
-    "hasIndices", "size", "toJSON", "hasOwnProperty", "propertyIsEnumerable",
-    "isPrototypeOf", "__proto__", "__defineGetter__", "__defineSetter__",
-    "__lookupGetter__", "__lookupSetter__",
+  static const ScrDynHandleName denied[] = {
+    SCR_DYN_HANDLE_NAME("constructor"), SCR_DYN_HANDLE_NAME("then"),
+    SCR_DYN_HANDLE_NAME("exec"), SCR_DYN_HANDLE_NAME("lastIndex"),
+    SCR_DYN_HANDLE_NAME("flags"), SCR_DYN_HANDLE_NAME("global"),
+    SCR_DYN_HANDLE_NAME("source"), SCR_DYN_HANDLE_NAME("ignoreCase"),
+    SCR_DYN_HANDLE_NAME("multiline"), SCR_DYN_HANDLE_NAME("dotAll"),
+    SCR_DYN_HANDLE_NAME("sticky"), SCR_DYN_HANDLE_NAME("unicode"),
+    SCR_DYN_HANDLE_NAME("unicodeSets"), SCR_DYN_HANDLE_NAME("hasIndices"),
+    SCR_DYN_HANDLE_NAME("size"), SCR_DYN_HANDLE_NAME("toJSON"),
+    SCR_DYN_HANDLE_NAME("hasOwnProperty"), SCR_DYN_HANDLE_NAME("propertyIsEnumerable"),
+    SCR_DYN_HANDLE_NAME("isPrototypeOf"), SCR_DYN_HANDLE_NAME("__proto__"),
+    SCR_DYN_HANDLE_NAME("__defineGetter__"), SCR_DYN_HANDLE_NAME("__defineSetter__"),
+    SCR_DYN_HANDLE_NAME("__lookupGetter__"), SCR_DYN_HANDLE_NAME("__lookupSetter__"),
   };
   for (size_t i = 0; i < sizeof denied / sizeof *denied; i++)
-    if (strlen(denied[i]) == len && memcmp(denied[i], name, len) == 0) return true;
+    if (denied[i].len == len && memcmp(denied[i].name, name, len) == 0) return true;
   /* ToPrimitive reaches the table only where the coercion calls the tag's
    * ops->invoke: Date (toString, valueOf, toLocaleString) and RegExp
    * (toString, toLocaleString). Every other class keeps the refusal. */
@@ -385,7 +519,9 @@ static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) 
 static bool hp_granted(ScrDynHandleTag tag, const ScrStr *key) {
   if (tag == SCR_DYNH_CHILD) return true; /* H1: every child key */
   if (hp_denied_member(key->data, key->len, tag)) return false;
-  if (hp_members_open[tag]) return true;
+  /* A fetch handle's writes are untyped JavaScript's, so every name its
+   * class declares is open without a grant. */
+  if (hp_members_open[tag] || hp_fetch_tag(tag)) return true;
   for (size_t i = 0; i < hp_grant_n; i++)
     if (hp_grants[i].tag == tag && strlen(hp_grants[i].name) == key->len &&
         memcmp(hp_grants[i].name, key->data, key->len) == 0)
@@ -439,9 +575,19 @@ static ScrDyn *hp_write_table(ScrDyn *handle, const ScrStr *key) {
   if (hp_has(props, key->data, key->len)) return props;
   ScrDynHandleTag tag = handle->v.handle.tag;
   if (!hp_accepts(tag)) return NULL;
+  /* A class's prototype accessor keeps its write rule even before this
+   * handle's first table entry wraps the tag's ops: the getter-only write
+   * refuses (strict) or is ignored (sloppy), and adds no own property. */
+  const ScrDynHandleOps *ops = hp_wrapped[tag] ? hp_orig[tag] : hp_current_ops(tag);
+  if (hp_is_attribute(ops, key->data, key->len)) {
+    hp_throw_getter_only(ops, key->data, key->len);
+    return NULL;
+  }
   /* An ordinary key needs no grant; a member key needs one, or the
-   * ordinary arm refuses it. */
-  if (hp_is_member(handle, key) && !hp_granted(tag, key)) return NULL;
+   * ordinary arm refuses it. Ask the grant first: a granted key writes
+   * whatever the membership answer is, and the membership question can
+   * materialize modeled state (a response's headers). */
+  if (!hp_granted(tag, key) && hp_is_member(handle, key)) return NULL;
   return hp_props_of_box(handle);
 }
 
@@ -499,7 +645,8 @@ static void hp_throw_unconfigurable(const ScrDyn *handle, const ScrStr *key) {
   bool tag_form = tag == SCR_DYNH_DATE || tag == SCR_DYNH_REGEXP;
   const char *open = tag_form ? tag_open : class_open;
   const char *close = tag_form ? tag_close : class_close;
-  const char *cls = scr_dyn_handle_cls(handle);
+  const ScrDynHandleOps *orig = hp_wrapped[tag] ? hp_orig[tag] : hp_current_ops(tag);
+  const char *cls = orig->error_cls ? orig->error_cls : scr_dyn_handle_cls(handle);
   size_t open_len = strlen(open), cls_len = strlen(cls), close_len = strlen(close);
   size_t len = sizeof head - 1 + key->len + sizeof mid - 1 + open_len + cls_len + close_len;
   char *msg = malloc(len);
@@ -764,6 +911,7 @@ static const ScrDynHandlePropsHooks hp_hooks = {
   .in = hp_in, .has_own = hp_has_own, .delete_key = hp_delete_key,
   .own_descriptor = hp_own_descriptor, .define = hp_define, .own_names = hp_own_names,
   .objwalk = hp_objwalk, .for_in_keys = hp_for_in_keys, .integrity = hp_integrity,
+  .released = hp_released,
 };
 
 static ScrDyn *hp_get(void *h, const char *key, size_t key_len) {
@@ -945,20 +1093,35 @@ void scr_child_on_dyn_hp(ScrChild *child, ScrStr *event, ScrDyn *listener) {
  * each at: an object the graph reaches again would otherwise be walked
  * down every path, and two self-references are 2^64 paths at the depth
  * cap. A later, shallower arrival is still walked, because the depth cap
- * left part of its subtree unsearched the first time. */
+ * left part of its subtree unsearched the first time. Lookups go through
+ * an identity hash: a wide JSON graph visits every element, and a linear
+ * identity scan over the visited set would make the guard quadratic in
+ * its width. */
 #define HP_SEEN_INLINE 32
 typedef struct {
-  const ScrDyn *value;
+  const ScrDyn *value; /* NULL = empty slot */
   int depth;
 } HpSeenItem;
 
 typedef struct {
   HpSeenItem inline_items[HP_SEEN_INLINE];
   HpSeenItem *items;
-  size_t len, cap;
+  size_t len, cap; /* cap: 0 or a power of two, at most half full */
 } HpSeen;
 
+#ifdef SCR_CYC_TESTING
+/* Deterministic regression hook (scr_handle_props_cycle.test.c): the number
+ * of probes hp_seen_add made, which distinguishes the hash lookup's O(1)
+ * from the old linear scan's O(visited). */
+static size_t hp_seen_probes;
+size_t scr_dyn_handle_props_seen_probes(void) { return hp_seen_probes; }
+#define HP_SEEN_PROBE() (hp_seen_probes++)
+#else
+#define HP_SEEN_PROBE() ((void)0)
+#endif
+
 static void hp_seen_init(HpSeen *seen) {
+  memset(seen->inline_items, 0, sizeof seen->inline_items);
   seen->items = seen->inline_items;
   seen->len = 0;
   seen->cap = HP_SEEN_INLINE;
@@ -968,31 +1131,54 @@ static void hp_seen_free(HpSeen *seen) {
   if (seen->items != seen->inline_items) free(seen->items);
 }
 
+static size_t hp_seen_bucket(const ScrDyn *value, size_t cap) {
+  uintptr_t x = (uintptr_t)value;
+  x ^= x >> 33;
+  x *= UINT64_C(0xff51afd7ed558ccd);
+  x ^= x >> 33;
+  return (size_t)x & (cap - 1);
+}
+
+static void hp_seen_grow(HpSeen *seen) {
+  size_t cap = seen->cap * 2;
+  HpSeenItem *grown = calloc(cap, sizeof *grown);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < seen->cap; i++) {
+    if (!seen->items[i].value) continue;
+    size_t j = hp_seen_bucket(seen->items[i].value, cap);
+    while (grown[j].value) j = (j + 1) & (cap - 1);
+    grown[j] = seen->items[i];
+  }
+  if (seen->items != seen->inline_items) free(seen->items);
+  seen->items = grown;
+  seen->cap = cap;
+}
+
 /* Whether the walk should enter `value` at `depth`. */
 static bool hp_seen_add(HpSeen *seen, const ScrDyn *value, int depth) {
-  for (size_t i = 0; i < seen->len; i++) {
-    if (seen->items[i].value != value) continue;
-    if (seen->items[i].depth <= depth) return false;
-    seen->items[i].depth = depth;
+  if ((seen->len + 1) * 2 > seen->cap) hp_seen_grow(seen);
+  for (size_t i = hp_seen_bucket(value, seen->cap);; i = (i + 1) & (seen->cap - 1)) {
+    HP_SEEN_PROBE();
+    HpSeenItem *item = &seen->items[i];
+    if (!item->value) {
+      item->value = value;
+      item->depth = depth;
+      seen->len++;
+      return true;
+    }
+    if (item->value != value) continue;
+    if (item->depth <= depth) return false;
+    item->depth = depth;
     return true;
   }
-  if (seen->len == seen->cap) {
-    size_t cap = seen->cap * 2;
-    HpSeenItem *grown = malloc(cap * sizeof *grown);
-    if (!grown) scr_trap("scriptc: out of memory\n");
-    memcpy(grown, seen->items, seen->len * sizeof *grown);
-    hp_seen_free(seen);
-    seen->items = grown;
-    seen->cap = cap;
-  }
-  seen->items[seen->len].value = value;
-  seen->items[seen->len].depth = depth;
-  seen->len++;
-  return true;
 }
 
 static bool hp_found(const ScrDyn *value, int depth, HpSeen *seen) {
   if (!value || depth > 64) return false;
+  /* No handle has a property table, so the walk cannot find one. This is
+   * the common case for a fetch-only program, whose serialization guard
+   * must not cost a walk of the value it serializes. */
+  if (hp_count == 0) return false;
   if (value->kind == SCR_DYN_HANDLE) {
     ScrDyn *props = hp_find(value->v.handle.ptr);
     return props && scr_dyn_obj_count(props) > 0;
@@ -1020,6 +1206,7 @@ static void hp_refuse(const ScrStr *consumer) {
 }
 
 ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer) {
+  if (hp_count == 0) return scr_dyn_retain(value);
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = hp_found(value, 0, &seen);
@@ -1029,6 +1216,7 @@ ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer) {
 }
 
 ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer) {
+  if (hp_count == 0) return scr_arr_retain(values);
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = false;
@@ -1044,6 +1232,7 @@ ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer) {
 
 /* The same check for a typed handle argument, boxed only for the check. */
 void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer) {
+  if (hp_count == 0) return;
   HpSeen seen;
   hp_seen_init(&seen);
   bool found = hp_found(value, 0, &seen);

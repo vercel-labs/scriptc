@@ -1,0 +1,9 @@
+{
+  "kind": "server",
+  "entry": "workloads/request-context.mjs",
+  "args": [],
+  "client": {
+    "script": "clients/http-load.mjs",
+    "args": ["--connections=64", "--threads=2", "--warmup=4000", "--requests=40000"]
+  }
+}

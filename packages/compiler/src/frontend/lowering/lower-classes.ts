@@ -5579,10 +5579,18 @@ export function collectClassShapeInner(
         ? lowerer.paramShapes(abiCtor.parameters.nodes)
         : (base?.ctorParams ??
           (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
+    // A constructor that reads its actual argument list receives it: every
+    // untyped constructor (JS arity), and a typed one whose callers can pass
+    // a different number of arguments than the declaration names (an
+    // optional, defaulted or rest parameter, where a fixed-arity signature
+    // folds `arguments.length` to a constant).
     if (
       ctor &&
       !mixinForwarding &&
-      isJsSourceFile(ts.getSourceFileOfNode(ctor)) &&
+      (isJsSourceFile(ts.getSourceFileOfNode(ctor)) ||
+        ctor.parameters.nodes.some(
+          (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+        )) &&
       !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest") &&
       bodyReadsArguments(ctor)
     ) {

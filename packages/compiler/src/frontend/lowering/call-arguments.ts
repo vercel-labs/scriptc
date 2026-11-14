@@ -172,17 +172,25 @@ export function completeArgs(
   const loweredSpreads = new Map<ts.Expression, IrExpr>();
   const lowerSpread = (arg: ts.SpreadElement): IrExpr =>
     loweredSpreads.get(arg) ?? lowerer.lowerExpr(arg.expression);
+  // The hidden actual-argument array (ParamMode "arguments") is one of the
+  // trailing slots. A signature that also declares a rest parameter packs
+  // both from the same argument list, so the whole list is built as one
+  // dynamic array (dynArgumentPack) even without a runtime-length spread:
+  // the rest slots slice it and the hidden array is the list itself.
+  const argumentsAt = shapes.findIndex((shape) => shape.mode === "arguments");
+  const declaresRest = shapes.some((shape) => shape.mode === "rest" || shape.mode === "dynRest");
   if (
-    runtimeSpreads.length > 0 &&
-    canCompleteRuntimeSpread(lowerer, shapes) &&
-    !spreadsFillTypedRest(
-      lowerer,
-      shapes,
-      argNodes,
-      leading?.length ?? 0,
-      runtimeSpreads,
-      loweredSpreads,
-    )
+    (runtimeSpreads.length > 0 &&
+      canCompleteRuntimeSpread(lowerer, shapes) &&
+      !spreadsFillTypedRest(
+        lowerer,
+        shapes,
+        argNodes,
+        leading?.length ?? 0,
+        runtimeSpreads,
+        loweredSpreads,
+      )) ||
+    (argumentsAt >= 0 && declaresRest && canCompleteRuntimeSpread(lowerer, shapes))
   ) {
     // Runtime-length spreads determine the complete argument list before
     // any parameter default runs. Build it once in source order, then

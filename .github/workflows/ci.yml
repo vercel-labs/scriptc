@@ -191,7 +191,7 @@ jobs:
   tests:
     needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
-    name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/20)
+    name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }})
     # The full suite runs on Linux x64, whose hosted runners start without the
     # macOS queue. tests_macos keeps the darwin clang/libc oracles.
     runs-on: ubuntu-24.04
@@ -199,9 +199,26 @@ jobs:
       fail-fast: false
       matrix:
         flavor: [plain, san]
-        # Twenty shards keep each job near six minutes of tests (the corpus
-        # programs are balanced by measured cost, tests/harness/shard.ts).
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        # The sanitized shards are this lane's long pole: with twenty slices
+        # they run 33 to 43 minutes of tests each, against the plain lane's
+        # 20. Thirty slices cut each sanitized shard's share of the corpus to
+        # two thirds. The corpus programs and side-queue files are balanced by
+        # measured cost, and the case-split harnesses by their cost tables
+        # (tests/harness/shard.ts); every shard's union still runs every case
+        # exactly once.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+        exclude:
+          # Plain keeps twenty: only the sanitized flavor is sharded further.
+          - { flavor: plain, shard: 21 }
+          - { flavor: plain, shard: 22 }
+          - { flavor: plain, shard: 23 }
+          - { flavor: plain, shard: 24 }
+          - { flavor: plain, shard: 25 }
+          - { flavor: plain, shard: 26 }
+          - { flavor: plain, shard: 27 }
+          - { flavor: plain, shard: 28 }
+          - { flavor: plain, shard: 29 }
+          - { flavor: plain, shard: 30 }
     env:
       # Capped workers: the shared runner's cores oversubscribe under the
       # corpus compile fan-out, and vitest's worker RPC times out ("Timeout
@@ -218,12 +235,13 @@ jobs:
       ASAN_OPTIONS: detect_leaks=0
       # Within-file partition for the large case-driven harnesses
       # (differential, llvm-differential, npm, server, Test262, coverage, and
-      # Vercel E2E): partition stable case names into slice i of 20
-      # (tests/harness/shard.ts). The twenty shards' unions run every case
-      # exactly once. vitest's own --shard is FILE-granular and cannot split
-      # these monster files (differential.test.ts alone is ~9 min
-      # sequential), hence the case-sharded steps below.
-      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/20
+      # Vercel E2E): partition stable case names into slice i of the job's
+      # shard count, twenty on the plain lane and thirty on the sanitized one
+      # (tests/harness/shard.ts). The shards' unions run every case exactly
+      # once. vitest's own --shard is FILE-granular and cannot split these
+      # monster files (differential.test.ts alone is ~9 min sequential), hence
+      # the case-sharded steps below.
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0

@@ -4224,9 +4224,28 @@ export function representedClassFieldTarget(
       ? lowerer.unions.get(value.type.unionId)?.arms.filter((arm) => !isUnitType(arm))
       : [value.type];
   const objectType = arms?.length === 1 ? arms[0] : null;
-  return objectType?.kind === "object"
-    ? classFieldTarget(lowerer, receiverNode, objectType, fieldName, value)
-    : null;
+  if (objectType?.kind === "object")
+    return classFieldTarget(lowerer, receiverNode, objectType, fieldName, value);
+  // Several classes (`FileNode | LinkNode | SpecialNode`, a narrowing of a
+  // node union): the field of their nearest common base, when it declares
+  // one, through the value upcast to that base. Each arm's instance holds
+  // the base's layout, so the slot is the same in all of them.
+  if (arms && arms.length > 1 && arms.every((arm) => arm.kind === "object")) {
+    const names = arms.map((arm) => (arm as IrType & { kind: "object" }).className);
+    for (let c = lowerer.classes.get(names[0]!); c; c = c.base ?? undefined) {
+      const base = c.def.name;
+      if (!names.every((name) => name === base || lowerer.isSubclassOf(name, base))) continue;
+      const baseType: IrType & { kind: "object" } = { kind: "object", className: base };
+      return classFieldTarget(
+        lowerer,
+        receiverNode,
+        baseType,
+        fieldName,
+        lowerer.coerceInto(receiverNode, value, baseType),
+      );
+    }
+  }
+  return null;
 }
 
 /** A STATICALLY-RESOLVABLE unique-symbol key: an identifier whose value

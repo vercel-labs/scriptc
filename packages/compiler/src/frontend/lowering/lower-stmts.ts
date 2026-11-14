@@ -294,7 +294,11 @@ import {
 import { hasExplicitJsDocReturn } from "./function-returns.js";
 import { recordKeysArrayCall } from "./lower-calls.js";
 import { registerOverloadedCallableAlias } from "./call-signatures.js";
-import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
+import {
+  isMixinFnBinding,
+  mixinInstantiationNewType,
+  mixinResultBindingClassOf,
+} from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
 import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
 import { isCompiledPrototypeMember } from "./class-prototypes.js";
@@ -8015,6 +8019,14 @@ export function lowerVarDecl(
     staticImportNamespaceType(lowerer, decl.initializer) ??
     (init.type.kind === "moduleNs" ? init.type : null) ??
     (init.type.kind === "dyn" ? DYN : null);
+  // `const made = new V()` where V is a mixin RESULT binding: the checker
+  // types the value by the class expression the mixin body returns, but the
+  // constructed value is that call site's INSTANTIATION. The binding keeps
+  // the value's layout (mixinInstantiationNewType).
+  if (!decl.type && type?.kind === "object" && init.type.kind === "object") {
+    const constructed = mixinInstantiationNewType(lowerer, decl);
+    if (constructed && typeEquals(constructed, init.type)) type = constructed;
+  }
   // A statSync/lstatSync/fstatSync call lowered to the run-time options
   // ladder answers a checked-dynamic Stats, BigIntStats or undefined (the
   // options pick the member table and the missing-entry policy at the call),

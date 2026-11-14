@@ -65,6 +65,10 @@ console.log(missing === undefined, typeof missing);
 try { console.log(list[9].name); } catch (e) { console.log(String(e)); }
 function describe(item: Item): string { return item === undefined ? "absent" : item.name; }
 console.log(describe(list[0]), describe(list[3]));
+// A numeric string key reads the `number` index signature too.
+const zero = "0";
+function at(key: "1" | "6"): Item { return list[key]; }
+console.log(list["1"].name, list["8"], typeof list["8"], list[zero].name, at("1").name, at("6"));
 
 class Counts {
   [key: string]: number;

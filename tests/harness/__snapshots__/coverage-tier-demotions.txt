@@ -5,9 +5,9 @@ scriptc coverage tests/coverage-fixtures/tier-demotions.ts
     in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   blockers:
-      ×1  SC1090  assignment to non-variables
-          at tests/coverage-fixtures/tier-demotions.ts:10:1
+      ×1  SC1090  class prototype reflection and accessor replacement (named prototype data and methods compile)
+          at tests/coverage-fixtures/tier-demotions.ts:10:23
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
       ×1  SC2020  'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
-          at tests/coverage-fixtures/tier-demotions.ts:22:27
+          at tests/coverage-fixtures/tier-demotions.ts:24:27
           hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile

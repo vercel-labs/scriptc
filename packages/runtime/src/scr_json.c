@@ -2576,6 +2576,82 @@ double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what) {
   return nan ? NAN : best;
 }
 
+/* Math.max/Math.min/Math.hypot over an argument list the compiler could not
+ * flatten statically (a spread of a Map/Set iterator, a generator, an
+ * untyped value): the pack holds the evaluated arguments in source order,
+ * and every one converts through ToNumber exactly once, in order. mode 0
+ * folds max, 1 min, 2 hypot — the same NaN-poisoning, ±0 and Infinity rules
+ * scr_math_max_arr and scr_math_hypot_arr apply to typed arrays. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode) {
+  if (pack == NULL || pack->kind != SCR_DYN_ARR) {
+    /* Only the compiler's own argument pack reaches here; an absent one is
+     * an empty argument list. */
+    if (pack != NULL && pack->kind != SCR_DYN_UNDEF && pack->kind != SCR_DYN_NULL) {
+      ScrStr *msg = scr_str_new("", 0);
+      ScrDyn *rest = scr_dyn_destructure_rest(pack, msg);
+      scr_str_release(msg);
+      if (!rest) return NAN;
+      double result = scr_dyn_math_fold_many(rest, mode);
+      scr_dyn_release(rest);
+      return result;
+    }
+    pack = NULL;
+  }
+  const size_t n = pack != NULL ? pack->v.arr.len : 0;
+  double *values = n > 0 ? malloc(n * sizeof *values) : NULL;
+  if (n > 0 && !values) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++) {
+    values[i] = scr_dyn_number_coerce(pack->v.arr.items[i]);
+    if (scr_exc_pending()) {
+      free(values);
+      return NAN;
+    }
+  }
+  double result;
+  if (mode == 2.0) {
+    /* Math.hypot: scale before summing to avoid intermediate overflow or
+     * underflow, and let Infinity win over NaN. */
+    double scale = 0.0;
+    bool has_nan = false;
+    for (size_t i = 0; i < n; i++) {
+      double v = fabs(values[i]);
+      if (isinf(v)) {
+        free(values);
+        return INFINITY;
+      }
+      if (isnan(v)) has_nan = true;
+      else if (v > scale) scale = v;
+    }
+    if (has_nan || scale == 0.0) {
+      free(values);
+      return has_nan ? NAN : 0.0;
+    }
+    double sum = 0.0;
+    double correction = 0.0;
+    for (size_t i = 0; i < n; i++) {
+      double v = values[i] / scale;
+      double term = v * v - correction;
+      double next = sum + term;
+      correction = (next - sum) - term;
+      sum = next;
+    }
+    free(values);
+    return scale * sqrt(sum);
+  }
+  const bool max = mode == 0.0;
+  double best = max ? -INFINITY : INFINITY;
+  bool nan = false;
+  for (size_t i = 0; i < n; i++) {
+    double v = values[i];
+    if (isnan(v)) nan = true;
+    else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
+                 : (v < best || (v == 0.0 && best == 0.0 && signbit(v))))
+      best = v;
+  }
+  free(values);
+  return nan ? NAN : best;
+}
+
 ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
   if (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack)
     return scr_dyn_handle_ops_of(src)->iter_pack(src->v.handle.ptr);
@@ -19538,6 +19614,11 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return NULL;
     }
     if (current->kind == SCR_DYN_FUNC) {
+      /* A class with no static property table answers name and length and
+       * refuses every other key (scr_dyn_fn_get), as a keyed read does: an
+       * empty table would report its statics as undefined. */
+      if (current->v.fn.class_obj && !current->v.fn.class_obj->static_data)
+        return scr_dyn_fn_get(current, key, key_len);
       ScrDyn *table = scr_dyn_fn_properties(current);
       ScrDyn *result = scr_dyn_obj_read_receiver(table, key, key_len, receiver);
       scr_dyn_release(table);

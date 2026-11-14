@@ -1681,11 +1681,11 @@ interface Request {
   readonly headers: Headers;
   readonly destination: string;
   readonly referrer: string;
-  readonly referrerPolicy: string;
-  readonly mode: string;
-  readonly credentials: string;
-  readonly cache: string;
-  readonly redirect: "follow" | "error" | "manual";
+  readonly referrerPolicy: ReferrerPolicy;
+  readonly mode: RequestMode;
+  readonly credentials: RequestCredentials;
+  readonly cache: RequestCache;
+  readonly redirect: RequestRedirect;
   readonly integrity: string;
   readonly keepalive: boolean;
   readonly isReloadNavigation: boolean;
@@ -1700,19 +1700,49 @@ interface Request {
   bytes(): Promise<Uint8Array>;
   clone(): Request;
 }
+type RequestCache =
+  | "default"
+  | "force-cache"
+  | "no-cache"
+  | "no-store"
+  | "only-if-cached"
+  | "reload";
+type RequestCredentials = "include" | "omit" | "same-origin";
+type RequestMode = "cors" | "navigate" | "no-cors" | "same-origin";
+type RequestPriority = "auto" | "high" | "low";
+type RequestRedirect = "error" | "follow" | "manual";
+type ReferrerPolicy =
+  | ""
+  | "no-referrer"
+  | "no-referrer-when-downgrade"
+  | "origin"
+  | "origin-when-cross-origin"
+  | "same-origin"
+  | "strict-origin"
+  | "strict-origin-when-cross-origin"
+  | "unsafe-url";
 interface RequestInit {
-  method?: string;
-  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
   body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
+  cache?: RequestCache;
+  credentials?: RequestCredentials;
   duplex?: "half";
-  redirect?: "follow" | "error" | "manual";
-  signal?: AbortSignal;
+  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
+  integrity?: string;
+  keepalive?: boolean;
+  method?: string;
+  mode?: RequestMode;
+  priority?: RequestPriority;
+  redirect?: RequestRedirect;
+  referrer?: string;
+  referrerPolicy?: ReferrerPolicy;
+  signal?: AbortSignal | null;
+  window?: null;
 }
 declare var Request: {
   new (input: RequestInfo, init?: RequestInit): Request;
   readonly prototype: Request;
 };
-declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
  * shipped). The handle is the Timeout interface, like Node's — it maps to

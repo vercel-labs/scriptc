@@ -396,6 +396,7 @@ import { lowerRecordInheritedCall } from "./record-inherited.js";
 import { builtinConstructorNames, builtinConstructorText } from "./held-constructors.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 import { lowerFetchDispatcherHook } from "./fetch-dispatcher.js";
+import { withClassInitFlag } from "./cycle-initialization.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -1695,7 +1696,19 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // or position fences by name inside.
   if (ts.isIdentifier(expr.expression)) {
     const mixinInfo = lowerer.mixinCallClassInfoOf(expr);
-    if (mixinInfo) return lowerer.classValueRef(mixinInfo, expr);
+    if (mixinInfo) {
+      const value = lowerer.classValueRef(mixinInfo, expr);
+      // A statics-bearing instantiation in a conditional's arm defines its
+      // statics where the arm evaluates: only on the path that selects it.
+      if (!mixinInfo.mixinInstance?.staticsInArm) return value;
+      return {
+        kind: "seqExpr",
+        stmts: withClassInitFlag(lowerer, mixinInfo, lowerer.lowerStaticFieldInits(mixinInfo)),
+        result: value,
+        type: value.type,
+        loc,
+      };
+    }
   }
 
   // Direct call of a top-level declared function: the fast path (no

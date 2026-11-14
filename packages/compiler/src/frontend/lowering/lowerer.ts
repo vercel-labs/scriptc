@@ -1418,6 +1418,13 @@ export interface LowererMode {
    * on the comparison pass of a program whose first pass met a refusal that
    * involves a held constructor (held-constructors.ts). */
   untypedConstructors?: boolean;
+  /** The program classes whose class values the pass holds as
+   * checked-dynamic values (TypeMapperCtx.dynamicClassValue), by
+   * declaration. lowerToIr sets it on the comparison pass of a program
+   * whose pass refused a descendant's class value, with a constructor of
+   * other parameters, in a slot of its base's class value type
+   * (Lowerer.dynamicClassValueRequests). */
+  dynamicClassValues?: ReadonlySet<ts.Node>;
   /** End the pass where it asks for the next stream mode, because that
    * pass replaces its result outright (lowerToIrWithIslands sets this on
    * the push-down pass and on the general stream pass). */
@@ -1570,6 +1577,12 @@ class StreamFlagsAbort {}
  * to its end and fails the build when that pass met an untyped stream flow
  * after its request which the general stream pass did not meet. */
 const CHECK_STREAM_MODE = process.env["SCRIPTC_CHECK_STREAM_MODE"] === "1";
+
+/** The class values a pass after `pass` holds as it did
+ * (LowererMode.dynamicClassValues). */
+function dynamicClassValuesOf(pass: Lowerer): { dynamicClassValues?: ReadonlySet<ts.Node> } {
+  return pass.dynamicClassValues.size > 0 ? { dynamicClassValues: pass.dynamicClassValues } : {};
+}
 
 export function lowerToIr(
   program: ts.Program,
@@ -1903,8 +1916,8 @@ function lowerToIrWithIslands(
   // The comparison round. A failing program lowers once more in another
   // representation, and the pass with fewer refusals stands (ties keep the
   // standing pass). A program that compiles with nothing refused never
-  // takes this path. Two representations are compared, in ONE pass when the
-  // program asks for both:
+  // takes this path. Three representations are compared, in ONE pass when
+  // the program asks for more than one:
   //   - Localized failure (stage L3): push-down must never cost a failing
   //     program more errors than the whole-slot checked dynamic. A
   //     pushed-down type is baked into the globals, fields and signatures
@@ -1915,10 +1928,17 @@ function lowerToIrWithIslands(
   //     refusal. When a refusal involves one, a build error or one deferred
   //     to run time, the emit runs with the constructors in checked-dynamic
   //     slots.
+  //   - Class values (Lowerer.dynamicClassValueRequests): a slot of a
+  //     class's class value type refused a descendant whose constructor
+  //     takes other parameters. The emit runs with that class's values,
+  //     and its ancestors', in checked-dynamic slots, where construction
+  //     runs the constructor of the class the value holds, with the
+  //     arguments as written.
   // A program whose errors all involve a held constructor compares that
   // representation alone first: its degraded types are not what failed. If
   // the standing pass then still fails with pushed-down types, it takes the
   // whole-slot comparison as any failing program does.
+  const classValuesCompared = new Set<ts.Node>();
   const comparisonRounds = (general: boolean): void => {
     let constructorsCompared = false;
     for (;;) {
@@ -1927,9 +1947,22 @@ function lowerToIrWithIslands(
         !constructorsCompared &&
         !resultLowerer.untypedConstructors &&
         constructorRefusals(resultLowerer, result);
+      // A refusal checked JavaScript defers to run time asks for the
+      // comparison as a build error does.
+      const requested =
+        result.diagnostics.length === 0 && result.runtimeFences.length === 0
+          ? []
+          : [...resultLowerer.dynamicClassValueRequests].filter(
+              (decl) => !classValuesCompared.has(decl),
+            );
+      const classValues = requested.length > 0;
       const whole = partial && (!untyped || otherErrors(result));
-      if (!whole && !untyped) return;
+      if (!whole && !untyped && !classValues) return;
       if (untyped) constructorsCompared = true;
+      for (const decl of requested) classValuesCompared.add(decl);
+      const dynamicClassValues = classValues
+        ? new Set([...resultLowerer.dynamicClassValues, ...requested])
+        : resultLowerer.dynamicClassValues;
       const pass = new Lowerer(program, entry, moduleOrder, {
         facts,
         frontendServices: options.frontendServices,
@@ -1962,6 +1995,7 @@ function lowerToIrWithIslands(
         ffiBindingSymbols: ffiValidation.symbolsByName,
         ...(whole ? { wholeSlotDegradation: true } : {}),
         ...(untyped || resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
+        ...(dynamicClassValues.size > 0 ? { dynamicClassValues } : {}),
       });
       for (const d of extraModuleCycleDiags) pass.pushDiag(d);
       for (const d of ffiValidation.diagnostics) pass.pushDiag(d);
@@ -1969,25 +2003,34 @@ function lowerToIrWithIslands(
       // The whole-slot comparison alone judges build errors, as it always
       // has; a comparison that involves held constructors also counts the
       // refusals deferred to run time.
-      const fewer = untyped
-        ? fewerRefusals(emitted.result, result)
-        : emitted.result.diagnostics.length < result.diagnostics.length;
+      const fewer =
+        untyped || classValues
+          ? fewerRefusals(emitted.result, result)
+          : emitted.result.diagnostics.length < result.diagnostics.length;
       if (fewer) {
         reachable = emitted.reachable;
         result = emitted.result;
         resultLowerer = pass;
       }
-      timing(whole ? "whole-slot-relower" : "untyped-constructors-relower", {
-        reachable: emitted.reachable.size,
-        ...(whole && untyped ? { constructors: "untyped" } : {}),
-        ...(untyped
-          ? {
-              kept: fewer,
-              errors: emitted.result.diagnostics.length,
-              deferred: emitted.result.runtimeFences.length,
-            }
-          : {}),
-      });
+      timing(
+        whole
+          ? "whole-slot-relower"
+          : untyped
+            ? "untyped-constructors-relower"
+            : "class-values-relower",
+        {
+          reachable: emitted.reachable.size,
+          ...(whole && untyped ? { constructors: "untyped" } : {}),
+          ...(classValues ? { class_values: "dynamic" } : {}),
+          ...(untyped || classValues
+            ? {
+                kept: fewer,
+                errors: emitted.result.diagnostics.length,
+                deferred: emitted.result.runtimeFences.length,
+              }
+            : {}),
+        },
+      );
       if (whole) return;
     }
   };
@@ -2027,6 +2070,7 @@ function lowerToIrWithIslands(
       // is replaced by the pass that has them.
       ...(dyn ? { dynNodeStreams: true } : { abortOnStreamFlags: abortReplacedPasses }),
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...dynamicClassValuesOf(resultLowerer),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
@@ -2107,6 +2151,7 @@ function lowerToIrWithIslands(
       typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
       ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
+      ...dynamicClassValuesOf(resultLowerer),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -2310,6 +2355,7 @@ function lowerToIrWithIslands(
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
       ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
+      ...dynamicClassValuesOf(resultLowerer),
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
@@ -4235,7 +4281,17 @@ export class Lowerer {
         this.checker.getPropertyOfType(receiverType, key.text) !== undefined
       )
         return null;
-      numericKey = (this.typeOf(key).flags & ts.TypeFlags.NumberLike) !== 0;
+      // A numeric string key (`list["0"]`, or a `"0"`-typed binding) is
+      // answered by a `number` index signature, as the checker resolves it.
+      const keyType = this.typeOf(key);
+      numericKey = (keyType.isUnionType() ? ts.constituentTypes(keyType) : [keyType]).every(
+        (part) => {
+          if (part.flags & ts.TypeFlags.NumberLike) return true;
+          if (!(part.flags & ts.TypeFlags.StringLiteral)) return false;
+          const text = (part as ts.StringLiteralType).value;
+          return String(Number(text)) === text;
+        },
+      );
     }
     const signatures = this.checker.getIndexInfosOfType(receiverType);
     const signature =
@@ -6093,6 +6149,7 @@ export class Lowerer {
       checkedTable("pendingClassExprInits", () => this.pendingClassExprInits.length),
       checkedTable("computedClassBases", () => this.computedClassBases.size),
       checkedTable("computedCallableBases", () => this.computedCallableBases.size),
+      checkedTable("computedHeritageArms", () => this.computedHeritageArms.size),
       checkedTable("mixinInstanceByCall", () => this.mixinInstanceByCall.size),
       checkedTable("mixinCollectingCalls", () => this.mixinCollectingCalls.size),
       checkedTable("mixinOrdinals", () => this.mixinOrdinals.size),
@@ -6119,6 +6176,7 @@ export class Lowerer {
       checkedTable("dynamicSlots", () => this.dynamicSlots.length),
       checkedTable("parallelWarnings", () => this.parallelWarnings.length),
       checkedTable("retriedSymbols", () => this.retriedSymbols.size),
+      checkedTable("dynamicClassValueRequests", () => this.dynamicClassValueRequests.size),
       checkedTable("skippedBodies", () => this.skippedBodies.size),
       checkedTable("retriedDeclarations", () => this.retriedDeclarations.length),
       checkedTable("loweredOnceDiags", () => this.loweredOnceDiags.size),
@@ -6172,6 +6230,7 @@ export class Lowerer {
     "priorRetriedSymbols",
     "wholeSlotDegradation",
     "untypedConstructors",
+    "dynamicClassValues",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.
@@ -6702,6 +6761,13 @@ export class Lowerer {
   readonly wholeSlotDegradation: boolean;
   /** LowererMode.untypedConstructors. */
   readonly untypedConstructors: boolean;
+  /** LowererMode.dynamicClassValues. */
+  readonly dynamicClassValues: ReadonlySet<ts.Node>;
+  /** The class declarations whose class values a slot refused to hold a
+   * descendant's because the descendant's constructor takes other
+   * arguments (requireExactShape), with their ancestors: the classes a
+   * comparison pass holds as checked-dynamic values. */
+  readonly dynamicClassValueRequests = new Set<ts.Node>();
   /** The program holds a primitive constructor as a value: one was written
    * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
    * nothing of held-constructors.ts is asked of the values it lowers. */
@@ -7293,6 +7359,7 @@ export class Lowerer {
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
     this.untypedConstructors = mode.untypedConstructors ?? false;
+    this.dynamicClassValues = mode.dynamicClassValues ?? new Set();
     this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
@@ -7482,6 +7549,14 @@ export class Lowerer {
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
       ...(this.untypedConstructors ? { untypedConstructors: true } : {}),
+      ...(this.dynamicClassValues.size > 0
+        ? {
+            dynamicClassValue: (className: string) => {
+              const decl = this.classes.get(className)?.decl;
+              return decl !== undefined && decl !== null && this.dynamicClassValues.has(decl);
+            },
+          }
+        : {}),
       // A mapping says nothing of whether the program holds a constructor:
       // analyses map the type of a callee or a receiver they never hold.
       onConstructorFunctionType: () => {
@@ -16281,7 +16356,7 @@ export class Lowerer {
     if (ts.isPropertyAccessExpression(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) {
       const receiver =
         node.expression.kind === ts.SyntaxKind.ThisKeyword && this.fnStack.length > 0
-          ? this.resolveThis()?.type
+          ? this.peekThis()?.type
           : this.mapTypeOf(this.checker.getTypeAtLocation(node.expression));
       const checkedThis =
         node.expression.kind === ts.SyntaxKind.ThisKeyword &&
@@ -16308,14 +16383,15 @@ export class Lowerer {
         return this.checker.getUnknownType();
       }
     }
-    // A checked JS method receives its actual call-site receiver. Its
-    // declaration's inferred class type must not turn property reads back
-    // into native field loads when the method is borrowed by another object.
+    // A member lowered over a dynamic receiver (a checked JS method, or a
+    // static member lowered for a class value's property table) receives
+    // its actual call-site receiver. Its declaration's inferred class type
+    // must not turn property reads back into native field loads when the
+    // member runs for another class value.
     if (
       node.kind === ts.SyntaxKind.ThisKeyword &&
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       this.fnStack.length > 0 &&
-      this.resolveThis()?.type.kind === "dyn"
+      this.peekThis()?.type.kind === "dyn"
     )
       return this.checker.getUnknownType();
     // Inside an optional-chain body the guarded receiver is typed by its
@@ -17034,6 +17110,17 @@ export class Lowerer {
       const sub = this.classes.get(actual.className);
       const sup = this.classes.get(expected.className);
       if (sub && sup && this.isSubclassOf(actual.className, expected.className)) {
+        // A comparison pass holds the base's class values (and its
+        // ancestors', which the same value may reach) as checked-dynamic
+        // values, where construction picks the held class's constructor.
+        for (let info: ClassInfo | null = sup; info !== null; info = info.base)
+          if (
+            info.decl !== null &&
+            !info.def.runtime &&
+            !info.generic &&
+            info.genericInstance === undefined
+          )
+            this.dynamicClassValueRequests.add(info.decl);
         this.unsupported(
           "SC1090",
           node,
@@ -20785,6 +20872,18 @@ export class Lowerer {
   readonly pendingClassExprInits: IrStmt[] = [];
   readonly computedClassBases = new Map<string, { value: IrExpr; classInfo: ClassInfo }>();
   readonly computedCallableBases = new Map<ts.ClassLikeDeclaration, IrExpr>();
+  /** The arms a conditional heritage may select from, by the inheriting
+   * class's name: `arms[0]` when the condition holds, `arms[1]` otherwise.
+   * The class lays out as the one class its type names, but `instanceof`
+   * answers must follow the SELECTED class, so the test reads which arm ran
+   * (`condGlobal`, the condition the class statement evaluated once).
+   * `condGlobal` is absent for a heritage the compiler cannot hold to one
+   * selection (a class expression evaluated again per evaluation). Absent
+   * entirely for a heritage that can select only one class. */
+  readonly computedHeritageArms = new Map<
+    string,
+    { arms: readonly [string, string]; condGlobal?: string }
+  >();
   /** Discovery hook: registers a just-collected expression class's member
    * bodies as worklist units (the units map is otherwise built before
    * lowering starts). Null in the emit pass. */
@@ -21589,6 +21688,21 @@ export class Lowerer {
    * their bodies never see an enclosing method's binding). */
   resolveThis(blame?: ts.Node): IrLocal | null {
     return this.resolveKey(undefined, blame);
+  }
+
+  /** The lexical `this` without threading a capture: the current
+   * context's this-param or the nearest enclosing one an arrow shares.
+   * A plain function boundary with no this-param answers null. Type
+   * queries use this form — asking a `this` expression for its type must
+   * not box the binding and add a capture the body never reads (which
+   * also makes an enclosing `this`←closure cycle). */
+  peekThis(): IrLocal | null {
+    for (let depth = this.fnStack.length - 1; depth >= 0; depth--) {
+      const ctx = this.fnStack[depth]!;
+      if (ctx.thisLocal !== null) return ctx.thisLocal;
+      if (ctx.thisBoundary) return null;
+    }
+    return null;
   }
 
   peekLocal(ident: ts.Identifier): IrLocal | null {

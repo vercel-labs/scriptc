@@ -6428,7 +6428,10 @@ const SYNC_CALLBACK_HOST_APIS7 = new Set([
  * access argument, computed name, `in` operand, through parentheses,
  * casts and template spans). A `typeof` operand is not one: the typeof
  * lowering keeps the read of a flagged binding, so its initialization
- * check runs (Node's typeof throws for a binding not yet initialized). */
+ * check runs (Node's typeof throws for a binding not yet initialized).
+ * That holds for every answer it folds from the binding's type, through
+ * type wrappers, and in the `typeof x === "lit"` tests
+ * (withCycleBindingRead, typeof.ts). */
 function foldablePosition7(ref: ts.Identifier): boolean {
   let child: ts.Node = ref;
   for (let p: ts.Node | undefined = ref.parent; p !== undefined; p = p.parent) {

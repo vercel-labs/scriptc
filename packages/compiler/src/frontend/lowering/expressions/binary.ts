@@ -107,7 +107,7 @@ import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
-import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
+import { lowerDynTypeofTest, lowerErrorCodeTypeofTest, withTypeofTestCycleRead } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
 import {
   lowerRuntimeConstructorIs,
@@ -2389,7 +2389,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
       lowerUnionTypeofTest(lowerer, expr, loc);
-    if (test) return test;
+    // These tests can answer from the operand's type alone (a union
+    // whose arms all answer alike): a binding an import cycle can reach
+    // before its declaration ran keeps its checked read.
+    if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.

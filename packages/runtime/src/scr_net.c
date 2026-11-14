@@ -8954,64 +8954,73 @@ static bool scr_net_flags_pending(void) {
   return false;
 }
 
-/* Whether a 'close' listener retains the server it listens to: one of the
- * closure's captures is the server itself (a box of the handle, a boxed
- * dynamic value wrapping it, or a captured-value slot). Such a pair is a
- * native ownership cycle the reference count cannot break, and native
- * handles stay outside the cycle collector. A settled server keeps its
- * persistent 'close' listeners for the repeat emission a later close()
- * causes; one that captures its own server would then pin the server and
- * everything it captured until process exit, so the settle drops those.
+/* Whether a 'close' listener's captures can reach the server `s`. A settled
+ * server keeps its persistent 'close' listeners for the repeat emission a
+ * later close() causes; a listener that can reach the server closes an
+ * ownership cycle (server → closure → server) the reference count cannot
+ * break and the cycle collector cannot see (native handles stay outside it),
+ * so the settle drops those listeners instead of pinning the server.
  *
- * The compiler emits a handle capture's entry points as the `_v` void-star
- * wrappers (lib-network.ts boxes the server with scr_net_server_retain_v /
- * scr_net_server_release_v), so the comparison names those, not the typed
- * functions the runtime calls internally. */
-static bool scr_net_server_release_entry(const void *release) {
-  return release == (const void *)scr_net_server_release_v ||
-         release == (const void *)scr_net_server_release;
-}
-
-static bool scr_net_listener_holds_server(const ScrClosure *cb, const ScrNetServer *s) {
+ * A capture is safe when it cannot hold the server: a number, a boolean or a
+ * string, or a function whose own captures are safe. A handle, an object, an
+ * array or a dynamic value may hold it through a field — including a handle
+ * boxed with scr_net_server_retain_v / scr_net_server_release_v, the entry
+ * points the compiler emits — so those are never safe, and neither is a
+ * function value's own-property table. `depth` bounds the chain of captured
+ * functions the walk follows. */
+static bool scr_net_listener_captures_safe(const ScrClosure *cb, const ScrNetServer *s, int depth) {
+  if (depth <= 0) return false;
+  if (cb->props != NULL) return false;
   for (size_t i = 0; i < cb->ncaps; i++) {
     const ScrBox *b = cb->caps[i];
-    if (b == NULL || b->kind != SCR_BOX_OBJ) continue;
+    if (b == NULL || b->kind == SCR_BOX_F64 || b->kind == SCR_BOX_BOOL || b->kind == SCR_BOX_STR)
+      continue;
     void *p;
     memcpy(&p, &b->slot, sizeof p);
     if (p == NULL) continue;
-    if (scr_net_server_release_entry((const void *)b->obj_release) && p == (const void *)s)
-      return true;
-    if ((const void *)b->obj_release == (const void *)scr_dyn_release) {
+    if (b->kind == SCR_BOX_FUNC) {
+      if (!scr_net_listener_captures_safe((const ScrClosure *)p, s, depth - 1)) return false;
+      continue;
+    }
+    if (b->kind == SCR_BOX_OBJ && (const void *)b->obj_release == (const void *)scr_dyn_release) {
       const ScrDyn *d = p;
       if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_NET_SERVER &&
           d->v.handle.ptr == (const void *)s)
-        return true;
+        return false;
+      if (d->kind == SCR_DYN_FUNC && !scr_net_listener_captures_safe(d->v.fn.clo, s, depth - 1))
+        return false;
+      continue;
     }
+    return false; /* a handle, an object, an array, or a dynamic non-function */
   }
   const ScrClosureValues *values = scr_closure_values(cb);
   if (values != NULL) {
     void **slots = scr_closure_value_slots((ScrClosure *)cb);
     for (size_t i = 0; i < values->count; i++) {
       if (slots[i] == NULL) continue;
-      if (scr_net_server_release_entry((const void *)values->refs[i].release) &&
-          slots[i] == (const void *)s)
-        return true;
+      if ((const void *)values->refs[i].release != (const void *)scr_str_release_v) return false;
     }
   }
-  return false;
+  return true;
 }
 
-/* Drops the entries of `l` whose listener holds the server `s` (see
- * scr_net_listener_holds_server); the others stay in order. */
+/* Drops the entries of `l` whose listener's captures can reach the server
+ * `s`; the others stay in order. */
 static void scr_net_ls_drop_holding(ScrNetLs *l, const ScrNetServer *s) {
   size_t w = 0;
   for (size_t i = 0; i < l->n; i++) {
-    /* The function the entry stands for: a dyn listener wraps the real
-     * closure in a box, and an adapter names its identity. */
-    if (scr_net_listener_holds_server(scr_net_listener_root(&l->ls[i]), s)) {
-      scr_closure_release(l->ls[i].cb);
-      scr_net_once_release(l->ls[i].shared_once);
-      continue;
+    /* A once entry fires and leaves on its own, and a close(cb) on the
+     * settled server adds one for the repeat emission that callback belongs
+     * to, so only persistent listeners are filtered. The function the entry
+     * stands for: a dyn listener wraps the real closure in a box, and an
+     * adapter names its identity. */
+    if (!l->ls[i].once) {
+      ScrClosure *root = scr_net_listener_root(&l->ls[i]);
+      if (!scr_net_listener_captures_safe(root, s, 8)) {
+        scr_closure_release(l->ls[i].cb);
+        scr_net_once_release(l->ls[i].shared_once);
+        continue;
+      }
     }
     l->ls[w++] = l->ls[i];
   }
@@ -9029,12 +9038,14 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_fire0_this(&srv->close_ls, srv, SCR_DYNH_NET_SERVER);
   scr_net_ls_drop(&srv->conn_ls);
   scr_net_ls_drop(&srv->err_ls);
-  /* close_ls stays: the persistent 'close' listeners (the once entries
-   * left it as they fired) receive the 'close' each later close() call
-   * emits, as Node's do. It drops when the server itself is freed — and a
-   * listener that captures this server is dropped here, because it would
-   * otherwise keep the server alive through the cycle of native handles
-   * the collector cannot see. */
+  /* close_ls stays: the persistent 'close' listeners (the once entries left
+   * it as they fired) receive the 'close' each later close() call emits, as
+   * Node's do. It keeps only listeners whose captures cannot reach this
+   * server: a captured object, array, handle, closure or dynamic value could
+   * hold it through a field, and native handles stay outside the cycle
+   * collector, so that pair would pin the server and everything it captured
+   * until process exit. The once entries a 'close' listener added here belong
+   * to the repeat emission they asked for and are left alone. */
   scr_net_ls_drop_holding(&srv->close_ls, srv);
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
@@ -9347,8 +9358,8 @@ static void scr_net_sweep(void) {
        * callbacks added for it fire here (Node's nextTick emission). */
       due->reclose_pending--;
       scr_net_fire0_this(&due->close_ls, due, SCR_DYNH_NET_SERVER);
-      /* A listener that captured its server joined a cycle the collector
-       * cannot see: it leaves with this emission (see the settle). */
+      /* A persistent listener that joined after the settle would form the
+       * cycle the collector cannot see: it leaves with this emission. */
       scr_net_ls_drop_holding(&due->close_ls, due);
       if (due->reclose_pending == 0) scr_net_server_unregister(due);
     } else {

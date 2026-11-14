@@ -1,10 +1,11 @@
 /* setHeader/appendHeader over an array argument. The value's elements have
  * their toString run during validation and again during conversion, and that
- * hook is program code: one element's toString can empty the array or replace
- * a later element. Each call retains a snapshot of the elements and reads only
- * that snapshot, so the header is what the call started with — and no
- * iteration dereferences a value the hook released. Without the snapshot the
- * conversion reads the mutated array and the header carries the replacement.
+ * hook is program code: one element's toString can empty the array, replace a
+ * later element, or swap in a CRLF payload. Each call retains a snapshot of
+ * the elements, converts and validates exactly those lines, and stores those
+ * same lines — so the header is what the call started with, no iteration
+ * dereferences a value the hook released, and a response can never put text
+ * on the wire that validation did not see.
  *
  * The expectation is this runtime's own: Node stores the raw array and
  * converts at write time, the eager-vs-lazy difference the header store
@@ -50,8 +51,19 @@ describe("header array arguments under a reentrant conversion", () => {
       maxBuffer: 16 * 1024 * 1024,
     });
     expect(run.stderr).toBe("");
+    // The client calls keep the elements the call started with; the response
+    // calls store the validated lines of that snapshot, so the CRLF the hook
+    // swaps in never reaches the wire (before this fix the response carried a
+    // second `x-injected` header).
     expect(run.stdout).toBe(
-      'set ["head","second","third","head","second","third"]\nnew ["head","second","third"]\n',
+      [
+        'set ["head","second","third","head","second","third"]',
+        'new ["head","second","third"]',
+        "response set ok",
+        'raw ["x-snapshot=first","x-snapshot=second","x-snapshot=first","x-snapshot=second"]',
+        "injected false",
+        "",
+      ].join("\n"),
     );
   });
 });

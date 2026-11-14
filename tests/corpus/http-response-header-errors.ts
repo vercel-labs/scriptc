@@ -27,6 +27,10 @@ const server = http.createServer((req, res) => {
     attempt("bad value", () => res.setHeader("x-value", "a\nb"));
     attempt("bad number name", () => res.setHeader("x num", 7));
     attempt("bad list value", () => res.setHeader("x-list", ["ok", "b\rc"]));
+    // The rejected calls convert their values before the character check
+    // throws; the converted lines must be released on the way out.
+    attempt("bad append value", () => res.appendHeader("x-value", "c\nd"));
+    attempt("bad append list", () => res.appendHeader("x-value", ["ok", "d\re"]));
     attempt("good", () => res.setHeader("X-Good", "fine"));
     attempt("latin1", () => res.setHeader("X-Latin", "café"));
     attempt("wide", () => res.setHeader("X-Wide", "Ā"));

@@ -1659,11 +1659,12 @@ void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDy
   size_t lines = scr_http_header_texts(name, items, n, &texts);
   bool valid = lines != SIZE_MAX;
   for (size_t i = 0; i < lines && valid; i++) valid = scr_http_res_header_valid(r, name, texts[i]);
-  if (valid && lines != SIZE_MAX) {
+  if (valid) {
     scr_http_res_insert_texts(r, scr_http_res_drop_named(r, name), name, items, texts, lines, is_arr,
                               false);
-    scr_http_header_texts_free(texts, lines);
   }
+  /* A failed validation still owns the converted lines: free them here. */
+  if (texts != NULL) scr_http_header_texts_free(texts, lines);
   scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }
@@ -1687,7 +1688,7 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
   size_t lines = scr_http_header_texts(name, items, n, &texts);
   bool valid = lines != SIZE_MAX;
   for (size_t i = 0; i < lines && valid; i++) valid = scr_http_res_header_valid(r, name, texts[i]);
-  if (valid && lines != SIZE_MAX) {
+  if (valid) {
     size_t last = SIZE_MAX;
     for (size_t i = 0; i < r->nheaders; i++) {
       if (!scr_http_name_eq(r->hnames[i], name)) continue;
@@ -1697,8 +1698,9 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
     scr_http_res_insert_texts(r, last == SIZE_MAX ? r->nheaders : last + 1,
                               last == SIZE_MAX ? name : r->hnames[last], items, texts, lines, is_arr,
                               last != SIZE_MAX);
-    scr_http_header_texts_free(texts, lines);
   }
+  /* A failed validation still owns the converted lines: free them here. */
+  if (texts != NULL) scr_http_header_texts_free(texts, lines);
   scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }

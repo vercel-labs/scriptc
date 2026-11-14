@@ -176,39 +176,50 @@ describe.skipIf(skip)("Node islands in-process", () => {
     };
     delete env["SCRIPTC_LIBNODE"];
     const expected = `${before}\n42\n${after}\ndone\n`;
-    // The build wrote the tree's name next to the modules: a start compares
-    // it and does not hash the tree.
-    const name = readFileSync(`${modules}.tree`, "utf8");
-    expect(name).toMatch(/^[0-9a-f]{64}\n$/);
-    const result = await run(beside, [], env);
-    expect(result.stdout).toBe(expected);
-    expect(result.code).toBe(0);
-    expect(treeHashes(result)).toBe(0);
-    // Modules without that name (a directory left from another build, a
-    // deployment that dropped the file): the content decides, on every
-    // start, and the program writes nothing beside itself.
-    for (const other of [null, `${"0".repeat(64)}\n`]) {
-      if (other === null) rmSync(`${modules}.tree`);
-      else writeFileSync(`${modules}.tree`, other);
-      for (let i = 0; i < 2; i++) {
-        const hashed = await run(beside, [], env);
-        expect(hashed.stdout).toBe(expected);
-        expect(treeHashes(hashed)).toBe(1);
-      }
+    // Every start hashes the modules against the executable's manifest, and
+    // the build writes nothing beside them for a start to trust instead.
+    expect(existsSync(`${modules}.tree`)).toBe(false);
+    for (let i = 0; i < 2; i++) {
+      const result = await run(beside, [], env);
+      expect(result.stdout).toBe(expected);
+      expect(result.code).toBe(0);
+      expect(treeHashes(result)).toBe(1);
     }
-    // ... and modules that do not match the executable are refused.
+    // Modules that do not match the executable are refused.
     writeFileSync(helper, `${original}\n// edited\n`);
     const edited = await run(beside, [], env);
     expect(edited.code).toBe(1);
     expect(edited.stderr).toContain(
       `scriptc: the Node island modules at ${modules} do not match this program\n`,
     );
-    // Under the build's name the tree is used as it is, like any file the
-    // program was installed with.
-    writeFileSync(`${modules}.tree`, name);
-    const trusted = await run(beside, [], env);
-    expect(trusted.stdout).toBe(expected);
-    expect(treeHashes(trusted)).toBe(0);
+  }, 300_000);
+
+  test("a beside tree that differs is refused whatever lies next to it", async () => {
+    const beside = await build("beside-edited", "beside");
+    const modules = join(outDir, "beside-edited/lifecycle.libnode/modules");
+    const helper = join(modules, "helper.cjs");
+    writeFileSync(helper, `${readFileSync(helper, "utf8")}\n// edited\n`);
+    // The tree's name, as earlier builds wrote it next to the modules: it
+    // vouches for nothing, and the edited file is refused on every start
+    // before Node loads.
+    const name = /\{"tree":"([0-9a-f]{64})"/.exec(readFileSync(beside, "latin1"))?.[1];
+    expect(name).toMatch(/^[0-9a-f]{64}$/);
+    writeFileSync(`${modules}.tree`, `${name}\n`);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_NODE_ISLANDS_TRACE: "boot",
+    };
+    delete env["SCRIPTC_LIBNODE"];
+    for (let i = 0; i < 2; i++) {
+      const refused = await run(beside, [], env);
+      expect(refused.code).toBe(1);
+      expect(treeHashes(refused)).toBe(1);
+      expect(refused.stdout).toBe(`${before}\n`);
+      expect(refused.stderr).toContain(
+        `scriptc: the Node island modules at ${modules} do not match this program\n`,
+      );
+    }
   }, 300_000);
 
   test("an installed tree is used without a check, and lost files are put back", async () => {

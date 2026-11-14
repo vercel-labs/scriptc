@@ -17,7 +17,8 @@ import type { Lowerer } from "./lowerer.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import type { ParamShape } from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
-import { isClassCallback } from "./class-callbacks.js";
+import { isClassCallback, methodsUnreplaced } from "./class-callbacks.js";
+import { classPrototypeData } from "./class-prototypes.js";
 import { TO_STRING_TAG_FIELD } from "./symbol-fields.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { DATE_TIME_FIELD, dateRootOf } from "./builtins/date-classes.js";
@@ -159,7 +160,97 @@ function classConversion(
   const info = lowerer.classes.get(value.type.className);
   if (!info || !plainProgramClass(info)) return null;
   const classes = subtree(lowerer, info);
-  if (hint !== "tag") for (const cls of classes) refuseReplacedConversions(lowerer, cls, node);
+  if (hint !== "tag") {
+    // A conversion method the program may replace at run time (an own
+    // property an unbounded write may store, a prototype write) converts
+    // through the declared methods while the instance's methods are still
+    // the declared ones, and through the runtime's conversion otherwise.
+    const replaceable = classes.some((cls) => replacedConversion(lowerer, cls, node));
+    if (replaceable) return guardedConversion(lowerer, value, hint, node, resultType, finish, info);
+  }
+  return plannedConversion(lowerer, value, hint, node, resultType, finish, info, classes);
+}
+
+/** classConversion behind the exact test that no method of the instance
+ * was replaced (methodsUnreplaced): its own property table is still absent
+ * and no prototype object of its class family exists. Otherwise the
+ * instance converts as a checked-dynamic value, whose view holds its own
+ * properties and its classes' prototype data, so ToPrimitive finds the
+ * methods JavaScript would. */
+function guardedConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  hint: ConversionHint,
+  node: ts.Node,
+  resultType: IrType,
+  finish: (primitive: IrExpr) => IrExpr,
+  info: ClassInfo,
+): IrExpr {
+  const loc = value.loc;
+  const local = lowerer.declareHiddenLocal("%converted", value.type);
+  const receiver = varRef(local.id, value.type, loc);
+  const unreplaced = methodsUnreplaced(lowerer, receiver, info, loc);
+  const classes = subtree(lowerer, info);
+  if (unreplaced === null) {
+    for (const cls of classes) refuseReplacedConversions(lowerer, cls, node);
+    return plannedConversion(lowerer, value, hint, node, resultType, finish, info, classes);
+  }
+  for (const cls of classes) classPrototypeData(lowerer, cls, loc, receiver);
+  const declaredPath = plannedConversion(
+    lowerer,
+    receiver,
+    hint,
+    node,
+    resultType,
+    finish,
+    info,
+    classes,
+  );
+  const boxed = lowerer.coerceToExpected(receiver, DYN);
+  const primitive: IrExpr =
+    hint === "number"
+      ? { kind: "libCall", fn: "dyn.numberConstructor", args: [boxed], type: F64, loc }
+      : hint === "default"
+        ? // `+` takes ToPrimitive's default hint: the runtime's addition of
+          // the empty string and the value computes exactly that.
+          {
+            kind: "libCall",
+            fn: "dyn.add",
+            args: [{ kind: "dynFrom", value: strLit("", loc), type: DYN, loc }, boxed],
+            type: DYN,
+            loc,
+          }
+        : boxed;
+  const runtimePath =
+    hint === "number"
+      ? finish(primitive)
+      : lowerer.coerceToExpected(lowerer.ensureString(primitive, node), resultType);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: {
+      kind: "ternary",
+      cond: unreplaced,
+      then: declaredPath,
+      else_: runtimePath,
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
+function plannedConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  hint: ConversionHint | "tag",
+  node: ts.Node,
+  resultType: IrType,
+  finish: (primitive: IrExpr) => IrExpr,
+  info: ClassInfo,
+  classes: ClassInfo[],
+): IrExpr {
   const plans = new Map(classes.map((cls) => [cls, planOf(lowerer, cls, hint, node)]));
   // A class whose plan differs from its base's starts a group; the deepest
   // groups are tested first, so each instance takes its own class's plan.
@@ -523,6 +614,21 @@ function refuseReplacedConversions(lowerer: Lowerer, info: ClassInfo, node: ts.N
     if (lowerer.prototypeMethodAccesses.has(method))
       refuse(lowerer, node, info, `a '${method}' the program reaches through a prototype`);
   }
+}
+
+/** Whether the program may replace a conversion method of `info` at run
+ * time by a write the census could not bound: a callback member or a
+ * prototype access of the name. A field of the name is a declared instance
+ * property, which no run-time test can tell from the method, and stays
+ * refused. */
+function replacedConversion(lowerer: Lowerer, info: ClassInfo, node: ts.Node): boolean {
+  let replaced = false;
+  for (const method of ["toString", "valueOf"] as const) {
+    if (info.fields.has(method)) refuse(lowerer, node, info, `a '${method}' instance property`);
+    if (isClassCallback(lowerer, info, method) || lowerer.prototypeMethodAccesses.has(method))
+      replaced = true;
+  }
+  return replaced;
 }
 
 /** Whether ensureString converts a value of this record or array type by

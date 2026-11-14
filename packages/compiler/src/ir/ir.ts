@@ -1694,6 +1694,12 @@ export interface IrClassDef {
    * bag. Its descriptors preserve presence and insertion order independently
    * of native layout order; field values remain in their native slots. */
   tracksOwnFields?: boolean;
+  /** `JSON.stringify` of an instance of this class can read the static
+   * layout: every own enumerable property is a field, in its slot, in the
+   * order the runtime walk lists it (frontend/lowering/class-json.ts). The
+   * backend writer still tests the property bag, so an instance that took a
+   * dynamic property keeps the runtime walk. Absent: the runtime walk. */
+  jsonLayout?: true;
   /** Error subclasses: the field an instance's own `name` follows among its
    * own properties, or null when it precedes every field. Absent when no
    * class of the chain sets `name` during construction, and then an own

@@ -6603,13 +6603,21 @@ function validateFunction(
         // The value's STATIC type drives the emitted serializer — it must be
         // JSON-safe (the frontend rejects the rest with a specific message).
         // A dyn ROOT is the one non-static shape allowed: the runtime's dyn
-        // walker serializes it (scr_dyn_format_j), no emitted serializer.
+        // walker serializes it (scr_dyn_format_j), no emitted serializer. A
+        // class instance is allowed when its declaration admits the layout
+        // writer (IrClassDef.jsonLayout): the frontend verified every own
+        // enumerable property then, and the backend writer falls back to the
+        // runtime walk for anything the layout does not describe.
         if (
           e.value.type.kind !== "dyn" &&
           !isJsonStringifySafeType(
             e.value.type,
             (id) => records.get(id),
             (id) => unions.get(id),
+          ) &&
+          !(
+            e.value.type.kind === "object" &&
+            classes.get(e.value.type.className)?.jsonLayout === true
           )
         ) {
           err(`jsonStringify of non-JSON-safe type ${e.value.type.kind}`, e.loc);

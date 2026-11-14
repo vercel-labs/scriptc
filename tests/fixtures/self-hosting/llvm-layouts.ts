@@ -103,6 +103,14 @@ try {
       if (index === -1) { index = mapOps.length; mapOps.push(body); }
       return `@native_map_ops_${index}`;
     },
+    // The requests this fixture emits never ask for a class instance's JSON
+    // writer, so no class here reads its layout and the walk hooks fail
+    // loudly if a request ever does.
+    jsonClassFields: () => [],
+    jsonClassFieldRead: () => { throw new Error("json class field read is not modeled by this fixture"); },
+    jsonClassBagHeld: () => null,
+    jsonClassReadsLayout: () => false,
+    jsonClassDynWrite: () => { throw new Error("json class walk is not modeled by this fixture"); },
   };
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const graph = buildClassGraph(mod, functions);

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-map-seed-entry-layout/core.js",
+  "<repo>/tests/corpus/js-map-seed-entry-layout/more.js",
+  "<repo>/tests/corpus/js-map-seed-entry-layout/main.js"
+ ],
+ "diags": []
+}

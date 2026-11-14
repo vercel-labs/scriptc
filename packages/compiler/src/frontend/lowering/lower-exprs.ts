@@ -4009,7 +4009,7 @@ export function staticRegexPatternOf(lowerer: Lowerer, e: ts.Expression): string
     return text.slice(1, text.lastIndexOf("/"));
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "RegExp" &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp") &&

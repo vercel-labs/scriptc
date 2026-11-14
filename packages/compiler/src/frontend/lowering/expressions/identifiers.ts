@@ -951,6 +951,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
+    // The binding as a bare value IS the object Node's `require` answers:
+    // the module's exports object, which the module-namespace lowering
+    // builds from the export table (`exports.CST = cst` in yaml).
+    const namespace = dep === null ? null : lowerer.cjsModuleNamespaceTypeOf(dep);
+    if (namespace !== null)
+      return { kind: "moduleNsRef", moduleId: namespace.moduleId, type: namespace, loc };
     lowerer.unsupported(
       "SC1090",
       expr,

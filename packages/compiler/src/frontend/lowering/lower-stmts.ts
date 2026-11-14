@@ -7844,6 +7844,7 @@ export function lowerVarDecl(
       keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
     )
       g.type = raw.type;
+    if (jsCollectionKeepsLayout(decl, raw.type, g.type)) g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -8098,6 +8099,7 @@ export function lowerVarDecl(
     anyResidueReplacedBy(lowerer, type, init.type)
   )
     type = init.type;
+  if (jsCollectionKeepsLayout(decl, init.type, type)) type = init.type;
   // A const whose initializer has another record or array layout than the
   // binding's type keeps the initializer's layout: converting would copy the
   // value, so the binding would not be the value its initializer names.
@@ -8611,6 +8613,25 @@ export function lowerVarDecl(
     lowerer.runtimeOptionalStorageLocals.add(runtimeOptionalRoot);
   }
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+}
+
+/** Whether a JavaScript binding keeps the Map or Set its initializer built
+ * when the checker's inferred type has another layout: `new Map([["a", xs],
+ * ["b", ys]])` takes V from the FIRST entry, so the later entries differ and,
+ * with checkJs off, are type errors the checker reports nowhere. The
+ * lowering built the map from every entry, so the initializer's layout is
+ * the one the value really has; there is no layout mapping between the two,
+ * and converting would store a map the program did not build. */
+function jsCollectionKeepsLayout(
+  decl: ts.VariableDeclaration,
+  actual: IrType,
+  declared: IrType | null,
+): boolean {
+  if (decl.type !== undefined || hasJsTypeAnnotation(decl)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  if (declared === null || declared.kind !== actual.kind) return false;
+  if (actual.kind !== "map" && actual.kind !== "set") return false;
+  return !typeEquals(declared, actual);
 }
 
 /** Whether an annotated declaration whose initializer names an existing

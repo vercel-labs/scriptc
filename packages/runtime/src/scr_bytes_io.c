@@ -537,6 +537,28 @@ static ScrDyn *scr_fs_cb_option(const ScrDyn *options, const char *name) {
   return value;
 }
 
+/* options[name] for any object-kind options value: a plain object or a
+ * typed record reads the member, and the kinds JS also exposes no such
+ * member on (arrays, handles, ...) answer undefined, like a property read.
+ * +1; undefined when the member is absent. */
+static ScrDyn *scr_fs_dyn_member(const ScrDyn *options, const char *name) {
+  ScrDyn *value = NULL;
+  ScrStr *key = scr_str_new(name, strlen(name));
+  switch (options->kind) {
+  case SCR_DYN_OBJ: value = scr_dyn_obj_read(options, name, strlen(name)); break;
+  /* A runtime handle's members are its own getters (an AbortSignal's
+   * `aborted`, say); other kinds have no member under these names. */
+  case SCR_DYN_TYPED_REF: value = scr_dyn_typed_ref_key_get(options, key); break;
+  case SCR_DYN_HANDLE: value = scr_dyn_handle_key_get(options, key); break;
+  case SCR_DYN_BYTES: value = scr_dyn_bytes_key_get(options, key); break;
+  case SCR_DYN_PROXY: value = scr_dyn_proxy_get(options, key); break;
+  case SCR_DYN_FUNC: value = scr_dyn_fn_get(options, name, strlen(name)); break;
+  default: break;
+  }
+  scr_str_release(key);
+  return value ? value : scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* Whether the options bag carries `name` as an own key. Node validates the
  * value even when it is undefined, so presence differs from a non-absent
  * read. */
@@ -606,19 +628,54 @@ static bool scr_fs_cb_read_buffer_option(const ScrDyn *options) {
   return absent;
 }
 
-static bool scr_fs_cb_signal(const ScrDyn *options) {
-  ScrDyn *signal = scr_fs_cb_option(options, "signal");
-  if (!signal) return false;
-  if (scr_fs_dyn_absent(signal)) { scr_dyn_release(signal); return true; }
-  if (signal->kind != SCR_DYN_HANDLE || signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+/* getOptions' validateAbortSignal: undefined passes, and any object with an
+ * `aborted` member is an AbortSignal; null and primitives throw. Answers
+ * true when valid, false with the TypeError pending. The caller releases
+ * the member. */
+static bool scr_fs_signal_valid(const ScrDyn *signal) {
+  if (signal->kind == SCR_DYN_UNDEF) return true;
+  bool object = signal->kind != SCR_DYN_NULL && signal->kind != SCR_DYN_BOOL &&
+                signal->kind != SCR_DYN_NUM && signal->kind != SCR_DYN_BIGINT &&
+                signal->kind != SCR_DYN_SYMBOL && signal->kind != SCR_DYN_STR;
+  if (!object) {
     scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return false;
+  }
+  bool has_aborted;
+  if (signal->kind == SCR_DYN_HANDLE) {
+    has_aborted = signal->v.handle.tag == SCR_DYNH_ABORT_SIGNAL;
+  } else {
+    ScrDyn *bag = signal->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(signal)
+                                                   : scr_dyn_retain((ScrDyn *)signal);
+    ScrStr *key = scr_str_new("aborted", 7);
+    has_aborted = bag && scr_dyn_has_own(bag, key);
+    scr_str_release(key);
+    scr_dyn_release(bag);
+  }
+  if (!has_aborted) {
+    scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return false;
+  }
+  return true;
+}
+
+/* getOptions' validateAbortSignal, then checkAborted's `aborted ===
+ * true`. The signal is only a value bag here — the sync syscall has
+ * nothing to cancel, the documented divergence. A string options value
+ * carries the defaults (no signal member). */
+static bool scr_fs_cb_signal(const ScrDyn *options) {
+  if (options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
+      scr_fs_dyn_absent(options))
+    return true;
+  ScrDyn *signal = scr_fs_dyn_member(options, "signal");
+  if (!signal) return false;
+  bool valid = scr_fs_signal_valid(signal);
+  if (!valid) {
     scr_dyn_release(signal);
     return false;
   }
-  ScrStr *key = scr_str_new("aborted", 7);
-  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
-  scr_str_release(key);
-  bool cancelled = aborted && scr_dyn_truthy(aborted);
+  ScrDyn *aborted = scr_fs_dyn_member(signal, "aborted");
+  bool cancelled = aborted && aborted->kind == SCR_DYN_BOOL && aborted->v.b;
   scr_dyn_release(aborted); scr_dyn_release(signal);
   if (cancelled) {
     static const char message[] = "The operation was aborted";
@@ -634,6 +691,18 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   return !scr_exc_pending();
 }
 
+/* readdir's signal check: validateAbortSignal alone — readdir never calls
+ * checkAborted, so an already-aborted signal is ignored. */
+static bool scr_fs_readdir_signal(const ScrDyn *options) {
+  if (options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
+      scr_fs_dyn_absent(options))
+    return true;
+  ScrDyn *signal = scr_fs_dyn_member(options, "signal");
+  if (!signal) return false;
+  bool valid = scr_fs_signal_valid(signal);
+  scr_dyn_release(signal);
+  return valid;
+}
 /* checkAborted's `signal.aborted` and `signal.reason` reads. Node reaches
  * them through an ordinary property access on its own fresh read of
  * options.signal, so the value need not be the AbortSignal that
@@ -1272,6 +1341,53 @@ static ScrDyn *scr_fs_cb_encoded_path(ScrStr *text, const ScrDyn *options) {
   return value;
 }
 
+/* fs.realpath's path in the plain callback form. Node runs this form in
+ * JavaScript, which does toPathIfFileURL(path), then `path += ''` for every
+ * value that is not a string, then validatePath's null-byte check and
+ * path.resolve — so a number or null becomes its text instead of throwing,
+ * a Symbol throws the conversion TypeError, and an object's toString runs.
+ * The native binding takes getValidatedPath instead. */
+static ScrStr *scr_fs_realpath_cb_path(const ScrDyn *value) {
+  const ScrDyn *given = value;
+  ScrDyn *from_url = NULL;
+  if (scr_dyn_native_url_is(value)) {
+    ScrStr *path = scr_url_checked_to_path(value);
+    if (path == NULL) return NULL;
+    from_url = scr_dyn_new_str(path);
+    scr_str_release(path);
+    given = from_url;
+  }
+  ScrStr *text;
+  if (given->kind == SCR_DYN_STR) {
+    text = scr_str_retain(given->v.str);
+  } else {
+    /* `+= ''` is dynamic addition with the empty string: its ToPrimitive
+     * is the one JavaScript uses (valueOf first for an object), and a
+     * Symbol is the conversion's TypeError. */
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *suffix = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+    ScrDyn *coerced = suffix ? scr_dyn_add(given, suffix) : NULL;
+    scr_dyn_release(suffix);
+    if (coerced == NULL) { scr_dyn_release(from_url); return NULL; }
+    text = coerced->kind == SCR_DYN_STR ? scr_str_retain(coerced->v.str) : scr_dyn_to_string(coerced, NULL);
+    scr_dyn_release(coerced);
+    if (text == NULL) { scr_dyn_release(from_url); return NULL; }
+  }
+  scr_dyn_release(from_url);
+  if (memchr(text->data, 0, text->len)) {
+    scr_fs_invalid_named_path(value, text, "path");
+    scr_str_release(text);
+    return NULL;
+  }
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
+  scr_arr_push_ref(parts, scr_str_retain(text));
+  ScrStr *absolute = scr_path_resolve(parts);
+  scr_arr_release(parts);
+  scr_str_release(text);
+  return absolute;
+}
+
 static ScrStr *scr_fs_cb_join(const ScrStr *directory, const char *name) {
   ScrStr *suffix = scr_str_new("/", 1);
   ScrStr *base = scr_str_concat((ScrStr *)directory, suffix);
@@ -1396,7 +1512,7 @@ static void scr_fs_cb_defer_throw(ScrDyn *error) {
 
 static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *,
                                  double *);
-static bool scr_fs_encoding_chk(const ScrDyn *);
+bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
 static bool scr_fs_length_int32(const ScrDyn *, double *);
 static bool scr_fs_write_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *);
@@ -1541,9 +1657,13 @@ static ScrArr *scr_fs_cb_vectors(const ScrDyn *buffers) {
 }
 
 static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc) {
-  /* fs.realpath.native is Node's realpath binding under a second name, so
-   * both spellings take the realpath path. */
-  const char *op = !strcmp(member->data, "realpath.native") ? "realpath" : member->data;
+  const char *op = member->data;
+  /* fs.realpath.native is the binding's realpath(2) call: unlike the plain
+   * form it validates the path instead of coercing it, and its errors name
+   * the path as given with syscall "realpath". The callback ladder is the
+   * same (options-only calls report the options value as the missing cb). */
+  bool native_realpath = !strcmp(op, "realpath.native");
+  if (native_realpath) op = "realpath";
   if (!strcmp(op, "cp")) {
     /* fs.cp(src, dest[, options], callback): makeCallback, then the option
      * and path validation (thrown), then the copy, whose error reaches the
@@ -1702,9 +1822,20 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     scr_arr_release(vectors);
     return NULL;
   }
-  if (!late && !optional_callback && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
+  /* realpath.native takes `callback || options`: a call that supplies only
+   * an options value reports that value as its missing callback. */
+  const ScrDyn *callback_arg = callback;
+  if (native_realpath && slot >= argc && argc >= 2 && args[argc - 1]->kind != SCR_DYN_FUNC)
+    callback_arg = args[argc - 1];
+  if (!late && !optional_callback && !scr_fs_cb_chk(callback_arg, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
   size_t count = timestamp ? argc : slot < argc ? slot : argc;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
+  /* realpath's getOptions and assertEncoding run after its callback and
+   * before its path (an unknown encoding throws at the call). */
+  if (!strcmp(op, "realpath") && !scr_fs_encoding_chk(ARG(1))) {
+    scr_arr_release(vectors);
+    return NULL;
+  }
   /* fchmod and ftruncate check their mode or len, then the callback; the
    * binding checks the fd last. */
   if (newControl) {
@@ -1826,7 +1957,11 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       if (!ok) return NULL;
     }
   }
-  ScrStr *path = descriptor || write_descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
+  ScrStr *path = descriptor || write_descriptor ? NULL
+    : timestamp ? scr_fs_timestamp_path(ARG(0))
+    : !strcmp(op, "realpath") ? (native_realpath ? scr_fs_checked_path(ARG(0), "path")
+                                                 : scr_fs_realpath_cb_path(ARG(0)))
+    : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
   if (!descriptor && !write_descriptor && !path) return NULL;
   /* writeFile's path form hands fs.open the flag and the mode, and open
    * parses the mode before the flag — both synchronously, after the path
@@ -1972,20 +2107,11 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   else if (!strcmp(op, "chown")) scr_fs_chown(path, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "lchown")) scr_fs_lchown(path, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "fchown")) scr_fs_fchown(fd, ARG(1)->v.num, ARG(2)->v.num);
-  else if (!strcmp(op, "realpath")) {
-    /* getOptions' encoding check, then the walk: the binding (the .native
-     * spelling) reports its failure as the 'realpath' syscall, the JS walk
-     * as 'lstat'. */
-    ScrDyn *encoding = scr_fs_readlink_encoding(count == 2 ? ARG(1) : scr_dyn_undefined());
-    if (!encoding) {
-      scr_str_release(path);
-      return NULL;
-    }
-    ScrStr *resolved = !strcmp(member->data, "realpath.native") ? scr_fs_realpath_promise(path)
-                                                                : scr_fs_realpath(path);
-    if (resolved) result = scr_fs_cb_encoded_path(resolved, encoding);
-    scr_dyn_release(encoding);
-  }
+  else if (!strcmp(op, "realpath"))
+    /* The plain form walks the path in JavaScript (lib/fs.js); the native
+     * binding resolves it in one realpath(2), so its errors name the
+     * syscall "realpath" and the path as given. */
+    result = scr_fs_cb_encoded_path(native_realpath ? scr_fs_realpath_promise(path) : scr_fs_realpath_walk(path), ARG(1));
   else if (!strcmp(op, "stat") || !strcmp(op, "lstat")) {
     bool stat = !strcmp(op, "stat");
     /* A function in the options position is the callback (Node's
@@ -2625,7 +2751,7 @@ static bool scr_fs_utf8_encoding(const ScrDyn *enc) {
  * encoding (the string, or an object's `encoding` member) then goes
  * through assertEncoding unless it is 'buffer': Node throws
  * ERR_INVALID_ARG_VALUE for any truthy value Buffer.isEncoding rejects. */
-static bool scr_fs_encoding_chk(const ScrDyn *opts) {
+bool scr_fs_encoding_chk(const ScrDyn *opts) {
   if (opts->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
     bool valid = view && !scr_exc_pending() && scr_fs_encoding_chk(view);
@@ -2639,19 +2765,40 @@ static bool scr_fs_encoding_chk(const ScrDyn *opts) {
     return false;
   }
   const ScrDyn *enc = opts;
+  ScrDyn *read = NULL; /* the object's second `encoding` read, when taken */
   if (opts->kind != SCR_DYN_STR) {
-    enc = opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "encoding", 8) : NULL;
-    if (enc == NULL) return true;
+    /* Node guards with `if (options.encoding !== 'buffer')` and then hands
+     * `options.encoding` to assertEncoding: the property is read twice, so
+     * an accessor runs twice, and only the first read's spelling can skip
+     * the assertion. */
+    ScrDyn *first = scr_dyn_obj_read(opts, "encoding", 8);
+    if (!first) return false; /* the accessor threw */
+    if (first->kind == SCR_DYN_STR && scr_fs_str_is(first->v.str, "buffer")) {
+      scr_dyn_release(first);
+      return true;
+    }
+    read = scr_dyn_obj_read(opts, "encoding", 8);
+    scr_dyn_release(first);
+    if (!read) return false;
+    enc = read;
   }
-  if (scr_fs_dyn_absent(enc)) return true;
+  if (scr_fs_dyn_absent(enc)) {
+    scr_dyn_release(read);
+    return true;
+  }
+  bool ok = false;
   if (enc->kind == SCR_DYN_STR) {
-    if (enc->v.str->len == 0) return true; /* falsy: assertEncoding's `encoding &&` gate */
-    if (scr_bytes_is_encoding(enc->v.str) || scr_fs_str_is(enc->v.str, "buffer")) return true;
+    /* falsy: assertEncoding's `encoding &&` gate */
+    ok = enc->v.str->len == 0 || scr_bytes_is_encoding(enc->v.str) ||
+         scr_fs_str_is(enc->v.str, "buffer");
+  } else if (enc->kind == SCR_DYN_BOOL) {
+    ok = !enc->v.b;
+  } else if (enc->kind == SCR_DYN_NUM) {
+    ok = enc->v.num == 0 || enc->v.num != enc->v.num; /* 0, NaN */
   }
-  if (enc->kind == SCR_DYN_BOOL && !enc->v.b) return true;
-  if (enc->kind == SCR_DYN_NUM && (enc->v.num == 0 || enc->v.num != enc->v.num)) return true; /* 0, NaN */
-  scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
-  return false;
+  if (!ok) scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
+  scr_dyn_release(read);
+  return ok;
 }
 
 /* Node's parseFileMode(value, name, def): a nullish value takes the
@@ -2817,6 +2964,336 @@ double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode) {
   return scr_fs_open_native(path, parsed_flags, parsed_mode);
 }
 
+/* stringToFlags for the options.flag value readFile keeps (stringToFlags
+ * takes numbers through validateInt32, and every other truthy value throws
+ * ERR_INVALID_ARG_VALUE with its inspected form). */
+static double scr_fs_open_dyn_flag(ScrStr *path, const ScrDyn *flag) {
+  int bits;
+  if (flag->kind == SCR_DYN_NUM) {
+    if (!scr_fs_int_range_chk(flag, "flags", -2147483648.0, 2147483647.0,
+                              ">= -2147483648 && <= 2147483647"))
+      return -1;
+    bits = (int)flag->v.num;
+  } else if (flag->kind == SCR_DYN_STR) {
+    bits = scr_fs_flag_bits(flag->v.str->data, flag->v.str->len);
+    if (bits < 0) {
+      scr_fs_flag_invalid(flag->v.str);
+      return -1;
+    }
+  } else {
+    scr_dyn_arg_value_fail("flags", NULL, flag);
+    return -1;
+  }
+  int fd = open(path->data, bits, 0666);
+  if (fd < 0) scr_fs_throw(errno, "open", path);
+  return fd;
+}
+
+/* The descriptor's bytes decoded by readFile's encoding: a Buffer for an
+ * absent or empty name, the decoded text otherwise ('buffer' reads and then
+ * throws ERR_UNKNOWN_ENCODING, Node's buffer.toString shape). */
+static ScrDyn *scr_fs_read_fd_dyn(double fd, const ScrDyn *encoding) {
+  bool text = encoding && encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0;
+  if (text && scr_fs_str_is(encoding->v.str, "buffer")) {
+    ScrBytes *bytes = scr_fs_read_fd_bytes(fd);
+    ScrStr *content = bytes ? scr_bytes_to_str_checked(bytes, encoding->v.str) : NULL;
+    scr_bytes_release(bytes);
+    if (!content) return NULL;
+    ScrDyn *value = scr_dyn_new_str(content);
+    scr_str_release(content);
+    return value;
+  }
+  if (text) {
+    ScrStr *content = scr_fs_read_fd_encoded(fd, encoding->v.str);
+    if (!content) return NULL;
+    ScrDyn *value = scr_dyn_new_str(content);
+    scr_str_release(content);
+    return value;
+  }
+  ScrBytes *content = scr_fs_read_fd_bytes(fd);
+  if (!content) return NULL;
+  ScrDyn *value = scr_dyn_new_buffer(content);
+  scr_bytes_release(content);
+  return value;
+}
+
+/* The open-and-read half of readFile, once Node's option ladders have
+ * run: the flag (any falsy member and 'r' itself read through the plain
+ * path) decides whether the descriptor is opened first. */
+static ScrDyn *scr_fs_read_file_string_options(ScrStr *path, const ScrDyn *options) {
+  bool defaults = options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
+                  scr_fs_dyn_absent(options);
+  ScrDyn *flag = defaults ? NULL : scr_fs_dyn_member(options, "flag");
+  ScrDyn *encoding = NULL;
+  if (options->kind == SCR_DYN_STR) encoding = scr_dyn_retain((ScrDyn *)options);
+  else if (!defaults) encoding = scr_fs_dyn_member(options, "encoding");
+  if (encoding && encoding->kind != SCR_DYN_STR) {
+    scr_dyn_release(encoding);
+    encoding = NULL;
+  }
+  /* `const flag = options.flag || 'r'`: any falsy member, and the literal
+   * 'r', read through the ordinary path. */
+  bool reading = !flag || !scr_dyn_truthy(flag) ||
+                 (flag->kind == SCR_DYN_STR && scr_fs_str_is(flag->v.str, "r"));
+  ScrDyn *result = NULL;
+  if (!scr_exc_pending()) {
+    if (reading) {
+      result = scr_fs_read_file_sync_dyn(path, encoding ? encoding : scr_dyn_undefined());
+    } else if (!scr_fs_path_ok(path, "path")) {
+      /* open() validates the path before it reads the flag. */
+    } else {
+      double fd = scr_fs_open_dyn_flag(path, flag);
+      if (fd >= 0 && !scr_exc_pending()) {
+        result = scr_fs_read_fd_dyn(fd, encoding);
+        int saved = errno;
+        close((int)fd);
+        errno = saved;
+      }
+    }
+  }
+  scr_dyn_release(flag);
+  scr_dyn_release(encoding);
+  return result;
+}
+
+/* fs.promises.readFile(path, options): Node's async function without the
+ * event-loop interleaving. getOptions first — nullish and function options
+ * mean the defaults, a string is the encoding with flag 'r', any other
+ * primitive is the options TypeError, an object's encoding/signal members
+ * are validated — then checkAborted, then open with options.flag (default
+ * 'r') and read the descriptor. The undocumented options.buffer is not
+ * part of the documented surface and is not read. Answers +1 dyn (a
+ * Buffer or a string), or NULL with the exception pending. */
+ScrDyn *scr_fs_read_file_options_dyn(ScrStr *path, const ScrDyn *options) {
+  if (!scr_fs_encoding_chk(options)) return NULL;
+  if (!scr_fs_cb_signal(options)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  return scr_fs_read_file_string_options(path, options);
+}
+
+/* fs.promises.readFile with a checked-dynamic path: the same ladders, with
+ * getValidatedPath between the signal check and the open (Node's order
+ * inside open). */
+ScrDyn *scr_fs_read_file_dyn_path_options(const ScrDyn *path, const ScrDyn *options) {
+  if (!scr_fs_encoding_chk(options)) return NULL;
+  if (!scr_fs_cb_signal(options)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  ScrStr *checked = scr_fs_checked_path(path, "path");
+  if (!checked) return NULL;
+  ScrDyn *result = scr_fs_read_file_string_options(checked, options);
+  scr_str_release(checked);
+  return result;
+}
+
+/* Whether a resolved readdir encoding asks for raw name bytes. */
+static bool scr_fs_readdir_encoding_is_buffer(const ScrStr *encoding) {
+  return encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0;
+}
+
+/* readdir's getOptions encoding name: the string options value itself, else
+ * the object's `encoding` member, "" for the utf8 default (+1). */
+static ScrStr *scr_fs_readdir_encoding_name(const ScrDyn *options) {  ScrDyn *encoding = NULL;
+  if (options->kind == SCR_DYN_STR) encoding = scr_dyn_retain((ScrDyn *)options);
+  else if (!scr_fs_dyn_absent(options) && options->kind != SCR_DYN_FUNC)
+    encoding = scr_fs_dyn_member(options, "encoding");
+  ScrStr *name = encoding && encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str)
+                                                           : scr_str_new("", 0);
+  scr_dyn_release(encoding);
+  return name;
+}
+
+/* readdir's option ladder in Node's order: getOptions (the options kind and
+ * encoding, then validateAbortSignal — readdir never checks an aborted
+ * signal), getValidatedPath, then options.recursive (validateBoolean in the
+ * sync forms, truthiness in the promise form) and options.withFileTypes
+ * (a truthiness test, never validated). Answers the +1 encoding name
+ * ("" for the utf8 default), the recursive flag and the withFileTypes
+ * flag; NULL with the exception pending. */
+static ScrStr *scr_fs_readdir_resolve(ScrStr *path, const ScrDyn *options, bool sync,
+                                      bool *recursive, bool *with_file_types) {
+  *recursive = false;
+  *with_file_types = false;
+  if (!scr_fs_encoding_chk(options)) return NULL;
+  if (!scr_fs_readdir_signal(options)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  ScrDyn *flag = scr_fs_dyn_member(options, "recursive");
+  if (!flag) return NULL;
+  if (sync && flag->kind != SCR_DYN_UNDEF && flag->kind != SCR_DYN_NULL &&
+      flag->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("options.recursive", "of type boolean", flag);
+    scr_dyn_release(flag);
+    return NULL;
+  }
+  *recursive = scr_dyn_truthy(flag);
+  scr_dyn_release(flag);
+  ScrDyn *types = scr_fs_dyn_member(options, "withFileTypes");
+  if (!types) return NULL;
+  *with_file_types = scr_dyn_truthy(types);
+  scr_dyn_release(types);
+  return scr_fs_readdir_encoding_name(options);
+}
+
+/* The call site's type says which answer shape the compiled call can hold; an
+ * options value typed `any` or `unknown` can resolve to another shape, which
+ * Node would answer. Reading one shape as the other would hand the program a
+ * value of the wrong type, so the call throws a catchable scriptc error
+ * naming the gap instead. */
+static void scr_fs_readdir_shape_with_file_types(void) {
+  static const char message[] =
+      "readdir's options value resolved to withFileTypes at run time, but the call site's type "
+      "holds the names array (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_buffer(void) {
+  static const char message[] =
+      "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's "
+      "type holds strings (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_names(void) {
+  static const char message[] =
+      "readdir's options value did not resolve to encoding: 'buffer' at run time, but the call "
+      "site's type holds Buffers (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_not_types(void) {
+  static const char message[] =
+      "readdir's options value did not resolve to withFileTypes at run time, but the call site's "
+      "type holds Dirent rows (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_name_strings(void) {
+  static const char message[] =
+      "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's "
+      "type holds string names (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+/* readdirSync / fs.promises.readdir with any options value: Node's ladder
+ * over the flat listing (the directory's own entries) or, when the options
+ * say recursive, the walk below the path in `lifo` queue order
+ * (fs.promises pops the queue's end, the sync form advances an index).
+ * `expected` is the call site's answer shape (0 strings, 1 Buffers); a
+ * resolved shape that differs throws. Answers the names as strings, or
+ * Buffers for encoding: 'buffer'; NULL with the exception pending. */
+ScrArr *scr_fs_readdir_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                            double expected) {
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_with_file_types();
+    return NULL;
+  }
+  if (scr_fs_readdir_encoding_is_buffer(encoding) != (expected == 1)) {
+    scr_str_release(encoding);
+    if (expected == 1) scr_fs_readdir_shape_names();
+    else scr_fs_readdir_shape_buffer();
+    return NULL;
+  }
+  ScrArr *arr = recursive ? scr_fs_readdir_recursive_enc(path, encoding, lifo)
+                          : scr_fs_readdir_enc(path, encoding);
+  scr_str_release(encoding);
+  return arr;
+}
+
+/* The same call whose declared result is `string[] | Buffer[]`: the walk's
+ * array boxed in the union arm its element kind names. The tags are the
+ * call site's arm indices, chosen HERE because only the runtime encoding
+ * decides which arm answers. */
+ScrUnion *scr_fs_readdir_opts_union(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                    double str_tag, double bytes_tag) {
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_with_file_types();
+    return NULL;
+  }
+  bool buffers = scr_fs_readdir_encoding_is_buffer(encoding);
+  ScrArr *arr = recursive ? scr_fs_readdir_recursive_enc(path, encoding, lifo)
+                          : scr_fs_readdir_enc(path, encoding);
+  scr_str_release(encoding);
+  if (!arr) return NULL;
+  return scr_union_new_ref((uint32_t)(buffers ? bytes_tag : str_tag), arr, &scr_arr_retain_v,
+                           &scr_arr_release_v, NULL);
+}
+
+/* readdir's withFileTypes form over any options value: the same ladder,
+ * then the listing snapshot the Dirent emitter walks with the promise
+ * form's descent rule (kind == directory, no symlink following) or the
+ * sync form's (the kind, or internalModuleStat(fullPath) === 1). `lifo`
+ * carries the promise form's pop order. *is_buffer reports whether the
+ * names are raw bytes. NULL with the exception pending. */
+ScrFsListing *scr_fs_listing_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                  bool follow, bool *is_buffer, double expected) {
+  *is_buffer = false;
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (!with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_not_types();
+    return NULL;
+  }
+  *is_buffer = scr_fs_readdir_encoding_is_buffer(encoding);
+  if (*is_buffer != (expected == 1)) {
+    scr_str_release(encoding);
+    if (expected == 1) scr_fs_readdir_shape_names();
+    else scr_fs_readdir_shape_name_strings();
+    return NULL;
+  }
+  ScrFsListing *listing = scr_fs_listing_new(path, encoding, recursive, lifo, follow);
+  scr_str_release(encoding);
+  return listing;
+}
+
+/* fs.promises.chmod(path, mode) with a typed string mode: Node parses the
+ * octal spelling inside the async function; the promise form's failures
+ * reject. */
+ScrPromise *scr_fsp_chmod_string(ScrStr *path, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  double parsed;
+  if (!scr_fs_parse_octal_mode(mode, &parsed)) return scr_promise_settled_void();
+  scr_fs_chmod(path, parsed);
+  return scr_promise_settled_void();
+}
+
+/* The JS-source lane: a dyn mode is a number or an octal string, checked in
+ * Node's order after the path. */
+ScrPromise *scr_fsp_chmod_chk(const ScrDyn *path, const ScrDyn *mode) {
+  ScrStr *checked = scr_fs_checked_path(path, "path");
+  if (!checked) return scr_promise_settled_void();
+  if (scr_fs_mode_chk(mode, "mode")) {
+    double parsed;
+    if (mode->kind == SCR_DYN_STR) {
+      if (scr_fs_parse_octal_mode(mode->v.str, &parsed)) scr_fs_chmod(checked, parsed);
+    } else {
+      scr_fs_chmod(checked, mode->v.num);
+    }
+  }
+  scr_str_release(checked);
+  return scr_promise_settled_void();
+}
+
+/* fs.promises.stat/lstat(path, null): Node's default parameter only covers
+ * undefined, so after validating the path it reads options.bigint off the
+ * null and throws — the promise rejects with that TypeError (no code, no
+ * syscall). */
+ScrPromise *scr_fsp_stat_null_options(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  static const char message[] = "Cannot read properties of null (reading 'bigint')";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return scr_promise_settled_void();
+}
+
 /* fs.exists(path, cb) — the REAL deprecated-API shape: the callback
  * validates synchronously (Node's one throwing arm), and a path that
  * getValidatedPath accepts — a string, a Uint8Array or a file: URL without
@@ -2977,8 +3454,8 @@ void scr_fs_watch_file_chk(const ScrDyn *path, const ScrDyn *listener, const Scr
  * callback/sync pair is not even exported elsewhere, so non-APPLE builds
  * answer the not-a-function TypeError; the promise form rejects
  * ERR_METHOD_NOT_IMPLEMENTED, Node's own linux shape). On macOS the
- * validation ladder runs in Node's order and the real lchmod(2) applies
- * where an operation survives it. */
+ * validation ladder runs in Node's order and the operation is Node's own
+ * open(O_WRONLY | O_SYMLINK) / fchmod / close ladder. */
 static bool scr_fs_lchmod_defined(const char *api) {
 #ifdef __APPLE__
   (void)api;
@@ -2991,22 +3468,54 @@ static bool scr_fs_lchmod_defined(const char *api) {
 #endif
 }
 
+/* parseFileMode's answer, at whichever point Node parses it: an octal string
+ * is read in base 8 (with the message the truncating formatter builds) and a
+ * number goes through validateUint32. */
+static bool scr_fs_lchmod_mode(const ScrDyn *mode, double *bits) {
+  if (mode->kind == SCR_DYN_STR) return scr_fs_parse_octal_mode(mode->v.str, bits);
+  *bits = mode->v.num;
+  return scr_fs_mode_chk(mode, "mode");
+}
+
 void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb,
                        const ScrStr *fence) {
   if (!scr_fs_lchmod_defined("fs.lchmod")) return;
   if (!scr_fs_cb_chk(cb, "cb")) return;
+  /* parseFileMode precedes the open: the mode is checked before the path. */
+  double bits = 0;
+  if (!scr_fs_lchmod_mode(mode, &bits)) return;
   if (!scr_fs_path_chk(path, "path")) return;
-  if (!scr_fs_mode_chk(mode, "mode")) return;
   scr_throw_lowering_fence(fence); /* the async op + callback dispatch */
 }
 
 #ifdef __APPLE__
-static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
-  ScrStr *p = path->kind == SCR_DYN_STR ? scr_str_retain(path->v.str)
-                                        : scr_bytes_string(path->v.bytes, 0, path->v.bytes->len);
-  double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
-  if (lchmod(p->data, (mode_t)m) != 0) scr_fs_throw(errno, "lchmod", p);
-  scr_str_release(p);
+/* Node's lchmod ladder: fs.lchmodSync opens O_WRONLY | O_SYMLINK, fchmods
+ * in a try and closes in its finally; fs/promises lchmod is
+ * `open(path, O_WRONLY | O_SYMLINK)` then handleFdClose(fchmod(fd, mode),
+ * fd.close). The open comes first, so a missing path is reported before a
+ * bad mode, and the descriptor is closed either way. The fchmod failure is
+ * the one reported; a close failure is reported when the fchmod succeeded.
+ * `data` is the checked path and `named` the value an error's path names. */
+static bool scr_fs_lchmod_open_chmod(const ScrStr *data, const ScrDyn *mode, const ScrStr *named) {
+  int fd = open(data->data, O_WRONLY | O_SYMLINK);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", named);
+    return false;
+  }
+  double bits = 0;
+  bool ok = scr_fs_lchmod_mode(mode, &bits);
+  int chmod_err = ok && fchmod(fd, (mode_t)bits) != 0 ? errno : 0;
+  int close_err = close(fd) != 0 ? errno : 0;
+  if (!ok) return false;
+  if (chmod_err != 0) {
+    scr_fs_throw(chmod_err, "fchmod", named);
+    return false;
+  }
+  if (close_err != 0) {
+    scr_fs_throw(close_err, "close", named);
+    return false;
+  }
+  return true;
 }
 #endif
 
@@ -3014,13 +3523,51 @@ static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
  * return-position uses lower; NULL with the exception pending. */
 ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode) {
   if (!scr_fs_lchmod_defined("fs.lchmodSync")) return NULL;
-  if (!scr_fs_path_chk(path, "path")) return NULL;
-  if (!scr_fs_mode_chk(mode, "mode")) return NULL;
 #ifdef __APPLE__
-  scr_fs_lchmod_apply(path, mode);
-  if (scr_exc_pending()) return NULL;
+  ScrStr *p = scr_fs_checked_path(path, "path");
+  if (!p) return NULL;
+  bool ok = scr_fs_lchmod_open_chmod(p, mode, p);
+  scr_str_release(p);
+  if (!ok) return NULL;
+#else
+  (void)path;
+  (void)mode;
 #endif
   return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* fs.promises.lchmod(path, mode) with the typed operands: Node's stub
+ * rejects with ERR_METHOD_NOT_IMPLEMENTED before any validation where
+ * O_SYMLINK does not exist (Linux), and macOS runs the open/fchmod/close
+ * ladder. */
+ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode) {
+#ifndef __APPLE__
+  (void)path;
+  (void)mode;
+  static const char ni[] = "The lchmod() method is not implemented";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
+  return scr_promise_settled_void();
+#else
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  ScrDyn value = { .kind = SCR_DYN_NUM, .v.num = mode };
+  scr_fs_lchmod_open_chmod(path, &value, path);
+  return scr_promise_settled_void();
+#endif
+}
+
+ScrPromise *scr_fsp_lchmod_string(ScrStr *path, ScrStr *mode) {
+#ifndef __APPLE__
+  (void)path;
+  (void)mode;
+  static const char ni[] = "The lchmod() method is not implemented";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
+  return scr_promise_settled_void();
+#else
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  ScrDyn value = { .kind = SCR_DYN_STR, .v.str = mode };
+  scr_fs_lchmod_open_chmod(path, &value, path);
+  return scr_promise_settled_void();
+#endif
 }
 
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode) {
@@ -3031,9 +3578,10 @@ ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
   return scr_promise_settled_void();
 #else
-  if (scr_fs_path_chk(path, "path") && scr_fs_mode_chk(mode, "mode")) {
-    scr_fs_lchmod_apply(path, mode);
-  }
+  ScrStr *checked = scr_fs_checked_path(path, "path");
+  if (!checked) return scr_promise_settled_void();
+  scr_fs_lchmod_open_chmod(checked, mode, checked);
+  scr_str_release(checked);
   return scr_promise_settled_void();
 #endif
 }

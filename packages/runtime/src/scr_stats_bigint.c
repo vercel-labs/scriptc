@@ -86,14 +86,17 @@ ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s) {
   return scr_stats_big_ms_of(s, SCR_STATS_BIRTHTIME);
 }
 
-static double scr_stats_big_date_of(const ScrStats *s, int which) {
+/* Node's BigIntStats builds each Date from its integer millisecond member
+ * (new Date(Number(mtimeMs))), so the time value truncates where Stats
+ * rounds; both cache the object on the snapshot through scr_stats_date. */
+static struct ScrDate *scr_stats_big_date_of(ScrStats *s, int which) {
   ScrBigInt *ms = scr_stats_big_ms_of(s, which);
-  double date = scr_date_new_ms(scr_bigint_to_f64(ms));
+  double time_value = scr_bigint_to_f64(ms);
   scr_bigint_release(ms);
-  return date;
+  return scr_stats_date(s, which, time_value);
 }
 
-double scr_stats_big_atime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_ATIME); }
-double scr_stats_big_mtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_MTIME); }
-double scr_stats_big_ctime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_CTIME); }
-double scr_stats_big_birthtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_BIRTHTIME); }
+struct ScrDate *scr_stats_big_atime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_ATIME); }
+struct ScrDate *scr_stats_big_mtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_MTIME); }
+struct ScrDate *scr_stats_big_ctime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_CTIME); }
+struct ScrDate *scr_stats_big_birthtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_BIRTHTIME); }

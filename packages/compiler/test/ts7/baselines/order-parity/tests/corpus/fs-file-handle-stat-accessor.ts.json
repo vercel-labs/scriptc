@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-file-handle-stat-accessor.ts"
+ ],
+ "diags": []
+}

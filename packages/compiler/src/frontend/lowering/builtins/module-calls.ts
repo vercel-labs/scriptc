@@ -11,6 +11,7 @@ import {
   lowerFsOpenSyncCall,
   lowerFsModeSyncCall,
   lowerFsDescriptorSyncCall,
+  lowerFsOpenAsBlobCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -19,24 +20,29 @@ import {
   lowerFsWriteDescriptorCall,
   lowerFsEncodedRead,
   lowerFsPromisesEncodedRead,
+  lowerFsPromisesReadOptionsCall,
   lowerFsMkdirSyncCall,
   lowerFsOpendirCall,
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
+  lowerFsPromisesEncodeOptionsCall,
   lowerFsRemoveCall,
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
+  lowerFsPromisesWriteOptionsCall,
   lowerFsWriteOptionsCall,
   lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
   lowerFsExistsValueCall,
+  staticallyAbsent,
 } from "./filesystem-calls.js";
-import { lowerBuiltinOptionalDefault } from "./arguments.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
+import { lowerBuiltinOptionalDefault } from "./arguments.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { locOf } from "../../program.js";
 import * as ts from "../../ts7/adapter.js";
 import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
@@ -50,6 +56,7 @@ import {
   type IrLibFn,
   type IrType,
   STRING,
+  VOID,
   type SrcLoc,
   arrayOf,
   typeEquals,
@@ -59,7 +66,8 @@ import { lowerProcessLoadEnvFile } from "./environment.js";
 import { withIgnoredArguments } from "./call-arguments.js";
 import {
   lowerFsWatchCall,
-  lowerFsReaddirTypesCall,
+  lowerFsReaddirOptionsCall,
+  lowerFsPromisesStatOptionsCall,
   lowerFsStatFdOptionsCall,
   lowerFsStatOptionsCall,
 } from "./filesystem.js";
@@ -174,6 +182,8 @@ export function lowerBuiltinModuleCall(
     const lowered = lowerFsDescriptorSyncCall(lowerer, expr, bi.member, loc);
     if (lowered) return lowered;
   }
+  if (bi.module === "fs" && bi.member === "openAsBlob")
+    return lowerFsOpenAsBlobCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
     return lowerer.lowerSpawnSyncCall(expr, loc);
@@ -208,17 +218,15 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "os" && bi.member === "networkInterfaces") {
     return lowerOsNetworkInterfacesCall(lowerer, expr, loc);
   }
-  // fs.readdirSync/fs.promises.readdir(path, { withFileTypes: true }) —
-  // the Dirent forms, routed BEFORE the 1-arg table completion. The
-  // options must be an object literal with withFileTypes: true (encoding
-  // "utf8"/"utf-8" is accepted as the default it is; recursive and
-  // encoding:'buffer' fence), and the call site's mapped type must carry
-  // the interned Dirent record array (type-mapper.ts) — the userInfo
-  // verification stance.
-  const syncReaddirTypes = bi.module === "fs" && bi.member === "readdirSync";
-  const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
-  if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
-    return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
+  // fs.readdirSync/fs.promises.readdir(path, options) — every documented
+  // options value (an encoding name or record, recursive, withFileTypes) is
+  // lowered through the runtime's getOptions ladder; the call site's mapped
+  // result type selects the string, Buffer, union or Dirent array form.
+  // Routed BEFORE the 1-arg table completion.
+  const syncReaddir = bi.module === "fs" && bi.member === "readdirSync";
+  const promiseReaddir = bi.module === "fs/promises" && bi.member === "readdir";
+  if ((syncReaddir || promiseReaddir) && expr.arguments.nodes.length === 2) {
+    return lowerFsReaddirOptionsCall(lowerer, expr, loc, promiseReaddir);
   }
   // fs.existsSync(path) over a value that is not statically a string: a
   // Buffer, a URL, an `any`, or any other value Node answers false for with
@@ -238,6 +246,44 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "fs" && bi.member === "fstatSync" && expr.arguments.nodes.length === 2) {
     return lowerFsStatFdOptionsCall(lowerer, expr, loc);
+  }
+  // fs.promises.realpath/mkdtemp(path, options): the encoding option,
+  // routed BEFORE the table completion.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "realpath" || bi.member === "mkdtemp") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    return lowerFsPromisesEncodeOptionsCall(lowerer, expr, loc, bi.member === "mkdtemp");
+  }
+  // fs.mkdtempDisposableSync(prefix, options) and
+  // fs.promises.mkdtempDisposable(prefix, options): the encoding option.
+  // The runtime runs Node's getOptions ladder (the options shape, then the
+  // encoding name) and builds the disposable record; the plain one-argument
+  // forms keep their table entries.
+  if (
+    ((bi.module === "fs" && bi.member === "mkdtempDisposableSync") ||
+      (bi.module === "fs/promises" && bi.member === "mkdtempDisposable")) &&
+    expr.arguments.nodes.length === 2 &&
+    !expr.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const [prefix, options] = expr.arguments.nodes;
+    return {
+      kind: "libCall",
+      fn: bi.module === "fs" ? "fs.mkdtempDisposableSyncChk" : "fsp.mkdtempDisposableChk",
+      args: [lowerer.lowerExprExpecting(prefix!, DYN), lowerer.lowerExprExpecting(options!, DYN)],
+      type: bi.module === "fs" ? DYN : { kind: "promise", inner: DYN },
+      loc,
+    };
+  }
+  // fs.promises.stat/lstat(path, options): bigint and (stat only)
+  // throwIfNoEntry, routed BEFORE the table completion.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "stat" || bi.member === "lstat") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    return lowerFsPromisesStatOptionsCall(lowerer, expr, loc, bi.member === "lstat");
   }
   if (bi.module === "os" && bi.member === "userInfo") {
     return lowerOsUserInfoCall(lowerer, expr, loc);
@@ -333,6 +379,8 @@ export function lowerBuiltinModuleCall(
   ) {
     const encoded = lowerFsPromisesEncodedRead(lowerer, expr, loc);
     if (encoded) return encoded;
+    const options = lowerFsPromisesReadOptionsCall(lowerer, expr, loc);
+    if (options) return options;
   }
   if (
     bi.module === "fs/promises" &&
@@ -380,6 +428,56 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "fs/promises" && bi.member === "rm" && expr.arguments.nodes.length === 2) {
     return lowerFsRemoveCall(lowerer, expr, loc, true);
   }
+  // chmod(path, mode) / lchmod(path, mode): parseFileMode takes the number
+  // the table form already carries or an octal string, which the fixed-width
+  // ABI has no slot for — a string mode takes the string entry point, and a
+  // dyn mode (a `Mode` union value) takes the checked one.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "chmod" || bi.member === "lchmod") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    const modeType = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
+    const chmod = bi.member === "chmod";
+    if (modeType?.kind === "string") {
+      const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+      const mode = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+      return {
+        kind: "libCall",
+        fn: chmod ? "fsp.chmodString" : "fsp.lchmodString",
+        args: [path, mode],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
+    const modeUnion =
+      modeType?.kind === "union" &&
+      lowerer.unions
+        .get(modeType.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || arm.kind === "f64");
+    if (modeType?.kind === "dyn" || modeUnion) {
+      const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+      const mode = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+      return {
+        kind: "libCall",
+        fn: chmod ? "fsp.chmodChk" : "fsp.lchmodChk",
+        args: [
+          {
+            kind: "dynFrom",
+            value: path,
+            type: DYN,
+            loc,
+          },
+          mode.type.kind === "dyn" ? mode : { kind: "dynFrom", value: mode, type: DYN, loc },
+        ],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
+  }
+  // accessSync(p, mode?) and truncateSync(p, len?), with their promise
+  // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
+  // The mode is an ordinary number — fs.constants.* reads bake to literals.
   if (zeroDefault) return lowerFsZeroDefaultCall(lowerer, expr, bi, fn, loc);
   // copyFileSync(src, dest, mode?) and copyFile(src, dest, mode?): the
   // mode is libuv's copyfile flag bits (COPYFILE_EXCL = 1, COPYFILE_FICLONE
@@ -396,12 +494,24 @@ export function lowerBuiltinModuleCall(
     const src = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
     const dest = lowerFsPath(lowerer, expr.arguments.nodes[1]!);
     const modeNode = expr.arguments.nodes[2];
-    if (!modeNode) return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
+    // An omitted mode and a statically absent one (undefined, or a `void`
+    // value) are both Node's plain copy, whose mode is 0.
+    if (!modeNode || staticallyAbsent(lowerer, modeNode))
+      return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
     const flags: IrLibFn = bi.module === "fs" ? "fs.copyFileFlagsSync" : "fsp.copyFileFlags";
     return {
       kind: "libCall",
       fn: flags,
-      args: [src, dest, lowerer.lowerExprExpecting(modeNode, F64)],
+      args: [
+        src,
+        dest,
+        lowerBuiltinOptionalDefault(lowerer, modeNode, F64, {
+          kind: "numLit",
+          value: 0,
+          type: F64,
+          loc,
+        }),
+      ],
       type: fn.result,
       loc,
     };
@@ -457,8 +567,57 @@ export function lowerBuiltinModuleCall(
   // utf8 the runtime writes anyway.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
+  // fs.promises.writeFile(vs appendFile): the general options record —
+  // every encoding name, the full flag table, mode, flush and signal —
+  // validated by the runtime in Node's order. writeFile's utf8-only
+  // spellings keep the plain-write lowerings below; appendFile's options
+  // always take the record (its default flag is "a").
+  if (promiseWriteOptions && expr.arguments.nodes.length === 3) {
+    const lowered = lowerFsPromisesWriteOptionsCall(lowerer, expr, loc, false);
+    if (lowered) return lowered;
+  }
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "appendFile" &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsPromisesWriteOptionsCall(lowerer, expr, loc, true);
+    if (lowered) return lowered;
+  }
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
+  }
+  // fs.promises.rmdir(p, options): the validateRmdirOptions record.
+  if (bi.module === "fs/promises" && bi.member === "rmdir" && expr.arguments.nodes.length === 2) {
+    const options = expr.arguments.nodes[1]!;
+    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+    const pathLocal = lowerer.declareHiddenLocal("%rmdirPath", STRING);
+    const optionsLocal = lowerer.declareHiddenLocal("%rmdirOptions", DYN);
+    const resultType: IrType = { kind: "promise", inner: VOID };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        {
+          kind: "varDecl",
+          localId: optionsLocal.id,
+          init: lowerer.lowerExprExpecting(options, DYN),
+          loc: locOf(options),
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "fsp.rmdirOptions",
+        args: [
+          varRef(pathLocal.id, pathLocal.type, loc),
+          varRef(optionsLocal.id, optionsLocal.type, loc),
+        ],
+        type: resultType,
+        loc,
+      },
+      type: resultType,
+      loc,
+    };
   }
   // appendFileSync(p, data, options): only the encoding can be lowered
   // here (utf8 is what the runtime appends anyway; the flag a plain append

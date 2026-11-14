@@ -414,7 +414,10 @@ export function validatorCases(): ValidatorCase[] {
           expression({
             kind: "libCall",
             fn: "fs.readdirTypesSync",
-            args: [strLit(".", loc)],
+            args: [
+              strLit(".", loc),
+              { kind: "dynFrom", value: strLit("utf8", loc), type: { kind: "dyn" }, loc },
+            ],
             type: arrayOf({ kind: "record", shapeId: "dirent" }),
             loc,
           }),

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-open-as-blob-dynamic.cjs"
+ ],
+ "diags": []
+}

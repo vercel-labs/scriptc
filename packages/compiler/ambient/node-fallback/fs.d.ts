@@ -265,22 +265,64 @@ declare module "node:fs" {
   ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
-  /* The recursive form: every entry below the path, relative to it. */
+  /* The recursive form and the utf8 default: every entry below the path,
+   * relative to it, decoded as a string. (The overload order keeps this
+   * form, whose runtime answer is always string[], a plain string[].) */
   export function readdirSync(
     path: string | URL,
-    options: {
+    options?: {
       recursive?: boolean;
       withFileTypes?: false;
       encoding?: "utf8" | "utf-8";
       [option: string]: unknown;
     },
   ): string[];
+  /* A known encoding name — BufferEncoding does not include 'buffer' —
+   * decodes every name as a string; the bare string spelling is the same
+   * answer. */
+  export function readdirSync(
+    path: string | URL,
+    options:
+      | BufferEncoding
+      | null
+      | {
+          encoding: BufferEncoding | null;
+          recursive?: boolean;
+          withFileTypes?: false;
+          [option: string]: unknown;
+        },
+  ): string[];
+  /* encoding: 'buffer' names decode as Buffers; the shorthand string form
+   * is the same answer. */
+  export function readdirSync(
+    path: string | URL,
+    options:
+      | "buffer"
+      | {
+          encoding: "buffer";
+          recursive?: boolean;
+          withFileTypes?: false;
+          [option: string]: unknown;
+        },
+  ): Buffer[];
+  /* An options value whose encoding is only known at run time, 'buffer'
+   * included: the runtime picks the arm its resolved encoding names. */
+  export function readdirSync(
+    path: string | URL,
+    options: {
+      encoding?: BufferEncoding | "buffer" | null;
+      recursive?: boolean;
+      withFileTypes?: false;
+      [option: string]: unknown;
+    },
+  ): string[] | Buffer[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes). The type is interned explicitly in type-mapper.ts (the
    * record's hidden %dtype field carries the entry kind; the probes lower
-   * as reads of it in builtins/filesystem.ts). */
-  export interface Dirent {
-    name: string;
+   * as reads of it in builtins/filesystem.ts). @types/node's Name type
+   * parameter selects the name's encoding; parentPath stays a string. */
+  export interface Dirent<Name extends string | Buffer = string> {
+    name: Name;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
@@ -292,9 +334,21 @@ declare module "node:fs" {
   }
   export function readdirSync(
     path: string | URL,
-    /* The options-record stance (see http.RequestOptions): recursive
-     * fences by name at the call site; undocumented keys drop like Node. */
-    options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
+    options: {
+      withFileTypes: true;
+      encoding: "buffer";
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
+  ): Dirent<Buffer>[];
+  export function readdirSync(
+    path: string | URL,
+    options: {
+      withFileTypes: true;
+      encoding?: BufferEncoding | null;
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
   ): Dirent[];
   /* fs.globSync / fs.glob: Node's glob walk over the file system. Patterns
    * are minimatch globs (case-insensitive on macOS and Windows); results
@@ -400,6 +454,29 @@ declare module "node:fs" {
   ): WriteStream;
   export function accessSync(path: string | URL, mode?: number): void;
   export function mkdtempSync(prefix: string | URL): string;
+  /* fs.mkdtempDisposableSync (Node 24): the created directory as a
+   * disposable record. `remove` deletes the tree (recursively) and the
+   * [Symbol.dispose] method is what `using` calls. */
+  export interface DisposableTempDir {
+    path: string;
+    remove(): void;
+    [Symbol.dispose](): void;
+  }
+  export function mkdtempDisposableSync(
+    prefix: string | URL,
+    options?: BufferEncoding | { encoding?: BufferEncoding | null } | null,
+  ): DisposableTempDir;
+  /* fs.openAsBlob (Node 24): a Blob over the file at `path`, read lazily.
+   * The call validates synchronously (the options, then the path) and
+   * answers an already-resolved promise; the blob's own reads reject with a
+   * NotReadableError when the file changed or went away since the call. */
+  export interface OpenAsBlobOptions {
+    type?: string;
+  }
+  export function openAsBlob(
+    path: string | Buffer | URL,
+    options?: OpenAsBlobOptions,
+  ): Promise<Blob>;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;
@@ -583,6 +660,10 @@ declare module "node:fs" {
     mode?: number | string,
   ): number;
   export function closeSync(fd: number): void;
+  /* close(fd[, callback]): the descriptor closes when called. A failure
+   * reaches the callback; without one Node's default callback throws it as
+   * an uncaught exception on a later turn (never for the call itself). */
+  export function close(fd: number, callback?: (err: NodeJS.ErrnoException | null) => void): void;
   export function fdatasyncSync(fd: number): void;
   export function ftruncateSync(fd: number, len?: number): void;
   export function utimesSync(
@@ -729,6 +810,8 @@ declare module "node:fs" {
   export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    ref(): this;
+    unref(): this;
     on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
     on(event: "error", listener: (error: Error) => void): this;
     on(event: "close", listener: () => void): this;
@@ -766,9 +849,14 @@ declare module "node:fs" {
    * path that cannot be stat'd polls as all-zero Stats. One poller per
    * resolved path is shared by every listener on it. interval defaults to
    * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
-   * no lowering. The call is a statement: Node's StatWatcher has no
-   * lowering. */
-  export interface StatWatcher {}
+   * no lowering. The call answers the path's StatWatcher: one object per
+   * resolved path, its ref()/unref() deciding whether the active watcher
+   * keeps the event loop alive (both answer the watcher itself, so calls
+   * chain). */
+  export interface StatWatcher {
+    ref(): this;
+    unref(): this;
+  }
   export function watchFile(
     filename: string,
     options: { interval?: number; persistent?: boolean; bigint?: false },
@@ -1173,37 +1261,45 @@ declare module "node:fs" {
     callback: (err: NodeJS.ErrnoException | null) => void,
   ): void;
   export function copyFile(...args: any[]): void;
-  /* An error reaches the callback alone, so the resolved path is absent
-   * then — the optional parameter is Node's own arity. */
+  /* The callback forms, and the native binding (`fs.realpath.native`). The
+   * plain form follows Node's JavaScript walk — `path += ''` for a non-string
+   * path, `path.resolve`, then lstat/stat/readlink per component — so a
+   * missing entry is named by the first missing component (syscall "lstat")
+   * and a link cycle fails in "stat"; the native binding is one realpath(2)
+   * call whose errors name the path as given. An unknown encoding is
+   * rejected before the path is touched, "buffer" answers a Buffer, and
+   * every other known encoding re-encodes the resolved text. An error
+   * reaches the callback alone, so the resolved path is optional then —
+   * Node's own arity. */
   export function realpath(
-    path: string | URL,
+    path: string | Uint8Array | URL,
     callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
   ): void;
   export function realpath(
-    path: string | URL,
-    options: BufferEncoding | null,
+    path: string | Uint8Array | URL,
+    options: BufferEncoding | null | { encoding?: BufferEncoding | null },
     callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
   ): void;
   export function realpath(
-    path: string | URL,
+    path: string | Uint8Array | URL,
     options: "buffer" | { encoding: "buffer" },
     callback: (err: NodeJS.ErrnoException | null, resolvedPath?: Buffer) => void,
   ): void;
   export function realpath(...args: any[]): void;
-  /* fs.realpath.native is the same realpath binding (Node's .name there
-   * is empty, and it takes the same arguments). */
+  /* fs.realpath.native is the same binding under a second name (Node's
+   * `.name` there is empty, and it takes the same arguments). */
   export namespace realpath {
     function native(
-      path: string | URL,
+      path: string | Uint8Array | URL,
       callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
     ): void;
     function native(
-      path: string | URL,
-      options: BufferEncoding | null,
+      path: string | Uint8Array | URL,
+      options: BufferEncoding | null | { encoding?: BufferEncoding | null },
       callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
     ): void;
     function native(
-      path: string | URL,
+      path: string | Uint8Array | URL,
       options: "buffer" | { encoding: "buffer" },
       callback: (err: NodeJS.ErrnoException | null, resolvedPath?: Buffer) => void,
     ): void;

@@ -1116,6 +1116,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  // The options forms run Node's getOptions/assertEncoding/abort ladder, so
+  // argument errors throw before the walk; the promise twins mint their
+  // answer from the same walk (pending errors become the rejection).
+  "fs.readdirSyncOpts",
+  "fs.readdirSyncBytesOpts",
+  "fs.readdirSyncOptsUnion",
+  "fsp.readdirOpts",
+  "fsp.readdirBytesOpts",
+  "fsp.readdirOptsUnion",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",
@@ -1270,6 +1279,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
+  "fs.mkdtempDisposableSyncChk",
+  "fs.openAsBlobChk",
+  "fsp.mkdtempDisposableChk",
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
@@ -1297,7 +1309,48 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.writeFileData",
   "fsp.appendFileData",
   "fsp.writeFileDataFlags",
+  "fsp.writeFileOptions",
+  "fsp.writeFileOptionsBytes",
+  "fsp.writeFileOptionsData",
+  "fsp.appendFileOptions",
+  "fsp.appendFileOptionsBytes",
+  "fsp.appendFileOptionsData",
+  "fsp.rmdirOptions",
+  "fsp.lchmod",
+  // The promise forms that validate an argument or run the filesystem call
+  // before the promise exists: the error is raised, then settled into the
+  // rejection (scr_async.c's settled constructors, scr_file_handle.c's open).
+  "fsp.mkdirModeOctal",
+  "fsp.mkdirRecursiveFirst",
+  "fsp.mkdirRecursiveFirstOctal",
+  "fsp.mkdtempEncoded",
+  "fsp.mkdtempBuffer",
+  "fsp.mkdtempDisposable",
+  "fsp.statProbe",
+  "fsp.realpathEncoded",
+  "fsp.realpathBuffer",
+  "fsp.openOptions",
+  // readFile's option ladder and the chmod/lchmod mode spellings validate
+  // before they touch the filesystem (and the read itself raises), then
+  // settle the error into the rejection; stat's null options value is a
+  // TypeError raised after the path check, and the FileHandle options
+  // record reads its members with the same order.
+  "fsp.readFileDyn",
+  "fsp.readFileDynPath",
+  "fsp.readFileStrOptions",
+  "fsp.readFileBytesOptions",
+  "fsp.chmodString",
+  "fsp.chmodChk",
+  "fsp.lchmodString",
+  "fsp.statNullOptions",
+  "fileHandle.statOptions",
   "fileHandle.writeFileData",
+  // The options record's own validation ladder, then the write, all before
+  // the promise exists.
+  "fileHandle.writeFileOptions",
+  "fileHandle.writeFileOptionsBytes",
+  "fileHandle.writeFileOptionsData",
+  "fileHandle.chown",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",
@@ -1323,6 +1376,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.rmOptsSync",
   "fs.rmRetrySync",
   "fs.mkdtempSync",
+  "fs.mkdtempDisposableSync",
   "fs.accessSync",
   "fs.readFdSync",
   "fs.readFdSyncBytes",

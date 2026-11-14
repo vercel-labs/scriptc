@@ -28,7 +28,19 @@
  *   so a listener may unwatch itself or others mid-emit — the corpus's
  *   own shape.
  * - persistent: false unrefs the poll timer: the poller still fires while
- *   the loop runs for something else, but never holds the process open. */
+ *   the loop runs for something else, but never holds the process open.
+ * - watchFile answers Node's StatWatcher record — the same object for the
+ *   same resolved path, carrying ref() and unref() — and mirrors Node's
+ *   two counters: the live count and the maximum. A first call starts the
+ *   poller (persistent: false unrefs the handle at once); another call on
+ *   the same path raises both counters without touching the handle;
+ *   removing a listener through unwatchFile lowers the maximum and unrefs
+ *   at the live count's zero; ref()/unref() move the live count and touch
+ *   the handle only at the 0/1 boundary. The handle is the poll timer,
+ *   re-armed every poll, so the state carries its ref flag and each arm
+ *   applies it. A stopped poller detaches the record's state: ref/unref
+ *   then answer the record and change nothing, exactly as Node's dropped
+ *   handle does. */
 #include "scr_runtime.h"
 
 #include <errno.h>
@@ -53,7 +65,8 @@ struct ScrWatchFiler {
   size_t rc;
   ScrStr *path;     /* the resolved path (+1): the registry key and the stat target */
   double interval;  /* the first call's interval, reused for every poll */
-  bool persistent;
+  struct ScrStatState *st; /* the StatWatcher counters (+1); NULL never */
+  ScrDyn *rec;      /* the StatWatcher record (+1); NULL never */
   int state;        /* libuv's busy_polling: 0 before the first poll, 1 after
                      * a success, -errno after a failure */
   int node_status;  /* Node's kOldStatus: -1 until a change is reported */
@@ -66,6 +79,35 @@ struct ScrWatchFiler {
 };
 
 typedef struct ScrWatchFiler ScrWatchFiler;
+
+/* One poller's StatWatcher bookkeeping: Node's two ref counters, whether
+ * the handle is ref'd (the poll timer, re-armed every poll), and a
+ * BORROWED poller pointer that stop() clears. The record's ref/unref
+ * closures and the poller share one of these through a box, so it is
+ * refcounted: a record the program still holds keeps it alive after the
+ * poller is gone, and every ref/unref then answers the record as a
+ * no-op, like Node's dropped handle. */
+typedef struct ScrStatState {
+  size_t rc;
+  ScrWatchFiler *p; /* borrowed; NULL once the poller stopped */
+  double ref_count;
+  double max_ref_count;
+  bool handle_ref;
+} ScrStatState;
+
+static ScrStatState *scr_stat_state_retain(ScrStatState *s) {
+  if (s->rc != SIZE_MAX) s->rc++;
+  return s;
+}
+
+static void scr_stat_state_release(ScrStatState *s) {
+  if (!s || s->rc == SIZE_MAX) return;
+  if (--s->rc == 0) free(s);
+}
+
+static void *scr_stat_state_retain_v(void *s) { return scr_stat_state_retain((ScrStatState *)s); }
+
+static void scr_stat_state_release_v(void *s) { scr_stat_state_release((ScrStatState *)s); }
 
 static SCR_TL ScrWatchFiler *scr_watch_filers = NULL; /* the registry (+1 each) */
 
@@ -88,6 +130,10 @@ static void scr_watch_file_release(ScrWatchFiler *p) {
     scr_closure_release(p->pollCb);
     scr_stats_release(p->last);
     scr_str_release(p->path);
+    /* The record's closures drop their state references first; the poller's
+     * own reference is the last one left when the program holds nothing. */
+    scr_dyn_release(p->rec);
+    scr_stat_state_release(p->st);
     free(p);
   }
 }
@@ -116,7 +162,7 @@ static ScrWatchFiler *scr_watch_file_find(ScrStr *resolved) {
  * turn, never synchronously), then one per interval. */
 static void scr_watch_file_arm(ScrWatchFiler *p, double ms) {
   p->timer = scr_set_timeout_handle(scr_closure_retain(p->pollCb), ms);
-  if (!p->persistent) scr_timer_unref(p->timer);
+  if (!p->st->handle_ref) scr_timer_unref(p->timer);
 }
 
 /* libuv's poll comparison: ctime, mtime and birthtime (the *_ms doubles
@@ -207,16 +253,107 @@ static void scr_watch_file_add(ScrWatchFiler *p, ScrClosure *cb /*moves*/, ScrWa
   p->n++;
 }
 
+/* Whether the handle (the poll timer) is ref'd: Node's ref/unref touch it
+ * only when the live count crosses the 0/1 boundary. Between polls the
+ * timer is unarmed; the flag then applies at the next arm. */
+static void scr_stat_state_set_handle_ref(ScrStatState *s, bool refs) {
+  if (s->handle_ref == refs) return;
+  s->handle_ref = refs;
+  ScrWatchFiler *p = s->p;
+  if (p == NULL || p->timer == 0) return;
+  if (refs)
+    scr_timer_ref(p->timer);
+  else
+    scr_timer_unref(p->timer);
+}
+
+/* Node's StatWatcher.unref(): the live count gives way at zero, and only a
+ * poller that still has its handle hears about it. */
+static void scr_stat_state_drop_ref(ScrStatState *s) {
+  if (s->ref_count == 0) return;
+  if (s->p != NULL && --s->ref_count == 0) scr_stat_state_set_handle_ref(s, false);
+}
+
+/* watchFile on a path that already has a poller: 'add' raises both counters
+ * and leaves the handle alone (Node's rule). */
+static void scr_stat_state_add_ref(ScrStatState *s) {
+  s->ref_count++;
+  s->max_ref_count++;
+}
+
+/* unwatchFile removing one listener: 'clean' lowers the maximum, then the
+ * same unref() the program's own call makes. */
+static void scr_stat_state_clean_ref(ScrStatState *s) {
+  s->max_ref_count--;
+  scr_stat_state_drop_ref(s);
+}
+
+/* unwatchFile removing every listener: 'cleanAll'. */
+static void scr_stat_state_clean_all_ref(ScrStatState *s) {
+  s->max_ref_count = 0;
+  s->ref_count = 0;
+  if (s->p != NULL) scr_stat_state_set_handle_ref(s, false);
+}
+
+/* The record's ref(): Node's guard keeps a live count that already equals
+ * the maximum from ref'ing again, and the handle hears only the 0 -> 1
+ * transition. Both methods answer the receiver, like Node's `this`. */
+static ScrDyn *scr_stat_watcher_ref_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStatState *s = (ScrStatState *)scr_box_get_ref(cb->caps[0]);
+  if (s != NULL) {
+    if (s->ref_count != s->max_ref_count && s->p != NULL && s->ref_count++ == 0)
+      scr_stat_state_set_handle_ref(s, true);
+    scr_stat_state_release(s);
+  }
+  return scr_dyn_this_get();
+}
+
+static ScrDyn *scr_stat_watcher_unref_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStatState *s = (ScrStatState *)scr_box_get_ref(cb->caps[0]);
+  if (s != NULL) {
+    scr_stat_state_drop_ref(s);
+    scr_stat_state_release(s);
+  }
+  return scr_dyn_this_get();
+}
+
+/* Builds the StatWatcher record the poller answers (+1): ref() and unref()
+ * over one shared state box. Both methods answer the receiver, so the
+ * record keeps no pointer of its own and the record and poller never form
+ * a cycle. */
+static ScrDyn *scr_stat_watcher_build(ScrWatchFiler *p) {
+  ScrBox *box = scr_box_new_obj(scr_stat_state_retain_v, scr_stat_state_release_v, NULL);
+  scr_box_set_ref(box, scr_stat_state_retain(p->st));
+  ScrDyn *record = scr_dyn_new_obj();
+  ScrClosure *ref = scr_closure_new(NULL, 1);
+  ref->caps[0] = scr_box_retain(box);
+  scr_dyn_obj_set(record, "ref", 3,
+                  scr_dyn_new_func(ref, scr_stat_watcher_ref_call, 0, "()", "ref"));
+  ScrClosure *unref = scr_closure_new(NULL, 1);
+  unref->caps[0] = scr_box_retain(box);
+  scr_dyn_obj_set(record, "unref", 5,
+                  scr_dyn_new_func(unref, scr_stat_watcher_unref_call, 0, "()", "unref"));
+  scr_box_release(box);
+  return record;
+}
+
 /* Stops a poller: clears its timer, unlinks it from the registry, and
  * breaks the poll-closure cycle (closure → box → poller) so the last
- * external reference frees the poller. Safe from inside a listener: the
- * poll frame's own reference keeps `p` alive. */
+ * external reference frees the poller. The record's state is detached:
+ * a StatWatcher the program still holds answers ref/unref as no-ops, as
+ * Node's stopped object does. Safe from inside a listener: the poll
+ * frame's own reference keeps `p` alive. */
 static void scr_watch_file_stop(ScrWatchFiler *p) {
   scr_watch_file_retain(p); /* the frame's reference */
   if (p->timer != 0) {
     scr_clear_interval(p->timer);
     p->timer = 0;
   }
+  p->st->p = NULL; /* the record's ref/unref are no-ops from here */
   for (ScrWatchFiler **pp = &scr_watch_filers; *pp != NULL; pp = &(*pp)->next) {
     if (*pp == p) {
       *pp = p->next;
@@ -246,27 +383,30 @@ static bool scr_watch_file_interval_ok(double interval) {
 }
 
 /* fs.watchFile(path, interval, persistent, listener) — the listener MOVES
- * in. A path holding a null byte throws Node's ERR_INVALID_ARG_VALUE. A
- * second call on the same resolved path adds the listener to the existing
- * poller and ignores its options (Node's rule); a new poller first checks
- * `interval` as a uint32, and registers nothing when that throws. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn) {
+ * in, and the answer is the path's StatWatcher record (+1). A path holding
+ * a null byte throws Node's ERR_INVALID_ARG_VALUE. A second call on the
+ * same resolved path raises the record's counters, adds the listener to
+ * the existing poller, and ignores its options (Node's rule); a new poller
+ * first checks `interval` as a uint32, and registers nothing when that
+ * throws. Answers NULL with the exception pending. */
+ScrDyn *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                          ScrWatchFileFn fn) {
   if (!scr_fs_path_ok(path, "path")) {
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrStr *resolved = scr_watch_file_resolve(path);
   ScrWatchFiler *existing = scr_watch_file_find(resolved);
   if (existing != NULL) {
     scr_str_release(resolved);
     scr_watch_file_add(existing, cb, fn);
-    return;
+    scr_stat_state_add_ref(existing->st);
+    return scr_dyn_retain(existing->rec);
   }
   if (!scr_watch_file_interval_ok(interval)) {
     scr_str_release(resolved);
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrWatchFiler *p = malloc(sizeof *p);
   if (!p) {
@@ -274,10 +414,23 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
     scr_closure_release(cb);
     scr_watch_file_oom();
   }
+  ScrStatState *st = malloc(sizeof *st);
+  if (!st) {
+    free(p);
+    scr_str_release(resolved);
+    scr_closure_release(cb);
+    scr_watch_file_oom();
+  }
   p->rc = 1;
   p->path = resolved;
   p->interval = interval;
-  p->persistent = persistent;
+  p->st = st;
+  p->rec = NULL;
+  st->rc = 1;
+  st->p = p;
+  st->ref_count = 1;
+  st->max_ref_count = 1;
+  st->handle_ref = true;
   p->state = 0;
   p->node_status = -1;
   p->last = NULL;
@@ -294,15 +447,21 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
   p->next = scr_watch_filers;
   scr_watch_filers = p;
   scr_watch_file_retain(p); /* the registry's reference */
+  /* Node's start(): persistent: false runs unref() before the handle
+   * starts, so the first arm is already unref'd. */
+  if (!persistent) scr_stat_state_drop_ref(st);
   scr_watch_file_arm(p, 0);
+  p->rec = scr_stat_watcher_build(p);
   /* The creating reference moved into the box (scr_box_set_ref moves, it
    * does not retain): the box and the registry are the two owners. */
+  return scr_dyn_retain(p->rec);
 }
 
 /* fs.unwatchFile(path[, listener]) — `cb` is borrowed (pointer identity);
- * NULL removes every listener on the resolved path. Removing the last one
- * stops the poller. A path holding a null byte throws Node's
- * ERR_INVALID_ARG_VALUE. */
+ * NULL removes every listener on the resolved path. The record's counters
+ * follow Node: 'clean' after one removal, 'cleanAll' after removing every
+ * listener. Removing the last one stops the poller. A path holding a null
+ * byte throws Node's ERR_INVALID_ARG_VALUE. */
 void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
   if (!scr_fs_path_ok(path, "path")) return; /* exception pending */
   ScrStr *resolved = scr_watch_file_resolve(path);
@@ -311,17 +470,21 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
   if (p == NULL) return;
   if (cb != NULL) {
     /* The LAST listener registered with this closure goes (Node's rule). */
+    bool removed = false;
     for (size_t i = p->n; i-- > 0;) {
       if (p->ls[i].cb == cb) {
         scr_closure_release(p->ls[i].cb);
         memmove(&p->ls[i], &p->ls[i + 1], (p->n - i - 1) * sizeof *p->ls);
         p->n--;
+        removed = true;
         break;
       }
     }
+    if (removed) scr_stat_state_clean_ref(p->st);
   } else {
     for (size_t i = 0; i < p->n; i++) scr_closure_release(p->ls[i].cb);
     p->n = 0;
+    scr_stat_state_clean_all_ref(p->st);
   }
   if (p->n == 0) scr_watch_file_stop(p);
 }

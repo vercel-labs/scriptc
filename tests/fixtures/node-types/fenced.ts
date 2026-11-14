@@ -32,10 +32,11 @@ void inspectResponse;
  * typecheck under @types/node and fence by their name — calls, module
  * member reads and the supported classes' statics alike. */
 import { openAsBlob } from "fs";
-import { EventEmitter } from "node:events";
+import { EventEmitter, on } from "node:events";
 import { win32 } from "path";
 openAsBlob("x");
 console.log(EventEmitter.captureRejections);
+on(new EventEmitter(), "tick");
 console.log(win32.sep);
 /* URL getters, serialization, the object-URL registry and searchParams'
  * method surface all lower under @types/node's declarations

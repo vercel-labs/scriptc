@@ -432,6 +432,10 @@ void scr_warning_emit_deferred(ScrDyn *warning);
  * constructor) is undefined (DEP0203). */
 void scr_warning_emit_deferred_undefined_ctor(ScrDyn *warning);
 ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code);
+/* fs.promises.rmdir(path, options): validateRmdirOptions, the once-per-
+ * process DEP0147 report of the recursive form (through the deferral
+ * above), then stat + the recursive removal or plain rmdir. */
+ScrPromise *scr_fsp_rmdir_options(ScrStr *path, const ScrDyn *options);
 /* The promise-or-absent await's unit arm: one microtask hop, like JS's
  * await of any non-thenable (and like awaiting a settled promise). */
 void scr_await_hop(void);

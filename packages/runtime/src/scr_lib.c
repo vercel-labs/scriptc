@@ -4680,8 +4680,9 @@ static const char *scr_errno_text(int e) {
   case EFBIG: return "file too large";
   case EPIPE: return "broken pipe";
   case ESPIPE: return "invalid seek";
-  case ELOOP: return "too many levels of symbolic links";
+  case ELOOP: return "too many symbolic links encountered";
   case ENOSYS: return "function not implemented";
+  case ENOTSUP: return "operation not supported on socket";
   default: return strerror(e);
   }
 }
@@ -5101,6 +5102,302 @@ ScrStr *scr_fs_realpath_promise(ScrStr *path) {
   return scr_fs_realpath_common(path, "realpath");
 }
 
+#ifdef _WIN32
+
+/* Windows keeps the handle-based realpath above: it is the native
+ * equivalent of the walk (final path of the opened object) and already
+ * answers the normalized form Node's JavaScript walk builds. */
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
+  return scr_fs_realpath(absolute);
+}
+
+#else
+
+/* Node v24 implements the callback API's realpath in lib/fs.js: it
+ * resolves the path, then walks it one component at a time, lstat'ing each
+ * prefix, stat'ing and readlink'ing a symlink, and substituting the link's
+ * target before restarting at the new path's root. Porting the walk (rather
+ * than calling realpath(3)) keeps every error Node's: the first missing
+ * component is named with syscall "lstat", and a link cycle fails in the
+ * stat that follows it ("stat"). knownHard caches the prefixes already
+ * proven link-free; seenLinks reuses a target read earlier for the same
+ * dev:ino pair. */
+
+typedef struct {
+  char **keys;
+  char **values; /* NULL for a membership-only entry */
+  size_t len;
+  size_t cap;
+} ScrFsWalkTable;
+
+static const char *scr_fs_walk_table_get(const ScrFsWalkTable *table, const char *key) {
+  for (size_t i = 0; i < table->len; i++)
+    if (!strcmp(table->keys[i], key)) return table->values ? table->values[i] : (const char *)1;
+  return NULL;
+}
+
+static void scr_fs_walk_table_free(ScrFsWalkTable *table) {
+  for (size_t i = 0; i < table->len; i++) {
+    free(table->keys[i]);
+    if (table->values) free(table->values[i]);
+  }
+  free(table->keys);
+  free(table->values);
+  table->keys = NULL;
+  table->values = NULL;
+  table->len = table->cap = 0;
+}
+
+/* Adds `key` (copied). A NULL `value` adds a membership-only entry; a
+ * non-NULL one is copied too. Tables are tiny (one entry per path component
+ * or per distinct link), so a linear scan is the whole lookup. */
+static void scr_fs_walk_table_add(ScrFsWalkTable *table, const char *key, const char *value) {
+  if (table->len == table->cap) {
+    size_t cap = table->cap ? table->cap * 2 : 8;
+    char **keys = realloc(table->keys, cap * sizeof *keys);
+    if (!keys) scr_trap("scriptc: out of memory\n");
+    table->keys = keys;
+    if (value) {
+      char **values = realloc(table->values, cap * sizeof *values);
+      if (!values) scr_trap("scriptc: out of memory\n");
+      table->values = values;
+    }
+    table->cap = cap;
+  }
+  size_t n = strlen(key);
+  char *copy = malloc(n + 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, key, n + 1);
+  table->keys[table->len] = copy;
+  if (table->values) {
+    size_t v = strlen(value);
+    char *target = malloc(v + 1);
+    if (!target) scr_trap("scriptc: out of memory\n");
+    memcpy(target, value, v + 1);
+    table->values[table->len] = target;
+  }
+  table->len++;
+}
+
+static char *scr_fs_walk_dup_n(const char *s, size_t n) {
+  char *out = malloc(n + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  memcpy(out, s, n);
+  out[n] = 0;
+  return out;
+}
+
+static char *scr_fs_walk_concat(const char *head, const char *tail, size_t tail_len) {
+  size_t head_len = strlen(head);
+  char *out = malloc(head_len + tail_len + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  memcpy(out, head, head_len);
+  memcpy(out + head_len, tail, tail_len);
+  out[head_len + tail_len] = 0;
+  return out;
+}
+
+/* path.resolve(a, b) for the walk's two string arguments. */
+static ScrStr *scr_fs_walk_resolve(const char *a, const char *b, size_t b_len) {
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+  scr_arr_push_ref(parts, scr_str_new(a, strlen(a)));
+  scr_arr_push_ref(parts, scr_str_new(b, b_len));
+  ScrStr *out = scr_path_resolve(parts);
+  scr_arr_release(parts);
+  return out;
+}
+
+/* The kernel's symlink budget (Linux's MAXSYMLINKS): the walk substitutes at
+ * most this many links and answers the ELOOP a link cycle gets beyond it.
+ * Node's JS walk has no such limit, so only a path that needs more
+ * substitutions than the kernel allows can differ. */
+#define SCR_FS_WALK_MAX_SUBSTITUTIONS 40
+
+/* The target of the link at `base_path`, read together with the identity it
+ * is cached under. The caller's lstat named the object; the target must come
+ * from that same object. A directory-entry owner who renames a different
+ * link over the name between the lstat and the readlink would otherwise
+ * poison the cache with a target the identity never had, and every later
+ * restart that reaches the identity replays the substitution. Read the
+ * target, then confirm the name still holds the identity the caller
+ * snapped, adopting the identity the retry read it under when it changed.
+ * Answers +1, or NULL with the exception pending when the link cannot be
+ * read consistently (a constantly renaming entry answers ELOOP). */
+static ScrBytes *scr_fs_walk_link_target(ScrStr *base_path, double *dev, double *ino) {
+  for (int attempt = 0; attempt < 8; attempt++) {
+    ScrBytes *link = scr_fs_readlink_bytes(base_path);
+    if (link == NULL) return NULL;
+    ScrStats *after = scr_fs_lstat(base_path);
+    if (after == NULL) {
+      scr_bytes_release(link);
+      return NULL; /* the lstat's error is the exception */
+    }
+    bool symlink = scr_stats_is_symlink(after);
+    double after_dev = scr_stats_dev(after), after_ino = scr_stats_ino(after);
+    scr_stats_release(after);
+    if (symlink && after_dev == *dev && after_ino == *ino) return link;
+    scr_bytes_release(link);
+    if (!symlink) break; /* the name no longer holds a link */
+    *dev = after_dev;
+    *ino = after_ino;
+  }
+  scr_fs_throw(ELOOP, "stat", base_path);
+  return NULL;
+}
+
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
+  size_t length = absolute->len;
+  char *p = scr_fs_walk_dup_n(absolute->data, length);
+  ScrFsWalkTable known = {0}, seen = {0}, restarted = {0};
+  ScrStr *answer = NULL;
+  bool reached_pipe_or_socket = false;
+  /* Substitutions so far, the kernel's budget: a cached target a racer
+   * poisoned can make every restart's path longer, and longer paths never
+   * repeat, so the repetition guard alone does not bound the walk. */
+  size_t substitutions = 0;
+  size_t root = 0;
+  while (p[root] == '/') root++;
+  char *current = scr_fs_walk_dup_n(p, root);
+  char *base = scr_fs_walk_dup_n(p, root);
+  /* The prefix that owned `current` before this component; a link target
+   * resolves against it, so it outlives the append and is freed at the top
+   * of the next round. */
+  char *retired = NULL;
+  size_t pos = root;
+  for (;;) {
+    free(retired);
+    retired = NULL;
+    size_t p_len = strlen(p);
+    /* Stop if scanned past the end of the path: the accumulated path is
+     * the answer (encodeRealpathResult applies the caller's encoding). */
+    if (pos >= p_len) {
+      answer = scr_str_new(p, p_len);
+      break;
+    }
+    const char *slash = strchr(p + pos, '/');
+    char *previous = current;
+    char *prior_base = base;
+    if (slash == NULL) {
+      size_t rest = p_len - pos;
+      current = scr_fs_walk_concat(previous, p + pos, rest);
+      base = scr_fs_walk_concat(previous, p + pos, rest);
+      pos = p_len;
+    } else {
+      size_t at = (size_t)(slash - p);
+      current = scr_fs_walk_concat(previous, p + pos, at + 1 - pos);
+      base = scr_fs_walk_concat(previous, p + pos, at - pos);
+      pos = at + 1;
+    }
+    free(prior_base);
+    retired = previous;
+    if (scr_fs_walk_table_get(&known, base) != NULL) {
+      /* A pipe or socket ended an earlier walk: nothing below it can be
+       * a link, so the path as it stands is final. */
+      if (reached_pipe_or_socket) {
+        answer = scr_str_new(p, p_len);
+        break;
+      }
+      continue;
+    }
+    ScrStr *base_path = scr_str_new(base, strlen(base));
+    ScrStats *snapshot = scr_fs_lstat(base_path);
+    if (snapshot == NULL) {
+      scr_str_release(base_path);
+      break; /* the lstat's error is the exception */
+    }
+    if (!scr_stats_is_symlink(snapshot)) {
+      scr_stats_release(snapshot);
+      scr_fs_walk_table_add(&known, base, NULL);
+      scr_str_release(base_path);
+      continue;
+    }
+    char id[64];
+    double link_dev = scr_stats_dev(snapshot), link_ino = scr_stats_ino(snapshot);
+    snprintf(id, sizeof id, "%.0f:%.0f", link_dev, link_ino);
+    scr_stats_release(snapshot);
+    const char *target = scr_fs_walk_table_get(&seen, id);
+    if (target == NULL) {
+      /* The link's target decides whether the walk stops: a FIFO or
+       * socket cannot be resolved further, as in Node. */
+      ScrStats *followed = scr_fs_stat(base_path);
+      if (followed == NULL) {
+        scr_str_release(base_path);
+        break; /* the stat's error is the exception ("stat", a cycle) */
+      }
+      reached_pipe_or_socket = scr_stats_is_fifo(followed) || scr_stats_is_socket(followed);
+      scr_stats_release(followed);
+      ScrBytes *link = scr_fs_walk_link_target(base_path, &link_dev, &link_ino);
+      if (link == NULL) {
+        scr_str_release(base_path);
+        break;
+      }
+      /* A link's target is raw filesystem bytes. Resolve those bytes as
+       * the kernel would: decoding first is lossy (utf8 replaces invalid
+       * sequences, ascii masks every byte with 0x7f, latin1 maps them to
+       * other characters), so two targets the raw graph keeps apart can
+       * decode onto one another and send a walk that would terminate
+       * around a cycle it was never given. */
+      ScrStr *text = scr_str_new((const char *)link->data, link->len);
+      scr_bytes_release(link);
+      /* The target was confirmed against (or re-read under) `link_dev` and
+       * `link_ino`: cache it under that identity, not the one the lstat
+       * above happened to see. */
+      snprintf(id, sizeof id, "%.0f:%.0f", link_dev, link_ino);
+      scr_fs_walk_table_add(&seen, id, text->data);
+      scr_str_release(text);
+      target = scr_fs_walk_table_get(&seen, id);
+    }
+    /* gotResolvedLink: resolve the link against the directory prefix, then
+     * the part of the path that follows the link component, and restart
+     * the walk at the root of that answer. */
+    ScrStr *resolved_link = scr_fs_walk_resolve(previous, target, strlen(target));
+    ScrStr *joined = scr_fs_walk_resolve(resolved_link->data, p + pos, p_len - pos);
+    scr_str_release(resolved_link);
+    if (joined == NULL) {
+      scr_str_release(base_path);
+      break;
+    }
+    /* A restart resumes from the resolved path's root with no other state,
+     * so restarting twice from one path replays the same substitution
+     * forever. Raw targets make that reachable only through a cycle the
+     * stat above did not follow, and the paths seen so far bound it: a
+     * repeated restart answers the ELOOP a link cycle gets. A target that
+     * a racer poisoned into the cache can instead grow the path on every
+     * restart, and an ever-longer path never repeats, so substitutions get
+     * the kernel's own budget: more than MAXSYMLINKS of them is ELOOP. */
+    if (scr_fs_walk_table_get(&restarted, joined->data) != NULL ||
+        substitutions >= SCR_FS_WALK_MAX_SUBSTITUTIONS) {
+      scr_fs_throw(ELOOP, "stat", base_path);
+      scr_str_release(base_path);
+      scr_str_release(joined);
+      break;
+    }
+    substitutions++;
+    scr_fs_walk_table_add(&restarted, joined->data, NULL);
+    scr_str_release(base_path);
+    free(p);
+    p = scr_fs_walk_dup_n(joined->data, joined->len);
+    scr_str_release(joined);
+    free(current);
+    free(base);
+    size_t new_root = 0;
+    while (p[new_root] == '/') new_root++;
+    current = scr_fs_walk_dup_n(p, new_root);
+    base = scr_fs_walk_dup_n(p, new_root);
+    pos = new_root;
+  }
+  free(retired);
+  free(p);
+  free(current);
+  free(base);
+  scr_fs_walk_table_free(&known);
+  scr_fs_walk_table_free(&seen);
+  scr_fs_walk_table_free(&restarted);
+  return answer;
+}
+
+#endif
+
 static void scr_fs_write_common(ScrStr *path, ScrStr *data, const char *mode) {
   if (!scr_fs_path_ok(path, "path")) return;
   FILE *f = scr_fs_fopen(path, mode);
@@ -5185,6 +5482,48 @@ bool scr_fs_mode_octal(const ScrStr *text, const char *name, double *out) {
 static bool scr_fs_file_mode_valid(double mode) {
   double parsed;
   return scr_fs_mode_number_valid(mode, "mode", &parsed);
+}
+
+/* Node's parseFileMode for a string mode: an octal string ([0-7]+) is read
+ * in base 8 and then range-checked like a numeric mode; anything else
+ * throws Node's ERR_INVALID_ARG_VALUE instead. Answers false with the
+ * exception pending. */
+bool scr_fs_parse_octal_mode(ScrStr *value, double *mode) {
+  bool octal = value->len > 0;
+  for (size_t i = 0; i < value->len && octal; i++) {
+    unsigned char c = (unsigned char)value->data[i];
+    if (c < '0' || c > '7') octal = false;
+  }
+  if (!octal) {
+    /* The value can be arbitrarily long, so it is formatted into a buffer
+     * sized for what is actually shown, never into a fixed stack buffer
+     * whose snprintf result may exceed it. Node truncates the quoted value
+     * the way its inspect-style formatting does: up to 126 bytes are
+     * quoted whole, longer values stop after 127 bytes with "..." and no
+     * closing quote. */
+    static const char head[] =
+        "The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received '";
+    const size_t head_len = sizeof head - 1;
+    size_t shown = value->len <= 126 ? value->len : 127;
+    size_t len = head_len + shown + (value->len <= 126 ? 1 : 3);
+    char *msg = malloc(len);
+    if (!msg) scr_trap("scriptc: out of memory\n");
+    memcpy(msg, head, head_len);
+    memcpy(msg + head_len, value->data, shown);
+    if (value->len <= 126) {
+      msg[len - 1] = '\'';
+    } else {
+      memcpy(msg + len - 3, "...", 3);
+    }
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_INVALID_ARG_VALUE");
+    free(msg);
+    return false;
+  }
+  double parsed = 0;
+  for (size_t i = 0; i < value->len; i++) parsed = parsed * 8 + (value->data[i] - '0');
+  if (!scr_fs_file_mode_valid(parsed)) return false;
+  *mode = parsed;
+  return true;
 }
 
 /* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
@@ -5361,6 +5700,9 @@ void scr_fs_unlink(ScrStr *path) {
   if (unlink(path->data) != 0) scr_fs_throw(errno, "unlink", path);
 }
 
+/* Node's parseFileMode for chmod: validateUint32(mode, "mode"), the same
+ * check open(2)'s paths make. The path is validated first, as Node's
+ * getValidatedPath runs before the mode check. */
 void scr_fs_chmod(ScrStr *path, double mode) {
   /* Node validates the path, then parseFileMode's numeric arm. */
   if (!scr_fs_path_ok(path, "path")) return;
@@ -6704,13 +7046,20 @@ static bool scr_fs_win_same_file(const WCHAR *a, const WCHAR *b) {
  * COPYFILE_FICLONE_FORCE (4) is the ENOSYS uv_fs_copyfile reports. The
  * POSIX arm lives in scr_fs_cp.c with its reflink handling. */
 void scr_fs_copyfile_flags(ScrStr *src, ScrStr *dest, double mode) {
+  /* copyFile validates the two paths before the binding reads the mode:
+   * getValidatedPath(src), getValidatedPath(dest), then GetValidFileMode. */
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
+  if (!isfinite(mode)) {
+    static const char text[] = "mode is out of range";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
   if (!(mode >= 0 && mode <= 7)) {
     static const char text[] = "mode is out of range: >= 0 && <= 7";
     scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
     return;
   }
-  if (!scr_fs_path_ok(src, "src")) return;
-  if (!scr_fs_path_ok(dest, "dest")) return;
   if (((int)mode & 4) != 0) {
     scr_fs_throw2(ENOSYS, "copyfile", src, dest);
     return;
@@ -6898,6 +7247,7 @@ static bool scr_fs_mkdirp_exists(char *buf, size_t len) {
 
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode) {
   if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (!scr_fs_file_mode_valid(mode)) return NULL;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");
@@ -7396,7 +7746,10 @@ ScrStats *scr_stats_retain(ScrStats *s) {
 
 void scr_stats_release(ScrStats *s) {
   if (!s || s->rc == SIZE_MAX) return;
-  if (--s->rc == 0) scr_mem_free(s);
+  if (--s->rc == 0) {
+    for (int i = 0; i < 4; i++) scr_date_release(s->dates[i]);
+    scr_mem_free(s);
+  }
 }
 
 void *scr_stats_retain_v(void *p) { return scr_stats_retain(p); }
@@ -7435,6 +7788,9 @@ double scr_stats_gid(ScrStats *s) { return (double)s->fields[SCR_STATS_GID]; }
 double scr_stats_rdev(ScrStats *s) { return (double)s->fields[SCR_STATS_RDEV]; }
 double scr_stats_blksize(ScrStats *s) { return (double)s->fields[SCR_STATS_BLKSIZE]; }
 double scr_stats_ino(ScrStats *s) { return (double)s->fields[SCR_STATS_INO]; }
+uint64_t scr_stats_dev_raw(ScrStats *s) { return s->fields[SCR_STATS_DEV]; }
+uint64_t scr_stats_ino_raw(ScrStats *s) { return s->fields[SCR_STATS_INO]; }
+bool scr_stats_has_identity(ScrStats *s) { return s->has_identity; }
 double scr_stats_size(ScrStats *s) { return (double)s->fields[SCR_STATS_SIZE]; }
 double scr_stats_blocks(ScrStats *s) { return (double)s->fields[SCR_STATS_BLOCKS]; }
 
@@ -7445,6 +7801,9 @@ static double scr_stats_ms(const ScrStats *s, int which) {
 
 double scr_stats_atime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_ATIME); }
 double scr_stats_mtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_MTIME); }
+/* The raw nanosecond field: openAsBlob compares it exactly, as libuv's
+ * FdEntry does (the seconds are not part of that check). */
+int64_t scr_stats_mtime_nsec(ScrStats *s) { return s->nsec[SCR_STATS_MTIME]; }
 double scr_stats_ctime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_CTIME); }
 double scr_stats_birthtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_BIRTHTIME); }
 
@@ -7454,11 +7813,22 @@ static double scr_stats_round(double ms) {
   return ms - low >= 0.5 ? low + 1 : low;
 }
 
-/* The Date fields: Node rounds the millisecond value before new Date(). */
-double scr_stats_atime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_ATIME))); }
-double scr_stats_mtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_MTIME))); }
-double scr_stats_ctime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
-double scr_stats_birthtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
+/* The Date fields: Node rounds the millisecond value before new Date() and
+ * caches the resulting object on the Stats, so every read answers the same
+ * Date. `scr_stats_date` is that cache; the caller passes the time value to
+ * build it with (rounded here for Stats, truncated for BigIntStats). */
+struct ScrDate *scr_stats_date(ScrStats *s, int which, double ms) {
+  if (s->dates[which] == NULL) {
+    double clipped = scr_date_new_ms(ms);
+    s->dates[which] = scr_date_new(clipped);
+  }
+  return scr_date_retain(s->dates[which]);
+}
+
+ScrDate *scr_stats_atime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_ATIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_ATIME))); }
+ScrDate *scr_stats_mtime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_MTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_MTIME))); }
+ScrDate *scr_stats_ctime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_CTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
+ScrDate *scr_stats_birthtime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_BIRTHTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
 
 /* Small-object blocks: a stat-and-test loop recycles one block instead of
  * calling the system allocator per call. */
@@ -7752,6 +8122,7 @@ static ScrStats *scr_stats_of_path(const ScrStr *path, const char *op,
   s->is_file = !is_link && (have_standard ? !standard.Directory : !is_dir);
   s->is_dir = !is_link && (have_standard ? standard.Directory : is_dir);
   s->is_symlink = is_link;
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
   s->fields[SCR_STATS_MODE] = scr_stats_win_mode(
     is_link ? SCR_STATS_IFLNK : s->is_dir ? SCR_STATS_IFDIR : SCR_STATS_IFREG,
@@ -7786,6 +8157,7 @@ static ScrStats *scr_stats_of_fd_win(int fd, const struct stat *st) {
   if (os_handle == INVALID_HANDLE_VALUE) return out;
   BY_HANDLE_FILE_INFORMATION basic;
   if (GetFileInformationByHandle(os_handle, &basic)) {
+    out->has_identity = true;
     out->fields[SCR_STATS_DEV] = basic.dwVolumeSerialNumber;
     out->fields[SCR_STATS_INO] = ((uint64_t)basic.nFileIndexHigh << 32) | basic.nFileIndexLow;
     out->fields[SCR_STATS_NLINK] = basic.nNumberOfLinks;
@@ -7818,6 +8190,7 @@ static ScrStats *scr_stats_of(const struct stat *st) {
   s->is_file = S_ISREG(st->st_mode);
   s->is_dir = S_ISDIR(st->st_mode);
   s->is_symlink = S_ISLNK(st->st_mode);
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = (uint64_t)st->st_dev;
   s->fields[SCR_STATS_MODE] = (uint64_t)st->st_mode;
   s->fields[SCR_STATS_NLINK] = (uint64_t)st->st_nlink;
@@ -7890,6 +8263,7 @@ static ScrStats *scr_stats_of_statx(const ScrStatx *sx) {
   s->is_file = type == SCR_STATS_IFREG;
   s->is_dir = type == SCR_STATS_IFDIR;
   s->is_symlink = type == SCR_STATS_IFLNK;
+  s->has_identity = true;
   s->fields[SCR_STATS_DEV] = scr_stats_makedev(sx->dev_major, sx->dev_minor);
   s->fields[SCR_STATS_MODE] = sx->mode;
   s->fields[SCR_STATS_NLINK] = sx->nlink;
@@ -8578,6 +8952,37 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
   return object;
 }
 
+/* getOptions' assertEncoding for a runtime encoding name: an empty name is
+ * utf8, 'buffer' is the caller's business, and every other name must be a
+ * Buffer encoding. False with Node's ERR_INVALID_ARG_VALUE thrown. */
+static bool scr_fs_encoding_name_ok(const ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) ||
+      (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0))
+    return true;
+  ScrDyn *value = scr_dyn_new_str((ScrStr *)encoding);
+  scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+  scr_dyn_release(value);
+  return false;
+}
+
+static bool scr_fs_encoding_is_buffer(const ScrStr *encoding) {
+  return encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0;
+}
+
+static ScrArr *scr_fs_readdir_names_of(ScrScandir *scan, const ScrStr *encoding) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++)
+    scr_arr_push_ref(arr, scr_fs_scandir_name_enc(scan, i, encoding));
+  return arr;
+}
+
+static ScrArr *scr_fs_readdir_buffers_of(ScrScandir *scan) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_BYTES, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++)
+    scr_arr_push_ref(arr, scr_fs_scandir_name_bytes(scan, i));
+  return arr;
+}
+
 /* ── checked-dynamic Stats values back to the snapshot ─────────────── */
 
 /* One integer member of a dynamic Stats object: a number member (Stats) and
@@ -8667,44 +9072,139 @@ ScrStats *scr_stats_from_dyn_opt(const ScrDyn *object) {
 /* The names of one scandir listing: byte order on POSIX (libuv sorts),
  * the directory's own order on Windows (libuv does not). */
 ScrArr *scr_fs_readdir(ScrStr *path) {
+  static ScrStr empty = { 0 };
   if (!scr_fs_path_ok(path, "path")) return NULL;
   ScrScandir *scan = scr_fs_scandir(path);
   if (!scan) return NULL;
-  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
-  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) scr_arr_push_ref(arr, scr_fs_scandir_name(scan, i));
+  ScrArr *arr = scr_fs_readdir_names_of(scan, &empty);
   scr_fs_scandir_free(scan);
   return arr;
 }
 
-/* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
- * Directories are listed in queue order: the base, then each directory in
- * the order its entry was listed. Each entry's path is path.join of its
- * directory and name; the result holds it relative to the base
- * (path.relative). An entry stat(2) reports as a directory, a symlink to
- * one included, joins the queue. */
-ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+ScrArr *scr_fs_readdir_enc(ScrStr *path, const ScrStr *encoding) {
+  if (!scr_fs_encoding_name_ok(encoding)) return NULL;
+  if (scr_fs_encoding_is_buffer(encoding)) {
+    if (!scr_fs_path_ok(path, "path")) return NULL;
+    ScrScandir *scan = scr_fs_scandir(path);
+    if (!scan) return NULL;
+    ScrArr *arr = scr_fs_readdir_buffers_of(scan);
+    scr_fs_scandir_free(scan);
+    return arr;
+  }
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) return NULL;
+  ScrArr *arr = scr_fs_readdir_names_of(scan, encoding);
+  scr_fs_scandir_free(scan);
+  return arr;
+}
+
+/* The recursive walks below join every directory's DECODED entry names, as
+ * Node does, so a name whose decoding is not the raw name can join a path
+ * that normalizes onto a directory already visited — including the one
+ * being scanned: ascii masks each byte with 0x7f, so a child named 0xAE
+ * decodes to ".", and 'hex'/'base64' decode to arbitrary bytes. Node's walk
+ * has no visited check, so such a name makes it rescan the same directory
+ * forever. Every queued path is remembered here (bytes and length, since a
+ * decoded name may carry a NUL) and a repeat is skipped, which only affects
+ * trees that would otherwise never terminate. */
+typedef struct {
+  char **data;
+  size_t *lens;
+  size_t len, cap;
+} ScrFsQueuedPaths;
+
+static void scr_fs_queued_paths_free(ScrFsQueuedPaths *q) {
+  for (size_t i = 0; i < q->len; i++) free(q->data[i]);
+  free(q->data);
+  free(q->lens);
+  q->data = NULL;
+  q->lens = NULL;
+  q->len = q->cap = 0;
+}
+
+/* Records `path` unless it is already queued; answers false for a repeat. */
+static bool scr_fs_queued_paths_add(ScrFsQueuedPaths *q, const ScrStr *path) {
+  for (size_t i = 0; i < q->len; i++) {
+    if (q->lens[i] == path->len && memcmp(q->data[i], path->data, path->len) == 0) return false;
+  }
+  if (q->len == q->cap) {
+    size_t cap = q->cap ? q->cap * 2 : 8;
+    char **data = realloc(q->data, cap * sizeof *data);
+    if (!data) scr_trap("scriptc: out of memory\n");
+    q->data = data;
+    size_t *lens = realloc(q->lens, cap * sizeof *lens);
+    if (!lens) scr_trap("scriptc: out of memory\n");
+    q->lens = lens;
+    q->cap = cap;
+  }
+  char *copy = malloc(path->len ? path->len : 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, path->data, path->len);
+  q->data[q->len] = copy;
+  q->lens[q->len] = path->len;
+  q->len++;
+  return true;
+}
+
+/* Node's recursive readdir walks queue order: `lifo` pops the queue's end
+ * (fs.promises readdirRecursive), otherwise the next index (readdirSync's
+ * readdirSyncRecursive). Every entry's path is path.join of its directory
+ * and its DECODED name (so an encoding that does not round-trip the raw
+ * bytes joins a path that may not exist, exactly like Node; recursive +
+ * encoding: 'buffer' throws path.join's TypeError when the first entry is
+ * joined). An entry on which stat(2) reports a directory — a symlink to
+ * one included — joins the queue. */
+static ScrArr *scr_fs_readdir_recursive_impl(ScrStr *base, const ScrStr *encoding, bool lifo) {
+  if (!scr_fs_encoding_name_ok(encoding)) return NULL;
+  if (scr_fs_encoding_is_buffer(encoding)) {
+    /* The entries are Buffers; the recursive walk joins names into paths,
+     * so path.join throws the first time an entry is joined (an empty
+     * directory answers an empty Buffer array instead). */
+    if (!scr_fs_path_ok(base, "path")) return NULL;
+    ScrScandir *first = scr_fs_scandir(base);
+    if (!first) return NULL;
+    size_t count = scr_fs_scandir_count(first);
+    scr_fs_scandir_free(first);
+    if (count != 0) {
+      static const char message[] =
+          "The \"path\" argument must be of type string. Received an instance of Buffer";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+    return scr_arr_new(SCR_ELEM_BYTES, 0);
+  }
   if (!scr_fs_path_ok(base, "path")) return NULL;
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
-  size_t len = 1, cap = 8;
+  size_t len = 1, cap = 8, head = 0;
   ScrStr **queue = malloc(cap * sizeof *queue);
   if (!queue) scr_trap("scriptc: out of memory\n");
   queue[0] = scr_str_retain(base);
+  ScrFsQueuedPaths queued = { 0 };
+  scr_fs_queued_paths_add(&queued, queue[0]);
   bool failed = false;
-  for (size_t at = 0; at < len && !failed; at++) {
-    ScrScandir *scan = scr_fs_scandir(queue[at]);
+  while (head < len && !failed) {
+    ScrStr *dir = lifo ? queue[--len] : queue[head++];
+    ScrScandir *scan = scr_fs_scandir(dir);
     if (!scan) {
+      scr_str_release(dir);
       failed = true;
       break;
     }
-    for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
       ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
-      scr_arr_push_ref(parts, scr_str_retain(queue[at]));
-      scr_arr_push_ref(parts, scr_fs_scandir_name(scan, i));
+      scr_arr_push_ref(parts, scr_str_retain(dir));
+      scr_arr_push_ref(parts, scr_fs_scandir_name_enc(scan, i, encoding));
       ScrStr *full = scr_path_join(parts);
       scr_arr_release(parts);
+      if (!full) {
+        failed = true;
+        break;
+      }
       scr_arr_push_ref(out, scr_path_relative(base, full));
       struct stat st;
-      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode) &&
+          scr_fs_queued_paths_add(&queued, full)) {
         if (len == cap) {
           cap *= 2;
           queue = realloc(queue, cap * sizeof *queue);
@@ -8716,14 +9216,265 @@ ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
       }
     }
     scr_fs_scandir_free(scan);
+    scr_str_release(dir);
   }
-  for (size_t i = 0; i < len; i++) scr_str_release(queue[i]);
+  /* Entries before `head` were popped and released inside the walk. */
+  for (size_t i = lifo ? 0 : head; i < len; i++) scr_str_release(queue[i]);
   free(queue);
+  scr_fs_queued_paths_free(&queued);
   if (failed) {
     scr_arr_release(out);
     return NULL;
   }
   return out;
+}
+
+ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+  static ScrStr empty = { 0 };
+  return scr_fs_readdir_recursive_impl(base, &empty, false);
+}
+
+ScrArr *scr_fs_readdir_recursive_enc(ScrStr *base, const ScrStr *encoding, bool lifo) {
+  return scr_fs_readdir_recursive_impl(base, encoding, lifo);
+}
+
+/* ── the Dirent listing snapshot ─────────────────────────────────────
+ * readdir's withFileTypes form, flat or recursive: each row keeps the
+ * decoded name (and its raw bytes, for encoding: 'buffer'), the parent
+ * path Node reports (the path argument as given for a flat listing;
+ * path.join of the walked directories for a recursive one) and the
+ * UV_DIRENT kind. The recursive walk descends into entries whose kind is
+ * a directory, in `lifo` queue order (fs.promises pops the queue's end,
+ * the sync form advances an index). `follow` adds the sync form's second
+ * descent test — internalModuleStat(fullPath) === 1, which follows a
+ * symlink to a directory; the promise form descends on the kind alone.
+ * encoding: 'buffer' answers raw name bytes; the sync walk joins EVERY
+ * entry into a path and so throws path.join's TypeError at the first entry,
+ * while the promise walk joins only a directory entry and throws when one
+ * is found (a directory of files lists normally). The promise walk reads
+ * each child directory as it finds it, Node's eager await; the sync walk
+ * reads a queued directory when the loop reaches it. */
+struct ScrFsListing {
+  size_t len, cap;
+  ScrStr **names;
+  ScrStr **parents;
+  double *kinds;
+  ScrBytes **raws; /* the entry name's raw bytes (encoding: 'buffer') */
+};
+
+static void scr_fs_listing_push(ScrFsListing *l, ScrStr *name, ScrStr *parent, double kind,
+                                ScrBytes *raw) {
+  if (l->len == l->cap) {
+    l->cap = l->cap ? l->cap * 2 : 8;
+    l->names = realloc(l->names, l->cap * sizeof *l->names);
+    l->parents = realloc(l->parents, l->cap * sizeof *l->parents);
+    l->kinds = realloc(l->kinds, l->cap * sizeof *l->kinds);
+    l->raws = realloc(l->raws, l->cap * sizeof *l->raws);
+    if (!l->names || !l->parents || !l->kinds || !l->raws)
+      scr_trap("scriptc: out of memory\n");
+  }
+  l->names[l->len] = name;
+  l->parents[l->len] = parent;
+  l->kinds[l->len] = kind;
+  l->raws[l->len] = raw; /* ownership moves */
+  l->len++;
+}
+
+/* Whether the decoded name the walk joins is the entry's own name. Decoding
+ * is lossy (utf8 replaces malformed bytes with U+FFFD, ascii masks them with
+ * 0x7f), so the joined path can name a sibling instead of the entry whose
+ * kind authorized the descent. Defined with the scandir snapshot below. */
+static bool scr_fs_listing_name_is_entry(const ScrScandir *scan, size_t i, const ScrStr *name);
+
+/* The row's stored name: the decoded name for the listing's encoding. For
+ * encoding: 'buffer' the stored name is never observed (the emitter reads
+ * the raw bytes); the utf8 decode keeps the recursive walk's join path
+ * defined until the entry's TypeError fires. */
+static ScrStr *scr_fs_listing_stored_name(const ScrScandir *scan, size_t i,
+                                          const ScrStr *encoding) {
+  if (scr_fs_encoding_is_buffer(encoding)) return scr_fs_scandir_name(scan, i);
+  return scr_fs_scandir_name_enc(scan, i, encoding);
+}
+
+static void scr_fs_listing_path_type_error(void) {
+  static const char message[] =
+      "The \"path\" argument must be of type string. Received an instance of Buffer";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+}
+
+/* A directory queued for the walk, with the scandir snapshot the promise
+ * form reads EAGERLY (Node's readdirRecursive awaits binding.readdir while
+ * it iterates the parent's entries, so a child directory's failure rejects
+ * before its siblings are visited). The sync form leaves `scan` NULL and
+ * reads a directory when its turn comes. */
+typedef struct {
+  ScrStr *path;
+  ScrScandir *scan;
+} ScrFsListingNode;
+
+/* Queue a directory whose +1 path the node takes. The eager form reads it
+ * now; a failure leaves the exception pending and answers false. */
+static bool scr_fs_listing_queue(ScrFsListingNode **queue, size_t *len, size_t *cap, ScrStr *path,
+                                 bool eager) {
+  if (*len == *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    *queue = realloc(*queue, *cap * sizeof **queue);
+    if (!*queue) scr_trap("scriptc: out of memory\n");
+  }
+  ScrScandir *scan = NULL;
+  if (eager) {
+    scan = scr_fs_scandir(path);
+    if (!scan) {
+      scr_str_release(path);
+      return false;
+    }
+  }
+  (*queue)[*len].path = path;
+  (*queue)[*len].scan = scan;
+  (*len)++;
+  return true;
+}
+
+ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recursive, bool lifo,
+                                 bool follow) {
+  if (!scr_fs_encoding_name_ok(encoding)) return NULL;
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  bool buffers = scr_fs_encoding_is_buffer(encoding);
+  /* fs.promises.readdirRecursive reads children as it finds them; the sync
+   * walk (readdirSyncRecursive) reads a queued directory when it reaches
+   * it. */
+  bool eager = recursive && lifo;
+  ScrFsListing *l = calloc(1, sizeof *l);
+  if (!l) scr_trap("scriptc: out of memory\n");
+  size_t len = 0, cap = 8, head = 0;
+  ScrFsListingNode *queue = malloc(cap * sizeof *queue);
+  if (!queue) scr_trap("scriptc: out of memory\n");
+  ScrFsQueuedPaths queued = { 0 };
+  scr_fs_queued_paths_add(&queued, path);
+  bool failed = !scr_fs_listing_queue(&queue, &len, &cap, scr_str_retain(path), eager);
+  while (!failed && (lifo ? len > 0 : head < len)) {
+    ScrFsListingNode node = lifo ? queue[--len] : queue[head++];
+    ScrScandir *scan = node.scan ? node.scan : scr_fs_scandir(node.path);
+    if (!scan) {
+      scr_str_release(node.path);
+      failed = true;
+      break;
+    }
+    size_t count = scr_fs_scandir_count(scan);
+    for (size_t i = 0; i < count && !failed; i++) {
+      double kind = scr_fs_scandir_type(scan, i);
+      /* Node joins a name into a path before it can descend. The sync walk
+       * (handleDirents) joins EVERY entry; the promise walk joins only a
+       * directory entry, which is the moment a Buffer name throws
+       * path.join's TypeError. */
+      if (buffers && recursive && (!eager || kind == 2)) {
+        scr_fs_listing_path_type_error();
+        failed = true;
+        break;
+      }
+      scr_fs_listing_push(l, scr_fs_listing_stored_name(scan, i, encoding),
+                          scr_str_retain(node.path), kind,
+                          buffers ? scr_fs_scandir_name_bytes(scan, i) : NULL);
+      bool descend = recursive && kind == 2;
+      ScrStr *full = NULL;
+      if (recursive && !descend && follow) {
+        ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+        scr_arr_push_ref(parts, scr_str_retain(node.path));
+        scr_arr_push_ref(parts, scr_fs_scandir_name_enc(scan, i, encoding));
+        full = scr_path_join(parts);
+        scr_arr_release(parts);
+        if (!full) {
+          failed = true;
+          break;
+        }
+        struct stat st;
+        descend = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        if (!descend) {
+          scr_str_release(full);
+          full = NULL;
+        }
+      } else if (descend) {
+        ScrStr *entry_name = scr_fs_scandir_name_enc(scan, i, encoding);
+        bool own_name = scr_fs_listing_name_is_entry(scan, i, entry_name);
+        ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+        scr_arr_push_ref(parts, scr_str_retain(node.path));
+        scr_arr_push_ref(parts, entry_name);
+        full = scr_path_join(parts);
+        scr_arr_release(parts);
+        if (!full) {
+          failed = true;
+          break;
+        }
+        /* The kind belongs to the raw entry; the walk reads the decoded
+         * path. When decoding changed the name, that path is not the entry
+         * whose directory kind authorized the descent, and the object it
+         * does name must not be followed through a symlink: the listing is
+         * the no-follow form, and a raw name that decodes onto a sibling
+         * link would otherwise list the link's out-of-tree target. Names
+         * that decode to their own bytes, which is every ordinary name,
+         * keep Node's behavior. */
+        if (!own_name) {
+          ScrStats *target = scr_fs_stat_probe(full, true, false);
+          if (target != NULL) {
+            if (scr_stats_is_symlink(target)) {
+              scr_stats_release(target);
+              scr_str_release(full);
+              full = NULL;
+            } else {
+              scr_stats_release(target);
+            }
+          }
+        }
+      }
+      if (full && !scr_fs_queued_paths_add(&queued, full)) {
+        scr_str_release(full);
+        full = NULL;
+      }
+      if (full && !scr_fs_listing_queue(&queue, &len, &cap, full, eager)) failed = true;
+    }
+    scr_fs_scandir_free(scan);
+    scr_str_release(node.path);
+  }
+  for (size_t i = lifo ? 0 : head; i < len; i++) {
+    scr_str_release(queue[i].path);
+    scr_fs_scandir_free(queue[i].scan);
+  }
+  free(queue);
+  scr_fs_queued_paths_free(&queued);
+  if (failed) {
+    scr_fs_listing_free(l);
+    return NULL;
+  }
+  return l;
+}
+
+size_t scr_fs_listing_count(const ScrFsListing *l) { return l ? l->len : 0; }
+
+ScrStr *scr_fs_listing_name(const ScrFsListing *l, size_t i) { return scr_str_retain(l->names[i]); }
+
+/* The row's raw name bytes as a Buffer (+1), encoding: 'buffer'. */
+ScrBytes *scr_fs_listing_name_bytes(const ScrFsListing *l, size_t i) {
+  return scr_bytes_retain(l->raws[i]);
+}
+
+ScrStr *scr_fs_listing_parent(const ScrFsListing *l, size_t i) {
+  return scr_str_retain(l->parents[i]);
+}
+
+double scr_fs_listing_type(const ScrFsListing *l, size_t i) { return l->kinds[i]; }
+
+void scr_fs_listing_free(ScrFsListing *l) {
+  if (!l) return;
+  for (size_t i = 0; i < l->len; i++) {
+    scr_str_release(l->names[i]);
+    scr_str_release(l->parents[i]);
+    scr_bytes_release(l->raws[i]);
+  }
+  free(l->names);
+  free(l->parents);
+  free(l->kinds);
+  free(l->raws);
+  free(l);
 }
 
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
@@ -8738,6 +9489,11 @@ struct ScrScandir {
   size_t len, cap;
   ScrStr **names;
   unsigned char *kinds;
+  /* The entry names' raw bytes and lengths: readdir's encoding option
+   * decodes them (Buffer.toString's rules), and encoding: 'buffer'
+   * answers them as Buffers. */
+  uint8_t **raws;
+  size_t *raw_lens;
 };
 
 #ifndef _WIN32
@@ -8765,13 +9521,18 @@ static ScrScandir *scr_fs_scandir_from_rows(ScrScandirEntry *rows, size_t len) {
   s->cap = len;
   s->names = len ? malloc(len * sizeof *s->names) : NULL;
   s->kinds = len ? malloc(len) : NULL;
-  if (len && (!s->names || !s->kinds)) scr_trap("scriptc: out of memory\n");
+  s->raws = len ? malloc(len * sizeof *s->raws) : NULL;
+  s->raw_lens = len ? malloc(len * sizeof *s->raw_lens) : NULL;
+  if (len && (!s->names || !s->kinds || !s->raws || !s->raw_lens))
+    scr_trap("scriptc: out of memory\n");
   qsort(rows, len, sizeof *rows, scr_fs_scandir_cmp);
   for (size_t i = 0; i < len; i++) {
+    size_t raw_len = strlen(rows[i].raw);
     /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does. */
-    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, strlen(rows[i].raw));
+    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, raw_len);
     s->kinds[i] = rows[i].kind;
-    free(rows[i].raw);
+    s->raws[i] = (uint8_t *)rows[i].raw; /* ownership moves */
+    s->raw_lens[i] = raw_len;
   }
   free(rows);
   return s;
@@ -8835,9 +9596,19 @@ static ScrScandir *scr_fs_scandir_windows(ScrStr *path) {
       scan->cap = scan->cap ? scan->cap * 2 : 8;
       scan->names = realloc(scan->names, scan->cap * sizeof *scan->names);
       scan->kinds = realloc(scan->kinds, scan->cap);
-      if (!scan->names || !scan->kinds) scr_trap("scriptc: out of memory\n");
+      scan->raws = realloc(scan->raws, scan->cap * sizeof *scan->raws);
+      scan->raw_lens = realloc(scan->raw_lens, scan->cap * sizeof *scan->raw_lens);
+      if (!scan->names || !scan->kinds || !scan->raws || !scan->raw_lens)
+        scr_trap("scriptc: out of memory\n");
     }
     scan->names[scan->len] = name;
+    /* The raw name bytes are the UTF-8 form Node's binding decodes from
+     * (a Windows name reaches JS as text, and every string encoding
+     * decodes these bytes). */
+    scan->raws[scan->len] = malloc(name->len ? name->len : 1);
+    if (!scan->raws[scan->len]) scr_trap("scriptc: out of memory\n");
+    memcpy(scan->raws[scan->len], name->data, name->len);
+    scan->raw_lens[scan->len] = name->len;
     scan->kinds[scan->len++] = (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
         scr_stats_is_link_tag(entry.dwReserved0) ? 3 :
         (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
@@ -8923,10 +9694,34 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
 #endif
 }
 
+static bool scr_fs_listing_name_is_entry(const ScrScandir *scan, size_t i, const ScrStr *name) {
+  return name->len == scan->raw_lens[i] &&
+         (name->len == 0 || memcmp(name->data, scan->raws[i], name->len) == 0);
+}
+
 size_t scr_fs_scandir_count(const ScrScandir *s) { return s ? s->len : 0; }
 
 ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i) {
   return scr_str_retain(s->names[i]);
+}
+
+/* The entry name decoded by a runtime encoding (Buffer.toString's rules;
+ * utf8 is the lossy decode the plain accessor answers). */
+ScrStr *scr_fs_scandir_name_enc(const ScrScandir *s, size_t i, const ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding))
+    return scr_str_retain(s->names[i]);
+  ScrBytes *bytes = scr_bytes_from_data(s->raws[i], s->raw_lens[i]);
+  ScrStr *text = scr_bytes_to_str_checked(bytes, encoding);
+  scr_bytes_release(bytes);
+  return text;
+}
+
+/* The entry name's raw bytes as a Buffer (+1), encoding: 'buffer'. */
+ScrBytes *scr_fs_scandir_name_bytes(const ScrScandir *s, size_t i) {
+  ScrBytes *bytes = scr_bytes_from_data(s->raws[i], s->raw_lens[i]);
+  ScrBytes *buffer = scr_bytes_as_buffer(bytes); /* retains the same object */
+  scr_bytes_release(bytes);
+  return buffer;
 }
 
 double scr_fs_scandir_type(const ScrScandir *s, size_t i) { return (double)s->kinds[i]; }
@@ -8934,6 +9729,9 @@ double scr_fs_scandir_type(const ScrScandir *s, size_t i) { return (double)s->ki
 void scr_fs_scandir_free(ScrScandir *s) {
   if (!s) return;
   for (size_t i = 0; i < s->len; i++) scr_str_release(s->names[i]);
+  for (size_t i = 0; i < s->len; i++) free(s->raws[i]);
+  free(s->raws);
+  free(s->raw_lens);
   free(s->names);
   free(s->kinds);
   free(s);
@@ -9104,10 +9902,12 @@ static void scr_dir_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_DIR, &ops);
 }
 
-/* Opens the directory and attaches its path: the stream half of
- * opendir, without the options.bufferSize check (fs.opendir's callback
- * form validates it after the open, from the completion callback). */
-ScrDir *scr_fs_opendir_raw(ScrStr *path) {
+/* Opens the directory: the stream half of opendir, without the
+ * options.bufferSize check (fs.opendir's callback form validates it after
+ * the open, from the completion callback). `with_path` picks the error
+ * shape: opendirSync reports Node's path-less errno error, while the
+ * callback and promise forms report the path and its message suffix. */
+static ScrDir *scr_fs_opendir_open(ScrStr *path, bool with_path) {
   if (!scr_fs_path_ok(path, "path")) return NULL;
   ScrDir *d = calloc(1, sizeof *d);
   if (!d) scr_trap("scriptc: out of memory\n");
@@ -9138,7 +9938,8 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
   if (error) {
     free(d->stream);
     free(d);
-    scr_fs_throw_nopath(error, "opendir");
+    if (with_path) scr_fs_throw(error, "opendir", path);
+    else scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #else
@@ -9147,7 +9948,8 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
     int error = errno;
     free(d->stream);
     free(d);
-    scr_fs_throw_nopath(error, "opendir");
+    if (with_path) scr_fs_throw(error, "opendir", path);
+    else scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #endif
@@ -9156,9 +9958,12 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
   return d;
 }
 
-ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+/* The options.bufferSize check runs after the open, as Node's Dir
+ * constructor does: an open error wins, and an invalid size closes the
+ * handle it just opened and throws the RangeError. */
+static ScrDir *scr_fs_opendir_sized(ScrStr *path, double buffer_size, bool with_path) {
   scr_dir_dyn_install();
-  ScrDir *d = scr_fs_opendir_raw(path);
+  ScrDir *d = scr_fs_opendir_open(path, with_path);
   if (!d) return NULL;
   if (!scr_dir_buffer_size_ok(buffer_size)) {
     scr_dir_close_stream(d);
@@ -9168,6 +9973,19 @@ ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
   }
   d->buffer_size = buffer_size;
   return d;
+}
+
+/* fs.opendir's callback form: the open errors carry the path. */
+ScrDir *scr_fs_opendir_raw(ScrStr *path) { return scr_fs_opendir_open(path, true); }
+
+/* fs.promises.opendir: the open's errors carry the path. */
+ScrDir *scr_fs_opendir_promise(ScrStr *path, double buffer_size) {
+  return scr_fs_opendir_sized(path, buffer_size, true);
+}
+
+/* opendirSync: Node's errno error for the open carries no path. */
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  return scr_fs_opendir_sized(path, buffer_size, false);
 }
 
 /* A Dir as a dynamic handle (fs.opendir's callback result). */

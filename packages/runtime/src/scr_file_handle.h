@@ -56,6 +56,7 @@ ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);
 ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode);
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid);
 double scr_file_handle_readv(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
@@ -65,10 +66,23 @@ double scr_file_handle_write_bytes(ScrFileHandle *h, ScrBytes *buf,
                                    double position, bool length_default);
 double scr_file_handle_write_str(ScrFileHandle *h, ScrStr *data,
                                  double position, ScrStr *encoding);
-ScrStr *scr_file_handle_read_file(ScrFileHandle *h);
+ScrStr *scr_file_handle_read_file(ScrFileHandle *h, ScrStr *encoding);
 ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h);
-void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data);
+void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data);
+/* FileHandle.writeFile/appendFile over Node's options record (encoding,
+ * flush and signal), split by the data's static spelling as the path form's
+ * options calls are: string data the record encodes, a view's bytes, and a
+ * value only the runtime can classify. */
+ScrPromise *scr_file_handle_write_file_options_promise(ScrFileHandle *h,
+                                                       ScrStr *data,
+                                                       const ScrDyn *options);
+ScrPromise *scr_file_handle_write_file_options_bytes_promise(ScrFileHandle *h,
+                                                             ScrBytes *data,
+                                                             const ScrDyn *options);
+ScrPromise *scr_file_handle_write_file_options_data_promise(ScrFileHandle *h,
+                                                            const ScrDyn *data,
+                                                            const ScrDyn *options);
 ScrStats *scr_file_handle_stat(ScrFileHandle *h);
 /* position == -1 reads from and advances the descriptor's current offset;
  * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */

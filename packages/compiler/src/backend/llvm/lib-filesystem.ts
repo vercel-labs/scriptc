@@ -597,6 +597,17 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_watcher_off(ptr ${w.name}, double ${event.name}, ptr ${cb.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
+    // Loop-liveness bookkeeping only (the watcher's uv handle ref/unref);
+    // the receiver comes back BORROWED for chaining, like Node's methods
+    // answering `this`.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @${sym}(ptr ${w.name})`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "watcher.close") {
     // Idempotent; never throws.
     const w = host.emitExpr(e.args[0]!);
@@ -608,7 +619,9 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     // (path, interval, persistent, listener) — the listener MOVES into
     // the poller's registry and the adapter is runtime-provided per
     // listener shape (zero, one or two Stats parameters). The poller
-    // re-arms a timer every interval, so this is a timer program. May
+    // re-arms a timer every interval, so this is a timer program. The
+    // answer is the path's StatWatcher record (an owned checked dynamic:
+    // the same object for the same resolved path, with ref()/unref()). May
     // throw (a null byte in the path, or an interval that is not a
     // uint32) — the standard pending check.
     host.usesTimers = true;
@@ -622,12 +635,14 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.toHeap(cb);
     const adapter = `scr_watch_file_thunk${cbT.params.length}`;
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    const t = B.tmp();
     B.line(
-      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${t} = call ptr @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
+    const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
-    return { name: "", type: e.type };
+    return out;
   }
   if (e.fn === "fs.unwatchFile") {
     // Removal is by closure identity: the listener stays borrowed
@@ -759,6 +774,70 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
+  if (
+    e.fn === "fs.readdirSyncOpts" ||
+    e.fn === "fs.readdirSyncBytesOpts" ||
+    e.fn === "fsp.readdirOpts" ||
+    e.fn === "fsp.readdirBytesOpts"
+  ) {
+    // The options form's names answer: the runtime ladder (getOptions,
+    // encoding, the recursive order) answers one +1 array of strings or
+    // Buffers. The sync form leaves argument errors pending; the promise
+    // twin converts them to the rejection.
+    const promiseForm = e.fn.startsWith("fsp.");
+    const arrayT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
+    const path = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_fs_readdir_opts(ptr, ptr, i1 zeroext, i1 zeroext, double)`);
+    /* The call site's answer shape: the options value's members decide it at
+     * run time only when the value is typed `any`, and the runtime throws
+     * when they disagree with the call site's type. */
+    const expected =
+      e.fn === "fs.readdirSyncBytesOpts" || e.fn === "fsp.readdirBytesOpts" ? "1.0" : "0.0";
+    const raw = B.tmp();
+    B.line(
+      `${raw} = call ptr @scr_fs_readdir_opts(ptr ${path.name}, ptr ${options.name}, i1 zeroext ${promiseForm ? "false" : "true"}, i1 zeroext ${promiseForm ? "true" : "false"}, double ${expected})`,
+    );
+    if (!promiseForm) {
+      host.emitPendingCheck();
+      return host.own({ name: raw, type: arrayT });
+    }
+    const rc = vAdapters(host.shapeHost, arrayT);
+    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    const arrayOut = host.own({ name: raw, type: arrayT });
+    host.toHeap(arrayOut); // promise fulfillment owns the array
+    const promise = B.tmp();
+    B.line(
+      `${promise} = call ptr @scr_promise_settled_ref(ptr ${raw}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,
+    );
+    return host.own({ name: promise, type: e.type });
+  }
+  if (e.fn === "fs.readdirSyncOptsUnion" || e.fn === "fsp.readdirOptsUnion") {
+    // `string[] | Buffer[]`: the runtime boxes the walk in the arm the
+    // encoding selects, with the call site's tags.
+    const promiseForm = e.fn === "fsp.readdirOptsUnion";
+    const path = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    const strTag = host.emitExpr(e.args[2]!);
+    const bytesTag = host.emitExpr(e.args[3]!);
+    if (promiseForm) {
+      host.declare(`declare ptr @scr_fsp_readdir_opts_union(ptr, ptr, double, double)`);
+      const promise = B.tmp();
+      B.line(
+        `${promise} = call ptr @scr_fsp_readdir_opts_union(ptr ${path.name}, ptr ${options.name}, double ${strTag.name}, double ${bytesTag.name})`,
+      );
+      return host.own({ name: promise, type: e.type });
+    }
+    host.declare(
+      `declare ptr @scr_fs_readdir_opts_union(ptr, ptr, i1 zeroext, i1 zeroext, double, double)`,
+    );
+    const box = B.tmp();
+    B.line(
+      `${box} = call ptr @scr_fs_readdir_opts_union(ptr ${path.name}, ptr ${options.name}, i1 zeroext true, i1 zeroext false, double ${strTag.name}, double ${bytesTag.name})`,
+    );
+    host.emitPendingCheck();
+    return host.own({ name: box, type: e.type });
+  }
   if (e.fn === "fs.statsFromDynOpt") {
     // `Stats | undefined` — the runtime answers a +1 Stats extracted from
     // the checked-dynamic object, or NULL for the dynamic undefined a
@@ -782,12 +861,12 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
-    // Dirent rows assembled inline from one scandir snapshot — the C
-    // emitter's flat loop. The sync form checks a scandir error before
-    // allocation. The promise form lets the null-tolerant count/free
-    // accessors turn a failed snapshot into an empty dummy array, then
-    // settled_ref converts the pending exception to a rejection and
-    // releases that dummy.
+    // Dirent rows assembled inline from the runtime's listing snapshot
+    // (scr_fs_listing_opts: the option ladder, then the walk with the
+    // sync form's stat-following descent or the promise form's
+    // Dirent::isDirectory one). Null-tolerant count/free accessors turn a
+    // failed walk into an empty dummy array for the promise form, whose
+    // settled_ref then converts the pending exception to a rejection.
     const promiseForm = e.fn === "fsp.readdirTypes";
     const arrayT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
     if (arrayT.kind !== "array" || arrayT.elem.kind !== "record") {
@@ -796,17 +875,27 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       );
     }
     const recT = arrayT.elem;
+    const nameType = host.recordsById.get(recT.shapeId)?.fields[1]?.type;
+    const nameFn = nameType?.kind === "bytes" ? "scr_fs_listing_name_bytes" : "scr_fs_listing_name";
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_scandir(ptr)`);
-    host.declare(`declare ${host.sizeType} @scr_fs_scandir_count(ptr)`);
-    host.declare(`declare ptr @scr_fs_scandir_name(ptr, ${host.sizeType})`);
-    host.declare(`declare double @scr_fs_scandir_type(ptr, ${host.sizeType})`);
-    host.declare(`declare void @scr_fs_scandir_free(ptr)`);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(
+      `declare ptr @scr_fs_listing_opts(ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext, ptr, double)`,
+    );
+    host.declare(`declare ${host.sizeType} @scr_fs_listing_count(ptr)`);
+    host.declare(`declare ptr @${nameFn}(ptr, ${host.sizeType})`);
+    host.declare(`declare ptr @scr_fs_listing_parent(ptr, ${host.sizeType})`);
+    host.declare(`declare double @scr_fs_listing_type(ptr, ${host.sizeType})`);
+    host.declare(`declare void @scr_fs_listing_free(ptr)`);
+    const bufSlot = B.slot();
+    B.entryAllocas.push(`${bufSlot} = alloca i1`);
     const snap = B.tmp();
-    B.line(`${snap} = call ptr @scr_fs_scandir(ptr ${path.name})`);
+    B.line(
+      `${snap} = call ptr @scr_fs_listing_opts(ptr ${path.name}, ptr ${options.name}, i1 zeroext ${promiseForm ? "false" : "true"}, i1 zeroext ${promiseForm ? "true" : "false"}, i1 zeroext ${promiseForm ? "false" : "true"}, ptr ${bufSlot}, double ${nameType?.kind === "bytes" ? "1.0" : "0.0"})`,
+    );
     if (!promiseForm) host.emitPendingCheck();
     const cnt = B.tmp();
-    B.line(`${cnt} = call ${host.sizeType} @scr_fs_scandir_count(ptr ${snap})`);
+    B.line(`${cnt} = call ${host.sizeType} @scr_fs_listing_count(ptr ${snap})`);
     const arr = B.tmp();
     B.line(`${arr} = ${arrNewCall(host.shapeHost, recT, cnt)}`);
     const arrayOut = host.own({ name: arr, type: arrayT });
@@ -827,21 +916,21 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const row = B.tmp();
     B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
     const dt = B.tmp();
-    B.line(`${dt} = call double @scr_fs_scandir_type(ptr ${snap}, ${host.sizeType} ${i})`);
+    B.line(`${dt} = call double @scr_fs_listing_type(ptr ${snap}, ${host.sizeType} ${i})`);
     host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
     const nm = B.tmp();
-    B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`${nm} = call ptr @${nameFn}(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
     B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
-    B.line(
-      `store ptr ${host.retainHeap(path.name, STRING)}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`,
-    );
+    const parent = B.tmp();
+    B.line(`${parent} = call ptr @scr_fs_listing_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${parent}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
     host.arrPush(arr, "ref", row, null); // push takes ownership of the row
     const i2 = B.tmp();
     B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
     B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
     B.br(lc);
     B.startBlock(le);
-    B.line(`call void @scr_fs_scandir_free(ptr ${snap})`);
+    B.line(`call void @scr_fs_listing_free(ptr ${snap})`);
     if (!promiseForm) return arrayOut;
     const rc = vAdapters(host.shapeHost, arrayT);
     host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);

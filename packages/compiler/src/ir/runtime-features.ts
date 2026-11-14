@@ -121,6 +121,13 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
+  // Every mkdtempDisposable record builder has both remove callbacks in the
+  // unit (the async form's boxes its outcome as a promise,
+  // scr_dyn_new_promise), whichever form the program calls.
+  "fs.mkdtempDisposableSync",
+  "fs.mkdtempDisposableSyncChk",
+  "fsp.mkdtempDisposable",
+  "fsp.mkdtempDisposableChk",
   "process.deprecationFlag",
   // process.finalization reports its ExperimentalWarnings through this
   // unit's deferred warning queue.
@@ -1801,12 +1808,17 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.generateKeyPairSync",
       "crypto.signOneshotCb",
       "crypto.verifyOneshotCb",
-      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
-      // this unit's warning queue.
+      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) and
+      // fs.promises.rmdir's DEP0147 report defer through this unit's
+      // warning queue.
       "fs.existsSyncValue",
+      "fsp.rmdirOptions",
       // A rejected entry's reason crosses as a checked-dynamic value
       // (Promise.allSettled's tuple form).
       "promise.entryReason",
+      // fs.openAsBlob answers a promise of a checked-dynamic Blob; the Blob
+      // unit lives over this one, so a non-awaited call links it too.
+      "fs.openAsBlobChk",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -2010,9 +2022,19 @@ const RUNTIME_FEATURE_RULES = {
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
   /** An untyped path of a synchronous fs function in a JavaScript source
-   * (scr_fs_path_value.c): a unit of its own, so no other executable
+   * (scr_fs_path_value.c), and the getValidatedPath of the mkdtempDisposable
+   * ladders of any source: a unit of its own, so no other executable
    * changes. */
-  fsPathValue: rule({ fns: ["dyn.validateFsPath"] }),
+  fsPathValue: rule({
+    fns: [
+      "dyn.validateFsPath",
+      "fs.mkdtempDisposableSyncChk",
+      "fsp.mkdtempDisposableChk",
+      // openAsBlob's ladder converts a URL path and checks null bytes in
+      // the runtime, at the point Node does (after the options).
+      "fs.openAsBlobChk",
+    ],
+  }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -2097,8 +2119,12 @@ const RUNTIME_FEATURE_RULES = {
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
    * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+   * byte for byte. `fs.openAsBlob` answers one without a `blob.*` call, and
+   * `URL.createObjectURL` registers one under an id the program fetches. */
+  webBodies: rule({
+    prefixes: ["blob."],
+    fns: ["fs.openAsBlobChk", "url.createObjectURL"],
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same
@@ -2354,13 +2380,24 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
-   * builds its Dirent there. A native Proxy's conversion reads
-   * Symbol.toPrimitive and Symbol.toStringTag through its get trap, which
-   * the unit makes (scr_sym_well_known_make_hook). */
+  /** A Dirent row converted to dyn carries Node's Symbol(type) key
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), a callback read
+   * builds its Dirent there, and a mkdtempDisposable record keys its
+   * dispose member with Symbol.dispose or Symbol.asyncDispose. A native
+   * Proxy's conversion reads Symbol.toPrimitive and Symbol.toStringTag
+   * through its get trap, which the unit makes
+   * (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
+    fns: [
+      ...SYMBOL_LIB_FNS,
+      "dir.readCb",
+      "dyn.proxyNew",
+      "fs.mkdtempDisposableSync",
+      "fs.mkdtempDisposableSyncChk",
+      "fsp.mkdtempDisposable",
+      "fsp.mkdtempDisposableChk",
+    ],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2554,6 +2591,12 @@ const RUNTIME_FEATURE_RULES = {
       "fs.appendFileDataOptionsDynModeSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
+      "fsp.writeFileOptions",
+      "fsp.writeFileOptionsBytes",
+      "fsp.writeFileOptionsData",
+      "fsp.appendFileOptions",
+      "fsp.appendFileOptionsBytes",
+      "fsp.appendFileOptionsData",
     ],
   }),
   /** existsSync over a path value that is not statically a string:

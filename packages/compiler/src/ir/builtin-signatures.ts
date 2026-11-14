@@ -47,6 +47,11 @@ import {
 export interface LibFnSignature {
   argTypes: (IrType | null)[];
   result: IrType;
+  /** A Date result the runtime builds itself: the symbol answers an owned
+   * `ScrDate *` (+1) instead of the milliseconds the backend wraps in
+   * `scr_date_new`. The Stats Date members use it to answer Node's cached
+   * Date object, whose identity and mutations the snapshot keeps. */
+  dateHandle?: true;
 }
 
 /** Preserve the closed names while giving every entry the same slot type. */
@@ -905,7 +910,20 @@ function buildLibFnSignatures() {
      * assembles the rows from the snapshot. Byte order on POSIX (libuv
      * sorts), the directory's order on Windows; no "."/"..". Throws
      * Node's scandir errno error (may-throw seed set); fresh +1 array. */
-    "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+    "fs.readdirTypesSync": { argTypes: [STRING, DYN], result: VOID },
+    /** `fs.readdirSync(path, options)` — the options value is dyn; the
+     * runtime runs Node's ladder over it (getOptions, assertEncoding,
+     * validateAbortSignal, validateBoolean(options.recursive), the path)
+     * and the form picks the answer: names decoded with the options'
+     * encoding (string[]), the raw name bytes (encoding: 'buffer'), or —
+     * the union form — whichever of the two the encoding selects, boxed
+     * with the call site's arm tags. */
+    "fs.readdirSyncOpts": { argTypes: [STRING, DYN], result: arrayOf(STRING) },
+    "fs.readdirSyncBytesOpts": { argTypes: [STRING, DYN], result: arrayOf(BYTES_U8) },
+    // Result is the call site's string[] | Buffer[] union (VOID sentinel,
+    // the readdirTypesSync pattern; the union's arms are validated in
+    // validate.ts). Args: path, options, string-arm tag, Buffer-arm tag.
+    "fs.readdirSyncOptsUnion": { argTypes: [STRING, DYN, F64, F64], result: VOID },
     /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
      * lib/internal/fs/glob.js walk): pattern and options are dyn values the
      * runtime validates in Node's order. The string forms answer string[];
@@ -1757,6 +1775,10 @@ function buildLibFnSignatures() {
     "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
     "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    // ref()/unref(): whether an open watcher holds the event loop; Node
+    // answers the receiver (`this`), so the handle comes back for chaining.
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: FSWATCHER_T },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: FSWATCHER_T },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for
@@ -1764,15 +1786,17 @@ function buildLibFnSignatures() {
     // the null slot pins the arity and the receiver.
     "watcher.on": { argTypes: [FSWATCHER_T, F64, F64, null], result: VOID },
     "watcher.off": { argTypes: [FSWATCHER_T, F64, null], result: VOID },
-    /** fs.watchFile(path, interval, persistent, listener) → void
-     * (scr_watch_file.c — its own gated unit; moduleUsesFsWatchFile is the
-     * switch, and scr_watch_file_install() is emitted with it). One
-     * libuv-shaped stat poller per RESOLVED path, shared by every listener
-     * on it; the listener's (current, previous) Stats func type is
-     * program-dependent, so the slot pins the arity. Statement position
-     * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
-     * takes a borrowed listener; the null slot is the absent one. */
-    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    /** fs.watchFile(path, interval, persistent, listener) → the path's
+     * StatWatcher record (scr_watch_file.c — its own gated unit;
+     * moduleUsesFsWatchFile is the switch, and scr_watch_file_install() is
+     * emitted with it). One libuv-shaped stat poller per RESOLVED path,
+     * shared by every listener on it; the listener's (current, previous)
+     * Stats func type is program-dependent, so the slot pins the arity. The
+     * answer is Node's record — the same object for the same resolved path,
+     * with ref()/unref() — so it crosses as the checked dynamic.
+     * fs.unwatchFile(path[, listener]) takes a borrowed listener; the null
+     * slot is the absent one. */
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: DYN },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
@@ -1858,11 +1882,12 @@ function buildLibFnSignatures() {
     "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
     "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
     "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
-    /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
-    "stats.atime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
+    /** The Date fields: the snapshot's cached Date, built from the *Ms value
+     * rounded (Node's dateFromMs builds it on the first read). */
+    "stats.atime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.mtime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.ctime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.birthtime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
     /** BigIntStats (statSync with `{ bigint: true }`): the same snapshot
      * handle under Node's bigint member table — every number member of Stats
      * (the integers, `*Ms` and the BigIntStats-only `*Ns`) answers `bigint`;
@@ -1892,10 +1917,10 @@ function buildLibFnSignatures() {
     "bigstats.mtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
     "bigstats.ctimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
     "bigstats.birthtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
-    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
     // The wider sync fs slice (unlink/chmod/chown/copyfile and the
     // mode-carrying write/mkdir forms).
     /** The wider sync fs slice (scr_lib.c), all throwing catchably with
@@ -4285,8 +4310,9 @@ function buildLibFnSignatures() {
      * string — so the ALWAYS-THROW forms take the error.nodeThrow
      * polymorphic-result carve-out. mkdtempSyncChk and the lchmod sync/
      * promise pair run the REAL operation on a validated pass instead
-     * (macOS lchmod(2); non-APPLE answers Node's not-a-function /
-     * ERR_METHOD_NOT_IMPLEMENTED shapes). May-throw seeds, all of them. */
+     * (macOS runs Node's open(O_SYMLINK) / fchmod / close ladder; non-APPLE
+     * answers Node's not-a-function / ERR_METHOD_NOT_IMPLEMENTED shapes).
+     * May-throw seeds, all of them. */
     "fs.existsChk": { argTypes: [DYN, DYN], result: DYN },
     "fs.mkdtempChk": { argTypes: [DYN, DYN, STRING], result: VOID },
     "fs.mkdtempSyncChk": { argTypes: [DYN, DYN, STRING], result: STRING },
@@ -4295,6 +4321,12 @@ function buildLibFnSignatures() {
     "fs.watchFileChk": { argTypes: [DYN, DYN, STRING], result: VOID },
     "fs.lchmodChk": { argTypes: [DYN, DYN, DYN, STRING], result: VOID },
     "fs.lchmodSyncChk": { argTypes: [DYN, DYN], result: DYN },
+    "fs.mkdtempDisposableSyncChk": { argTypes: [DYN, DYN], result: DYN },
+    /** openAsBlob's synchronous ladder (options object, its type string, the
+     * path, the stat) answering the already-resolved promise for the
+     * lazily-read file-backed Blob; it throws and may be caught. */
+    "fs.openAsBlobChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    "fsp.mkdtempDisposableChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "fsp.lchmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fs.readChk": { argTypes: [DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
     "fs.streamOptsChk": { argTypes: [DYN, DYN, STRING], result: VOID },
@@ -4517,8 +4549,24 @@ function buildLibFnSignatures() {
     "fsp.mkdirMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.mkdirRecursive": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdirRecursiveMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.mkdirModeOctal": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+    // mkdir(p, { recursive: true }) answers the first created directory:
+    // the interned `string | undefined` union (the runtime answers
+    // +1-or-NULL; the backend builds the arms), like fs.mkdirRecursiveSync.
+    "fsp.mkdirRecursiveFirst": {
+      argTypes: [STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.mkdirRecursiveFirstOctal": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    /** chmod(path, mode) with an octal-string mode (parseFileMode). */
+    "fsp.chmodString": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+    /** chmod with a dyn mode: parseFileMode's number / octal-string ladder. */
+    "fsp.chmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
@@ -4552,14 +4600,67 @@ function buildLibFnSignatures() {
       argTypes: [STRING, DYN, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
+    /** fs.promises.writeFile/appendFile(path, data, options) over the
+     * general options record: the runtime validates encoding, flag, flush,
+     * mode and signal in Node's order and rejects with Node's error. */
+    "fsp.writeFileOptions": {
+      argTypes: [STRING, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileOptionsBytes": {
+      argTypes: [STRING, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileOptionsData": {
+      argTypes: [STRING, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptions": {
+      argTypes: [STRING, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptionsBytes": {
+      argTypes: [STRING, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptionsData": {
+      argTypes: [STRING, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    "fsp.mkdtempDisposable": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
+    "fsp.mkdtempEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.mkdtempBuffer": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],
       result: { kind: "promise", inner: STRING },
     },
+    /** readFile(path, options) with the options value as a dyn: Node's
+     * getOptions ladder, the flag, the encoding and the signal, answering
+     * whatever the encoding asks for. */
+    "fsp.readFileDyn": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
+    "fsp.readFileDynPath": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    "fsp.readFileStrOptions": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.readFileBytesOptions": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: BYTES_U8 },
+    },
     "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    /** fs.promises.rmdir(path, options): validateRmdirOptions and the
+     * recursive form's DEP0147 report, in the dyn-async unit. */
+    "fsp.rmdirOptions": { argTypes: [STRING, DYN], result: { kind: "promise", inner: VOID } },
+    /** fs.promises.lchmod(path, mode): Node's stub on Linux (where
+     * O_SYMLINK does not exist) and the real lchmod(2) on macOS. */
+    "fsp.lchmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmodString": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.cp": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
@@ -4577,7 +4678,24 @@ function buildLibFnSignatures() {
      * promise twin of fs.readdirTypesSync. The backends assemble the same
      * call-site-shaped Dirent rows, then move the array into a promise;
      * scandir failure becomes its rejection. */
-    "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    "fsp.readdirTypes": { argTypes: [STRING, DYN], result: { kind: "promise", inner: VOID } },
+    /** `fs.promises.readdir(path, options)` — the settled-promise twin of
+     * fs.readdirSyncOpts; the runtime walks in Node's promise order (LIFO
+     * queue, eager child readdir), and errors become the rejection. */
+    "fsp.readdirOpts": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
+    "fsp.readdirBytesOpts": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(BYTES_U8) },
+    },
+    // Result is promise<call-site string[] | Buffer[] union> (VOID sentinel
+    // checked in validate.ts). Args: path, options, arm tags.
+    "fsp.readdirOptsUnion": {
+      argTypes: [STRING, DYN, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
      * behind a settled promise; their errors become its rejection. */
@@ -4587,7 +4705,16 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
+    "fsp.statProbe": { argTypes: [STRING, BOOL], result: { kind: "promise", inner: VOID } },
+    /** stat(path, null): Node reads options.bigint off the null and throws
+     * the TypeError ("Cannot read properties of null"). */
+    "fsp.statNullOptions": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
     "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    "fsp.realpathEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.realpathBuffer": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
     /** fs/promises.open and the statically represented FileHandle surface.
      * Every operation returns an already-settled promise; syscall failures
@@ -4596,6 +4723,14 @@ function buildLibFnSignatures() {
      * buffer }) assembled by the backends around the fixed runtime ABI. */
     "fsp.open": {
       argTypes: [STRING, STRING, F64],
+      result: { kind: "promise", inner: FILEHANDLE_T },
+    },
+    // open()'s general form: Node's stringToFlags and parseFileMode read the
+    // argument values, so a numeric flag mask, an octal-string mode, and an
+    // absent argument all reach one entry point that resolves them at run
+    // time. The all-static spelling above keeps its direct call.
+    "fsp.openOptions": {
+      argTypes: [STRING, DYN, DYN],
       result: { kind: "promise", inner: FILEHANDLE_T },
     },
     "fileHandle.fd": { argTypes: [FILEHANDLE_T], result: F64 },
@@ -4607,6 +4742,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.chmod": { argTypes: [FILEHANDLE_T, F64], result: { kind: "promise", inner: VOID } },
+    "fileHandle.chown": {
+      argTypes: [FILEHANDLE_T, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.utimes": {
       argTypes: [FILEHANDLE_T, DYN, DYN],
       result: { kind: "promise", inner: VOID },
@@ -4653,7 +4792,32 @@ function buildLibFnSignatures() {
       argTypes: [FILEHANDLE_T, DYN, STRING],
       result: { kind: "promise", inner: VOID },
     },
+    // writeFile/appendFile over Node's options record (encoding, flush and
+    // signal); the same ladder serves both members, as Node's do behind the
+    // handle. Split by the data's static spelling, like fsp.writeFileOptions
+    // and its pairs.
+    "fileHandle.writeFileOptions": {
+      argTypes: [FILEHANDLE_T, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFileOptionsBytes": {
+      argTypes: [FILEHANDLE_T, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFileOptionsData": {
+      argTypes: [FILEHANDLE_T, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
+    // stat with a non-literal options value: the runtime validates the
+    // handle first, then reads options.bigint (an accessor runs, and a null
+    // options value is the member read's TypeError); Node's member table
+    // was chosen by the checker's result type, so the payload stays the
+    // stat snapshot.
+    "fileHandle.statOptions": {
+      argTypes: [FILEHANDLE_T, DYN],
+      result: { kind: "promise", inner: STATS_T },
+    },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
     // The Node runtime flags a node:test binary took out of process.argv
     // (--test-update-snapshots and the reporter options), or []; a fresh
@@ -6872,6 +7036,7 @@ function buildLibFnSignatures() {
      * outside uint32, before checking the path. */
     "fs.rmRetrySync": { argTypes: [STRING, BOOL, BOOL, F64, F64], result: VOID },
     "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: DYN },
     "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
     "fs.readFdSync": { argTypes: [F64, STRING], result: STRING },
     /** The writeFileSync(fd, data) form: a write(2) loop over the whole

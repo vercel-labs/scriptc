@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-promises-write-file-shared-data.ts"
+ ],
+ "diags": []
+}

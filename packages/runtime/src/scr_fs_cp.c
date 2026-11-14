@@ -603,13 +603,20 @@ static void cp_copyfile(const ScrStr *src, const ScrStr *dest, int mode, const c
  * arm (CopyFileW and its ENOSYS for FICLONE_FORCE) sits beside the Win32 fs
  * helpers in scr_lib.c. */
 void scr_fs_copyfile_flags(ScrStr *src, ScrStr *dest, double mode) {
+  /* copyFile validates the two paths before the binding reads the mode:
+   * getValidatedPath(src), getValidatedPath(dest), then GetValidFileMode. */
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
+  if (!isfinite(mode)) {
+    static const char text[] = "mode is out of range";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
   if (!(mode >= 0 && mode <= 7)) {
     static const char text[] = "mode is out of range: >= 0 && <= 7";
     scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
     return;
   }
-  if (!scr_fs_path_ok(src, "src")) return;
-  if (!scr_fs_path_ok(dest, "dest")) return;
   cp_copyfile(src, dest, (int)mode, "copyfile");
 }
 #endif

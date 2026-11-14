@@ -5,6 +5,8 @@
 
 #include "scr_bytes.h"
 #include "scr_bigint.h"
+#include "scr_os.h"
+#include "scr_union.h"
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
  * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
@@ -311,6 +313,42 @@ void scr_fs_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
 /* fs/promises readFile(path) [no encoding]: the same read behind an
  * already-settled promise — failure REJECTS (catchable at the await). */
 ScrPromise *scr_fsp_read_file_bytes(ScrStr *path); /* +1 */
+/* fs/promises readFile's options ladder (scr_bytes_io.c): Node's
+ * getOptions/validate/checkAborted/open order over any options spelling.
+ * Answers a Buffer or a string. */
+ScrDyn *scr_fs_read_file_options_dyn(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrDyn *scr_fs_read_file_dyn_path_options(const ScrDyn *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_dyn(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_str_options(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_bytes_options(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_dyn_path(const ScrDyn *path, const ScrDyn *options); /* +1 */
+/* readdir's option ladder and listings (scr_bytes_io.c): getOptions over
+ * any options spelling, getValidatedPath, then options.recursive (validated
+ * in the sync forms) and options.withFileTypes. scr_fs_readdir_opts answers
+ * the flat or recursive names as strings or Buffers, scr_fs_readdir_opts_union
+ * boxes that array in the `string[] | Buffer[]` arm its element kind names,
+ * and scr_fs_listing_opts answers the withFileTypes snapshot (scr_lib.c).
+ * `expected` is the answer shape the call site's type holds (0 strings,
+ * 1 Buffers); an options value typed `any` can resolve to another shape, and
+ * the call then throws a scriptc error rather than answer it. All NULL with
+ * the exception pending. */
+ScrArr *scr_fs_readdir_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                            double expected); /* +1 */
+ScrUnion *scr_fs_readdir_opts_union(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                    double str_tag, double bytes_tag); /* +1 */
+ScrFsListing *scr_fs_listing_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                  bool follow, bool *is_buffer, double expected); /* +1 */
+/* The settled-promise twins (scr_async.c). */
+ScrPromise *scr_fsp_readdir_opts(ScrStr *path, const ScrDyn *options,
+                                 double expected); /* +1 */
+ScrPromise *scr_fsp_readdir_opts_union(ScrStr *path, const ScrDyn *options, double str_tag,
+                                       double bytes_tag); /* +1 */
+/* fs/promises chmod/lchmod with an octal-string mode (typed or JS-source). */
+ScrPromise *scr_fsp_chmod_string(ScrStr *path, ScrStr *mode); /* +1 */
+ScrPromise *scr_fsp_chmod_chk(const ScrDyn *path, const ScrDyn *mode); /* +1 */
+ScrPromise *scr_fsp_lchmod_string(ScrStr *path, ScrStr *mode); /* +1 */
+/* fs/promises stat/lstat(path, null): the rejection Node's member read makes. */
+ScrPromise *scr_fsp_stat_null_options(ScrStr *path); /* +1 */
 
 /* crypto.randomBytes(n) → a real u8 Buffer. Out-of-range n THROWS Node's
  * RangeError catchably (same check as scr_crypto_random_string). */

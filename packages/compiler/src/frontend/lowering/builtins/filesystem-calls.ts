@@ -31,6 +31,8 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import { lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { defaultAfterUndefined } from "../optional-arguments.js";
 import { isConstantOperand } from "../expressions/library-callbacks.js";
 import { constInitializerOf } from "../lower-exprs.js";
@@ -482,10 +484,13 @@ export function lowerFsDescriptorSyncCall(
   return { kind: "libCall", fn, args: dynArgs, type: VOID, loc };
 }
 
-// fs/promises.open(path[, flags[, mode]]) — string flags and numeric
-// creation mode, with Node's "r"/0o666 defaults. The runtime wraps
-// the descriptor in a shared FileHandle and settles/rejects exactly
-// like the existing fs/promises operations.
+// fs/promises.open(path[, flags[, mode]]) — Node's stringToFlags (a flag
+// name or an int32 mask) and parseFileMode (a number or an octal string),
+// with Node's "r"/0o666 defaults and its path → flags → mode validation
+// order. The all-static spelling keeps the direct runtime call; every
+// other form hands the option values to the runtime, which reads them the
+// way Node does. The runtime wraps the descriptor in a shared FileHandle
+// and settles/rejects exactly like the existing fs/promises operations.
 export function lowerFsPromisesOpenCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -499,23 +504,140 @@ export function lowerFsPromisesOpenCall(
     lowerer.noLowering(
       `fs.promises.open with ${expr.arguments.nodes.length} arguments`,
       expr,
-      "use open(path[, stringFlags[, numericMode]])",
+      "use open(path[, flags[, mode]])",
     );
   }
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const flagsNode = expr.arguments.nodes[1];
+  const modeNode = expr.arguments.nodes[2];
+  // An explicitly supplied argument whose static type is only unit values
+  // takes Node's default (`stringToFlags(null)`, `parseFileMode(undefined,
+  // 'mode', 0o666)`), but the argument expression still evaluates. Its
+  // effects run between the path and the call.
+  const unitEffects = (node: ts.Expression | undefined): IrExpr | null => {
+    if (node === undefined || !staticallyAbsent(lowerer, node)) return null;
+    const value = lowerStaticallyUndefinedArgument(lowerer, node) ?? lowerer.lowerExpr(node);
+    return isSafeToDiscard(value) ? null : value;
+  };
+  const flagsEffect = unitEffects(flagsNode);
+  const modeEffect = unitEffects(modeNode);
+  const effects = [flagsEffect, modeEffect].filter((e): e is IrExpr => e !== null);
+  const flagsPresent = flagsNode !== undefined && !staticallyAbsent(lowerer, flagsNode);
+  const modePresent = modeNode !== undefined && !staticallyAbsent(lowerer, modeNode);
+  const flagsKind =
+    flagsNode !== undefined && flagsPresent
+      ? lowerer.mapTypeOf(lowerer.typeOf(flagsNode))?.kind
+      : undefined;
+  const modeKind =
+    modeNode !== undefined && modePresent
+      ? lowerer.mapTypeOf(lowerer.typeOf(modeNode))?.kind
+      : undefined;
+  const type: IrType = { kind: "promise", inner: FILEHANDLE_T };
+  const direct = (!flagsPresent || flagsKind === "string") && (!modePresent || modeKind === "f64");
   const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
   const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-  const flags = expr.arguments.nodes[1]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[1]!, STRING, defaultFlags)
-    : defaultFlags;
-  const mode = expr.arguments.nodes[2]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
-    : defaultMode;
+  const call = (pathArg: IrExpr, flags: IrExpr, mode: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: direct ? "fsp.open" : "fsp.openOptions",
+    args: [pathArg, flags, mode],
+    type,
+    loc,
+  });
+  if (effects.length === 0) {
+    const flags = flagsPresent
+      ? lowerer.lowerExprExpecting(flagsNode!, direct ? STRING : DYN)
+      : direct
+        ? defaultFlags
+        : dynUndefinedExpr(loc);
+    const mode = modePresent
+      ? lowerer.lowerExprExpecting(modeNode!, direct ? F64 : DYN)
+      : direct
+        ? defaultMode
+        : dynUndefinedExpr(loc);
+    return call(path, flags, mode);
+  }
+  // Some argument's type is only unit values: its expression contributes
+  // effects while the default stands in for its value. Every other
+  // supplied argument is bound first, in argument order, so all three
+  // evaluate exactly once as path, flags, mode — a hoisted mode effect
+  // must not run before an effectful flags expression.
+  const stmts: IrStmt[] = [];
+  const pathLocal = lowerer.declareHiddenLocal("%openPath", STRING);
+  stmts.push({ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc });
+  const argument = (
+    node: ts.Expression | undefined,
+    present: boolean,
+    effect: IrExpr | null,
+    argType: IrType,
+    defaultValue: IrExpr,
+    name: string,
+  ): IrExpr => {
+    if (!present || effect !== null) {
+      if (effect !== null) stmts.push({ kind: "exprStmt", expr: effect, loc: effect.loc });
+      return defaultValue;
+    }
+    const local = lowerer.declareHiddenLocal(name, argType);
+    stmts.push({
+      kind: "varDecl",
+      localId: local.id,
+      init: lowerer.lowerExprExpecting(node!, argType),
+      loc,
+    });
+    return varRef(local.id, argType, loc);
+  };
+  const flagsArg = argument(
+    flagsNode,
+    flagsPresent,
+    flagsEffect,
+    direct ? STRING : DYN,
+    direct ? defaultFlags : dynUndefinedExpr(loc),
+    "%openFlags",
+  );
+  const modeArg = argument(
+    modeNode,
+    modePresent,
+    modeEffect,
+    direct ? F64 : DYN,
+    direct ? defaultMode : dynUndefinedExpr(loc),
+    "%openMode",
+  );
+  const result = call(varRef(pathLocal.id, STRING, loc), flagsArg, modeArg);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
+// fs.openAsBlob(path[, options]) — Node's call is synchronous: it validates
+// the options object, its `type` string and the path (a URL's conversion and
+// the null-byte check included), stats the file, and answers a promise that
+// is already resolved. The runtime runs that whole ladder in Node's order,
+// so both arguments cross as dynamic values unlowered (the path keeps its
+// URL until the runtime converts it at the point Node does) and the runtime
+// owns every error shape.
+export function lowerFsOpenAsBlobCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  if (
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > 2 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    lowerer.noLowering(
+      `openAsBlob with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
+      expr,
+      "use openAsBlob(path[, options])",
+    );
+  }
+  const pathNode = expr.arguments.nodes[0]!;
+  const optionsNode = expr.arguments.nodes[1];
   return {
     kind: "libCall",
-    fn: "fsp.open",
-    args: [path, flags, mode],
-    type: { kind: "promise", inner: FILEHANDLE_T },
+    fn: "fs.openAsBlobChk",
+    args: [
+      lowerer.lowerExprExpecting(pathNode, DYN),
+      optionsNode ? lowerer.lowerExprExpecting(optionsNode, DYN) : dynUndefinedExpr(loc),
+    ],
+    type: { kind: "promise", inner: DYN },
     loc,
   };
 }
@@ -1153,6 +1275,45 @@ export function lowerFsPromisesEncodedRead(
   };
 }
 
+/** fs.promises.readFile(path, options) beyond the literal-utf8 encoded
+ * read: the runtime runs Node's getOptions ladder over the options value —
+ * nullish and function values (the defaults), a string (the encoding with
+ * flag 'r'), an object's encoding/signal members, options.flag — and reads
+ * the descriptor, answering a Buffer or a string. The result must be the
+ * promise form's payload: a dynamic box, a string, or bytes. A statically
+ * typed string/Buffer spelling keeps the table's entries. Null for other
+ * shapes. */
+export function lowerFsPromisesReadOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expr.arguments.nodes.length !== 2 || expr.arguments.nodes.some(ts.isSpreadElement))
+    return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "promise") return null;
+  const inner = result.inner;
+  const fn =
+    inner.kind === "dyn"
+      ? "fsp.readFileDyn"
+      : inner.kind === "string"
+        ? "fsp.readFileStrOptions"
+        : inner.kind === "bytes" && inner.elem === "u8"
+          ? "fsp.readFileBytesOptions"
+          : null;
+  if (fn === null) return null;
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const raw = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+  const options: IrExpr | null =
+    raw.type.kind === "dyn"
+      ? raw
+      : raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)
+        ? { kind: "dynFrom", value: raw, type: DYN, loc }
+        : null;
+  if (options === null) return null;
+  return { kind: "libCall", fn, args: [path, options], type: result, loc };
+}
+
 /** opendirSync(path[, options]) and fs.promises.opendir: the options are a
  * literal `{ bufferSize?: <number>, encoding?: "utf8" }`. bufferSize
  * defaults to Node's 32 and is checked by the runtime after the directory
@@ -1402,37 +1563,219 @@ function isFalseLiteral(node: ts.Expression): boolean {
   return withoutParenthesesTypeWrappers(node).kind === ts.SyntaxKind.FalseKeyword;
 }
 
-// fs.promises.mkdir(p, options): the mkdirSync matrix behind settled
-// promises — literal { recursive?: <boolean literal>, mode?: number }.
-// The recursive form's value (`string | undefined`) has no lowering;
-// `await` in statement position is the supported use.
+// fs.promises.mkdir(p, options): Node's mkdir matrix behind settled
+// promises. Options may be the mode shorthand (a number or an octal
+// string), null/undefined (the defaults), or a literal
+// { recursive?: <boolean literal>, mode?: number | <octal string> }. The
+// recursive form answers the first created directory (`string |
+// undefined`); the plain form answers undefined. The runtime validates the
+// mode and parses octal strings in Node's order — the path first, then
+// parseFileMode.
 export function lowerFsPromisesMkdirCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments.nodes[1]!;
-  const options = parseMkdirOptions(optsNode);
-  if (!options || (options.recursive && !isBooleanLiteral(options.recursive))) {
-    lowerer.noLowering(
-      "fs.promises.mkdir with an options argument beyond { recursive: <boolean literal>, mode }",
-      optsNode,
-      "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
-    );
+  const spelling = "fs.promises.mkdir";
+  const optsNode = expr.arguments.nodes[1];
+  let recursive = false;
+  let modeNode: ts.Expression | null = null;
+  if (optsNode !== undefined && !staticallyAbsent(lowerer, optsNode)) {
+    if (ts.isObjectLiteralExpression(optsNode)) {
+      const options = parseMkdirOptions(optsNode);
+      if (!options || (options.recursive && !isBooleanLiteral(options.recursive))) {
+        lowerer.noLowering(
+          `${spelling} with an options argument beyond { recursive, mode }`,
+          optsNode,
+          "the recursive flag must be a boolean literal and mode a number or an octal string; other options have no lowering",
+        );
+      }
+      recursive = options.recursive ? isTrueLiteral(options.recursive) : false;
+      modeNode = options.mode;
+    } else {
+      // Node reads a non-object options value as the mode itself.
+      modeNode = optsNode;
+    }
+    if (modeNode && staticallyAbsent(lowerer, modeNode)) modeNode = null;
   }
-  const recursive = options.recursive ? isTrueLiteral(options.recursive) : false;
-  const modeNode = options.mode;
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
-  const type: IrType = { kind: "promise", inner: VOID };
+  let mode: IrExpr | null = null;
+  let octal: string | null = null;
+  if (modeNode) {
+    const type = lowerer.typeOf(modeNode);
+    if (type.isStringLiteralType()) octal = type.value;
+    else if (lowerer.mapTypeOf(type)?.kind === "f64")
+      mode = lowerer.lowerExprExpecting(modeNode, F64);
+    else
+      lowerer.noLowering(
+        `${spelling} whose mode is neither a number nor an octal string`,
+        modeNode,
+        "pass a number, or the octal spelling as a string literal",
+      );
+  }
   if (!recursive) {
+    const type: IrType = { kind: "promise", inner: VOID };
+    if (octal !== null)
+      return {
+        kind: "libCall",
+        fn: "fsp.mkdirModeOctal",
+        args: [path, strLit(octal, loc)],
+        type,
+        loc,
+      };
     return mode
       ? { kind: "libCall", fn: "fsp.mkdirMode", args: [path, mode], type, loc }
       : { kind: "libCall", fn: "fsp.mkdir", args: [path], type, loc };
   }
-  return mode
-    ? { kind: "libCall", fn: "fsp.mkdirRecursiveMode", args: [path, mode], type, loc }
-    : { kind: "libCall", fn: "fsp.mkdirRecursive", args: [path], type, loc };
+  // recursive: true answers the first created directory, a `string |
+  // undefined` union the runtime spells as a string or NULL.
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  const def = inner?.kind === "union" ? lowerer.unions.get(inner.unionId) : undefined;
+  if (
+    callType?.kind !== "promise" ||
+    !def ||
+    !def.arms.some((a) => a.kind === "string") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  )
+    lowerer.noLowering(
+      `${spelling} in the recursive form without its 'string | undefined' result`,
+      expr,
+      "recursive: true answers the first created directory",
+    );
+  if (octal !== null)
+    return {
+      kind: "libCall",
+      fn: "fsp.mkdirRecursiveFirstOctal",
+      args: [path, strLit(octal, loc)],
+      type: callType,
+      loc,
+    };
+  return {
+    kind: "libCall",
+    fn: "fsp.mkdirRecursiveFirst",
+    args: [path, mode ?? numLit(0o777, loc)],
+    type: callType,
+    loc,
+  };
+}
+
+/** True when the expression's static type is only the unit types (null,
+ * undefined, void): Node's `??` default applies. A `T | undefined`
+ * variable may still hold a T, so it does not count. */
+export function staticallyAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  const unit = (type: ts.Type): boolean =>
+    (type.flags & ~(ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0;
+  const type = lowerer.typeOf(node);
+  return type.isUnionType() ? ts.constituentTypes(type).every(unit) : unit(type);
+}
+
+/** realpath and mkdtemp's documented option keys. */
+const FS_ENCODE_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["encoding", "signal"]);
+
+/** fs.promises.realpath / mkdtemp(path, options): the encoding is the
+ * string shorthand or an object literal's `encoding` member, exactly the
+ * shape Node's getOptions accepts. Node validates the encoding before the
+ * path, so an unknown name rejects first; "buffer" answers the raw bytes and
+ * every other name re-encodes the UTF-8 path text. */
+export function lowerFsPromisesEncodeOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  isMkdtemp: boolean,
+): IrExpr {
+  const spelling = isMkdtemp ? "fs.promises.mkdtemp" : "fs.promises.realpath";
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering(`${spelling} with spread arguments`, expr);
+  const optsNode = expr.arguments.nodes[1];
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  const wantsBuffer = inner?.kind === "bytes";
+  if (!wantsBuffer && inner?.kind !== "string") {
+    lowerer.noLowering(
+      `${spelling} where the result is neither a string nor a Buffer`,
+      expr,
+      "an encoding of 'buffer' answers a Buffer; every other encoding answers a string",
+    );
+  }
+  const plainFn: IrLibFn = isMkdtemp ? "fsp.mkdtemp" : "fsp.realpath";
+  const strType: IrType = { kind: "promise", inner: STRING };
+  const bytesType: IrType = { kind: "promise", inner: BYTES_U8 };
+  const answer = (fn: IrLibFn, args: IrExpr[], type: IrType): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args,
+    type,
+    loc,
+  });
+  const plain = (): IrExpr => answer(plainFn, [path], wantsBuffer ? bytesType : strType);
+  const fence = (node: ts.Node): never =>
+    lowerer.noLowering(
+      `${spelling} with this options value`,
+      node,
+      "pass a BufferEncoding string, or an object literal whose encoding is one; 'buffer' answers a Buffer",
+    );
+  // null = the default utf8 (also options that are null or undefined).
+  let encoding: string | null = null;
+  const literalOf = (node: ts.Expression): string | null => {
+    const t = lowerer.typeOf(node);
+    return t.isStringLiteralType() ? t.value : null;
+  };
+  if (optsNode !== undefined) {
+    if (!staticallyAbsent(lowerer, optsNode)) {
+      const t = lowerer.typeOf(optsNode);
+      if (t.isStringLiteralType()) {
+        encoding = t.value;
+      } else if (ts.isObjectLiteralExpression(optsNode)) {
+        for (const p of optsNode.properties.nodes) {
+          const m = optionMember(p);
+          if (!m)
+            lowerer.noLowering(
+              `${spelling} with this options shape`,
+              p,
+              "spreads and computed keys have no lowering — write each member inline",
+            );
+          if (m.name === "encoding") {
+            const lit = literalOf(m.value);
+            if (lit === null) fence(m.value);
+            encoding = lit;
+          } else if (m.name === "signal") {
+            // getOptions validates the signal and realpath ignores it; a
+            // statically typed AbortSignal needs neither.
+          } else {
+            fenceOrDropOptionKey(
+              lowerer,
+              p,
+              m.name,
+              spelling,
+              FS_ENCODE_DOCUMENTED_OPTIONS,
+              "encoding is the supported option",
+            );
+          }
+        }
+      } else {
+        fence(optsNode);
+      }
+    }
+  }
+  const enc = encoding;
+  if (enc === null || enc.length === 0 || enc === "utf8" || enc === "utf-8") return plain();
+  if (enc === "buffer") {
+    if (!wantsBuffer) fence(optsNode ?? expr);
+    return answer(isMkdtemp ? "fsp.mkdtempBuffer" : "fsp.realpathBuffer", [path], bytesType);
+  }
+  if (wantsBuffer)
+    lowerer.noLowering(
+      `${spelling} with an encoding other than 'buffer' where the result is a Buffer`,
+      optsNode ?? expr,
+      "only encoding: 'buffer' answers a Buffer",
+    );
+  return answer(
+    isMkdtemp ? "fsp.mkdtempEncoded" : "fsp.realpathEncoded",
+    [path, strLit(enc, loc)],
+    strType,
+  );
 }
 
 // rmSync(p, options) and fs.promises.rm(p, options): literal
@@ -1940,6 +2283,117 @@ export function lowerFsWriteOptionsCall(
     );
   }
   return finishWrite(optionValues);
+}
+
+/** fs.promises.writeFile/appendFile(p, data, options): Node's general
+ * options record, validated by scr_fs_flags.c in Node's order — the
+ * encoding (any BufferEncoding name, "buffer", or a name Node rejects),
+ * flag (the full open(2) table), mode, flush and signal, plus the data's
+ * own type check before the path. Answers null for the utf8-only spellings
+ * the plain writes already cover (writeFile's bare "utf8" and its
+ * { encoding: "utf8" } record), so their IR is unchanged. */
+export function lowerFsPromisesWriteOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  append: boolean,
+): IrExpr | null {
+  const optsNode = expr.arguments.nodes[2]!;
+  if (!append) {
+    const t = lowerer.typeOf(optsNode);
+    if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")) return null;
+    const literal = optionsLiteralOf(lowerer, optsNode);
+    if (
+      literal !== null &&
+      literal.properties.nodes.every((property) => {
+        const m = optionMember(property);
+        if (!m || m.name !== "encoding") return false;
+        const et = lowerer.typeOf(m.value);
+        return et.isStringLiteralType() && (et.value === "utf8" || et.value === "utf-8");
+      })
+    )
+      return null;
+  }
+  // A bare `__proto__: <object>` entry changes the record's prototype, and
+  // the lowered record is read through its own keys only, so the inherited
+  // options could be dropped without a diagnostic: fence it by name, as the
+  // static option walks do (a primitive value is the no-op Node makes of
+  // it, so it stays accepted).
+  const optionsLiteral = optionsLiteralOf(lowerer, optsNode);
+  if (optionsLiteral !== null) {
+    const operation = append ? "fs.promises.appendFile" : "fs.promises.writeFile";
+    for (const property of optionsLiteral.properties.nodes) {
+      if (optionMember(property)?.name !== "__proto__") continue;
+      fenceOrDropOptionKey(
+        lowerer,
+        property,
+        "__proto__",
+        operation,
+        FS_WRITE_FILE_DOCUMENTED_OPTIONS,
+        "the supported options are { encoding, flag, mode, flush, signal }",
+      );
+    }
+  }
+  const dataNode = expr.arguments.nodes[1]!;
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+  const dataType: IrType =
+    dataIr?.kind === "string"
+      ? STRING
+      : dataIr?.kind === "bytes" && dataIr.elem === "u8"
+        ? BYTES_U8
+        : DYN;
+  const dataKind: "string" | "bytes" | "data" =
+    dataType.kind === "string" ? "string" : dataType.kind === "bytes" ? "bytes" : "data";
+  const resultType: IrType = { kind: "promise", inner: VOID };
+  const fn: IrLibFn = append
+    ? dataKind === "string"
+      ? "fsp.appendFileOptions"
+      : dataKind === "bytes"
+        ? "fsp.appendFileOptionsBytes"
+        : "fsp.appendFileOptionsData"
+    : dataKind === "string"
+      ? "fsp.writeFileOptions"
+      : dataKind === "bytes"
+        ? "fsp.writeFileOptionsBytes"
+        : "fsp.writeFileOptionsData";
+  // Node evaluates the arguments left to right; stage them in that order,
+  // then the runtime runs its validation ladder over the record.
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
+  const dataLocal = lowerer.declareHiddenLocal("%writeData", dataType);
+  const optionsLocal = lowerer.declareHiddenLocal("%writeOptions", DYN);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+    {
+      kind: "varDecl",
+      localId: dataLocal.id,
+      init: lowerer.lowerExprExpecting(dataNode, dataType),
+      loc: locOf(dataNode),
+    },
+    {
+      kind: "varDecl",
+      localId: optionsLocal.id,
+      init: lowerer.lowerExprExpecting(optsNode, DYN),
+      loc: locOf(optsNode),
+    },
+  ];
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn,
+      args: [
+        varRef(pathLocal.id, pathLocal.type, loc),
+        varRef(dataLocal.id, dataLocal.type, loc),
+        varRef(optionsLocal.id, optionsLocal.type, loc),
+      ],
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
 }
 
 /** writeFileSync/appendFileSync with the options the plain forms do not

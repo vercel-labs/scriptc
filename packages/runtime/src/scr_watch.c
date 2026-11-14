@@ -14,7 +14,8 @@
  *   "rename" (NOTE_RENAME/DELETE/REVOKE — rename wins when a drain
  *   coalesces both, libuv's precedence).
  * - An open watcher KEEPS THE LOOP ALIVE until close() (Node's persistent
- *   default; unref has no lowering — nothing exercises it).
+ *   default); unref() drops it from the liveness count and ref() puts it
+ *   back, both answering the receiver like Node's FSWatcher methods.
  * - close() is idempotent: the fd closes (dropping its kqueue filter),
  *   listeners release, nothing fires again.
  *
@@ -144,6 +145,7 @@ struct ScrWatcher {
   bool inflight;   /* a read is outstanding (ovl/buf are the kernel's) */
   alignas(DWORD) char buf[4096]; /* FILE_NOTIFY_INFORMATION entries */
 #endif
+  bool unref;   /* unref()'d: open but not holding the loop */
   bool closed;  /* close() called: off the liveness count, listeners gone */
   ScrStr *path; /* the watched path — the reopen-after-rename target */
   ScrWatchL *ls;
@@ -152,7 +154,10 @@ struct ScrWatcher {
 };
 
 static SCR_TL ScrWatcher *scr_watchers = NULL;
-static SCR_TL size_t scr_watchers_open = 0; /* liveness: open (unclosed) watchers */
+static SCR_TL size_t scr_watchers_open = 0; /* open (unclosed) watchers */
+/* liveness: the open watchers that have not been unref()'d — what Node's
+ * uv handle ref/unref count decides for the loop. */
+static SCR_TL size_t scr_watchers_active = 0;
 
 static void scr_watch_close_tick(ScrClosure *cb);
 
@@ -412,6 +417,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->next = scr_watchers;
   scr_watchers = scr_watcher_retain(w);
   scr_watchers_open++;
+  scr_watchers_active++;
   return w;
 }
 
@@ -457,6 +463,7 @@ void scr_watcher_close(ScrWatcher *w) {
   }
   scr_watcher_drop_listeners(w);
   scr_watchers_open--;
+  if (!w->unref) scr_watchers_active--;
   if (ncloses > 0) {
     ScrWatchCloseBatch *batch = malloc(sizeof *batch);
     if (!batch) scr_watch_oom();
@@ -505,6 +512,26 @@ void scr_watch_thunk_event(ScrClosure *cb, const char *event, const char *filena
 void scr_watch_err_thunk0(ScrClosure *cb, ScrError *err) {
   (void)err;
   ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+/* watcher.ref()/unref(): whether an open watcher holds the event loop.
+ * Node's FSWatcher methods call the same-named uv handle methods and
+ * answer the receiver either way, including after close(), where the
+ * dropped handle makes them no-ops. */
+ScrWatcher *scr_watcher_ref(ScrWatcher *w) {
+  if (w && !w->closed && w->unref) {
+    w->unref = false;
+    scr_watchers_active++;
+  }
+  return w;
+}
+
+ScrWatcher *scr_watcher_unref(ScrWatcher *w) {
+  if (w && !w->closed && !w->unref) {
+    w->unref = true;
+    scr_watchers_active--;
+  }
+  return w;
 }
 
 /* watcher.on/once/addListener/prependListener(event, listener). A closed
@@ -609,10 +636,10 @@ static void scr_watch_fire(ScrWatcher *w, const char *event, const char *filenam
 
 /* ── the loop hooks (scr_async.c) ────────────────────────────────────── */
 
-/* Liveness: every un-closed watcher holds the loop (Node's persistent
+/* Liveness: every open, ref'd watcher holds the loop (Node's persistent
  * default) — a watcher with no event source (fd < 0) included, exactly
- * like Node's. */
-static bool scr_watch_pending(void) { return scr_watchers_open > 0; }
+ * like Node's; an unref()'d one stays open but does not count. */
+static bool scr_watch_pending(void) { return scr_watchers_active > 0; }
 
 static int scr_watch_pollfd(void) {
 #ifdef SCR_HAVE_KQUEUE
@@ -776,6 +803,7 @@ static void scr_watch_cleanup_atexit(void) {
     if (!w->closed) {
       w->closed = true;
       scr_watchers_open--;
+      if (!w->unref) scr_watchers_active--;
     }
 #ifdef SCR_HAVE_RDCW
     scr_watch_backend_drop(w);

@@ -89,6 +89,16 @@ describe("runtime feature snapshots", () => {
     const blob = module();
     blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
     expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
+
+    // Blobs that arrive without a `blob.*` call: openAsBlob's answer, and a
+    // registered object URL that the program then fetches.
+    const opened = module();
+    opened.functions[0]!.body.push(call("fs.openAsBlobChk"));
+    expect(moduleRuntimeFeatures(opened)).toMatchObject({ webBodies: true });
+
+    const registered = module();
+    registered.functions[0]!.body.push(call("url.createObjectURL"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(registered)).toMatchObject({ fetch: true, webBodies: true });
   });
 
   test("gates the call-time parameter bind unit on a barriered generator", () => {

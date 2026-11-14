@@ -34,6 +34,11 @@ void scr_watcher_release_v(void *p);
  * directory watch has no lowering yet and THROWS [SC2020]. +1. */
 ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb, ScrWatchFn fn, bool wants_name);
 void scr_watcher_close(ScrWatcher *w); /* idempotent */
+/* watcher.ref()/unref(): whether the open watcher holds the event loop
+ * (persistent is the default). Both answer the receiver; a closed
+ * watcher makes them no-ops, like Node's dropped handle. */
+ScrWatcher *scr_watcher_ref(ScrWatcher *w);
+ScrWatcher *scr_watcher_unref(ScrWatcher *w);
 /* watcher.on/once/addListener/prependListener(event, listener): cb MOVES
  * in. On a closed watcher the listener is released at once (it can never
  * run). Directory watches on macOS cannot name entries (slice F3), so a
@@ -55,12 +60,16 @@ void scr_watch_install(void);
  * when the program uses it). Stat polling in Node's shape: one poller per
  * RESOLVED path, shared by every listener on it. */
 typedef void (*ScrWatchFileFn)(ScrClosure *cb, ScrStats *current, ScrStats *previous);
+typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 /* fs.watchFile(path, { interval, persistent }, listener) — cb MOVES in;
  * the adapter calls the listener with (current, previous) Stats (+1 each).
  * The path is resolved (path.resolve) and keys the poller; a second call
- * on the same resolved path adds the listener and ignores its options. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn);
+ * on the same resolved path adds the listener and ignores its options.
+ * Answers the path's StatWatcher record (+1): one object per resolved
+ * path, carrying Node's ref()/unref() counters over the poll timer. NULL
+ * with the exception pending. */
+ScrDyn *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                          ScrWatchFileFn fn);
 /* fs.unwatchFile(path[, listener]) — cb borrowed, NULL removes every
  * listener; with none left the poller stops. */
 void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb);

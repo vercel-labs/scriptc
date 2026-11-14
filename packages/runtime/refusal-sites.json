@@ -2173,6 +2173,36 @@
  },
  {
   "file": "scr_bytes_io.c",
+  "function": "scr_fs_readdir_shape_with_file_types",
+  "message": "readdir's options value resolved to withFileTypes at run time, but the call site's type holds the names array (the options value's members are only known at run time)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_readdir_shape_buffer",
+  "message": "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's type holds strings (the options value's members are only known at run time)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_readdir_shape_names",
+  "message": "readdir's options value did not resolve to encoding: 'buffer' at run time, but the call site's type holds Buffers (the options value's members are only known at run time)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_readdir_shape_not_types",
+  "message": "readdir's options value did not resolve to withFileTypes at run time, but the call site's type holds Dirent rows (the options value's members are only known at run time)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_readdir_shape_name_strings",
+  "message": "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's type holds string names (the options value's members are only known at run time)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
   "function": "scr_fs_stream_path",
   "message": "Runtime numeric filesystem flags have no portable native lowering",
   "code": "SC2020"

@@ -4792,6 +4792,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // fs.mkdtempDisposableSync and fs.promises.mkdtempDisposable answer the
+  // record Node's binding builds at run time — `path`, a `remove` function
+  // and the dispose symbol (scr_bytes_io.c's disposable build). Both
+  // declarations (the fallback's and @types/node's, in the fs and
+  // fs/promises ambient modules) map to the checked dynamic the runtime
+  // record is; its members read through that view.
+  if (
+    isStdlibInterface("DisposableTempDir") &&
+    psym!.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  )
+    return DYN;
   // util.inspect as a value (a custom inspect method's third parameter is
   // `typeof inspect`): the runtime's inspect function, called through the
   // checked-dynamic boundary.
@@ -5495,6 +5510,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c). Module-checked
+  // like FSWatcher — @types/node declares it inside `declare module "fs"`
+  // (an interface in the pinned fixture and in current typings) and the
+  // shipped fallback mirrors it. The runtime record is a checked dynamic
+  // carrying Node's ref/unref counters, so the value crosses as one.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return DYN;
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the
@@ -6412,10 +6444,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // A row converted to dyn takes Node's Dirent prototype and Symbol(type)
   // key, with %dtype non-enumerable (scr_dyn_dirent_finish), and inspect
   // renders rows through that view. @types/node declares Dirent<Name>
-  // generic over the name's encoding — only the string instantiation maps (the
-  // encoding:'buffer' readdir form has no lowering); the shipped fallback
-  // declares it concrete (an interface; @types/node uses a class — both
-  // provenance-checked, the Buffer/URL pattern).
+  // generic over the name's encoding: the string instantiation (the
+  // default) and the Buffer one (readdir's encoding: 'buffer' form) map —
+  // both keep Node's parentPath (always a string). The shipped fallback
+  // declares the same generic (an interface; @types/node uses a class —
+  // both provenance-checked, the Buffer/URL pattern).
   if (
     psym !== undefined &&
     psymName === "Dirent" &&
@@ -6427,16 +6460,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length > 1) return null;
+    let nameType: IrType = STRING;
     if (args.length === 1) {
       const t = args[0] && mapType(args[0], ctx);
-      if (!t || t.kind !== "string") return null;
+      if (!t || (t.kind !== "string" && !(t.kind === "bytes" && t.elem === "u8"))) return null;
+      nameType = t;
     }
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
         [
           { name: "%dtype", type: F64 },
-          { name: "name", type: STRING },
+          { name: "name", type: nameType },
           { name: "parentPath", type: STRING },
         ],
         false,

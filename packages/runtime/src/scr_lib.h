@@ -439,6 +439,13 @@ ScrStr *scr_fs_read_file(ScrStr *path);
  * spelling (syscall "lstat"). */
 ScrStr *scr_fs_realpath(ScrStr *path);
 ScrStr *scr_fs_realpath_promise(ScrStr *path);
+/* fs.realpath's callback implementation: Node runs it in JavaScript
+ * (lib/fs.js), walking one component at a time with lstat/stat/readlink so
+ * a failure names the first missing component (syscall "lstat") or the
+ * link that loops ("stat"). `absolute` is already path.resolve'd; the
+ * answer is the walk's accumulated path. +1, or NULL with the exception
+ * pending. Windows answers through scr_fs_realpath. */
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute);
 void scr_fs_write_file(ScrStr *path, ScrStr *data);
 /* writeFileSync(fd, data): a write(2) loop over the whole string at the
  * descriptor's current offset; the descriptor stays open (closeSync owns
@@ -462,6 +469,16 @@ void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
+/* readdir's encoding option: the names decoded by `encoding` (Buffer.toString's
+ * rules; an empty name is utf8), or encoding: 'buffer' answering the raw bytes
+ * as Buffers. An encoding that is not a Buffer encoding throws Node's
+ * ERR_INVALID_ARG_VALUE before the path is read. */
+ScrArr *scr_fs_readdir_enc(ScrStr *path, const ScrStr *encoding); /* strings, or Buffers for 'buffer' */
+/* The recursive form in `lifo` queue order (fs.promises pops, the sync form
+ * advances); the recursive names form joins each directory's DECODED name
+ * and descends by stat(2), so a non-round-trip encoding stops the walk and
+ * 'buffer' throws path.join's TypeError on the first entry. */
+ScrArr *scr_fs_readdir_recursive_enc(ScrStr *base, const ScrStr *encoding, bool lifo);
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
@@ -482,6 +499,25 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
 bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
+/* getOptions over an fs options argument (scr_bytes_io.c): the shape check
+ * and Node's assertEncoding. The checked fs entry points that run the
+ * getOptions ladder outside that unit (scr_fs_disposable_chk.c) share it. */
+bool scr_fs_encoding_chk(const ScrDyn *opts);
+/* fs.mkdtempDisposableSync: the created directory as Node 24's disposable
+ * record ({ path, remove(), [Symbol.dispose]() }); the Chk form is the
+ * untyped ladder over prefix and options. The record builder and the
+ * options encoding name live in scr_fs_disposable.c, beside the typed entry
+ * points; scr_fs_disposable_chk.c runs the ladders that also convert the
+ * prefix through the path-value unit. */
+ScrDyn *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix);
+ScrDyn *scr_fs_mkdtemp_disposable_sync_chk(const ScrDyn *prefix, const ScrDyn *opts);
+ScrDyn *scr_fs_mkdtemp_disposable_build(ScrStr *created, const ScrStr *encoding, bool async);
+ScrStr *scr_fs_mkdtemp_encoding_name(const ScrDyn *opts);
+/* fs.openAsBlob(path[, options]) — Node's synchronous validation ladder
+ * (options object, type string, path, null bytes, stat), answering the
+ * already-resolved promise for the lazily-read file-backed Blob. Throws on
+ * failure like Node's synchronous call; NULL with the exception pending. */
+ScrPromise *scr_fs_open_as_blob_chk(const ScrDyn *path, const ScrDyn *options);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 
@@ -600,6 +636,10 @@ void scr_fs_mkdir_mode_octal(ScrStr *path, ScrStr *mode);
 /* The same walk, answering the first directory created (+1) or NULL
  * when the path already existed (or on failure, the exception pending). */
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);
+/* Node's parseFileMode for a string mode: [0-7]+ read in base 8 and then
+ * range-checked like a numeric mode. Answers false with Node's
+ * ERR_INVALID_ARG_VALUE (or ERR_OUT_OF_RANGE) pending for anything else. */
+bool scr_fs_parse_octal_mode(ScrStr *value, double *mode);
 
 /* Sequentially consistent integer operations and shared Int32 wait queues. */
 typedef struct ScrBytes ScrBytes;
@@ -687,11 +727,19 @@ bool scr_stats_is_dir(ScrStats *s);
 bool scr_stats_is_symlink(ScrStats *s); /* lstat snapshots only */
 double scr_stats_dev(ScrStats *s);
 double scr_stats_ino(ScrStats *s);
+/* The same two fields as the full integers the snapshot holds: identity
+ * checks compare these (Node's Stats members are doubles, as they are). */
+uint64_t scr_stats_dev_raw(ScrStats *s);
+uint64_t scr_stats_ino_raw(ScrStats *s);
+/* Whether DEV and INO name the object: always on POSIX, on Windows only for
+ * a snapshot taken through a handle. */
+bool scr_stats_has_identity(ScrStats *s);
 double scr_stats_size(ScrStats *s);
 double scr_stats_blocks(ScrStats *s); /* allocated size in 512-byte units */
 double scr_stats_nlink(ScrStats *s);
 double scr_stats_atime_ms(ScrStats *s); /* ms with the sub-second fraction */
 double scr_stats_mtime_ms(ScrStats *s); /* ms with the ns fraction */
+int64_t scr_stats_mtime_nsec(ScrStats *s); /* the raw mtime nanoseconds */
 double scr_stats_ctime_ms(ScrStats *s); /* ms with the ns fraction */
 double scr_stats_birthtime_ms(ScrStats *s);
 double scr_stats_mode(ScrStats *s);
@@ -707,10 +755,15 @@ bool scr_stats_is_fifo(ScrStats *s);
 bool scr_stats_is_socket(ScrStats *s);
 /* The Date fields' time values: the *Ms value rounded, as Node's
  * dateFromMs does. */
-double scr_stats_atime(ScrStats *s);
-double scr_stats_mtime(ScrStats *s);
-double scr_stats_ctime(ScrStats *s);
-double scr_stats_birthtime(ScrStats *s);
+/* The Date members: +1 on the snapshot's cached Date (Node builds it on
+ * the first read and keeps the same object), built from the rounded
+ * millisecond value. */
+struct ScrDate;
+struct ScrDate *scr_stats_date(ScrStats *s, int which, double ms);
+struct ScrDate *scr_stats_atime(ScrStats *s);
+struct ScrDate *scr_stats_mtime(ScrStats *s);
+struct ScrDate *scr_stats_ctime(ScrStats *s);
+struct ScrDate *scr_stats_birthtime(ScrStats *s);
 /* BigIntStats members (scr_stats_bigint.c): every number member of Stats
  * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
  * time values from the truncated `*Ms` member. */
@@ -733,10 +786,10 @@ ScrBigInt *scr_stats_big_atime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_mtime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_ctime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s);
-double scr_stats_big_atime(ScrStats *s);
-double scr_stats_big_mtime(ScrStats *s);
-double scr_stats_big_ctime(ScrStats *s);
-double scr_stats_big_birthtime(ScrStats *s);
+struct ScrDate *scr_stats_big_atime(ScrStats *s);
+struct ScrDate *scr_stats_big_mtime(ScrStats *s);
+struct ScrDate *scr_stats_big_ctime(ScrStats *s);
+struct ScrDate *scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
 /* stat(2) following symlinks without throwing (the fs.watchFile poll):
@@ -769,10 +822,14 @@ ScrPromise *scr_fsp_mkdir(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_mode(ScrStr *path, double mode);
 ScrPromise *scr_fsp_mkdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_recursive_mode(ScrStr *path, double mode);
+ScrPromise *scr_fsp_mkdir_mode_octal(ScrStr *path, ScrStr *mode);
+ScrPromise *scr_fsp_mkdir_recursive_first(ScrStr *path, double mode);
+ScrPromise *scr_fsp_mkdir_recursive_first_octal(ScrStr *path, ScrStr *mode);
 ScrPromise *scr_fsp_unlink(ScrStr *path);
 ScrPromise *scr_fsp_chmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
+ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
@@ -783,9 +840,29 @@ ScrPromise *scr_fsp_write_file_data(ScrStr *path, const ScrDyn *data);
 ScrPromise *scr_fsp_append_file_data(ScrStr *path, const ScrDyn *data);
 ScrPromise *scr_fsp_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
                                           double exclusive);
+/* writeFile/appendFile over Node's options record: the data argument is a
+ * string, a Buffer/TypedArray view, or a value whose type the call site did
+ * not pin down (the checked form). Each reports through the settled
+ * promise. */
+ScrPromise *scr_fsp_write_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options);
+ScrPromise *scr_fsp_write_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                             const ScrDyn *options);
+ScrPromise *scr_fsp_write_file_options_data(ScrStr *path, const ScrDyn *data,
+                                            const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                              const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options_data(ScrStr *path, const ScrDyn *data,
+                                             const ScrDyn *options);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
+ScrPromise *scr_fsp_mkdtemp_encoded(ScrStr *prefix, ScrStr *encoding);
+ScrPromise *scr_fsp_mkdtemp_buffer(ScrStr *prefix);
+/* fs.promises.mkdtempDisposable: the async-disposable record ({"path",
+ * async remove(), [Symbol.asyncDispose]()}), rejected for every failure. */
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix);
+ScrPromise *scr_fsp_mkdtemp_disposable_chk(const ScrDyn *prefix, const ScrDyn *opts);
 ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding);
 ScrPromise *scr_fsp_rmdir(ScrStr *path);
 ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
@@ -797,13 +874,19 @@ ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
 ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,
                                   double retry_delay);
 ScrPromise *scr_fsp_stat(ScrStr *path);
+ScrPromise *scr_fsp_stat_probe(ScrStr *path, bool throw_if_no_entry);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
+ScrPromise *scr_fsp_realpath_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_realpath_buffer(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);
 typedef struct ScrDir ScrDir; /* fs.Dir, declared with its operations in scr_os.h */
 ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size);
 ScrPromise *scr_dir_close_promise(ScrDir *d);
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath);
 ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode);
+/* open()'s general form: the flags and mode are read from their values
+ * (a flag mask or name, a numeric mode or an octal string). */
+ScrPromise *scr_fsp_open_options(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode);
 ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_utimes_promise(ScrFileHandle *h, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding);
@@ -813,6 +896,9 @@ ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes 
 ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h, const ScrDyn *data,
                                                     ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
+/* FileHandle.stat with a non-literal options value: the handle check, then
+ * Node's TypeError for a null options value. */
+ScrPromise *scr_file_handle_stat_options_promise(ScrFileHandle *h, ScrDyn *options);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state
  * and no exceptions; each answers its result or -errno. A negative

@@ -169,7 +169,12 @@ import {
 import { objectFactoryGlobalType } from "./object-factory-new.js";
 import { streamClassAliasDecl } from "./lower-stream.js";
 import { isAssertClassNew } from "./assert-instances.js";
-import { stdlibGlobalAliasDecl, stdlibGlobalAliasNameOf, stdlibGlobalNameOf } from "./surfaces.js";
+import {
+  builtinModuleFnOf,
+  stdlibGlobalAliasDecl,
+  stdlibGlobalAliasNameOf,
+  stdlibGlobalNameOf,
+} from "./surfaces.js";
 import { isNativeBuiltinValueInitializer, reflectMemberValueRead } from "./lower-builtin-values.js";
 import { isDataViewPrototypeRead, isPromisePrototypeRead } from "./expressions/property-access.js";
 import {
@@ -1711,6 +1716,19 @@ function jsDynHoldableInitializer(
     if (
       member &&
       (lowerer.globalOf(member)?.type.kind === "dyn" || lowerer.genericFnOf(member)?.implicitParams)
+    )
+      return true;
+  }
+  // A builtin module's function read as a value (`var origRealpath =
+  // fs.realpath` in a JavaScript dependency): the runtime answers its own
+  // interned callable (lowerBuiltinCallableValue), so the binding holds the
+  // checked-dynamic kind even when the ambient declaration's overloads keep
+  // the static type from mapping.
+  if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
+    const builtin = ts.isIdentifier(e) ? lowerer.builtinImportOf(e) : lowerer.builtinMemberOf(e);
+    if (
+      builtin !== null &&
+      builtinModuleFnOf(lowerer, builtin.module, builtin.member) !== undefined
     )
       return true;
   }

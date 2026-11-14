@@ -4453,8 +4453,9 @@ function validateFunction(
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'. The
-      // checked-dynamic extraction answers the handle the slot's member
-      // table reads, so it takes either table's type too.
+      // The promise forms carry that choice in the promise's inner type,
+      // and the checked-dynamic extraction answers the handle the slot's
+      // member table reads, so it takes either table's type too.
       const statsVariant =
         (e.fn === "fs.statSync" ||
           e.fn === "fs.lstatSync" ||
@@ -4462,7 +4463,16 @@ function validateFunction(
           e.fn === "fs.statsFromDyn") &&
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
-      if (!statsVariant)
+      const promiseStatsVariant =
+        (e.fn === "fsp.stat" ||
+          e.fn === "fsp.lstat" ||
+          e.fn === "fileHandle.stat" ||
+          e.fn === "fileHandle.statOptions") &&
+        sig.result.kind === "promise" &&
+        e.type.kind === "promise" &&
+        typeEquals(sig.result.inner, STATS_T) &&
+        typeEquals(e.type.inner, BIGINT_STATS_T);
+      if (!statsVariant && !promiseStatsVariant)
         err(`libCall ${e.fn} must be ${sig.result.kind}, got ${e.type.kind}`, e.loc);
     }
   }
@@ -5231,16 +5241,39 @@ function validateFunction(
     if (
       e.fn === "fs.statProbeSync" ||
       e.fn === "fs.lstatProbeSync" ||
-      e.fn === "fs.statsFromDynOpt"
+      e.fn === "fs.statsFromDynOpt" ||
+      e.fn === "fsp.statProbe" ||
+      e.fn === "fsp.mkdirRecursiveFirst" ||
+      e.fn === "fsp.mkdirRecursiveFirstOctal"
     ) {
-      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      // The promise calls' union rides inside the promise.
+      const promiseResult =
+        e.fn === "fsp.statProbe" ||
+        e.fn === "fsp.mkdirRecursiveFirst" ||
+        e.fn === "fsp.mkdirRecursiveFirstOctal";
+      const result = promiseResult
+        ? e.type.kind === "promise"
+          ? e.type.inner
+          : undefined
+        : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const mkdirFirst =
+        e.fn === "fsp.mkdirRecursiveFirst" || e.fn === "fsp.mkdirRecursiveFirstOctal";
       const ok =
         def &&
         def.arms.length === 2 &&
-        def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") &&
-        def.arms.some((a) => a.kind === "undefinedT");
+        (mkdirFirst
+          ? def.arms.some((a) => a.kind === "string") &&
+            def.arms.some((a) => a.kind === "undefinedT")
+          : def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") &&
+            def.arms.some((a) => a.kind === "undefinedT"));
       if (!ok) {
-        err(`libCall ${e.fn} must return the 'Stats | undefined' union`, e.loc);
+        err(
+          `libCall ${e.fn} must return ${promiseResult ? "a promise of " : ""}the '${
+            mkdirFirst ? "string | undefined" : "Stats | undefined"
+          }' union`,
+          e.loc,
+        );
       }
       return true;
     }
@@ -5355,8 +5388,8 @@ function validateFunction(
       e.fn === "fsp.globTypes"
     ) {
       // Result: the interned Dirent record array — {%dtype: f64,
-      // name: string, parentPath: string} rows (canonical field
-      // order; the structure lowerFsReaddirTypesCall pinned). The glob
+      // name: string|bytes, parentPath: string} rows (canonical field
+      // order; the structure lowerFsReaddirOptionsCall pinned). The glob
       // forms answer the array itself.
       const result =
         e.fn === "fsp.readdirTypes"
@@ -5372,6 +5405,29 @@ function validateFunction(
       if (!ok) {
         err(
           `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          e.loc,
+        );
+      }
+      return true;
+    }
+    if (e.fn === "fs.readdirSyncOptsUnion" || e.fn === "fsp.readdirOptsUnion") {
+      // Result: the call site's `string[] | Buffer[]` union, boxed by the
+      // runtime in the arm its encoding selects. Args 2 and 3 carry those
+      // arms' tags, so both arms must be present.
+      const result =
+        e.fn === "fsp.readdirOptsUnion"
+          ? e.type.kind === "promise"
+            ? e.type.inner
+            : undefined
+          : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const names = def?.arms.some((a) => a.kind === "array" && a.elem.kind === "string");
+      const buffers = def?.arms.some(
+        (a) => a.kind === "array" && a.elem.kind === "bytes" && a.elem.elem === "u8",
+      );
+      if (!def || !names || !buffers) {
+        err(
+          `libCall ${e.fn} must return ${e.fn === "fsp.readdirOptsUnion" ? "a promise of " : ""}the string[] | Buffer[] union`,
           e.loc,
         );
       }

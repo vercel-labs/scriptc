@@ -396,6 +396,13 @@ export function unloweredModuleMemberValue(
     refuseUnmodeledMember(lowerer, display, node);
     return builtinFunctionFenceValue(lowerer, bi, node, loc);
   }
+  // A member whose value depends on the operating system (fs.lchmod and
+  // fs.lchmodSync, which Node exports only where lchmod(2) exists): the
+  // target platforms without that syscall read undefined, exactly as Node's
+  // exports object reads there. A platform that has it keeps the refusal.
+  if (kind.type === "platform" && lowerer.targetPlatform !== "darwin") {
+    return dynUndefinedExpr(loc);
+  }
   lowerer.nodeValueFence(display, node, hint);
 }
 

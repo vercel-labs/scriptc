@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-promises-copyfile-mode.ts"
+ ],
+ "diags": []
+}

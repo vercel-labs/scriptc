@@ -4,7 +4,6 @@
 // registry gap.
 import { AsyncResource } from "node:async_hooks";
 import { EventEmitterAsyncResource } from "node:events";
-import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
 import { Readable, Writable } from "node:stream";
 
@@ -27,9 +26,6 @@ const resource = new AsyncResource("Probe");
 console.log(resource.runInAsyncScope(() => 1), resource.asyncId());
 const emitter = new EventEmitterAsyncResource({ name: "Probe" });
 emitter.emit("x");
-
-// fs: Blob-backed opens.
-console.log(await openAsBlob("/tmp/x"));
 
 // process: the worker events and the execve entry point.
 process.on("worker", () => {});

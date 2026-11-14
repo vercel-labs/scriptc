@@ -23,7 +23,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
   switch (e.fn) {
     case "tls.createServer":
     case "tls.createServerCb":
-    case "https.createServer": {
+    case "https.createServer":
+    case "https.createServerNoCb": {
       const cb = args[2];
       const handler =
         cb === undefined
@@ -41,7 +42,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(
         host,
         e,
-        e.fn === "https.createServer" ? "scr_https_create_server" : "scr_tls_create_server",
+        e.fn.startsWith("https.") ? "scr_https_create_server" : "scr_tls_create_server",
         [...rawBytes(host, args[0]!), ...rawBytes(host, args[1]!), ...handler],
       );
     }

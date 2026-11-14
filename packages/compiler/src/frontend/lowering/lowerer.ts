@@ -1101,6 +1101,11 @@ export type StaticCallableProjection =
    * https.request`). Calls through it keep the module's client lowering;
    * the value has no function object and fences where it escapes. */
   | { kind: "client-function"; module: "http" | "https"; member: "request" | "get" }
+  /** A process listener bound to the process object (`const on =
+   * process.on.bind(process)`, the graceful-shutdown idiom): calls through
+   * the binding are `process.on(...)` calls on the stored member access,
+   * and the value has no function object to read. */
+  | { kind: "process-listener"; member: string; access: ts.PropertyAccessExpression }
   | { kind: "promisified-exec-file" }
   | { kind: "promisified-exec" }
   | { kind: "promisified-builtin"; module: string; member: string }

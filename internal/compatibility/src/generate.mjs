@@ -1067,7 +1067,7 @@ function publicDetail(tier) {
       source.startsWith("compiler-feature:http.request.setHeader") ||
       source.startsWith("compiler-feature:http.response.getHeader")
     ) {
-      return "Static outgoing header reads and mutations support the tested string-value shapes.";
+      return "Static outgoing header reads and mutations keep the value's type — a number, a string, or an array — and report Node's validation errors.";
     }
     if (
       /^compiler-feature:http\.(?:path|method|host|protocol|listening|headersSent|writableEnded|complete|httpVersion|url|statusCode)$/.test(
@@ -1076,8 +1076,15 @@ function publicDetail(tier) {
     ) {
       return "Static HTTP request metadata and message state support the tested lifecycle.";
     }
+    if (
+      /^compiler-feature:http\.(?:agent\.createConnection|agent\.keepSocketAlive|agent\.reuseSocket|maxTotalSockets)$/.test(
+        source,
+      )
+    ) {
+      return "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.";
+    }
     if (/^compiler-feature:http\.response\.write(?:Continue|Processing|EarlyHints)$/.test(source)) {
-      return "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.";
+      return "Static HTTP/1.1 informational responses support their callback forms; Early Hints takes a lowercase link string or array of links, and string, number, boolean or array field values.";
     }
     if (
       /^compiler-feature:http\.(?:response\.setTimeout|connection|req|sendDate|socket|statusMessage|strictContentLength|writableFinished)$/.test(
@@ -1105,6 +1112,13 @@ function publicDetail(tier) {
     }
     if (source === "compiler-feature:crypto.crypto.diffieHellman") {
       return "Derives the shared secret a private KeyObject and a public KeyObject agree on for the supported curves and X25519, in its synchronous and callback forms, with Node's key-type, curve and key checks.";
+    }
+    if (
+      /^compiler-feature:http\.(?:request\.(?:setNoDelay|setSocketKeepAlive|setTimeout)|message\.(?:destroy|setTimeout)|server\.(?:setTimeout|closeAllConnections|closeIdleConnections)|maxHeadersCount|maxRequestsPerSocket|'(?:timeout|dropRequest|aborted)')$/.test(
+        source,
+      )
+    ) {
+      return "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.";
     }
     if (
       source === "compiler-feature:os.os.availableParallelism" ||

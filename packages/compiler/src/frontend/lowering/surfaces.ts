@@ -298,8 +298,8 @@ export const HTTP_SERVER_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
 /** new http.Agent(options)'s documented keys (Node v24 — the Agent
  * constructor table plus the socket.connect() options it forwards into
  * each dial). The lowered set is keepAlive/keepAliveMsecs/maxSockets/
- * maxFreeSockets/timeout/port/scheduling; the rest fence by name and
- * unknown keys drop like Node. */
+ * maxTotalSockets/maxFreeSockets/timeout/port/scheduling; the rest fence
+ * by name and unknown keys drop like Node. */
 export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "family",
   "hints",
@@ -308,7 +308,6 @@ export const AGENT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "localAddress",
   "localPort",
   "lookup",
-  "maxTotalSockets",
   "noDelay",
   "path",
 ]);

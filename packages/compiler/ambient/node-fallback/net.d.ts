@@ -265,7 +265,10 @@ declare module "net" {
       },
       callback?: () => void,
     ): Server;
-    close(callback?: () => void): Server;
+    /* The callback runs at 'close'; it receives Node's ERR_SERVER_NOT_RUNNING
+     * when the server was not listening (a never-listened or already-closed
+     * server), and undefined otherwise. Node answers the server itself. */
+    close(callback?: (err?: Error) => void): Server;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
      * stance). */

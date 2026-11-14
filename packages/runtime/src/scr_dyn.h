@@ -2860,6 +2860,20 @@ typedef struct ScrDynHandleTransfer {
 } ScrDynHandleTransfer;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
 
+/* ── IncomingMessage.signal (scr_http.c / the abort-signal unit) ─────────
+ * The signal is a real AbortSignal handle, so creating and aborting it is
+ * the abort-signal unit's work (scr_abort.c when the program links no
+ * fetch, the fetch unit otherwise). That unit fills these at its install;
+ * a program that reads the member links it (the http.reqSignal runtime
+ * fact), and every other http program keeps its exact link line because
+ * scr_http.o never names the unit's symbols. */
+extern ScrDyn *(*scr_dyn_signal_new_fn)(void);
+extern void (*scr_dyn_signal_abort_fn)(ScrDyn *signal);
+/* Drops the signal's listeners once its owning message settles; the
+ * signal keeps its identity, state and reason. NULL until the unit
+ * installs. */
+extern void (*scr_dyn_signal_sever_fn)(ScrDyn *signal);
+
 /* ── promises in the checked-dynamic tree (SCR_DYN_PROMISE) ────────────────────────────
  * Boxes by REFERENCE (+1 box; retains p). The boundary contract: p
  * settles with a dyn payload — promise<dyn> boxes directly; other inner

@@ -57,6 +57,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
+  // scr_http_request_set_auth retains the value and stores it in a
+  // thread-local; no user code runs.
+  "http.requestAuth",
   // scr_dns_resolver_is compares the value's kind and handle tag.
   "dns.resolverIs",
   // scr_dns_get_servers_default builds the server array from the default
@@ -66,10 +69,26 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
-  // A listener is added to the request's or the session's list, or dropped
-  // when the request or session is past the event; no listener runs.
+  // The corked payload, its chunk framing and the socket's pending writes,
+  // added up from fields; writableNeedDrain compares that total with the
+  // high water mark. No listener or user code runs.
+  "http.resWritableLength",
+  "http.resWritableNeedDrain",
+  "http.clientWritableLength",
+  "http.clientWritableNeedDrain",
+  // end(cb) adds the callback to the finish slot or schedules it on the
+  // next tick when the request already finished.
+  "http.clientOnEndCallback",
+  // A listener is added to the request's, the response's or the session's
+  // list; no listener runs.
   "http.clientOnConnect",
   "http.clientOnInformation",
+  "http.clientOnDrain",
+  "http.resOnDrain",
+  "http.resOnError",
+  // Reads one stored header line group and boxes it as a number, string or
+  // array; an absent name is the undefined value. Nothing runs.
+  "http.clientGetHeaderDyn",
   "http2.sessionOnPing",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
@@ -182,6 +201,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // rather than the handle.
   "timers.dispose",
   "timers.immediateDispose",
+  // scr_net_option_value_text reads the value's kind and renders its
+  // inspect text (a string, a scalar, or "[object]"): no accessor,
+  // coercion or listener runs.
+  "net.optionValueText",
   // The header-limit properties are plain storage: the getters retain the
   // stored value (or answer null / 0) and the setters retain the new value
   // and release the old one. No accessor, coercion or listener runs, and
@@ -192,6 +215,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_http_req_destroy_error retains the payload and tears the message
+  // down; the 'error' it reports runs from the deferred emit queue.
+  "http.reqDestroyError",
+  // scr_http_res_destroy_error retains the payload and tears the response
+  // down; the 'clientError' it reports runs from the deferred emit queue.
+  "http.resDestroyError",
   // The autoSelectFamily default is plain storage in the core unit: the
   // getter answers the stored boolean and runs nothing else.
   "net.getDefaultAutoSel",

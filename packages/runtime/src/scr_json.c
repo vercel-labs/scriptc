@@ -9057,6 +9057,17 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
 SCR_TL void (*scr_dyn_promise_release_fn)(ScrPromise *p) = NULL;
 SCR_TL bool (*scr_dyn_promise_identity_fn)(ScrPromise *a, ScrPromise *b) = NULL;
 
+/* IncomingMessage.signal (scr_http.c): the abort-signal unit's factory and
+ * its abort edge, filled by that unit's install (scr_abort.c's
+ * scr_abort_install, or the fetch unit's). A program that reads the member
+ * links the unit; http programs that never do keep their exact link line. */
+/* Plain globals, not thread-local: the factory and the abort edge run on
+ * any thread (a worker's message signal), and their own per-thread state
+ * installs itself on first use. */
+ScrDyn *(*scr_dyn_signal_new_fn)(void) = NULL;
+void (*scr_dyn_signal_abort_fn)(ScrDyn *signal) = NULL;
+void (*scr_dyn_signal_sever_fn)(ScrDyn *signal) = NULL;
+
 ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
   scr_dyn_promise_release_fn = release_fn;
   return scr_dyn_alloc(SCR_DYN_PROMISE);

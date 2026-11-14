@@ -9,7 +9,7 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * analyses must treat a function containing one of these as throwing, exactly
  * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
  * nodes, which throw on validation failure / promise rejection). */
-export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
@@ -372,6 +372,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
+  // The header trio over a name the compiler cannot see as a string: a
+  // non-string value raises Node's validateString ERR_INVALID_ARG_TYPE.
+  "http.resGetHeaderDynName",
+  "http.resHasHeaderDynName",
+  "http.resRemoveHeaderDynName",
   "http.clientSignal",
   "http.clientSignalCheck",
   "http.clientProtocolCheck",
@@ -382,11 +387,28 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates its status code and headers, and setHeaders
+  // validates the collection's shape, so both throw catchably.
+  "http.resWriteInformation",
+  "http.resSetHeaders",
+  "http.clientSetHeaders",
+  // The interim writers' callback forms run their callback after the block
+  // reached the socket, and validate the hints object first.
+  "http.resWriteContinueCb",
+  "http.resWriteProcessingCb",
+  "http.resWriteEarlyHintsCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
+  // The dispose is a close: a close override runs program code inside the
+  // call, and a server that was not running takes the reject path, which
+  // raises ERR_SERVER_NOT_RUNNING before it settles the promise.
+  "http.serverAsyncDispose",
+  // The first read creates the message's AbortSignal; a build without the
+  // abort-signal unit reports SC2020 instead of answering one.
+  "http.reqSignal",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
@@ -414,6 +436,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.createServerDynCb",
   "https.createServerDyn",
   "https.createServerDynCb",
+  // the literal cert/key pair is parsed by the runtime, whose PEM decoder
+  // throws on a malformed certificate or key.
+  "https.createServerNoCb",
   "http2.createSecureServerDyn",
   "http2.createSecureServerDynCb",
   "tls.connect",
@@ -471,8 +496,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
+  "http.resWriteDynEnc",
+  "http.resWriteDynEncCb",
   "http.resEndDyn",
+  "http.resEndDynEnc",
   "http.resAddTrailers",
+  // pipe() on a write-only outgoing message: with no 'error' listener the
+  // ERR_STREAM_CANNOT_PIPE surfaces as a synchronous throw to the caller.
+  "http.resPipe",
+  "http.clientPipe",
   "http.resFlushHeaders",
   "http.resUncork",
   "http.resWriteHead",
@@ -480,24 +512,47 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteHeadPairs",
   "http.resWrite",
   "http.resWriteBytes",
+  "http.resWriteStrEnc",
+  "http.resWriteCb",
+  "http.resWriteBytesCb",
+  "http.resWriteStrEncCb",
+  "http.resWriteBytesEnc",
+  "http.resWriteBytesEncCb",
   "http.resEnd",
   "http.resEndStr",
   "http.resEndBytes",
+  "http.resEndStrEnc",
+  "http.resEndBytesEnc",
+  "http.resWriteDynCb",
   "http.clientWriteDyn",
+  "http.clientWriteDynCb",
+  "http.clientWriteDynEnc",
+  "http.clientWriteDynEncCb",
   "http.clientEndDyn",
+  "http.clientEndDynEnc",
   "http.clientAddTrailers",
   // setHeader and removeHeader throw ERR_HTTP_HEADERS_SENT once the head is
   // out (flushHeaders(), a first write, or an Expect header at
   // construction), and setHeader throws Node's name and value checks.
   "http.clientSetHeader",
+  "http.clientSetHeaderDyn",
+  "http.clientAppendHeader",
   "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",
   "http.clientWrite",
   "http.clientWriteBytes",
+  "http.clientWriteStrEnc",
+  "http.clientWriteCb",
+  "http.clientWriteBytesCb",
+  "http.clientWriteStrEncCb",
+  "http.clientWriteBytesEnc",
+  "http.clientWriteBytesEncCb",
   "http.clientEnd",
   "http.clientEndStr",
   "http.clientEndBytes",
+  "http.clientEndStrEnc",
+  "http.clientEndBytesEnc",
   // The URL-string client form throws catchably on an unparsable input
   // ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL).
   "http.requestUrl",
@@ -1355,6 +1410,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
   // or the fence for forms without a lowering.
   "net.listenPortDyn",
+  // The options form's port: ERR_SOCKET_BAD_PORT for a bad number or
+  // string, the options-object error for a value of another kind.
+  "net.listenPortOpts",
+  // The options form's non-string host: ERR_INVALID_ARG_TYPE from the
+  // hostname check once the port branch wins.
+  "net.listenHostNumber",
+  "net.listenHostBool",
   // Server event registrations fire the 'newListener' meta event before the
   // add, so a handler of it can throw out of the on/once/addListener call.
   "net.serverOnError",
@@ -1378,6 +1440,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen({ path })'s isPipeName check throws ERR_INVALID_ARG_VALUE for a
+  // path that is not a pipe name.
+  "net.listenPathOpts",
+  "net.listenPathOptsCb",
   // listen(port) and listen(path) on a server that is already listening
   // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
   // catchable), so every listen entry point can leave an exception.

@@ -198,6 +198,10 @@ long scr_promise_live_count(void);
 #endif
 
 void scr_fetch_install(void);
+/* The abort-signal unit's install: a program that links scr_abort.c (the
+ * signal-only build) calls it before main, and the fetch build answers the
+ * same idempotent install. */
+void scr_abort_install(void);
 ScrPromise *scr_fetch_input(ScrDyn *input, ScrDyn *init);
 ScrDyn *scr_fetch_function(void);
 void scr_global_fetch_install(ScrDyn *(*get)(void));
@@ -212,6 +216,10 @@ ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_bytes(ScrDyn *response); /* +1 promise<dyn> */
 ScrDyn *scr_fetch_abort_controller_new(void); /* +1 AbortController handle */
+/* IncomingMessage.signal: a fresh AbortSignal handle an http message aborts
+ * on teardown (+1), and the abort itself (a non-signal value is ignored). */
+ScrDyn *scr_fetch_abort_signal_new(void);
+void scr_fetch_abort_signal_abort(ScrDyn *signal);
 /* Borrowed number; +1 AbortSignal handle or NULL pending. */
 ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay);
 ScrDyn *scr_fetch_abort_now(ScrDyn *reason); /* borrowed reason; +1 handle */

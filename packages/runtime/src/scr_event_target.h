@@ -50,6 +50,12 @@ typedef struct ScrEvent {
 void scr_et_core_init(ScrEventTargetCore *core, double max_listeners, const char *cls);
 /* Drops every listener and handler (teardown and target destruction). */
 void scr_et_core_drop(ScrEventTargetCore *core);
+/* Drops every listener and handler while the target stays alive and
+ * usable: the settle point for an owner that would otherwise leak a
+ * listener→owner cycle. The target keeps its hooks, its class and its
+ * state (an AbortSignal keeps `aborted` and `reason`), and a later
+ * listener that can never fire (an aborted signal) simply never does. */
+void scr_et_core_sever(ScrEventTargetCore *core);
 /* The EventTarget methods over a core: `self` is the target's own dyn
  * value (borrowed — `this` for listeners and the events' target), args
  * borrowed. +1 result, or NULL with the exception pending. */

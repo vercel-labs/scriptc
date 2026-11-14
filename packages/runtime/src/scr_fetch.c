@@ -700,6 +700,38 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* IncomingMessage.signal: one signal per message, created on the first
+ * read and aborted when the message is torn down incomplete. */
+ScrDyn *scr_fetch_abort_signal_new(void) {
+  SfSignal *s = sf_signal_new();
+  ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_ABORT_SIGNAL);
+  sf_signal_release(s);
+  return out;
+}
+
+/* Aborts a signal handle with the DOMException AbortController.abort()
+ * uses (Node's message teardown passes no reason). */
+void scr_fetch_abort_signal_abort(ScrDyn *signal) {
+  if (signal == NULL || signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)
+    return;
+  SfSignal *s = (SfSignal *)signal->v.handle.ptr;
+  if (!s->aborted) sf_signal_abort_default(s, false);
+}
+
+/* A message that settles drops the signal's listeners: a listener that
+ * captured the message is the signal→listener→message cycle, and the
+ * signal keeps its state (aborted, reason) for every program that retained
+ * it. Past the settle no further abort can fire, so only registration
+ * bookkeeping changes. */
+void scr_fetch_abort_signal_sever(ScrDyn *signal) {
+  if (signal == NULL || signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)
+    return;
+  SfSignal *s = (SfSignal *)signal->v.handle.ptr;
+  scr_et_core_sever(&s->core);
+}
+
 /* util.transferableAbortSignal(signal): node checks the argument and
  * answers the same signal. The transfer marking it leaves on the signal is
  * read only by structuredClone/postMessage, which copy any AbortSignal the
@@ -7880,6 +7912,11 @@ void scr_fetch_install(void) {
   scr_dyn_handle_install(SCR_DYNH_WEB_WRITABLE, &sf_writable_ops);
   scr_dyn_handle_install(SCR_DYNH_WEB_WRITER, &sf_writer_ops);
   scr_et_signal_core_fn = sf_signal_core_of;
+  /* IncomingMessage.signal (scr_http.c) creates and aborts a message's
+   * signal through these. */
+  scr_dyn_signal_new_fn = &scr_fetch_abort_signal_new;
+  scr_dyn_signal_abort_fn = &scr_fetch_abort_signal_abort;
+  scr_dyn_signal_sever_fn = &scr_fetch_abort_signal_sever;
   scr_atexit(sf_teardown);
 }
 
@@ -7909,9 +7946,24 @@ static void sf_signal_install(void) {
   scr_dyn_handle_install(SCR_DYNH_ABORT_SIGNAL, &sf_signal_ops);
   scr_dyn_handle_install(SCR_DYNH_ABORT_CONTROLLER, &sf_abort_controller_ops);
   scr_et_signal_core_fn = sf_signal_core_of;
+  scr_dyn_signal_new_fn = &scr_fetch_abort_signal_new;
+  scr_dyn_signal_abort_fn = &scr_fetch_abort_signal_abort;
+  scr_dyn_signal_sever_fn = &scr_fetch_abort_signal_sever;
   scr_atexit(sf_signal_teardown);
 }
 
 #endif /* SCR_FETCH_SIGNAL_ONLY */
+
+/* The abort-signal unit's startup install. The compiler emits the call
+ * before %main when the program reads IncomingMessage.signal and links this
+ * unit (scr_abort.c); the fetch build fills the same hooks from
+ * scr_fetch_install, and the call is the same idempotent install there. */
+void scr_abort_install(void) {
+#ifdef SCR_FETCH_SIGNAL_ONLY
+  sf_signal_install();
+#else
+  scr_fetch_install();
+#endif
+}
 
 #undef SCR_FETCH_BAD_PORTS

@@ -280,6 +280,7 @@ import {
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
+  lowerServerAsyncDisposeCall,
   lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
@@ -1478,6 +1479,13 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         );
       }
+      // A call through `const on = process.on.bind(process)`: the stored
+      // `process.<member>` access lowers the call exactly as the member
+      // itself would (Node's process listeners read their receiver).
+      if (projection?.kind === "process-listener") {
+        const served = lowerer.lowerProcessMethodCall(expr, projection.access);
+        if (served) return served;
+      }
       // A call through an immutable alias of an http/https client
       // function (`const httpsRequest = https.request`).
       if (projection?.kind === "client-function") {
@@ -2329,6 +2337,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (dirDispose) return dirDispose;
     const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
     if (streamDispose) return streamDispose;
+    const serverDispose = lowerServerAsyncDisposeCall(lowerer, expr);
+    if (serverDispose) return serverDispose;
     const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);
     if (netServerDispose) return netServerDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
@@ -6045,9 +6055,14 @@ const DYN_DISPATCH_METHODS = new Set([
   "connect",
   "resetAndDestroy",
   "destroySoon",
-  // The Agent handle's own member (no other dyn prototype declares it,
-  // so the remainder keeps the stored-member answers).
+  // The Agent handle's own members: getName builds the pool key, and the
+  // socket hooks dial (createConnection, net's argument normalization) or
+  // run the base keepAlive/ref accounting (no other dyn prototype declares
+  // these names, so the remainder keeps the stored-member answers).
   "getName",
+  "createConnection",
+  "keepSocketAlive",
+  "reuseSocket",
   // The netServer half of the handle surface (`let server; server =
   // createServer(...)` — the handle lives in a dyn binding whose
   // closures the checker cannot narrow): listen/close dispatch onto the

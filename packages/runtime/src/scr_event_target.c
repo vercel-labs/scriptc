@@ -363,6 +363,8 @@ void scr_et_core_init(ScrEventTargetCore *core, double max_listeners, const char
   core->cls = cls;
 }
 
+static void scr_et_core_release_lists(ScrEtRoot *roots, ScrEtHandler *handlers);
+
 void scr_et_core_drop(ScrEventTargetCore *core) {
   scr_et_core_untrack(core);
   /* Released last: it may hold the instance that owns this core. */
@@ -380,6 +382,13 @@ void scr_et_core_drop(ScrEventTargetCore *core) {
     h->target = NULL;
     h->target_next = NULL;
   }
+  scr_et_core_release_lists(roots, handlers);
+  scr_dyn_release(self);
+}
+
+/* The two listener lists, released without touching the target: the drop
+ * path and a settle that only severs what the lists retain. */
+static void scr_et_core_release_lists(ScrEtRoot *roots, ScrEtHandler *handlers) {
   while (roots) {
     ScrEtRoot *next = roots->map_next;
     roots->core = NULL;
@@ -403,7 +412,14 @@ void scr_et_core_drop(ScrEventTargetCore *core) {
     }
     handlers = next;
   }
-  scr_dyn_release(self);
+}
+
+void scr_et_core_sever(ScrEventTargetCore *core) {
+  ScrEtRoot *roots = core->roots;
+  ScrEtHandler *handlers = core->handlers;
+  core->roots = NULL;
+  core->handlers = NULL;
+  scr_et_core_release_lists(roots, handlers);
 }
 
 /* Appends a listener node to the type's list (Node's addEventListener

@@ -5,92 +5,11 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Property 'createConnection' does not exist on type 'Agent'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 508,
-    "end": 524
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'keepSocketAlive' does not exist on type 'Agent'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 539,
-    "end": 554
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 569,
-    "end": 580
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxTotalSockets' does not exist on type 'Agent'. Did you mean 'maxSockets'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 601,
-    "end": 616
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'signal' does not exist on type 'IncomingMessage'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 901,
-    "end": 907
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1057,
-    "end": 1067
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'writeInformation' does not exist on type 'ServerResponse'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1105,
-    "end": 1121
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'writableLength' does not exist on type 'ServerResponse'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1186,
-    "end": 1200
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Argument of type '\"drain\"' is not assignable to parameter of type '\"close\" | \"finish\" | \"prefinish\"'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1217,
-    "end": 1224
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1331,
-    "end": 1352
+    "start": 448,
+    "end": 469
    }
   }
  ]

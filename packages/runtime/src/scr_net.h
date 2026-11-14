@@ -105,7 +105,10 @@ bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn);
-void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
+/* The protocol layer's write: Node's socket.write answer (false once the
+ * unsent bytes reach writableHighWaterMark; the socket's own 'drain'
+ * follows). */
+bool scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
 /* Several protocol-layer slices in order as one write: a single vectored
  * syscall when the bytes can go out immediately, else the same buffering
  * as consecutive scr_net_sock_write_native calls. */
@@ -113,7 +116,7 @@ typedef struct {
   const char *data;
   size_t len;
 } ScrNetSlice;
-void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n);
+bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n);
 /* The protocol layer's deferred-emit hook: `pending` joins the loop's
  * liveness test, `sweep` runs at every net sweep top. */
 void scr_net_set_proto_sweep(bool (*pending)(void), void (*sweep)(void));
@@ -175,6 +178,9 @@ void scr_net_server_timeout_option_set(ScrNetServer *s, double field, const stru
 ScrStr *scr_net_server_addr_ip(ScrNetServer *s);     /* +1 — address().address */
 ScrStr *scr_net_server_addr_family(ScrNetServer *s); /* +1 — address().family */
 void scr_net_server_close(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/);
+/* server[Symbol.asyncDispose](): +1 promise; rejects with
+ * ERR_SERVER_NOT_RUNNING when the server was not running. */
+ScrPromise *scr_net_server_async_dispose(ScrNetServer *s);
 void scr_net_server_close_dyn(ScrNetServer *s, const ScrDyn *listener /*borrowed*/);
 void scr_net_sock_on_lookup(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_lookup_install(void);
@@ -308,6 +314,10 @@ bool scr_net_sock_write_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
 double scr_net_sock_writable_length(ScrNetSocket *s);
 bool scr_net_sock_writable_need_drain(ScrNetSocket *s);
 void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* Unregisters a 'drain' listener the caller registered (borrowed): the
+ * runtime's own bridge leaves when its message settles, so a socket that
+ * never drains keeps nothing of the exchange. */
+void scr_net_sock_off_drain(ScrNetSocket *s, ScrClosure *cb /*borrowed*/);
 void scr_net_sock_end(ScrNetSocket *s);
 void scr_net_sock_end_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
 void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
@@ -347,8 +357,26 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
                                            ScrClosure *cb /*moves, nullable*/); /* +1 */
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* listen({ path }) for a path the compiler could not decide: Node's
+ * isPipeName over it, ERR_INVALID_ARG_VALUE otherwise with the rendered
+ * options object in the "Received" tail. */
+void scr_net_listen_path_opts(ScrNetServer *s, ScrStr *path /*borrowed*/,
+                              ScrStr *received /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* options.port of server.listen({ port }): a number or a numeric string,
+ * validated as Node's validatePort does. */
+double scr_net_listen_port_validate(const ScrDyn *v, ScrStr *received);
+/* options.host of a TCP listen that is a number or a boolean: Node's
+ * hostname check rejects it with ERR_INVALID_ARG_TYPE. Always throws. */
+ScrStr *scr_net_listen_host_number(double v);
+ScrStr *scr_net_listen_host_bool(bool v);
+/* The inspect text of one listen option value for ERR_INVALID_ARG_VALUE's
+ * "Received" tail. Answers a new string; reads no property. */
+ScrStr *scr_net_option_value_text(const ScrDyn *v);
 void scr_net_sock_dial_start(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
+/* Node's `msecs` contract for a timeout: a non-negative finite number.
+ * False with ERR_OUT_OF_RANGE pending. */
+bool scr_net_timeout_msecs_valid(double ms);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_net_sock_remote_address(ScrNetSocket *s); /* +1 or NULL (undefined arm) */
 double scr_net_sock_remote_port(ScrNetSocket *s);    /* NaN = undefined */

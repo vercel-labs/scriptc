@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-server-close-callbacks.ts"
+ ],
+ "diags": []
+}

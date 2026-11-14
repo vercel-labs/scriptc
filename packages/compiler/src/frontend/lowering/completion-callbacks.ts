@@ -66,6 +66,7 @@ const COMPLETION_CALLBACKS: ReadonlyMap<IrLibFn, CallbackPosition> = new Map<
   ["net.listenOptsCb", 4],
   ["net.listenOptsReusePortCb", 5],
   ["net.listenPathCb", 2],
+  ["net.listenPathOptsCb", 3],
   ["process.stderrWriteBytesCb", 2],
   ["process.stdoutWriteBytesCb", 2],
   // stream.finished and stream.pipeline callbacks, which Node binds to

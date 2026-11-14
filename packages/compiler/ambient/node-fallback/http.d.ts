@@ -25,13 +25,18 @@ declare module "http" {
      * per-connection request cap (0 = no limit). */
     maxHeadersCount: number | null;
     maxRequestsPerSocket: number;
-    setTimeout(msecs: number, callback?: (socket: Socket) => void): this;
+    setTimeout(msecs?: number, callback?: (socket: Socket) => void): this;
+    setTimeout(callback: (socket: Socket) => void): this;
     closeAllConnections(): void;
     closeIdleConnections(): void;
     keepAliveTimeout: number;
     keepAliveTimeoutBuffer: number;
     headersTimeout: number;
     requestTimeout: number;
+    /* `await using server = ...`: close() and wait for 'close'. A server
+     * that never listened (or one already closed) rejects with
+     * ERR_SERVER_NOT_RUNNING, as Node's promisified close does. */
+    [Symbol.asyncDispose](): Promise<void>;
   }
   export type RequestListener = (req: IncomingMessage, res: ServerResponse) => void;
   /* The Server VALUE — Node's constructor works with and without `new`
@@ -72,6 +77,9 @@ declare module "http" {
     readonly url: string;
     readonly method: string;
     readonly httpVersion: string;
+    /* The parsed version's numbers: 1 and 1 for "1.1", Node's split. */
+    readonly httpVersionMajor: number;
+    readonly httpVersionMinor: number;
     readonly complete: boolean;
     readonly aborted: boolean;
     readonly destroyed: boolean;
@@ -85,9 +93,12 @@ declare module "http" {
     readonly trailers: { [name: string]: string | undefined };
     readonly trailersDistinct: { [name: string]: string[] | undefined };
     readonly rawTrailers: string[];
+    /* The message's AbortSignal (Node 24): created on the first read,
+     * aborted when the message is destroyed before it completed. */
+    readonly signal: AbortSignal;
     resume(): void;
     pause(): void;
-    destroy(): void;
+    destroy(error?: Error): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
      * throw a "not supported yet" Error at runtime; unknown names throw
@@ -115,8 +126,12 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    /* Unsent body bytes: corked chunks, the head before it goes out, and
+     * the socket's own write buffer. */
+    readonly writableLength: number;
     readonly writableHighWaterMark: number;
     readonly writableObjectMode: boolean;
+    readonly writableNeedDrain: boolean;
     readonly destroyed: boolean;
     readonly req: IncomingMessage;
     readonly socket: Socket | null;
@@ -127,15 +142,19 @@ declare module "http" {
     statusCode: number;
     statusMessage: string | undefined;
     /* The value keeps its type: getHeader answers the number, string or
-     * array that was set. */
-    setHeader(name: string, value: number | string | readonly string[]): void;
-    appendHeader(name: string, value: string | readonly string[]): void;
+     * array that was set. Both mutators answer the message, as Node's do
+     * (`return this`). */
+    setHeader(name: string, value: number | string | readonly string[]): this;
+    /* Every entry of a Headers or Map set at once; every Set-Cookie value
+     * keeps its own line. */
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): void;
+    appendHeader(name: string, value: string | readonly string[]): this;
     getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): OutgoingHttpHeaders;
     hasHeader(name: string): boolean;
-    removeHeader(name: string): void;
+    removeHeader(name: string): this;
     /* Both overloads answer the response (`return this` chaining); the
      * headers argument also takes Node's flat [name, value, ...] array. */
     writeHead(statusCode: number, headers?: OutgoingHttpHeaders | string[]): ServerResponse;
@@ -146,23 +165,44 @@ declare module "http" {
     ): ServerResponse;
     writeContinue(callback?: () => void): void;
     writeProcessing(callback?: () => void): void;
+    /* An arbitrary informational (1xx) response: the status line and the
+     * given headers go out with no body, before the final head. Answers
+     * write()'s backpressure boolean. */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
-    write(data: string | Uint8Array): void;
+    /* write answers the Writable boolean: false once writableLength reached
+     * the 64 KiB high water mark; the response then emits 'drain'. */
+    write(data: string | Uint8Array, callback?: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
     addTrailers(headers: OutgoingHttpHeaders | ReadonlyArray<[string, string]>): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* end's callback forms fire once the body went out (the 'finish'
-     * emit, deferred past the handler's synchronous tail). */
-    end(data?: string | Uint8Array, callback?: () => void): void;
-    end(callback: () => void): void;
-    destroy(): void;
-    /* 'prefinish' fires inside end(), before 'finish'. */
-    on(event: "close" | "finish" | "prefinish", listener: () => void): void;
+     * emit, deferred past the handler's synchronous tail); every form
+     * answers the response, as Node's `return this` does. */
+    end(callback?: () => void): this;
+    end(data: string | Uint8Array | undefined, callback?: () => void): this;
+    end(data: string | Uint8Array, encoding: string, callback?: () => void): this;
+    /* destroy([error]): tears the connection down; an error argument is the
+     * connection's 'clientError' payload (Node's socket destroy carries
+     * it), where destroy() reports no error. */
+    destroy(error?: Error): void;
+    /* An outgoing message is write-only: pipe() reports
+     * ERR_STREAM_CANNOT_PIPE to the 'error' listeners, or throws it when the
+     * response has none. */
+    pipe(): void;
+    /* 'prefinish' fires inside end(), before 'finish'; 'drain' fires once
+     * a false write's buffered bytes are all out; 'error' carries the
+     * refusal a write after end() or after destroy() reports. */
+    on(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    on(event: "error", listener: (err: Error) => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "close" | "finish" | "prefinish", listener: () => void): void;
-    once(event: "close" | "finish" | "prefinish", listener: () => void): void;
+    addListener(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    addListener(event: "error", listener: (err: Error) => void): void;
+    once(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    once(event: "error", listener: (err: Error) => void): void;
   }
   /* The CLIENT slice (http.request/http.get): the options-object form
    * with hostname/host, port, path, method, timeout, and headers; the
@@ -226,9 +266,25 @@ declare module "http" {
       [option: string]: unknown;
     }): string;
     maxSockets: number;
+    maxTotalSockets: number;
     maxFreeSockets: number;
     keepAliveMsecs: number;
+    /* Node's default is net.createConnection (an https.Agent's default is
+     * tls.connect): the options record dials host/port or the Unix `path`,
+     * and the optional callback becomes the socket's 'connect' listener. */
+    createConnection(
+      options: AgentOptions | string | number,
+      callback?: (err: Error | null, stream: Socket) => void,
+    ): Socket;
+    /* Node's base method: socket.setKeepAlive(true, keepAliveMsecs),
+     * socket.unref(), and the agent's timeout on the idle socket. */
+    keepSocketAlive(socket: Socket): boolean;
+    /* Node's base method: socket.ref() and request.reusedSocket = true. */
+    reuseSocket(socket: Socket, request: ClientRequest): void;
     readonly keepAlive: boolean;
+    /* 'lifo' (Node's default) takes the newest free socket, 'fifo' the
+     * oldest. Settable, as Node's plain property is. */
+    scheduling: "fifo" | "lifo";
     readonly protocol: string;
     /* Settable — a portless request through this agent dials it (Node's
      * option merge). */
@@ -260,6 +316,8 @@ declare module "http" {
     readonly socket: Socket;
     readonly connection: Socket;
     readonly writableCorked: number;
+    readonly writableLength: number;
+    readonly writableNeedDrain: boolean;
     readonly method: string;
     readonly path: string;
     readonly host: string;
@@ -269,10 +327,17 @@ declare module "http" {
     readonly writableFinished: boolean;
     readonly finished: boolean;
     readonly reusedSocket: boolean;
-    setHeader(name: string, value: string): void;
-    getHeader(name: string): string | undefined;
+    /* The value keeps its type, like Node's stored header: getHeader
+     * answers the number, string or string array that was set. The mutators
+     * answer the request (`return this`). */
+    setHeader(name: string, value: number | string | readonly string[]): this;
+    /* Every entry of a Headers or Map<string, string> set at once; every
+     * Set-Cookie value keeps its own line. */
+    setHeaders(headers: Headers | Map<string, string>): void;
+    appendHeader(name: string, value: string | readonly string[]): this;
+    getHeader(name: string): number | string | string[] | undefined;
     hasHeader(name: string): boolean;
-    removeHeader(name: string): void;
+    removeHeader(name: string): this;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): OutgoingHttpHeaders;
@@ -283,10 +348,17 @@ declare module "http" {
     setNoDelay(noDelay?: boolean): void;
     setSocketKeepAlive(enable?: boolean, initialDelay?: number): void;
     setTimeout(timeout: number, callback?: () => void): this;
-    write(data: string | Uint8Array): void;
-    end(data?: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback?: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
+    end(callback?: () => void): this;
+    end(data: string | Uint8Array | undefined, callback?: () => void): this;
+    end(data: string | Uint8Array, encoding: string, callback?: () => void): this;
     destroy(error?: Error): void;
     abort(): void;
+    /* An outgoing message is write-only: pipe() reports
+     * ERR_STREAM_CANNOT_PIPE to the request's 'error' listeners, or throws
+     * it when the request has none. */
+    pipe(): void;
     on(event: "response", listener: (res: IncomingMessage) => void): this;
     on(event: "socket", listener: (socket: Socket) => void): this;
     /* 'connect' is the response to a CONNECT request: the tunnel's socket. */
@@ -294,7 +366,10 @@ declare module "http" {
       event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
-    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    on(
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
+      listener: () => void,
+    ): this;
     on(event: "information", listener: (info: InformationEvent) => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     /* addListener IS on (Node aliases them) — the suite spells both. Each
@@ -306,7 +381,7 @@ declare module "http" {
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     addListener(
-      event: "timeout" | "close" | "finish" | "abort" | "continue",
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
       listener: () => void,
     ): this;
     addListener(event: "information", listener: (info: InformationEvent) => void): this;
@@ -317,7 +392,10 @@ declare module "http" {
       event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
-    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    once(
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
+      listener: () => void,
+    ): this;
     once(event: "information", listener: (info: InformationEvent) => void): this;
     once(event: "error", listener: (err: Error) => void): this;
   }

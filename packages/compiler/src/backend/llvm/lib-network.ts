@@ -23,6 +23,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   if (
     [
       "https.createServer",
+      "https.createServerNoCb",
       "https.createServerDyn",
       "https.createServerDynCb",
       "https.requestAgent",
@@ -168,6 +169,34 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     // 'newListener' handler can throw out of the call. A second listen on
     // a listening server throws ERR_SERVER_ALREADY_LISTEN either way.
     host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.listenPathOpts" || e.fn === "net.listenPathOptsCb") {
+    // [server, path, received[, cb]]: the path check (isPipeName) throws
+    // Node's ERR_INVALID_ARG_VALUE with the compiler-rendered options
+    // text in its "Received" tail.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.listenPathOptsCb") {
+      const cbT = e.args[3]!.type;
+      if (cbT.kind === "func") {
+        host.toHeap(args[3]!);
+        cb = args[3]!.name;
+      } else {
+        if (cbT.kind !== "union")
+          throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback shape`);
+        const def = host.unionsById.get(cbT.unionId);
+        const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
+        if (funcTag < 0)
+          throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its func arm`);
+        cb = host.unwrapNullableClosure(args[3]!.name, cbT.unionId, funcTag);
+      }
+    }
+    host.declare(`declare void @scr_net_listen_path_opts(ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_listen_path_opts(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb})`,
+    );
+    if (e.fn === "net.listenPathOptsCb") host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "net.listenDyn" || e.fn === "net.listenDynCb") {
@@ -420,9 +449,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnClose" ||
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
+    e.fn === "http.resOnDrain" ||
     e.fn === "http.resOnPrefinish" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
+    e.fn === "http.clientOnDrain" ||
     e.fn === "http.clientOnFinish" ||
     e.fn === "http.clientOnAbort" ||
     e.fn === "http.clientOnContinue"
@@ -442,9 +473,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnClose": "scr_http_req_on_close",
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
+      "http.resOnDrain": "scr_http_res_on_drain",
       "http.resOnPrefinish": "scr_http_res_on_prefinish",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
+      "http.clientOnDrain": "scr_http_client_on_drain",
       "http.clientOnFinish": "scr_http_client_on_finish",
       "http.clientOnAbort": "scr_http_client_on_abort",
       "http.clientOnContinue": "scr_http_client_on_continue",
@@ -841,7 +874,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.clientOnResponse" ||
     e.fn === "http.clientOnInformation" ||
     e.fn === "http.clientOnError" ||
-    e.fn === "http.reqOnError"
+    e.fn === "http.reqOnError" ||
+    e.fn === "http.resOnError"
   ) {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
@@ -864,6 +898,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.clientOnResponse": "scr_http_client_on_response",
       "http.clientOnInformation": "scr_http_client_on_information",
       "http.clientOnError": "scr_http_client_on_error",
+      "http.resOnError": "scr_http_res_on_error",
       "http.reqOnError": "scr_http_req_on_error",
     }[e.fn]!;
     host.declare(`declare void @${adapter}(ptr, ptr)`);
@@ -873,14 +908,62 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
+  if (
+    e.fn === "http.resOnFinish" ||
+    e.fn === "http.resOnEndCallback" ||
+    e.fn === "http.clientOnEndCallback"
+  ) {
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
     const entry =
-      e.fn === "http.resOnFinish" ? "scr_http_res_on_finish" : "scr_http_res_on_end_callback";
+      e.fn === "http.resOnFinish"
+        ? "scr_http_res_on_finish"
+        : e.fn === "http.resOnEndCallback"
+          ? "scr_http_res_on_end_callback"
+          : "scr_http_client_on_end_callback";
     host.declare(`declare void @${entry}(ptr, ptr)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return { name: "", type: e.type };
+  }
+  if (
+    e.fn === "http.resWriteCb" ||
+    e.fn === "http.resWriteBytesCb" ||
+    e.fn === "http.resWriteStrEncCb" ||
+    e.fn === "http.resWriteBytesEncCb" ||
+    e.fn === "http.resWriteDynCb" ||
+    e.fn === "http.resWriteDynEncCb" ||
+    e.fn === "http.clientWriteCb" ||
+    e.fn === "http.clientWriteBytesCb" ||
+    e.fn === "http.clientWriteStrEncCb" ||
+    e.fn === "http.clientWriteBytesEncCb" ||
+    e.fn === "http.clientWriteDynCb" ||
+    e.fn === "http.clientWriteDynEncCb"
+  ) {
+    // write(chunk[, enc], cb): every argument is a reference, the callback
+    // (last) moves into the runtime, and the answer is Node's boolean.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[args.length - 1]!);
+    const entry = {
+      "http.resWriteCb": "scr_http_res_write_str_cb",
+      "http.resWriteBytesCb": "scr_http_res_write_bytes_cb",
+      "http.resWriteStrEncCb": "scr_http_res_write_str_enc_cb",
+      "http.resWriteBytesEncCb": "scr_http_res_write_bytes_enc_ignore_cb",
+      "http.resWriteDynCb": "scr_http_res_write_dynv_cb",
+      "http.resWriteDynEncCb": "scr_http_res_write_dynv_enc_cb",
+      "http.clientWriteCb": "scr_http_client_write_str_cb",
+      "http.clientWriteBytesCb": "scr_http_client_write_bytes_cb",
+      "http.clientWriteStrEncCb": "scr_http_client_write_str_enc_cb",
+      "http.clientWriteBytesEncCb": "scr_http_client_write_bytes_enc_ignore_cb",
+      "http.clientWriteDynCb": "scr_http_client_write_dynv_cb",
+      "http.clientWriteDynEncCb": "scr_http_client_write_dynv_enc_cb",
+    }[e.fn]!;
+    host.declare(`declare zeroext i1 @${entry}(${args.map(() => "ptr").join(", ")})`);
+    const t = B.tmp();
+    B.line(`${t} = call zeroext i1 @${entry}(${args.map((a) => `ptr ${a.name}`).join(", ")})`);
+    const out = host.own({ name: t, type: e.type });
+    // A refused write raises (ERR_STREAM_WRITE_AFTER_END, a bad encoding).
+    if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
+    return out;
   }
   if (e.fn === "http.resSetTimeoutCb" || e.fn === "http.reqSetTimeoutCb") {
     const args = e.args.map((a) => host.emitExpr(a));
@@ -914,6 +997,27 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.toHeap(args[1]!);
     host.declare(`declare void @scr_net_sock_on_write_flush(ptr, ptr)`);
     B.line(`call void @scr_net_sock_on_write_flush(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    return { name: "", type: e.type };
+  }
+  if (
+    e.fn === "http.resWriteContinueCb" ||
+    e.fn === "http.resWriteProcessingCb" ||
+    e.fn === "http.resWriteEarlyHintsCb"
+  ) {
+    // [res(, hints), cb] — the interim block moves into the runtime and the
+    // callback fires when it flushes. Every argument is a reference.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[args.length - 1]!);
+    const sym =
+      e.fn === "http.resWriteContinueCb"
+        ? "scr_http_res_write_continue_cb"
+        : e.fn === "http.resWriteProcessingCb"
+          ? "scr_http_res_write_processing_cb"
+          : "scr_http_res_write_early_hints_cb";
+    host.declare(`declare void @${sym}(${args.map(() => "ptr").join(", ")})`);
+    B.line(`call void @${sym}(${args.map((a) => `ptr ${a.name}`).join(", ")})`);
+    // A refused write (headers sent, HTTP/2) raises before the next statement.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "net.sockSetTimeoutCb") {

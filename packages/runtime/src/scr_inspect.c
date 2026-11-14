@@ -1312,6 +1312,8 @@ static bool insp_obj_shows(const ScrDynProp *ent);
 static bool scr_insp_symbol_entry(ScrDyn *d, size_t i, ScrDynProp *out);
 static ScrStr *insp_table_entry(ScrDyn *table, ScrDyn *owner, const ScrDynProp *ent,
                                 double recurse, double depth);
+static ScrStr *insp_held_entry(ScrDyn *owner, const ScrDynProp *held, const ScrStr *key,
+                               double recurse, double depth);
 static void insp_table_symbols(ScrDyn *table, ScrDyn *owner, double recurse, double depth);
 static bool insp_fmt_object(const ScrDyn *value);
 static void insp_key_into(InspBuf *b, const char *key, size_t len);
@@ -2614,18 +2616,21 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
         if (scr_exc_pending()) break;
         continue;
       }
-      ScrDyn *value = insp_assertion_ellipsis(ent.value);
+      ScrStr *held_key = NULL;
+      ScrDynProp held = insp_prop_hold(&ent, &held_key);
+      ScrDyn *value = insp_assertion_ellipsis(held.value);
       /* The key renders before the value, whose own getters can change this
-       * error's entries. */
+       * error's entries; the key and the value are held for both. */
       InspBuf eb = {0};
       if (!ent.enumerable) ib_char(&eb, '[');
-      insp_key_into(&eb, ent.key, ent.key_len);
+      insp_key_into(&eb, held_key->data, held_key->len);
       if (!ent.enumerable) ib_char(&eb, ']');
       ib_cstr(&eb, ": ");
       ScrStr *val = scr_insp_dyn(value, recurse + 1, value_depth);
       scr_dyn_release(value);
       ib_bytes(&eb, val->data, val->len);
       scr_str_release(val);
+      insp_prop_drop(&held, held_key);
       ScrStr *entry = ib_take(&eb);
       scr_insp_entry(entry, false);
       scr_str_release(entry);
@@ -2644,16 +2649,19 @@ static ScrStr *insp_dyn_error(ScrDyn *d, double recurse, double depth, ScrError 
         continue;
       bool shortened = assertion && ((ent.key_len == 6 && memcmp(ent.key, "actual", 6) == 0) ||
                                      (ent.key_len == 8 && memcmp(ent.key, "expected", 8) == 0));
-      ScrDyn *value = shortened ? insp_assertion_ellipsis(ent.value) : scr_dyn_retain(ent.value);
+      ScrStr *held_key = NULL;
+      ScrDynProp held = insp_prop_hold(&ent, &held_key);
+      ScrDyn *value = shortened ? insp_assertion_ellipsis(held.value) : scr_dyn_retain(held.value);
       /* The key renders before the value, whose own getters can change this
-       * error's entries. */
+       * error's entries; the key and the value are held for both. */
       InspBuf eb = {0};
-      insp_key_into(&eb, ent.key, ent.key_len);
+      insp_key_into(&eb, held_key->data, held_key->len);
       ib_cstr(&eb, ": ");
       ScrStr *val = scr_insp_dyn(value, recurse + 1, value_depth);
       scr_dyn_release(value);
       ib_bytes(&eb, val->data, val->len);
       scr_str_release(val);
+      insp_prop_drop(&held, held_key);
       ScrStr *entry = ib_take(&eb);
       scr_insp_entry(entry, false);
       scr_str_release(entry);
@@ -2792,11 +2800,17 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
   bool pairs = selection == 2;
   const char *label = kind == 3 ? (pairs ? "[Set Entries]" : "[Set Iterator]")
                                 : (pairs ? "[Map Entries]" : "[Map Iterator]");
+  /* The entries render through program code (a custom inspect, the style
+   * tables), and that code can consume this iterator: a consumed step drops
+   * the iterator's own reference to the collection. Hold the collection for
+   * the whole render, so the walk cannot read what the iterator gave back. */
+  ScrDyn *collection = scr_dyn_native_iterator_source(d); /* +1 or NULL */
   if (recurse > depth) {
     InspBuf out = {0};
     ib_cstr(&out, "[Object ");
     ib_cstr(&out, label);
     ib_char(&out, ']');
+    if (collection) scr_dyn_release(collection);
     return ib_take(&out);
   }
   size_t remaining = 0;
@@ -2808,6 +2822,7 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
     InspBuf out = {0};
     ib_cstr(&out, label);
     ib_cstr(&out, " {  }");
+    if (collection) scr_dyn_release(collection);
     return ib_take(&out);
   }
   ScrStr *base = scr_str_new(label, strlen(label));
@@ -2851,6 +2866,10 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
     }
     scr_insp_entry(text, false);
     scr_str_release(text);
+    /* The render above may have consumed the iterator, which ended the
+     * collection's iteration guard; hold it again for the rest of the walk
+     * so the entries this loop still reads do not move under it. */
+    if (map->iter_depth == 0) scr_map_iter_enter(map);
   }
   scr_map_iter_exit(map);
   if (remaining > shown) {
@@ -2864,6 +2883,7 @@ static ScrStr *scr_insp_native_iterator(ScrDyn *d, double recurse, double depth)
   scr_str_release(base);
   scr_str_release(b0);
   scr_str_release(b1);
+  if (collection) scr_dyn_release(collection);
   return out;
 }
 
@@ -2997,14 +3017,21 @@ static ScrStr *insp_table_entry(ScrDyn *table, ScrDyn *owner, const ScrDynProp *
                                 double recurse, double depth) {
   ScrStr *key = NULL;
   ScrDynProp held = insp_prop_hold(ent, &key);
-  ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse, depth)
-                              : scr_insp_dyn(held.value, recurse, depth);
-  if (!val) {
-    insp_prop_drop(&held, key);
-    return NULL;
-  }
+  ScrStr *out = insp_held_entry(owner, &held, key, recurse, depth);
+  insp_prop_drop(&held, key);
+  return out;
+}
+
+/* A rendered entry whose key and value its caller already holds (see
+ * insp_prop_hold): the caller keeps them alive across the render. Borrows
+ * `held` and `key`; +1, or NULL with an exception pending. */
+static ScrStr *insp_held_entry(ScrDyn *owner, const ScrDynProp *held, const ScrStr *key,
+                               double recurse, double depth) {
+  ScrStr *val = held->accessor ? insp_accessor_value(held, owner, recurse, depth)
+                               : scr_insp_dyn(held->value, recurse, depth);
+  if (!val) return NULL;
   InspBuf eb = {0};
-  if (held.enumerable) {
+  if (held->enumerable) {
     insp_key_into(&eb, key->data, key->len);
   } else {
     /* formatProperty's hidden key: the key's rendering in brackets. */
@@ -3015,7 +3042,6 @@ static ScrStr *insp_table_entry(ScrDyn *table, ScrDyn *owner, const ScrDynProp *
   ib_cstr(&eb, ": ");
   ib_bytes(&eb, val->data, val->len);
   scr_str_release(val);
-  insp_prop_drop(&held, key);
   return ib_take(&eb);
 }
 
@@ -4189,12 +4215,18 @@ static ScrDyn *insp_user_options(double depth) {
     for (size_t i = 0; i < scr_dyn_obj_count(g_user_options); i++) {
       ScrDynProp ent = scr_dyn_obj_prop_at(g_user_options, i);
       if (!ent.enumerable) continue;
-      ScrDyn *value = scr_dyn_obj_read((ScrDyn *)g_user_options, ent.key, ent.key_len);
+      /* The read below runs the property's getter, which can delete it and
+       * free the key the entry lends; copy the key before the read. */
+      ScrStr *own_key = scr_str_new(ent.key ? ent.key : "", ent.key_len);
+      ScrDyn *value =
+          scr_dyn_obj_read((ScrDyn *)g_user_options, own_key->data, own_key->len);
       if (!value) {
+        scr_str_release(own_key);
         scr_dyn_release(options);
         return NULL;
       }
-      scr_dyn_obj_set(options, ent.key, ent.key_len, value);
+      scr_dyn_obj_set(options, own_key->data, own_key->len, value);
+      scr_str_release(own_key);
     }
   }
   return options;
@@ -4423,7 +4455,13 @@ static ScrStr *scr_insp_regexp_props(ScrDyn *d, double recurse, double depth) {
   for (size_t i = 0; table && i < scr_dyn_obj_count(table); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(table, i);
     if (!insp_obj_shows(&ent)) continue;
-    if (!appended && !insp_index_key(ent.key, ent.key_len)) {
+    /* The `[lastIndex]` entry below is styled before this entry is
+     * rendered, and styling runs inspect.styles accessors. Hold the entry
+     * first: an accessor that changes this property frees what the entry
+     * lends, and this render still reads it. */
+    ScrStr *own_key = NULL;
+    ScrDynProp held = insp_prop_hold(&ent, &own_key);
+    if (!appended && !insp_index_key(own_key->data, own_key->len)) {
       appended = true;
       InspBuf lb = {0};
       ib_cstr(&lb, "[lastIndex]: ");
@@ -4434,7 +4472,8 @@ static ScrStr *scr_insp_regexp_props(ScrDyn *d, double recurse, double depth) {
       scr_insp_entry(entry, false);
       scr_str_release(entry);
     }
-    ScrStr *entry = insp_table_entry(table, d, &ent, recurse + 1, depth);
+    ScrStr *entry = insp_held_entry(d, &held, own_key, recurse + 1, depth);
+    insp_prop_drop(&held, own_key);
     if (!entry) break;
     scr_insp_entry(entry, false);
     scr_str_release(entry);

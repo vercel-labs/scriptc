@@ -10444,6 +10444,11 @@ void scr_dyn_native_iterator_state(const ScrDyn *value, unsigned *kind, unsigned
   *index = iterator->index;
 }
 
+ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *value) {
+  const ScrNativeIterator *iterator = value->v.handle.ptr;
+  return iterator->source ? scr_dyn_retain(iterator->source) : NULL;
+}
+
 double scr_dyn_collection_iterator_index(const ScrDyn *value) {
   ScrNativeIterator *iterator = value->v.handle.ptr;
   ScrDyn *source = iterator->source;

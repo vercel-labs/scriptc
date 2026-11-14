@@ -5299,6 +5299,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   )
     return DYN;
+  // The stat family's option records: the runtime reads bigint and
+  // throwIfNoEntry off the value at the call, so a binding of one keeps the
+  // live object representation.
+  if (
+    psym !== undefined &&
+    (psymName === "StatOptions" || psymName === "StatSyncOptions") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  )
+    return DYN;
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.
   if (

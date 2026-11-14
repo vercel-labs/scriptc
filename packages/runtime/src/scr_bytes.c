@@ -249,6 +249,89 @@ bool scr_bytes_elem_is_bigint(ScrBytesElem elem) {
 }
 #endif
 
+/* Appends Node's inspect of an ArrayBuffer at indentation level `indent`:
+ * the first 100 bytes as hex pairs, on one line when it fits the 80-column
+ * break length (reduceToSingleString), one entry per line otherwise. */
+static void scr_bytes_inspect_array_buffer(ScrJsonBuf *jb, const ScrBytes *owner, size_t indent) {
+  static const char digits[] = "0123456789abcdef";
+  size_t len = owner->len * scr_bytes_elem_size(owner->elem);
+  size_t shown = len < 100 ? len : 100;
+  ScrJsonBuf contents;
+  scr_jb_init(&contents);
+  scr_jb_puts(&contents, "[Uint8Contents]: <");
+  for (size_t i = 0; i < shown; i++) {
+    uint8_t byte;
+    scr_bytes_read(owner, i, &byte, 1);
+    if (i) scr_jb_putc(&contents, ' ');
+    scr_jb_putc(&contents, digits[byte >> 4]);
+    scr_jb_putc(&contents, digits[byte & 15]);
+  }
+  if (len > shown) {
+    char more[48];
+    snprintf(more, sizeof more, " ... %zu more byte%s", len - shown, len - shown > 1 ? "s" : "");
+    scr_jb_puts(&contents, more);
+  }
+  scr_jb_putc(&contents, '>');
+  ScrStr *first = scr_jb_finish(&contents);
+  char second[40];
+  int second_len = snprintf(second, sizeof second, "[byteLength]: %zu", len);
+  /* isBelowBreakLength with two entries, start = 2 + indentation + "ArrayBuffer {" + 10. */
+  size_t total = 2 + (2 + indent + 13 + 10) + first->len + (size_t)second_len;
+  if (total <= 80) {
+    scr_jb_puts(jb, "ArrayBuffer { ");
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ", ");
+    scr_jb_puts(jb, second);
+    scr_jb_puts(jb, " }");
+  } else {
+    scr_jb_puts(jb, "ArrayBuffer {\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ",\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_puts(jb, second);
+    scr_jb_putc(jb, '\n');
+    for (size_t i = 0; i < indent; i++) scr_jb_putc(jb, ' ');
+    scr_jb_putc(jb, '}');
+  }
+  scr_str_release(first);
+}
+
+/* ERR_INVALID_ARG_VALUE for an empty ArrayBufferView: Node's inspect of the
+ * view (a Buffer, an empty typed array, or a DataView with its buffer), cut
+ * to 128 characters followed by "...". The fs ladders print the same text
+ * under their own message ("...is empty and cannot be written. Received "),
+ * so this is shared. */
+ScrStr *scr_dyn_empty_view_inspect(const ScrDyn *value) {
+  const ScrBytes *view = value->v.bytes;
+  ScrJsonBuf jb;
+  scr_jb_init(&jb);
+  if (value->buffer) {
+    scr_jb_puts(&jb, "<Buffer >");
+  } else if (!view->is_data_view) {
+    scr_jb_puts(&jb, scr_bytes_elem_name(view->elem));
+    scr_jb_puts(&jb, "(0) []");
+  } else {
+    const ScrBytes *owner = view->backing ? view->backing : view;
+    char line[64];
+    snprintf(line, sizeof line, "DataView {\n  [byteLength]: 0,\n  [byteOffset]: %zu,\n  [buffer]: ",
+             (size_t)(view->data - owner->data));
+    scr_jb_puts(&jb, line);
+    scr_bytes_inspect_array_buffer(&jb, owner, 2);
+    scr_jb_puts(&jb, "\n}");
+  }
+  ScrStr *inspected = scr_jb_finish(&jb);
+  if (inspected->len <= 128) return inspected;
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  ScrStr *head = scr_str_new(inspected->data, 128);
+  scr_jb_put_str(&out, head);
+  scr_str_release(head);
+  scr_jb_puts(&out, "...");
+  scr_str_release(inspected);
+  return scr_jb_finish(&out);
+}
+
 double scr_bytes_to_u8_clamp(double value) {
   if (!(value > 0)) return 0;
   if (value >= 255) return 255;
@@ -3354,8 +3437,10 @@ ScrStr *scr_bytes_normalize_encoding_empty_utf8(const ScrStr *raw) {
 }
 
 /* Buffer.byteLength's encoding read: an unknown name counts as utf8
- * instead of throwing. */
+ * instead of throwing. A NULL name — a call site whose encoding argument is
+ * known not to be a string — is the same utf8 fallback. */
 ScrStr *scr_bytes_normalize_encoding_or_utf8(const ScrStr *raw) {
+  if (raw == NULL) return scr_str_new("utf8", 4);
   const char *to = scr_enc_alias(raw);
   if (to) return scr_str_new(to, strlen(to));
   return scr_str_new("utf8", 4);
@@ -5178,5 +5263,26 @@ bool scr_bytes_storage_movable(const ScrBytes *owner) {
 #else
   (void)owner;
   return false;
+#endif
+}
+
+/* scr_bytes.h. Here for the same reason: the descriptor I/O unit is built
+ * once, so it asks the build of this unit the program links. */
+bool scr_bytes_view_usable(const ScrBytes *b) {
+#ifdef SCR_JS_OBJECT_MODEL
+  return scr_js_bytes_live(b);
+#else
+  (void)b;
+  return true;
+#endif
+}
+
+bool scr_bytes_view_byte_length(const ScrBytes *b, double *length) {
+#ifdef SCR_JS_OBJECT_MODEL
+  *length = scr_js_bytes_byte_length(b);
+  return !scr_exc_pending();
+#else
+  *length = scr_bytes_byte_len(b);
+  return true;
 #endif
 }

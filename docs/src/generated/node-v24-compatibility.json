@@ -19102,8 +19102,8 @@
       "anchor": "err_dir_closed",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reports a closed Dir or a synchronous member used during an asynchronous operation as an Error with Node's name, code, and message.",
         "verification": "test-backed"
       }
     },
@@ -19120,8 +19120,8 @@
       "anchor": "err_dir_concurrent_operation",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reports a closed Dir or a synchronous member used during an asynchronous operation as an Error with Node's name, code, and message.",
         "verification": "test-backed"
       }
     },
@@ -27782,8 +27782,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Exposes the platform's open flags, file-type bits, and permission bits as read-only members of a null-prototype object.",
         "verification": "test-backed"
       }
     },
@@ -27805,7 +27805,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -27828,7 +27828,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -27874,7 +27874,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28012,8 +28012,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers path existence for strings, Buffers, and file URLs; a path getValidatedPath rejects answers false, the deprecated exists validates its callback first and answers a rejected path through the callback synchronously, and existsSync reports DEP0187 once for invalid argument types.",
         "verification": "test-backed"
       }
     },
@@ -28035,7 +28035,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28058,7 +28058,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28081,7 +28081,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28104,7 +28104,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28150,7 +28150,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28173,7 +28173,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Changes timestamps using numeric seconds, numeric strings, and Dates with tested argument validation; link variants update the symlink itself.",
         "verification": "test-backed"
       }
@@ -28242,7 +28242,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28265,7 +28265,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Changes timestamps using numeric seconds, numeric strings, and Dates with tested argument validation; link variants update the symlink itself.",
         "verification": "test-backed"
       }
@@ -28288,7 +28288,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Creates hard or symbolic links and reads link targets using string, Buffer, or file URL paths, with encoded results and deferred error-first callbacks; complete filesystem error metadata remains unsupported.",
         "verification": "test-backed"
       }
@@ -28311,7 +28311,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28564,7 +28564,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Creates hard or symbolic links and reads link targets using string, Buffer, or file URL paths, with encoded results and deferred error-first callbacks; complete filesystem error metadata remains unsupported.",
         "verification": "test-backed"
       }
@@ -28587,7 +28587,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28725,7 +28725,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28748,7 +28748,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Reads filesystem capacity using string, Buffer, or file URL paths with number or BigInt fields and deferred callbacks; StatFs prototype behavior and complete filesystem error metadata remain unsupported.",
         "verification": "test-backed"
       }
@@ -28771,7 +28771,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Creates hard or symbolic links and reads link targets using string, Buffer, or file URL paths, with encoded results and deferred error-first callbacks; complete filesystem error metadata remains unsupported.",
         "verification": "test-backed"
       }
@@ -28794,7 +28794,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28863,7 +28863,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Changes timestamps using numeric seconds, numeric strings, and Dates with tested argument validation; link variants update the symlink itself.",
         "verification": "test-backed"
       }
@@ -29001,7 +29001,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -29024,7 +29024,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -29047,8 +29047,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29116,8 +29116,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29139,8 +29139,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29208,8 +29208,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Answers path existence for strings, Buffers, and file URLs; a path getValidatedPath rejects answers false, the deprecated exists validates its callback first and answers a rejected path through the callback synchronously, and existsSync reports DEP0187 once for invalid argument types.",
         "verification": "test-backed"
       }
     },
@@ -29231,8 +29231,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29254,8 +29254,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29277,8 +29277,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29300,8 +29300,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29323,8 +29323,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29346,8 +29346,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29369,8 +29369,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29438,8 +29438,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29461,8 +29461,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29484,8 +29484,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29507,8 +29507,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29691,8 +29691,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29714,8 +29714,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29737,8 +29737,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29760,8 +29760,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29898,8 +29898,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29921,8 +29921,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Reads filesystem capacity using string, Buffer, or file URL paths with number or BigInt fields and deferred callbacks; StatFs prototype behavior and complete filesystem error metadata remain unsupported.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29944,8 +29944,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -29967,8 +29967,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30013,8 +30013,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30059,8 +30059,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30082,8 +30082,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30105,8 +30105,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30128,8 +30128,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -30175,7 +30175,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30198,7 +30198,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30221,7 +30221,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30244,7 +30244,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30267,7 +30267,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30290,7 +30290,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30313,7 +30313,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30336,7 +30336,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30359,7 +30359,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Opens a directory as a Dir and walks it one Dirent at a time, with read, readSync, close, closeSync, path, disposal, and for-await iteration; a closed Dir reports ERR_DIR_CLOSED and a synchronous member used while an asynchronous operation is outstanding reports ERR_DIR_CONCURRENT_OPERATION.",
         "verification": "test-backed"
       }
     },
@@ -30428,7 +30428,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30451,7 +30451,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30474,7 +30474,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30497,7 +30497,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30520,7 +30520,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30543,7 +30543,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -30566,7 +30566,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Classifies each entry as a file, directory, symbolic link, FIFO, socket, block device, or character device from the directory handle's entry metadata.",
         "verification": "test-backed"
       }
     },
@@ -31715,7 +31715,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Capacity snapshots expose seven mutable number or BigInt fields; StatFs prototype reflection and constructor behavior remain unsupported.",
         "verification": "test-backed"
       }
@@ -31830,8 +31830,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -32727,8 +32727,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Exposes the platform's open flags, file-type bits, and permission bits as read-only members of a null-prototype object.",
         "verification": "test-backed"
       }
     },

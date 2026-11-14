@@ -878,6 +878,11 @@ function buildLibFnSignatures() {
      * encodings throw the "not supported yet" Error, unknown names throw
      * ERR_UNKNOWN_ENCODING. */
     "fs.readFileSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    /** readFileSync(path, { encoding, flag }) answering a string or a
+     * Buffer: the options ladder (getOptions, stringToFlags, open(2)) runs
+     * at run time; the call site's type selected the arm. */
+    "fs.readFileSyncStrOpts": { argTypes: [STRING, DYN], result: STRING },
+    "fs.readFileSyncBytesOpts": { argTypes: [STRING, DYN], result: BYTES_U8 },
     "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.existsSync": { argTypes: [STRING], result: BOOL },
@@ -1683,8 +1688,24 @@ function buildLibFnSignatures() {
     // +1-or-NULL; the backend builds the arms).
     "fs.statProbeSync": { argTypes: [STRING, BOOL], result: VOID },
     "fs.lstatProbeSync": { argTypes: [STRING, BOOL], result: VOID },
+    // statSync/lstatSync(path, options) and fstatSync(fd, options) with an
+    // options value only the runtime knows: Node's member ladder over the
+    // value (bigint selects the member table, throwIfNoEntry the missing-
+    // entry answer) answers Stats, BigIntStats or undefined as a checked-
+    // dynamic object, so no static stats type can name it.
+    "fs.statSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.lstatSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.fstatSyncDyn": { argTypes: [DYN, DYN], result: DYN },
+    // A checked-dynamic Stats object back into the snapshot the typed
+    // members read (the ladder's answer at a typed slot). `statsFromDynOpt`
+    // answers NULL for the dynamic undefined, so its call site builds the
+    // `Stats | undefined` union (the runtime's +1-or-NULL answer).
+    "fs.statsFromDyn": { argTypes: [DYN], result: STATS_T },
+    "fs.statsFromDynOpt": { argTypes: [DYN], result: VOID },
     "fs.fstatSync": { argTypes: [F64], result: STATS_T },
     "fs.fchmodSync": { argTypes: [F64, F64], result: VOID },
+    "fs.fchmodSyncStr": { argTypes: [F64, STRING], result: VOID },
+    "fs.fchmodSyncDyn": { argTypes: [DYN, DYN], result: VOID },
     "fs.fsyncSync": { argTypes: [F64], result: VOID },
     "fs.fdatasyncSync": { argTypes: [F64], result: VOID },
     "fs.ftruncateSync": { argTypes: [F64, F64], result: VOID },
@@ -1715,10 +1736,30 @@ function buildLibFnSignatures() {
      * ENOENT/EACCES..., readSync EBADF/range errors, closeSync EBADF). */
     "fs.openSync": { argTypes: [STRING, STRING, F64], result: F64 },
     "fs.openNumericSync": { argTypes: [STRING, F64, F64], result: F64 },
+    "fs.openNumericStrSync": { argTypes: [STRING, F64, STRING], result: F64 },
+    "fs.openNumericDynSync": { argTypes: [STRING, F64, DYN], result: F64 },
+    "fs.openStrModeSync": { argTypes: [STRING, STRING, STRING], result: F64 },
+    "fs.openNativeSync": { argTypes: [STRING, F64, F64], result: F64 },
+    "fs.openDynSync": { argTypes: [STRING, DYN, DYN], result: F64 },
+    "fs.openModeDynSync": { argTypes: [STRING, STRING, DYN], result: F64 },
+    "fs.openNativeStrSync": { argTypes: [STRING, F64, STRING], result: F64 },
+    "fs.openNativeDynSync": { argTypes: [STRING, F64, DYN], result: F64 },
     "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
-    "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
     "fs.writeSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
     "fs.writeStrSync": { argTypes: [F64, STRING, F64, STRING], result: F64 },
+    /** The fd primitives' checked-dynamic lane: the argument kinds the call
+     * site did not pin down take Node's own run-time ladder (readSync also
+     * needs the call's argument count for its options form), then the typed
+     * operation. */
+    "fs.readSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN, F64], result: F64 },
+    "fs.writeSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
+    "fs.readvSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.writevSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.ftruncateSyncDyn": { argTypes: [DYN, DYN], result: VOID },
+    "fs.closeSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fsyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fdatasyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fchownSyncDyn": { argTypes: [DYN, DYN, DYN], result: VOID },
     // fs.watch's callback func type is program-dependent (zero params, or
     // the eventType string) — the slot pins arity and the path/receiver.
     /** fs.watch(path, listener?) → an FSWatcher handle (scr_watch.c —
@@ -1901,6 +1942,8 @@ function buildLibFnSignatures() {
      * creates, like Node's). */
     "fs.unlinkSync": { argTypes: [STRING], result: VOID },
     "fs.chmodSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.chmodSyncStr": { argTypes: [STRING, STRING], result: VOID },
+    "fs.chmodSyncDyn": { argTypes: [STRING, DYN], result: VOID },
     "fs.chownSync": { argTypes: [STRING, F64, F64], result: VOID },
     "fs.lchownSync": { argTypes: [STRING, F64, F64], result: VOID },
     "fs.fchownSync": { argTypes: [F64, F64, F64], result: VOID },
@@ -1953,8 +1996,49 @@ function buildLibFnSignatures() {
       argTypes: [STRING, DYN, STRING, F64, STRING],
       result: VOID,
     },
+    /** The same option writes with a `mode` whose static type is not a
+     * number (an octal string, or a value the call site did not pin down)
+     * and/or a `flag` whose static type is not a string (open(2) bits, or a
+     * value the call site did not pin down): the runtime runs parseFileMode's
+     * mode ladder and stringToFlags on the dynamic slots, keeping Node's
+     * encoding, flag, mode, path validation order. */
+    "fs.writeFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.mkdirModeStrSync": { argTypes: [STRING, STRING], result: VOID },
+    // Results are program-dependent unions (string | undefined); the
+    // lowering fills the real type from the call site, like envGet.
+    "fs.mkdirObjSync": { argTypes: [STRING, F64, BOOL], result: VOID },
+    "fs.mkdirObjStrSync": { argTypes: [STRING, STRING, BOOL], result: VOID },
+    "fs.mkdirDynSync": { argTypes: [STRING, DYN], result: VOID },
+    "fs.mkdirDynVoidSync": { argTypes: [STRING, DYN], result: VOID },
+    "fs.mkdirModeValueSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.mkdirModeStrValueSync": { argTypes: [STRING, STRING], result: VOID },
+    "fs.mkdirObjVoidSync": { argTypes: [STRING, F64, BOOL], result: VOID },
+    "fs.mkdirObjStrVoidSync": { argTypes: [STRING, STRING, BOOL], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
     "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
     "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },

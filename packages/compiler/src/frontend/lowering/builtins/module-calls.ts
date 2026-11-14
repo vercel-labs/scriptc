@@ -8,8 +8,9 @@ import {
   lowerFsLinkOrStatfsCall,
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
-  lowerFsNumericOpenCall,
-  lowerFsOpenCall,
+  lowerFsOpenSyncCall,
+  lowerFsModeSyncCall,
+  lowerFsDescriptorSyncCall,
   lowerFsOpenAsBlobCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
@@ -58,6 +59,7 @@ import {
   VOID,
   type SrcLoc,
   arrayOf,
+  typeEquals,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
@@ -102,6 +104,23 @@ export function lowerBuiltinModuleCall(
   );
   if (fallible) return fallible;
   checkFsUrlPaths(lowerer, expr, bi);
+  // accessSync(p, mode?) and truncateSync(p, len?), with their promise
+  // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
+  // An explicit undefined (or a `number | undefined` value) takes the same
+  // default; access alone also treats null as F_OK, while truncate's
+  // validateInteger rejects null with Node's ERR_INVALID_ARG_TYPE. This
+  // runs before the checked-value adapter, which would hand the optional
+  // union to the runtime as a dynamic value it cannot carry.
+  const zeroDefault =
+    bi.module === "fs"
+      ? bi.member === "accessSync" || bi.member === "truncateSync"
+      : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
+  if (zeroDefault) {
+    const second = expr.arguments.nodes[1];
+    const nullIsDefault = bi.member === "accessSync" || bi.member === "access";
+    if (isFsZeroDefaultShape(lowerer, second, nullIsDefault))
+      return lowerFsZeroDefaultCall(lowerer, expr, bi, fn, loc);
+  }
   {
     const checked = jsCheckedBuiltinCall(lowerer, expr, fn, `${bi.module}.${bi.member}`, loc);
     if (checked) return checked;
@@ -147,15 +166,22 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsVectorOrTruncateCall(lowerer, expr, bi, fn, loc, name);
   }
+  if (bi.module === "fs" && bi.member === "openSync")
+    return lowerFsOpenSyncCall(lowerer, expr, loc);
+  if (bi.module === "fs" && (bi.member === "chmodSync" || bi.member === "fchmodSync")) {
+    const lowered = lowerFsModeSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
+  }
   if (
     bi.module === "fs" &&
-    bi.member === "openSync" &&
-    expr.arguments.nodes.length >= 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "f64"
+    (bi.member === "closeSync" ||
+      bi.member === "fsyncSync" ||
+      bi.member === "fdatasyncSync" ||
+      bi.member === "fchownSync")
   ) {
-    return lowerFsNumericOpenCall(lowerer, expr, loc);
+    const lowered = lowerFsDescriptorSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
   }
-  if (bi.module === "fs" && bi.member === "openSync") return lowerFsOpenCall(lowerer, expr, loc);
   if (bi.module === "fs" && bi.member === "openAsBlob")
     return lowerFsOpenAsBlobCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
@@ -202,9 +228,9 @@ export function lowerBuiltinModuleCall(
   if ((syncReaddir || promiseReaddir) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirOptionsCall(lowerer, expr, loc, promiseReaddir);
   }
-  // fs.existsSync(path) over a Buffer path or a value whose type only the
-  // runtime knows (`any`): Node answers false for a non-path and reports
-  // DEP0187 once, which the value form does.
+  // fs.existsSync(path) over a value that is not statically a string: a
+  // Buffer, a URL, an `any`, or any other value Node answers false for with
+  // one DEP0187 report. The value form decides the arm at run time.
   if (bi.module === "fs" && bi.member === "existsSync") {
     const lowered = lowerFsExistsValueCall(lowerer, expr, loc);
     if (lowered) return lowered;
@@ -390,7 +416,7 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsStreamCreate(lowerer, expr, bi.member, loc);
   }
-  if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.nodes.length === 2) {
+  if (bi.module === "fs" && bi.member === "mkdirSync") {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);
   }
   if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.nodes.length === 2) {
@@ -452,20 +478,7 @@ export function lowerBuiltinModuleCall(
   // accessSync(p, mode?) and truncateSync(p, len?), with their promise
   // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
   // The mode is an ordinary number — fs.constants.* reads bake to literals.
-  const zeroDefault =
-    bi.module === "fs"
-      ? bi.member === "accessSync" || bi.member === "truncateSync"
-      : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
-  if (zeroDefault) {
-    if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
-      lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
-    }
-    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-    const second: IrExpr = expr.arguments.nodes[1]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[1], F64)
-      : { kind: "numLit", value: 0, type: F64, loc };
-    return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
-  }
+  if (zeroDefault) return lowerFsZeroDefaultCall(lowerer, expr, bi, fn, loc);
   // copyFileSync(src, dest, mode?) and copyFile(src, dest, mode?): the
   // mode is libuv's copyfile flag bits (COPYFILE_EXCL = 1, COPYFILE_FICLONE
   // = 2, COPYFILE_FICLONE_FORCE = 4 — fs.constants.* reads bake to
@@ -823,4 +836,49 @@ export function lowerBuiltinModuleCall(
     type: fn.result,
     loc,
   }));
+}
+
+/** Whether an accessSync/truncateSync second argument stays in the
+ * number-defaulting lowering: absent, a number, an explicit undefined, or
+ * a union of those arms (access also admits null, Node's F_OK). Anything
+ * else — a string or a checked-dynamic value — goes to the checked-value
+ * adapter so the runtime answers Node's validation error. */
+function isFsZeroDefaultShape(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  nullIsDefault: boolean,
+): boolean {
+  if (!node) return true;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (!type) return false;
+  const allowed = (arm: IrType): boolean =>
+    typeEquals(arm, F64) || arm.kind === "undefinedT" || (nullIsDefault && arm.kind === "nullT");
+  if (type.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms;
+    return arms !== undefined && arms.every(allowed);
+  }
+  return allowed(type);
+}
+
+/** accessSync/truncateSync (and the fs/promises spellings): the optional
+ * mode/len completes to 0, and an explicit undefined or `number |
+ * undefined` value falls back to it after its effects run. */
+function lowerFsZeroDefaultCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  fn: BuiltinModuleFn,
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
+    lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
+  }
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+  const secondArg = expr.arguments.nodes[1];
+  const nullIsDefault = bi.member === "accessSync" || bi.member === "access";
+  const second = secondArg
+    ? lowerBuiltinOptionalDefault(lowerer, secondArg, F64, zero, nullIsDefault)
+    : zero;
+  return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
 }

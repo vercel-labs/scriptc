@@ -15,11 +15,15 @@ function clean(text: string): string {
   return text.split(dir).join("<dir>");
 }
 
-function report(label: string, error: NodeJS.ErrnoException | null, resolved: string): void {
+function report(
+  label: string,
+  error: NodeJS.ErrnoException | null,
+  resolved: string | undefined,
+): void {
   if (error) {
     console.log(label, "error", error.code);
   } else {
-    console.log(label, "resolved", clean(resolved));
+    console.log(label, "resolved", clean(resolved ?? ""));
   }
 }
 
@@ -73,7 +77,7 @@ async function main(): Promise<void> {
   // Another known encoding re-encodes the resolved path.
   const roundTrip = await new Promise<boolean>((resolve) => {
     fs.realpath(link, "base64", (error, resolved) => {
-      resolve(!error && Buffer.from(resolved, "base64").toString("utf8") === file);
+      resolve(error === null && resolved !== undefined && Buffer.from(resolved, "base64").toString("utf8") === file);
     });
   });
   console.log("base64 round trip", roundTrip);

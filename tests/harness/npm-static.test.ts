@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
+import { icuAvailable } from "./icu.js";
 import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
@@ -245,7 +247,9 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   test.each(["direct", "through a helper module"])(
     "a path alias into an opted-in package compiles (%s)",
     async (shape) => {
-      const dir = mkdtempSync(join(tmpdir(), "scriptc-alias-root-"));
+      // macOS's /var is a link to /private/var: the compiler resolves the
+      // config's directory, so the fixture starts from its real path.
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "scriptc-alias-root-")));
       try {
         const pkg = join(dir, "node_modules", "rawpad");
         mkdirSync(pkg, { recursive: true });
@@ -1759,7 +1763,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test(
+  // The published Effect's module graph carries a reachable
+  // Intl.DateTimeFormat (its DateTime module), so the pilot links ICU: a
+  // pack target without ICU refuses the build with SC3002 (see icu.ts).
+  test.skipIf(!icuAvailable())(
     "the published Effect generator logs and completes statically",
     async () => {
       const entry = join(pilotRoot, "effect-gen-cli.ts");
@@ -1779,7 +1786,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     effectBuildTimeout,
   );
 
-  test(
+  test.skipIf(!icuAvailable())(
     "the published Effect generator has deterministic native results",
     async () => {
       const entry = join(pilotRoot, "effect-gen-result-cli.ts");

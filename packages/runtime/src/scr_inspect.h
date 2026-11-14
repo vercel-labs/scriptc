@@ -265,10 +265,21 @@ bool scr_dataview_write_u64_raw(ScrBytes *b, double offset, bool le, uint64_t va
  * Buffer forms of scr_lib.c's utf8 pair, byte-exact and NUL-safe.
  * Failures THROW catchably (scr_fs_throw, Node-shaped messages). */
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
-/* readFileSync's runtime-encoding form (scr_bytes_io.c's note): +1 dyn
- * value — a Buffer box for nullish/empty encodings, a decoded string otherwise — or NULL
- * with the exception pending. */
-ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
+/* readFileSync(path, options)'s full ladder (scr_bytes_io.c's note) in its
+ * three answer types: a decoded string, the raw Buffer bytes, or the
+ * unchecked dyn value that picks between them at run time. The options
+ * argument is the raw second argument (a string, a bag, or the defaults);
+ * failures THROW catchably. */
+ScrStr *scr_fs_read_file_str_opts(ScrStr *path, const ScrDyn *options);   /* +1 string */
+ScrBytes *scr_fs_read_file_bytes_opts(ScrStr *path, const ScrDyn *options); /* +1 Buffer */
+ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *options);   /* +1 dyn */
+/* statSync / lstatSync / fstatSync with the options held at run time: the
+ * bigint member picks Stats or BigIntStats, throwIfNoEntry (stat and lstat)
+ * the missing-entry answer. A +1 dynamic Stats object, or NULL with the
+ * exception pending. */
+ScrDyn *scr_fs_stat_sync_dyn(ScrStr *path, const ScrDyn *options);        /* +1 dyn */
+ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options);       /* +1 dyn */
+ScrDyn *scr_fs_fstat_sync_dyn(const ScrDyn *fd, const ScrDyn *options); /* +1 dyn */
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
 /* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
  * check Node runs before it converts a URL path. */

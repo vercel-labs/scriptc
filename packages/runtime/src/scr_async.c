@@ -4351,9 +4351,15 @@ static void scr_dir_deliver_op(ScrDirOp *op) {
   scr_dyn_release(arguments);
 }
 
-/* dir.close(callback): a closed Dir reports ERR_DIR_CLOSED on a next tick;
- * otherwise the handle closes now and the callback follows on the loop. */
+/* dir.close(callback): the callback is validated before anything else
+ * (Node's validateFunction runs ahead of its closed check), a closed Dir
+ * reports ERR_DIR_CLOSED on a next tick, and otherwise the handle closes
+ * now and the callback follows on the loop. */
 void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
   ScrDirOp *op = scr_dir_op_new(d, true);
   op->callback = scr_dyn_retain(callback);
   if (d->closed) {

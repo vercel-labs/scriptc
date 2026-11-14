@@ -1646,6 +1646,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.realpath.native",
+      "kind": "node-builtin",
+      "name": "fs.realpath.native",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.realpathSync",
       "kind": "node-builtin",
       "name": "fs.realpathSync",

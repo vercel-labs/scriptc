@@ -1605,6 +1605,27 @@ static ScrDyn *scr_http_header_value_plain(ScrDyn *value) {
   return scr_dyn_retain(value);
 }
 
+/* The elements a header value contributes, retained: an array's elements, or
+ * the single value itself. Validation and conversion run the value's
+ * toString, which is program code and may mutate — or empty — the caller's
+ * array; reading the mutable array by a cached length would then dereference
+ * elements the mutation released. Everything that follows reads this
+ * snapshot instead. Answers the count; the caller releases each element. */
+static size_t scr_http_header_elements(const ScrDyn *value, ScrDyn ***out) {
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  ScrDyn **items = malloc((n == 0 ? 1 : n) * sizeof *items);
+  if (items == NULL) scr_http_oom();
+  for (size_t i = 0; i < n; i++)
+    items[i] = scr_dyn_retain(value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : (ScrDyn *)value);
+  *out = items;
+  return n;
+}
+
+static void scr_http_header_elements_free(ScrDyn **items, size_t n) {
+  for (size_t i = 0; i < n; i++) scr_dyn_release(items[i]);
+  free(items);
+}
+
 /* setHeader(name, value) for a number, a string or an array value. */
 void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *raw /*borrowed*/) {
   if (!scr_http_res_headers_unsent(r, "set") || !scr_http_res_header_valid(r, name, NULL)) return;
@@ -1613,14 +1634,16 @@ void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDy
     scr_dyn_release(value);
     return;
   }
+  ScrDyn **items;
+  size_t n = scr_http_header_elements(value, &items);
   bool valid = true;
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
   for (size_t i = 0; i < n && valid; i++) {
-    ScrStr *text = scr_http_header_value_text(name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
+    ScrStr *text = scr_http_header_value_text(name, items[i]);
     valid = text != NULL && scr_http_res_header_valid(r, name, text);
     scr_str_release(text);
   }
   if (valid) scr_http_res_insert_value(r, scr_http_res_drop_named(r, name), name, value, false);
+  scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }
 
@@ -1633,14 +1656,16 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
     scr_dyn_release(value);
     return;
   }
+  ScrDyn **items;
+  size_t n = scr_http_header_elements(value, &items);
   bool valid = true;
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
   for (size_t i = 0; i < n && valid; i++) {
-    ScrStr *text = scr_http_header_value_text(name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
+    ScrStr *text = scr_http_header_value_text(name, items[i]);
     valid = text != NULL && scr_http_res_header_valid(r, name, text);
     scr_str_release(text);
   }
   if (!valid) {
+    scr_http_header_elements_free(items, n);
     scr_dyn_release(value);
     return;
   }
@@ -1652,6 +1677,7 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
   }
   if (last == SIZE_MAX) scr_http_res_insert_value(r, r->nheaders, name, value, false);
   else scr_http_res_insert_value(r, last + 1, r->hnames[last], value, true);
+  scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }
 
@@ -6503,20 +6529,17 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value
   scr_http_client_touch_header(c, name, true);
 }
 
-/* The owned text of every line a header value stores: one line for a single
- * value, one per element for an array. Converting runs the value's toString,
- * which is program code and may touch the request (the reentrancy the
- * insertion offsets below must never be computed across): every line is
+/* The owned text of every line a header value stores, one per snapshot
+ * element. Converting runs each element's toString, so every line is
  * converted up front, before any store position is read. Answers the line
  * count; on failure releases what it converted and answers SIZE_MAX with the
- * exception pending. `*out` is NULL for an empty array. */
-static size_t scr_http_header_texts(const ScrStr *name, const ScrDyn *value, ScrStr ***out) {
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+ * exception pending. `*out` is NULL for an empty list. */
+static size_t scr_http_header_texts(const ScrStr *name, const ScrDyn *const *items, size_t n,
+                                    ScrStr ***out) {
   ScrStr **lines = n == 0 ? NULL : malloc(n * sizeof *lines);
   if (lines == NULL && n != 0) scr_http_oom();
   for (size_t i = 0; i < n; i++) {
-    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
-    lines[i] = scr_http_header_value_text(name, element);
+    lines[i] = scr_http_header_value_text(name, items[i]);
     if (lines[i] == NULL) {
       for (size_t j = 0; j < i; j++) scr_str_release(lines[j]);
       free(lines);
@@ -6547,28 +6570,29 @@ void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed
     scr_dyn_release(value);
     return;
   }
+  bool is_arr = value->kind == SCR_DYN_ARR;
+  ScrDyn **items;
+  size_t n = scr_http_header_elements(value, &items);
   bool valid = true;
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
   for (size_t i = 0; i < n && valid; i++) {
-    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
-    scr_http_validate_header_value(name, element);
+    scr_http_validate_header_value(name, items[i]);
     valid = !scr_exc_pending();
   }
   ScrStr **texts = NULL;
-  size_t lines = valid ? scr_http_header_texts(name, value, &texts) : SIZE_MAX;
+  size_t lines = valid ? scr_http_header_texts(name, items, n, &texts) : SIZE_MAX;
   if (valid && lines != SIZE_MAX) {
     /* Both conversions are done: the store can no longer move under us, so
      * the replacement position is read once and written straight through. */
     size_t pos = scr_http_client_drop_named(c, name);
     for (size_t i = 0; i < lines; i++) {
-      const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
-      uint8_t kind = element->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
-      if (value->kind == SCR_DYN_ARR) kind |= SCR_HTTP_HV_LIST;
+      uint8_t kind = items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+      if (is_arr) kind |= SCR_HTTP_HV_LIST;
       scr_http_client_insert_header(c, pos + i, name, texts[i], kind);
     }
     scr_http_client_touch_header(c, name, true);
   }
   if (texts != NULL) scr_http_header_texts_free(texts, lines);
+  scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }
 
@@ -6586,15 +6610,16 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borro
     scr_dyn_release(value);
     return;
   }
+  bool is_arr = value->kind == SCR_DYN_ARR;
+  ScrDyn **items;
+  size_t n = scr_http_header_elements(value, &items);
   bool valid = true;
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
   for (size_t i = 0; i < n && valid; i++) {
-    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
-    scr_http_validate_header_value(name, element);
+    scr_http_validate_header_value(name, items[i]);
     valid = !scr_exc_pending();
   }
   ScrStr **texts = NULL;
-  size_t lines = valid ? scr_http_header_texts(name, value, &texts) : SIZE_MAX;
+  size_t lines = valid ? scr_http_header_texts(name, items, n, &texts) : SIZE_MAX;
   if (valid && lines != SIZE_MAX) {
     /* The conversions are done; group the name's existing lines and append
      * after the last one, all without running program code again. */
@@ -6607,14 +6632,14 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borro
     size_t pos = last == SIZE_MAX ? c->nheaders : last + 1;
     ScrStr *stored_name = last == SIZE_MAX ? name : c->hnames[last];
     for (size_t i = 0; i < lines; i++) {
-      const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
-      uint8_t kind = element->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
-      if (value->kind == SCR_DYN_ARR || last != SIZE_MAX) kind |= SCR_HTTP_HV_LIST;
+      uint8_t kind = items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+      if (is_arr || last != SIZE_MAX) kind |= SCR_HTTP_HV_LIST;
       scr_http_client_insert_header(c, pos + i, stored_name, texts[i], kind);
     }
     scr_http_client_touch_header(c, name, true);
   }
   if (texts != NULL) scr_http_header_texts_free(texts, lines);
+  scr_http_header_elements_free(items, n);
   scr_dyn_release(value);
 }
 

@@ -8961,7 +8961,17 @@ static bool scr_net_flags_pending(void) {
  * handles stay outside the cycle collector. A settled server keeps its
  * persistent 'close' listeners for the repeat emission a later close()
  * causes; one that captures its own server would then pin the server and
- * everything it captured until process exit, so the settle drops those. */
+ * everything it captured until process exit, so the settle drops those.
+ *
+ * The compiler emits a handle capture's entry points as the `_v` void-star
+ * wrappers (lib-network.ts boxes the server with scr_net_server_retain_v /
+ * scr_net_server_release_v), so the comparison names those, not the typed
+ * functions the runtime calls internally. */
+static bool scr_net_server_release_entry(const void *release) {
+  return release == (const void *)scr_net_server_release_v ||
+         release == (const void *)scr_net_server_release;
+}
+
 static bool scr_net_listener_holds_server(const ScrClosure *cb, const ScrNetServer *s) {
   for (size_t i = 0; i < cb->ncaps; i++) {
     const ScrBox *b = cb->caps[i];
@@ -8969,9 +8979,9 @@ static bool scr_net_listener_holds_server(const ScrClosure *cb, const ScrNetServ
     void *p;
     memcpy(&p, &b->slot, sizeof p);
     if (p == NULL) continue;
-    if (b->obj_release == (void (*)(void *))scr_net_server_release && p == (const void *)s)
+    if (scr_net_server_release_entry((const void *)b->obj_release) && p == (const void *)s)
       return true;
-    if (b->obj_release == (void (*)(void *))scr_dyn_release) {
+    if ((const void *)b->obj_release == (const void *)scr_dyn_release) {
       const ScrDyn *d = p;
       if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_NET_SERVER &&
           d->v.handle.ptr == (const void *)s)
@@ -8983,7 +8993,7 @@ static bool scr_net_listener_holds_server(const ScrClosure *cb, const ScrNetServ
     void **slots = scr_closure_value_slots((ScrClosure *)cb);
     for (size_t i = 0; i < values->count; i++) {
       if (slots[i] == NULL) continue;
-      if (values->refs[i].release == (void (*)(void *))scr_net_server_release &&
+      if (scr_net_server_release_entry((const void *)values->refs[i].release) &&
           slots[i] == (const void *)s)
         return true;
     }
@@ -8996,7 +9006,9 @@ static bool scr_net_listener_holds_server(const ScrClosure *cb, const ScrNetServ
 static void scr_net_ls_drop_holding(ScrNetLs *l, const ScrNetServer *s) {
   size_t w = 0;
   for (size_t i = 0; i < l->n; i++) {
-    if (scr_net_listener_holds_server(l->ls[i].cb, s)) {
+    /* The function the entry stands for: a dyn listener wraps the real
+     * closure in a box, and an adapter names its identity. */
+    if (scr_net_listener_holds_server(scr_net_listener_root(&l->ls[i]), s)) {
       scr_closure_release(l->ls[i].cb);
       scr_net_once_release(l->ls[i].shared_once);
       continue;

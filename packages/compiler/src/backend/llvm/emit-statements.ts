@@ -21,6 +21,11 @@ import {
 } from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
 import {
+  emitStringCursorAdvance,
+  emitStringCursorLoop,
+  matchCursorAdvance,
+} from "./string-cursor-loops.js";
+import {
   canDeferSplitPiece,
   emitSplitCursor,
   emitSplitNext,
@@ -154,7 +159,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const slice = emitter.scalarStringSlices.get(s.localId);
-      if (slice) {
+      // A slice of a string cursor's local: the cursor keeps the string the
+      // local entered its loop with, so a snapshot of that slot would hold
+      // the base rather than the rest the source slices. The declaration
+      // stores the slice the cursor's own read answers instead.
+      if (
+        slice &&
+        !(slice.receiver.kind === "varRef" && emitter.stringCursors.has(slice.receiver.localId))
+      ) {
         const snapshot = emitStringSliceSnapshot(emitter, slice);
         emitter.stringSlices.set(s.localId, snapshot);
         emitter.scopes[emitter.scopes.length - 1]!.push({ slot: snapshot.source, type: STRING });
@@ -389,6 +401,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "assign": {
+      const cursor = emitter.stringCursors.get(s.localId);
+      if (cursor !== undefined) {
+        const advance = matchCursorAdvance(s.value, s.localId);
+        if (advance === null)
+          throw new InternalCompilerError(
+            `llvm emitter bug: string cursor write to ${s.localId} was not proven`,
+          );
+        emitStringCursorAdvance(emitter, cursor, advance);
+        break;
+      }
       if (emitter.int32Locals.has(s.localId)) {
         emitter.storeInt32Local(s.localId, emitter.emitExpr(s.value), s.value);
         break;
@@ -1073,6 +1095,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "while": {
+      const cursor = emitter.stringCursorEmitting.has(s)
+        ? undefined
+        : emitter.stringCursorLoops.get(s);
+      if (cursor) {
+        emitStringCursorLoop(emitter, s, cursor);
+        break;
+      }
       const callbacks = callbackVersionBindings(emitter, s);
       if (callbacks) {
         emitCallbackVersionedLoop(emitter, s, callbacks);
@@ -1121,6 +1150,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "doWhile": {
+      const cursor = emitter.stringCursorEmitting.has(s)
+        ? undefined
+        : emitter.stringCursorLoops.get(s);
+      if (cursor) {
+        emitStringCursorLoop(emitter, s, cursor);
+        break;
+      }
       const callbacks = callbackVersionBindings(emitter, s);
       if (callbacks) {
         emitCallbackVersionedLoop(emitter, s, callbacks);

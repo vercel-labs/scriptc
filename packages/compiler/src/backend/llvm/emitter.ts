@@ -258,6 +258,7 @@ import {
   type LendingFacts,
   type StringSliceSnapshot,
 } from "./string-slices.js";
+import type { StringCursor, StringCursorLoop } from "./string-cursor-loops.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { type EnvironmentLayout, ValueCaptures } from "./value-captures.js";
 import { StackCaptures } from "./stack-captures.js";
@@ -1315,6 +1316,14 @@ export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
+  /** The loops whose string local is read and stepped at an offset
+   * (string-cursor-loops.ts), keyed by loop statement. */
+  stringCursorLoops = new Map<IrStmt, StringCursorLoop>();
+  /** The cursor state of each such local, while its loop is emitted. */
+  readonly stringCursors = new Map<string, StringCursor>();
+  /** The cursor loops being emitted: their own emission is the ordinary
+   * one, so it must not version them a second time. */
+  readonly stringCursorEmitting = new Set<IrStmt>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   /** Slices written into stack buffers (findScratchStringSlices). */
   scratchStringSlices: ReadonlySet<IrExpr> = new Set();

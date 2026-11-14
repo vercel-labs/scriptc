@@ -111,6 +111,13 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
+  // A connect or listen signal that only looks like an AbortSignal throws
+  // before the listener install: scr_net_connect_dyn and scr_net_listen_dyn
+  // ask only when the call passed events.addAbortListener, and every call
+  // that reaches them (net.connectDyn, net.connectDynCb, net.listenDyn,
+  // net.listenDynCb) selects the EventTarget unit (ABORT_SIGNAL_LIB_FNS)
+  // and passes scr_events_add_abort_listener, which that unit defines.
+  "scr_net.c -> scr_event_target.c": ["scr_events_is_abort_signal"],
   // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
   // that reaches it (the deprecated crypto.fips read) selects the
   // dyn-async unit as well.

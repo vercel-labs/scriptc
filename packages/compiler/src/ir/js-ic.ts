@@ -57,7 +57,12 @@ export function dynIndexFastpath(env: NodeJS.ProcessEnv = process.env): boolean 
 
 export const DYN_INDEX_FASTPATH: boolean = dynIndexFastpath();
 
-const CAPSULE_TESTS = new Set<IrLibFn>(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
+const CAPSULE_TESTS = new Set<IrLibFn>([
+  "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
+  "dyn.typedRefKeyIs",
+  "dyn.classIs",
+]);
 
 /** A class table's branches in the order a receiver that matches none of
  * them reaches their guards: the body's statements, with a `dyn.classHash`

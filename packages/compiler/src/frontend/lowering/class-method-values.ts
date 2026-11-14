@@ -761,7 +761,7 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           kind: "if",
           cond: {
             kind: "libCall",
-            fn: "dyn.typedRefIs",
+            fn: "dyn.typedRefBrandIs",
             args: [receiver, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
             type: BOOL,
             loc,

@@ -1588,6 +1588,9 @@ ScrDyn *scr_dyn_new_typed_ref_observed(
 bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_prototypes_replaced(void);
+bool scr_dyn_prototype_replaced(const ScrDyn *d);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 /* Record views (scr_json.c): a checked conversion's view of the record a
  * capsule holds, or NULL. */

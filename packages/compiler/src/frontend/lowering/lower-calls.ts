@@ -1,4 +1,5 @@
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import {
   memberCallHolder,
@@ -13069,6 +13070,9 @@ export function lowerObjectMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  /** The receiver, already evaluated into a local (the declared arm of a
+   * call on an instance whose prototype may have been replaced). */
+  staged?: IrExpr,
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   let mappedReceiver =
@@ -13142,6 +13146,7 @@ export function lowerObjectMethodCall(
         : null;
   if (receiverIr === null) return null;
   const lowerReceiver = (): IrExpr => {
+    if (staged !== undefined) return staged;
     if (arrayClassOwner !== null)
       return arrayClassReceiver(
         lowerer,
@@ -13177,6 +13182,67 @@ export function lowerObjectMethodCall(
   // A member the class refused (class-member-refusals.ts): this call is a
   // statically visible use of it.
   if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
+  // An instance of a class a setPrototypeOf call may reprototype: once one
+  // has another prototype, the call on it looks the method up through that
+  // prototype, as JavaScript does. Every other instance makes the declared
+  // call, and nothing is boxed until some instance's prototype changes.
+  if (info && found && staged === undefined && mayReplacePrototype(lowerer, info)) {
+    const loc = locOf(call);
+    const receiver = lowerReceiver();
+    const local = lowerer.declareHiddenLocal("%reprototypedReceiver", receiver.type);
+    const value = varRef(local.id, receiver.type, loc);
+    const declared = lowerObjectMethodCall(lowerer, call, access, value);
+    if (declared === null) return null;
+    const boxed = (): IrExpr => lowerer.coerceToExpected(value, DYN);
+    const dynamic: IrExpr = {
+      kind: "dynInvoke",
+      recv: boxed(),
+      method: access.name.text,
+      calleeName: ts.getTextOfNode(access),
+      args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
+      type: DYN,
+      loc,
+    };
+    const replaced: IrExpr = {
+      kind: "logical",
+      op: "&&",
+      left: { kind: "libCall", fn: "dyn.prototypesReplaced", args: [], type: BOOL, loc },
+      right: { kind: "libCall", fn: "dyn.prototypeReplaced", args: [boxed()], type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+    const result: IrExpr =
+      declared.type.kind === "void"
+        ? {
+            kind: "ternary",
+            cond: replaced,
+            then: dynamic,
+            else_: {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: declared, loc }],
+              result: dynUndefinedExpr(loc),
+              type: DYN,
+              loc,
+            },
+            type: DYN,
+            loc,
+          }
+        : {
+            kind: "ternary",
+            cond: replaced,
+            then: lowerer.coerceToExpected(dynamic, declared.type),
+            else_: declared,
+            type: declared.type,
+            loc,
+          };
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
+  }
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
   if (

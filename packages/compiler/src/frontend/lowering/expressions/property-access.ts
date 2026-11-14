@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -513,6 +514,34 @@ export function lowerPropertyAccessExpr(
     builtinConstructorNames(lowerer, expr.expression) !== null
   )
     lowerer.noLowering("the prototype of a held built-in constructor", expr);
+  // A method or accessor read on an instance whose prototype may have been
+  // replaced (reprototyped-reads.ts).
+  if (expr.questionDotToken === undefined && ts.isIdentifier(expr.name)) {
+    const name = expr.name.text;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const info = type?.kind === "object" ? lowerer.classes.get(type.className) : undefined;
+    if (
+      info &&
+      !info.fields.has(name) &&
+      (lowerer.findMethodOn(info, name) || lowerer.findMethodOn(info, `get:${name}`))
+    ) {
+      const read = reprototypedGuard(
+        lowerer,
+        expr,
+        expr.expression,
+        loc,
+        (boxed) => ({
+          kind: "dynKeyGet",
+          value: boxed,
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          type: DYN,
+          loc,
+        }),
+        () => lowerPropertyAccessExpr(lowerer, expr, loc),
+      );
+      if (read !== null) return read;
+    }
+  }
   const heldLoaderMember = heldLoaderMemberThrow(lowerer, expr);
   if (heldLoaderMember !== null) return heldLoaderMember;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);

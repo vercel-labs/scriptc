@@ -49,6 +49,10 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object) {
     if (!scr_ni_dyn_handle(object)) return scr_dyn_new_null();
     break;
   case SCR_DYN_TYPED_REF: {
+    /* A class instance's chain is the compiled class test's, except for an
+     * instance Object.setPrototypeOf gave another prototype, which that
+     * test declines: its chain continues from the replacement. */
+    if (scr_dyn_prototype_replaced(object)) break;
     const char *key = object->v.typed_ref.type_key;
     if (strncmp(key, "record:", 7) && strncmp(key, "array<", 6)) return scr_dyn_new_null();
     break;

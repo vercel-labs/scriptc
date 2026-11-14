@@ -470,7 +470,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
                   kind: "if" as const,
                   cond: {
                     kind: "libCall" as const,
-                    fn: "dyn.typedRefIs" as const,
+                    fn: "dyn.typedRefBrandIs" as const,
                     args: [
                       read,
                       {

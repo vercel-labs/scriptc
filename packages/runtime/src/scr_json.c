@@ -1660,11 +1660,12 @@ static void scr_weak_disposed(void *key);
 static SCR_TL struct {
   uint64_t bits[SCR_DISPOSE_FILTER_BITS / 64];
   size_t noted;
-  size_t weak_keys, record_sources, record_links;
+  size_t weak_keys, record_sources, record_links, instance_protos;
 } scr_dispose_filter;
 #define scr_weak_keys_used (scr_dispose_filter.weak_keys)
 #define scr_record_source_count (scr_dispose_filter.record_sources)
 #define scr_record_link_count (scr_dispose_filter.record_links)
+#define scr_instance_proto_count (scr_dispose_filter.instance_protos)
 static inline size_t scr_dispose_filter_bit(const void *obj) {
   return ((uintptr_t)obj >> 4) & (SCR_DISPOSE_FILTER_BITS - 1);
 }
@@ -1702,12 +1703,145 @@ static inline void scr_dispose_note(const void *obj) {
  * table that empties on every removal pays. */
 static inline void scr_dispose_filter_emptied(void) {
   if (scr_dispose_filter.noted < SCR_DISPOSE_FILTER_STALE) return;
-  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count) return;
+  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count ||
+      scr_instance_proto_count)
+    return;
   memset(scr_dispose_filter.bits, 0, sizeof scr_dispose_filter.bits);
   scr_dispose_filter.noted = 0;
 }
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
+}
+
+/* Prototypes that Object.setPrototypeOf gave program class instances, by
+ * native instance. A class instance's checked-dynamic view is rebuilt from
+ * the instance each time the instance is boxed again, so the view alone
+ * cannot keep the change: this table does, for as long as the instance
+ * lives (the dispose hook drops its entry, scr_instance_proto_disposed).
+ * `prototype` is retained, or NULL for a null prototype. While the table
+ * is empty, every reader returns on its count. */
+typedef struct {
+  void *instance;
+  ScrDyn *prototype;
+  /* Private copies of the type keys the instance's capsules carry
+   * (scr_instance_proto_key): a capsule whose key is not the program's
+   * constant takes no class fast path that compares the key's address. */
+  char **keys;
+  size_t nkeys;
+} ScrInstanceProto;
+static SCR_TL ScrInstanceProto *scr_instance_protos; /* open addressing, linear probes */
+static SCR_TL size_t scr_instance_proto_capacity;      /* a power of two, or 0 */
+static void scr_dispose_observers(void *object);
+
+static inline size_t scr_instance_proto_bucket(const void *instance) {
+  uintptr_t h = (uintptr_t)instance >> 4;
+  h ^= h >> 17;
+  h *= (uintptr_t)0x9E3779B97F4A7C15ull;
+  return (size_t)(h ^ (h >> 29)) & (scr_instance_proto_capacity - 1);
+}
+
+static ScrInstanceProto *scr_instance_proto_find(const void *instance) {
+  if (!scr_instance_proto_count || !scr_dispose_maybe_observed(instance)) return NULL;
+  size_t mask = scr_instance_proto_capacity - 1;
+  for (size_t slot = scr_instance_proto_bucket(instance); scr_instance_protos[slot].instance;
+       slot = (slot + 1) & mask)
+    if (scr_instance_protos[slot].instance == instance) return &scr_instance_protos[slot];
+  return NULL;
+}
+
+/* The entry of the instance a class-instance capsule wraps, or NULL. */
+static inline ScrInstanceProto *scr_typed_ref_instance_proto(const ScrDyn *d) {
+  if (!scr_instance_proto_count || d->kind != SCR_DYN_TYPED_REF ||
+      d->v.typed_ref.type_key_len < 7 || memcmp(d->v.typed_ref.type_key, "object:", 7) != 0)
+    return NULL;
+  return scr_instance_proto_find(d->v.typed_ref.ptr);
+}
+
+static void scr_instance_proto_insert(ScrInstanceProto entry) {
+  size_t mask = scr_instance_proto_capacity - 1;
+  size_t slot = scr_instance_proto_bucket(entry.instance);
+  while (scr_instance_protos[slot].instance) slot = (slot + 1) & mask;
+  scr_instance_protos[slot] = entry;
+}
+
+static void scr_instance_proto_set(void *instance, ScrDyn *prototype) {
+  ScrDyn *held = prototype && prototype->kind != SCR_DYN_NULL ? scr_dyn_retain(prototype) : NULL;
+  scr_dispose_note(instance);
+  ScrInstanceProto *entry = scr_instance_proto_find(instance);
+  if (entry) {
+    scr_dyn_release(entry->prototype);
+    entry->prototype = held;
+    return;
+  }
+  /* Keep the table at most half full. */
+  if ((scr_instance_proto_count + 1) * 2 > scr_instance_proto_capacity) {
+    size_t old_capacity = scr_instance_proto_capacity;
+    ScrInstanceProto *old = scr_instance_protos;
+    size_t capacity = old_capacity ? old_capacity * 2 : 16;
+    scr_instance_protos = calloc(capacity, sizeof *scr_instance_protos);
+    if (!scr_instance_protos) scr_json_oom();
+    scr_instance_proto_capacity = capacity;
+    for (size_t i = 0; i < old_capacity; i++)
+      if (old[i].instance) scr_instance_proto_insert(old[i]);
+    free(old);
+  }
+  scr_instance_proto_insert((ScrInstanceProto){instance, held, NULL, 0});
+  scr_instance_proto_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+static void scr_instance_proto_disposed(void *instance) {
+  ScrInstanceProto *entry = scr_instance_proto_find(instance);
+  if (!entry) return;
+  ScrDyn *prototype = entry->prototype;
+  char **keys = entry->keys;
+  size_t nkeys = entry->nkeys;
+  /* Backward-shift deletion: move later members of the probe run into the
+   * hole so every remaining key stays reachable from its bucket. */
+  size_t mask = scr_instance_proto_capacity - 1;
+  size_t hole = (size_t)(entry - scr_instance_protos);
+  for (size_t next = (hole + 1) & mask; scr_instance_protos[next].instance; next = (next + 1) & mask) {
+    size_t home = scr_instance_proto_bucket(scr_instance_protos[next].instance);
+    bool movable = hole <= next ? (home <= hole || home > next) : (home <= hole && home > next);
+    if (!movable) continue;
+    scr_instance_protos[hole] = scr_instance_protos[next];
+    hole = next;
+  }
+  scr_instance_protos[hole] = (ScrInstanceProto){NULL, NULL, NULL, 0};
+  scr_instance_proto_count--;
+  if (!scr_instance_proto_count) scr_dispose_filter_emptied();
+  /* The instance is gone, and with it every capsule that wrapped it. */
+  for (size_t i = 0; i < nkeys; i++) free(keys[i]);
+  free(keys);
+  scr_dyn_release(prototype);
+}
+
+/* The entry's private copy of `type_key` (an "object:" key), made on first
+ * use. */
+static const char *scr_instance_proto_key(ScrInstanceProto *entry, const char *type_key,
+                                          size_t type_key_len) {
+  for (size_t i = 0; i < entry->nkeys; i++)
+    if (strlen(entry->keys[i]) == type_key_len && !memcmp(entry->keys[i], type_key, type_key_len))
+      return entry->keys[i];
+  char **grown = realloc(entry->keys, (entry->nkeys + 1) * sizeof *grown);
+  if (!grown) scr_json_oom();
+  entry->keys = grown;
+  char *copy = malloc(type_key_len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, type_key, type_key_len);
+  copy[type_key_len] = 0;
+  entry->keys[entry->nkeys++] = copy;
+  return copy;
+}
+
+/* Gives a class instance's view the prototype the table holds for it. */
+static void scr_instance_proto_apply(const ScrDyn *capsule, ScrDyn *view) {
+  ScrInstanceProto *entry = scr_typed_ref_instance_proto(capsule);
+  if (!entry || view->kind != SCR_DYN_OBJ || view->prototype == entry->prototype) return;
+  ScrDyn *old = view->prototype;
+  view->prototype = entry->prototype ? scr_dyn_retain(entry->prototype) : NULL;
+  view->null_proto = entry->prototype == NULL;
+  scr_dyn_release(old);
 }
 
 /* A disposed node's child: most getters, setters, prototypes and symbol
@@ -3471,6 +3605,11 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
+  /* A program class instance whose prototype Object.setPrototypeOf
+   * replaced: the replacement (the class's own prototype is answered by
+   * the compiled class dispatch, which declines this instance). */
+  ScrInstanceProto *replaced = scr_typed_ref_instance_proto(object);
+  if (replaced) return replaced->prototype ? scr_dyn_retain(replaced->prototype) : scr_dyn_new_null();
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     /* A live record's snapshot is an ordinary object and a live array's an
      * ordinary array, each with the prototype it is born with. */
@@ -3558,6 +3697,17 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_dyn_release(view);
     if (!result) return NULL;
     scr_dyn_release(result);
+    /* A program class instance keeps the prototype past this boxing: the
+     * next view of the instance is built from the instance again. */
+    if (object->v.typed_ref.type_key_len >= 7 &&
+        memcmp(object->v.typed_ref.type_key, "object:", 7) == 0)
+    {
+      scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
+      ScrInstanceProto *entry = scr_instance_proto_find(object->v.typed_ref.ptr);
+      if (entry)
+        object->v.typed_ref.type_key = scr_instance_proto_key(entry, object->v.typed_ref.type_key,
+                                                              object->v.typed_ref.type_key_len);
+    }
     return scr_dyn_retain(object);
   }
   if (object->kind == SCR_DYN_FUNC) {
@@ -4745,6 +4895,7 @@ static __attribute__((noinline)) void scr_dispose_observed(void *object) {
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
+  if (scr_instance_proto_count) scr_instance_proto_disposed(object);
 }
 
 #ifdef SCR_JS_OBJECT_MODEL
@@ -5406,6 +5557,10 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.retain = retain;
   d->v.typed_ref.release = release;
   d->v.typed_ref.type_key = type_key;
+  if (scr_instance_proto_count && type_key_len >= 7 && memcmp(type_key, "object:", 7) == 0) {
+    ScrInstanceProto *entry = scr_instance_proto_find(ptr);
+    if (entry) d->v.typed_ref.type_key = scr_instance_proto_key(entry, type_key, type_key_len);
+  }
   d->v.typed_ref.type_key_len = (uint32_t)type_key_len;
   d->v.typed_ref.materialize = materialize;
   d->v.typed_ref.commit = commit;
@@ -5462,7 +5617,28 @@ bool scr_dyn_typed_ref_is(
          memcmp(d->v.typed_ref.type_key, type_key, type_key_len) == 0;
 }
 
+/* The class dispatch test (dyn.typedRefIs): a capsule of `type_key` whose
+ * instance answers through its class's prototype. An instance that
+ * Object.setPrototypeOf gave another prototype answers through that one, so
+ * the dispatch takes the checked-dynamic path, which reads it. */
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key) {
+  if (d && scr_typed_ref_instance_proto(d)) return false;
+  return scr_dyn_typed_ref_is(d, type_key->data, type_key->len);
+}
+
+/* Whether Object.setPrototypeOf has replaced the prototype of any program
+ * class instance that is still alive (dyn.prototypesReplaced): the test a
+ * typed call guards the per-instance one with, so it boxes nothing until
+ * then. */
+bool scr_dyn_prototypes_replaced(void) { return scr_instance_proto_count != 0; }
+
+/* Whether `d` wraps a program class instance whose prototype
+ * Object.setPrototypeOf replaced (dyn.prototypeReplaced). */
+bool scr_dyn_prototype_replaced(const ScrDyn *d) { return d && scr_typed_ref_instance_proto(d); }
+
+/* The brand test (dyn.typedRefBrandIs): what the capsule wraps, whatever
+ * its prototype is (`#x in value`, a method called on a receiver). */
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key) {
   return scr_dyn_typed_ref_is(d, type_key->data, type_key->len);
 }
 
@@ -5815,6 +5991,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     fresh->rc = fresh_rc;
     scr_dyn_release(fresh);
   }
+  scr_instance_proto_apply(capsule, capsule->v.typed_ref.materialized);
   if (scr_dyn_typed_ref_frozen(capsule)) scr_dyn_record_view_freeze(capsule->v.typed_ref.materialized);
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }
@@ -5913,7 +6090,9 @@ void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *o
  * data property before anything that needs more (an accessor, a function,
  * array or capsule link, Object.prototype). */
 ScrDyn *scr_dyn_typed_ref_bag_method(const ScrDyn *d, const char *key, size_t key_len) {
-  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.bag_class || d->prototype) return NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.bag_class || d->prototype ||
+      scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedBagClassOps *ops = (const ScrDynTypedBagClassOps *)(const void *)d->v.typed_ref.array;
   void *instance = d->v.typed_ref.ptr;
   const ScrDyn *bag = ops->bag(instance);
@@ -5964,7 +6143,8 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
 }
 
 const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops ? ops->class_name : NULL;
 }
@@ -5978,19 +6158,22 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
 }
 
 ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops && ops->string_tag ? ops->string_tag(d->v.typed_ref.ptr) : NULL;
 }
 
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return false;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
 }
 
 ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t key_len) {
-  if (d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   if (!d->v.typed_ref.bag_class) {
     /* A class instance's view holds its own fields and the properties added
      * to it, and its class's prototype members stay off the view. A name
@@ -14994,7 +15177,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
-    const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
+    const ScrDynTypedClassOps *klass = scr_typed_ref_instance_proto(v) ? NULL : scr_typed_ref_class_ops(v);
     bool out;
     if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
       /* a compiled method or accessor of the class or a base class, also

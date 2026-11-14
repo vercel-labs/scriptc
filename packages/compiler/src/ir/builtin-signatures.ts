@@ -356,8 +356,19 @@ function buildLibFnSignatures() {
     "dyn.globalSymbolSet": { argTypes: [SYMBOL_T, DYN], result: VOID },
     "dyn.globalSymbolHas": { argTypes: [SYMBOL_T], result: BOOL },
     "dyn.globalSymbolDelete": { argTypes: [SYMBOL_T], result: VOID },
-    /** Exact native class capsule identity, without materializing its fields. */
+    /** Exact native class capsule identity, without materializing its fields,
+     * for class dispatch: false for an instance Object.setPrototypeOf gave
+     * another prototype, which dispatches through it. */
     "dyn.typedRefIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Exact native class capsule identity whatever the instance's prototype
+     * is: the brand a private member or a method's receiver checks. */
+    "dyn.typedRefBrandIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Whether Object.setPrototypeOf has replaced a live class instance's
+     * prototype (scr_dyn_prototypes_replaced). */
+    "dyn.prototypesReplaced": { argTypes: [], result: BOOL },
+    /** Whether the value wraps a class instance whose prototype
+     * Object.setPrototypeOf replaced. */
+    "dyn.prototypeReplaced": { argTypes: [DYN], result: BOOL },
     /** A capsule boxed by this program from exactly this class: one key
      * pointer test, false for equal keys boxed elsewhere. Guards fast paths
      * whose fallback handles every other value. The key is a literal. */

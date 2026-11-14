@@ -811,6 +811,11 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ]),
     ),
   ],
+  // the arity opinion of 2554 for an executor whose `resolve` the checker
+  // cannot give a value type: Node's resolve takes its value optionally,
+  // and a call with none resolves the promise with undefined (the
+  // lowering keeps the call).
+  [2810, inCheckedJs(CHECKER(DYNAMIC_SHAPE, ["tests/corpus/promise-resolve-without-value.mjs"]))],
   [
     2305,
     CHECKER(DYNAMIC_SHAPE, [

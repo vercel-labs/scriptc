@@ -3225,6 +3225,123 @@ export interface CjsConditionalExportMirror {
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
+/** Whether a write declaration targets the member through `this`
+ * (`this.k = v`, `this[k] = v`, `this.k++`, `delete this.k`): the checker
+ * then declares a class field, which the lowerer stores in the class
+ * layout and reads as a typed slot that answers undefined where the
+ * assignment is not guaranteed. */
+function writesMemberOfThis(decl: ts.Node): boolean {
+  if (!ts.isBinaryExpression(decl)) return false;
+  const target = decl.left;
+  if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) return false;
+  let receiver: ts.Node = target.expression;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  return receiver.kind === ts.SyntaxKind.ThisKeyword;
+}
+
+/** Whether `symbol`, the member a read answered with, is one the checker
+ * only INFERS from writes in JavaScript: its declarations are the writes
+ * themselves (`o.k = v`, `o[k] = v`, `o.k++`, `delete o.k`,
+ * `Object.defineProperty(o, k, ...)`), not a declaration that gives it a
+ * type. The inferred type describes the write the program makes somewhere,
+ * not the value at every read: a read before the write runs, on a path
+ * that skips it, or after a `delete` answers undefined, the way Node reads
+ * it. A write through `this` is a class field (writesMemberOfThis), which
+ * the lowerer reads from the class layout and not from a property bag. */
+function memberTypeIsInferred(symbol: ts.Symbol | undefined): boolean {
+  const declarations = symbol?.declarations;
+  if (declarations === undefined || declarations.length === 0) return false;
+  return declarations.every(
+    (decl) =>
+      // A write to the member: assignment, compound assignment, update or
+      // `delete` (one binary expression in this checker's tree).
+      (ts.isBinaryExpression(decl) && !writesMemberOfThis(decl)) ||
+      // `Object.defineProperty(o, k, ...)`.
+      ts.isCallExpression(decl),
+  );
+}
+
+/** Whether `expr`, the value a JavaScript binding is initialized or
+ * assigned from, reads a member the checker types only from writes
+ * (memberTypeIsInferred). */
+function readsInferredMemberExpr(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node = expr;
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isPropertyAccessExpression(node))
+    return memberTypeIsInferred(lowerer.checker.getSymbolAtLocation(node.name));
+  if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression))
+    return memberTypeIsInferred(lowerer.checker.getSymbolAtLocation(node.argumentExpression));
+  return false;
+}
+
+/** Whether the value of a declaration that types `name` in JavaScript is
+ * the member the declaration initializes from. */
+function readsInferredMemberOfDeclaration(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) return false;
+  return readsInferredMemberExpr(lowerer, decl.initializer);
+}
+
+/** Whether the destructuring element `el` binds a member the checker types
+ * only from writes (memberTypeIsInferred). */
+function destructuresInferredMember(lowerer: Lowerer, el: ts.BindingElement): boolean {
+  const prop = el.propertyName;
+  if (prop !== undefined) {
+    if (!ts.isIdentifier(prop) && !ts.isStringLiteralLike(prop)) return false;
+    return memberTypeIsInferred(lowerer.checker.getSymbolAtLocation(prop));
+  }
+  const pattern = el.parent;
+  if (!ts.isObjectBindingPattern(pattern) || !ts.isIdentifier(el.name)) return false;
+  return memberTypeIsInferred(
+    lowerer.checker.getPropertyOfType(lowerer.typeOf(pattern), el.name.text),
+  );
+}
+
+/** The declared type a binding element's host declaration gives its names,
+ * if any: the variable declaration or parameter a pattern hangs from. */
+function bindingElementHost(
+  el: ts.BindingElement,
+): ts.VariableDeclaration | ts.ParameterDeclaration | undefined {
+  let node: ts.Node | undefined = el.parent;
+  while (
+    node !== undefined &&
+    (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node))
+  ) {
+    const holder = node.parent;
+    if (holder === undefined) return undefined;
+    if (ts.isBindingElement(holder)) {
+      node = holder.parent;
+      continue;
+    }
+    return ts.isVariableDeclaration(holder) || ts.isParameter(holder) ? holder : undefined;
+  }
+  return undefined;
+}
+
+/** Whether `decl` gives the binding a type of its own (TypeScript syntax
+ * or a JavaScript `@type`). */
+function bindsDeclaredType(decl: ts.VariableDeclaration | ts.ParameterDeclaration): boolean {
+  if (decl.type !== undefined) return true;
+  return ts.isVariableDeclaration(decl) ? hasJsTypeAnnotation(decl) : false;
+}
+
+/** The name of a JavaScript binding initialized from a member the checker
+ * types only from writes, if `node` declares one: `const s = e.status`,
+ * `const { status } = e`. The binding has no type of its own, so the
+ * checker's inference for it is not a promise about the value. */
+function inferredMemberBindingName(lowerer: Lowerer, node: ts.Node): ts.Identifier | undefined {
+  if (ts.isVariableDeclaration(node)) {
+    if (bindsDeclaredType(node) || !readsInferredMemberOfDeclaration(lowerer, node))
+      return undefined;
+    return ts.isIdentifier(node.name) ? node.name : undefined;
+  }
+  if (!ts.isBindingElement(node) || !ts.isIdentifier(node.name) || node.dotDotDotToken)
+    return undefined;
+  const host = bindingElementHost(node);
+  if (host === undefined || !ts.isVariableDeclaration(host) || bindsDeclaredType(host))
+    return undefined;
+  return destructuresInferredMember(lowerer, node) ? node.name : undefined;
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -3856,6 +3973,13 @@ export class Lowerer {
    * reads instead of applying the checker-bare string narrowing adapter. */
   readonly runtimeOptionalArithmeticLocals = new Set<IrLocal>();
   readonly runtimeOptionalArithmeticGlobals = new Set<IrGlobal>();
+  /** The declarations among the two sets above whose initializer IS a
+   * recorded string-arithmetic result (runtimeOptionalArithmeticTypes), not
+   * merely a value of union type: their run-time arm can be the one the
+   * checker's type for every read names away (`x + 1` over an optional
+   * string is NaN where the checker types the sum as a string). Reads of
+   * these keep the union even when the declaration annotates a union. */
+  readonly runtimeUncheckedArithmeticDeclarations = new Set<ts.VariableDeclaration>();
   /** Binding symbols whose IR storage type was widened by the indexed-read
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
@@ -6443,6 +6567,7 @@ export class Lowerer {
     "narrowing.plainContainers",
     "runtimeOptionalStorageLocals",
     "runtimeOptionalArithmeticLocals",
+    "runtimeUncheckedArithmeticDeclarations",
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",
@@ -9815,6 +9940,50 @@ export class Lowerer {
         ) {
           const setterParam = this.resolveValueSymbol(node.name);
           if (setterParam) this.jsWidenedBindings.add(setterParam);
+          return undefined;
+        }
+        // A binding initialized from a member the checker types only from
+        // writes (`let e = {}; ... e.k = v` types every read of `e.k`):
+        // the write runs where the program puts it, so a read before it, on
+        // a path that skips it, or after a `delete` answers undefined where
+        // the inferred type does not admit it. The binding holds the read's
+        // checked-dynamic value, and reads of the binding keep that value.
+        const inferredMemberName = inferredMemberBindingName(this, node);
+        if (inferredMemberName !== undefined) {
+          const symbol = this.resolveValueSymbol(inferredMemberName);
+          if (symbol) {
+            this.jsWidenedBindings.add(symbol);
+            const global = this.globalsBySymbol.get(symbol);
+            if (global) global.type = DYN;
+          }
+          return undefined;
+        }
+        // `s = e.k` stores the same read through an assignment: a target
+        // binding with no type of its own keeps the checked-dynamic value
+        // too, like the declaration form above.
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          readsInferredMemberExpr(this, node.right)
+        ) {
+          const target = this.resolveValueSymbol(node.left);
+          const targetDecl = target?.valueDeclaration;
+          if (
+            target &&
+            targetDecl !== undefined &&
+            ts.isVariableDeclaration(targetDecl) &&
+            ts.isIdentifier(targetDecl.name) &&
+            isJsSourceFileName(ts.getSourceFileOfNode(targetDecl).fileName) &&
+            !hasJsTypeAnnotation(targetDecl) &&
+            targetDecl.parent !== undefined &&
+            ts.isVariableDeclarationList(targetDecl.parent) &&
+            (targetDecl.parent.flags & ts.NodeFlags.Const) === 0
+          ) {
+            this.jsWidenedBindings.add(target);
+            const global = this.globalsBySymbol.get(target);
+            if (global) global.type = DYN;
+          }
           return undefined;
         }
         if (

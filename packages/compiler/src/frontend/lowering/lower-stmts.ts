@@ -2093,6 +2093,10 @@ function hoistVarBinding(
     return bound;
   }
   let type = varBindingType(lowerer, nameNode);
+  // A var analyzeJsWidenedBindings marked (it stores a member the checker
+  // types only from writes) holds that read's value.
+  const widened = lowerer.resolveValueSymbol(nameNode);
+  if (widened && lowerer.jsWidenedBindings.has(widened)) type = DYN;
   // The first value stored is an existing checked-dynamic object: keep it
   // (jsBindingKeepsCheckedObject). A checked-dynamic slot holds undefined
   // natively, so no runtime-optional widening applies.
@@ -6843,7 +6847,11 @@ export function bindPatternTarget(
     const symbol = lowerer.checker.getSymbolAtLocation(name);
     const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
     if (g) {
-      if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
+      if (
+        value.type.kind === "dyn" &&
+        (jsBindingKeepsCheckedObject(lowerer, name, g.type) ||
+          (symbol !== undefined && lowerer.jsWidenedBindings.has(symbol)))
+      )
         g.type = DYN;
       out.push({
         kind: "assign",
@@ -6874,13 +6882,16 @@ export function bindPatternTarget(
     // cannot represent them without a refusal or an alias-breaking copy.
     // A name destructured from a container of an evolving array
     // (evolvingArrayHold) may hold the array, which the checker types by
-    // the elements written before it.
+    // the elements written before it. A member the checker types only
+    // from writes (analyzeJsWidenedBindings) is absent at a read before
+    // the write runs, so its binding keeps the checked-dynamic read too.
     const dynStays =
       value.type.kind === "dyn" &&
       ((() => {
         const mapped = lowerer.mapTypeOf(lowerer.typeOf(name));
         return mapped === null || jsBindingKeepsCheckedObject(lowerer, name, mapped);
       })() ||
+        (symbol !== undefined && lowerer.jsWidenedBindings.has(symbol)) ||
         readsHeldEvolvingArray(lowerer, name));
     let type = dynStays
       ? DYN
@@ -7394,6 +7405,28 @@ function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean 
   return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
 
+/** The unchecked string-arithmetic result the lowerer recorded for `expr`,
+ * looking through parentheses and the type-only wrappers that keep the same
+ * value: `const s = (x + 1)` records the sum under the parenthesis. */
+function runtimeArithmeticTypeOf(lowerer: Lowerer, expr: ts.Expression): IrType | undefined {
+  let node = expr;
+  for (;;) {
+    const recorded = lowerer.runtimeOptionalArithmeticTypes.get(node);
+    if (recorded !== undefined) return recorded;
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertion(node) ||
+      ts.isSatisfiesExpression(node) ||
+      ts.isNonNullExpression(node)
+    ) {
+      node = node.expression;
+      continue;
+    }
+    return undefined;
+  }
+}
+
 export function lowerVarDecl(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -7844,12 +7877,20 @@ export function lowerVarDecl(
       keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
     )
       g.type = raw.type;
+    // A JavaScript binding widened by analyzeJsWidenedBindings (it reads a
+    // member the checker types only from writes) holds the read's
+    // checked-dynamic value, and reads of the binding keep it.
+    if (ts.isIdentifier(decl.name)) {
+      const symbol = lowerer.resolveValueSymbol(decl.name);
+      if (symbol && lowerer.jsWidenedBindings.has(symbol)) g.type = DYN;
+    }
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
+    const arithmeticType = runtimeArithmeticTypeOf(lowerer, decl.initializer);
     if (
       arithmetic?.length === 2 &&
       arithmetic.every((a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool") &&
-      (lowerer.runtimeOptionalArithmeticTypes.has(decl.initializer) ||
+      (arithmeticType !== undefined ||
         lowerer.runtimeOptionalBindingType(decl.name)?.kind === "union" ||
         (g.type.kind === "string" &&
           arithmetic.some((a) => a.kind === "f64") &&
@@ -7857,6 +7898,11 @@ export function lowerVarDecl(
     ) {
       g.type = raw.type;
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
+      // The initializer itself answered the unchecked string-arithmetic
+      // union; reads keep it even when the declaration annotates a union
+      // (runtimeUncheckedArithmeticDeclarations).
+      if (arithmeticType !== undefined && typeEquals(arithmeticType, raw.type))
+        lowerer.runtimeUncheckedArithmeticDeclarations.add(decl);
     }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
     refuseAssertionViewWrite(lowerer, decl);
@@ -7930,6 +7976,11 @@ export function lowerVarDecl(
     if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
+    // A binding analyzeJsWidenedBindings marked (an assignment stores a
+    // member the checker types only from writes) holds that read's value,
+    // over the type the evolving-let inference read from the writes.
+    const widenedSymbol = lowerer.resolveValueSymbol(decl.name);
+    if (widenedSymbol && lowerer.jsWidenedBindings.has(widenedSymbol)) type = DYN;
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
     // the unit-only union (its undefined arm is the unassigned state,
     // which is also the only state).
@@ -8432,7 +8483,7 @@ export function lowerVarDecl(
         : (objectFactorySignature(lowerer, decl.initializer)?.returnType ?? settledType);
   }
   const arithmeticType = decl.initializer
-    ? lowerer.runtimeOptionalArithmeticTypes.get(decl.initializer)
+    ? runtimeArithmeticTypeOf(lowerer, decl.initializer)
     : undefined;
   const isStringArithmeticUnion = (t: IrType): boolean => {
     if (t.kind !== "union") return false;
@@ -8604,6 +8655,12 @@ export function lowerVarDecl(
   const local = lowerer.declareLocal(decl.name, decl.name.text, settledType, isLet);
   if (runtimeStringArithmetic && init.type.kind === "union") {
     lowerer.runtimeOptionalArithmeticLocals.add(lowerer.runtimeOptionalRootOf(local));
+    // The initializer itself answered the unchecked string-arithmetic union
+    // (not merely a value of union type): its run-time arm is the one the
+    // checker's type for every read can name away, so reads keep the union
+    // even when the declaration annotates a union.
+    if (arithmeticType !== undefined && typeEquals(arithmeticType, init.type))
+      lowerer.runtimeUncheckedArithmeticDeclarations.add(decl);
   }
   if (runtimeOptional) {
     const runtimeOptionalRoot = lowerer.runtimeOptionalRootOf(local);

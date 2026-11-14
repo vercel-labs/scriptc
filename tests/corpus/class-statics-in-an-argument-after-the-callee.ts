@@ -26,6 +26,19 @@ const registry = {
   },
 };
 
+class Tools {
+  static define(name: string, C: typeof Base): void {
+    console.log("Tools.define", name, new C().v);
+  }
+}
+
+// Computed writes through receivers that cannot hold the registry or the
+// class leave their members inert.
+const counts: Record<string, number> = {};
+for (const word of ["a", "b", "a"]) counts[word] = (counts[word] ?? 0) + 1;
+const slots: number[] = [];
+slots[0] = 1;
+
 const first = "x-one";
 console.log("start");
 register(first, Tagged(Base));
@@ -36,4 +49,11 @@ registry.define(
     v = 2;
   },
 );
-console.log(registry.names.join(","));
+Tools.define(
+  "x-three",
+  class Three extends Base {
+    static tag = (console.log("Three statics"), "three");
+    v = 3;
+  },
+);
+console.log(registry.names.join(","), JSON.stringify(counts), slots.length);

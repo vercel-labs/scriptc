@@ -65,9 +65,30 @@ class-values.ts:82:31 - error SC1090: mixin classes with static members outside 
      |                               ^~~~~~~~~~~~~~
   83 | 
 
-class-values.ts:102:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
+class-values.ts:91:34 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
 
-  101 | class OtherThis extends UsesThis {}
-  102 | function self(value: typeof UsesThis): string { return value.self(); }
+  90 | };
+  91 | console.log(table.define("swap", class Swap { static { (table as Record<string, unknown>)[slot] = () => "replaced"; } }));
+     |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  92 | const shelf = {
+
+class-values.ts:96:36 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
+
+  95 | const replacement: { define(name: string, C: unknown): string } = { define: () => "replaced" };
+  96 | console.log(shelf.define("assign", class Assign { static { Object.assign(shelf, replacement); } }));
+     |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  97 | interface Definer {
+
+class-values.ts:103:40 - error SC1090: class expressions with static initializers or static blocks outside a whole-initializer position (their declaration-time code must run exactly where the expression evaluates — bind the class in its own top-level `const C = class …` statement) is not supported yet
+
+  102 | };
+  103 | console.log(viaGetter.define("getter", class Got { static x = (console.log("statics second"), 1); }));
+      |                                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  104 | 
+
+class-values.ts:123:56 - error SC1090: receiver-dependent static methods through a polymorphic class value is not supported yet
+
+  122 | class OtherThis extends UsesThis {}
+  123 | function self(value: typeof UsesThis): string { return value.self(); }
       |                                                        ^~~~~~~~~~
-  103 | console.log(self(OtherThis));
+  124 | console.log(self(OtherThis));

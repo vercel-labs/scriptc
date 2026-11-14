@@ -81,6 +81,27 @@ function Stamped(B: typeof Plain) {
 }
 console.log(pickConsumer()(0, Stamped(Plain)));
 
+// A callee member the class's declaration-time code can replace through a
+// computed key or Object.assign, or one a getter can answer (the interface
+// does not pin the value behind it), must be read before that code runs.
+const slot: string = "define";
+const table = {
+  define(name: string, C: unknown): string { return name + String(C); },
+};
+console.log(table.define("swap", class Swap { static { (table as Record<string, unknown>)[slot] = () => "replaced"; } }));
+const shelf = {
+  define(name: string, C: unknown): string { return name + String(C); },
+};
+const replacement: { define(name: string, C: unknown): string } = { define: () => "replaced" };
+console.log(shelf.define("assign", class Assign { static { Object.assign(shelf, replacement); } }));
+interface Definer {
+  define(name: string, C: unknown): string;
+}
+const viaGetter: Definer = {
+  get define() { console.log("getter first"); return (name: string) => name; },
+};
+console.log(viaGetter.define("getter", class Got { static x = (console.log("statics second"), 1); }));
+
 // Construction through a UNION of class values: narrow or annotate first.
 class Left {
   constructor() {}

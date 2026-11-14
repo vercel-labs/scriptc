@@ -1396,6 +1396,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.classIs": "scr_dyn_class_is_key",
   "dyn.iterPack": "scr_dyn_iter_pack",
   "dyn.mathFold": "scr_dyn_math_fold",
+  "dyn.mathFoldMany": "scr_dyn_math_fold_many",
   "dyn.destructureRest": "scr_dyn_destructure_rest",
   "dyn.iterator": "scr_dyn_iterator",
   "dyn.asyncIteratorOpen": "scr_dyn_async_iterator_open",

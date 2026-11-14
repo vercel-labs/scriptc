@@ -53,3 +53,40 @@ try {
   console.log(String(e));
 }
 console.log(real.total(), real.add(3).total());
+
+// The call evaluates its arguments before it finds the method missing, as
+// Node does: their side effects happen, and an argument that throws wins.
+class Pair extends Array<number> {
+  base = 100;
+  sum(a: number, b: number): number {
+    return this.base + a + b + this.length;
+  }
+}
+const seen: string[] = [];
+const note = (label: string, value: number): number => {
+  seen.push(label);
+  return value;
+};
+const pairs: Pair[] = JSON.parse("[[1]]");
+const realPair = new Pair();
+realPair.push(7);
+for (const pair of [realPair, ...pairs]) {
+  seen.length = 0;
+  try {
+    console.log(pair.sum(note("a", 1), note("b", 2)), seen.join(","));
+  } catch (e) {
+    console.log(String(e), seen.join(","));
+  }
+}
+try {
+  pairs[0].sum(
+    note("c", 1),
+    (() => {
+      throw new Error("argument threw");
+    })(),
+  );
+} catch (e) {
+  console.log(String(e));
+}
+let shifting = 1;
+console.log(realPair.sum(shifting, (shifting = 5)), shifting);

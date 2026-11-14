@@ -8,7 +8,9 @@ import {
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
+  applyDeferredArrayClassCheck,
   arrayClassReceiver,
+  type DeferredArrayClassCheck,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
 import { refuseWrittenParamCopy, structuralCallInstance } from "./structural-instances.js";
@@ -13070,6 +13072,23 @@ export function lowerObjectMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
+  // A member of an Array subclass called on an array value tests the
+  // array's class after the call's arguments, as Node finds a missing
+  // method only when it calls it.
+  const deferred: DeferredArrayClassCheck[] = [];
+  const result = lowerObjectMethodCallOn(lowerer, call, access, deferred);
+  const check = deferred[0];
+  return result === null || check === undefined
+    ? result
+    : applyDeferredArrayClassCheck(lowerer, result, check);
+}
+
+function lowerObjectMethodCallOn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  deferred: DeferredArrayClassCheck[],
+): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   let mappedReceiver =
     lowerer.receiverTypeOverrides.get(access.expression) ??
@@ -13149,6 +13168,8 @@ export function lowerObjectMethodCall(
         lowerer.lowerExpr(access.expression),
         access.expression,
         access.name.text,
+        "read",
+        deferred,
       );
     const receiver = specializedReceiver ?? lowerer.lowerExpr(access.expression);
     const optional = lowerer.runtimeOptionalPropertyReceiver(

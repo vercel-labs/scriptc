@@ -169,6 +169,35 @@ console.log(out[3]);
   expect(parallelFlag(built, "scr_par_into")).toBe("double 0x0000000000000000");
 });
 
+test("an async callback stays sequential", async () => {
+  // An async body's call returns a promise, which an adapter drops, and its
+  // spawn wrapper updates the closure's reference count around the call.
+  const into = await build(`
+const out = new Float64Array(64);
+parallelInto(out, async (part, start, end) => {
+  for (let i = start; i < end; i++) part[i - start] = i;
+}, { grain: 4 });
+console.log(out[3]);
+`);
+  expect(into.ok).toBe(true);
+  expect(into.warnings).toHaveLength(1);
+  expect(into.warnings[0]).toContain("SC6106");
+  expect(into.warnings[0]).toContain("an async callback");
+  expect(parallelFlag(into, "scr_par_into")).toBe("double 0x0000000000000000");
+});
+
+test("a body in a program that reads stacks stays sequential", async () => {
+  // Such a program pushes a source frame onto the one shared exception
+  // cell in every function that keeps one; helper threads must not.
+  const built = await build(
+    intoProgram("for (let i = start; i < end; i++) part[i - start] = table[i % 16]! + i;") +
+      'console.log(String(new Error("probe").stack).split("\\n")[0]);\n',
+  );
+  expect(built.ok).toBe(true);
+  expect(built.warnings).toEqual([]);
+  expect(parallelFlag(built, "scr_par_into")).toBe("double 0x0000000000000000");
+});
+
 test("parallelReduce folds its chunks on helper threads", async () => {
   const built = await build(`
 const sum = parallelReduce(1000, 0, (start, end) => {

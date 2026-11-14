@@ -477,6 +477,18 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
+    // A binding of an import cycle that code here can reach before its
+    // declaration ran: Node's `typeof` throws the binding's ReferenceError
+    // then, so the answer keeps the read the initialization check guards.
+    const early = cycleFlaggedRead(lowerer, tested, loc);
+    if (early !== null)
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: early, loc }],
+        result,
+        type: STRING,
+        loc,
+      };
     return isSafeToDiscard(operand)
       ? result
       : {
@@ -562,6 +574,16 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     return { kind: "libCall", fn: "dyn.typeof", args: [operand], type: STRING, loc };
   }
   lowerer.unsupported("SC1090", expr, "typeof expressions on statically-typed values");
+}
+
+/** The storage read of an identifier naming a module binding with an
+ * import-cycle initialization flag (cycle-initialization.ts), or null. */
+function cycleFlaggedRead(lowerer: Lowerer, operand: ts.Expression, loc: SrcLoc): IrExpr | null {
+  if (!ts.isIdentifier(operand) || lowerer.cycleInitFlags.size === 0) return null;
+  const symbol = lowerer.resolveValueSymbol(operand);
+  const global = symbol === null ? undefined : lowerer.globalsBySymbol.get(symbol);
+  if (global === undefined || !lowerer.cycleInitFlags.has(global.id)) return null;
+  return varRef(global.id, global.type, loc);
 }
 
 /** `typeof e.code === "string"` / `"undefined"` (and the `!==` forms)

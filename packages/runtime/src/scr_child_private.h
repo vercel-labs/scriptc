@@ -95,6 +95,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -179,6 +183,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */

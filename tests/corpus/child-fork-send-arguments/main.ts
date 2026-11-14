@@ -26,6 +26,27 @@ function keepOpen(label: string): boolean {
   console.log("evaluated", label);
   return true;
 }
+// Node serializes the message inside send(), after every argument expression
+// has run: a handle, keepOpen value or callback expression that mutates the
+// message changes the payload.
+function mutateHandle(label: string, message: { echo: string }): null {
+  console.log("evaluated", label);
+  message.echo = label;
+  return null;
+}
+function mutateOption(label: string, message: { echo: string }): boolean {
+  console.log("evaluated", label);
+  message.echo = label;
+  return true;
+}
+function lateCallback(
+  message: { echo: string },
+  label: string,
+): (error: Error | null) => void {
+  console.log("evaluated", label);
+  message.echo = label;
+  return callback;
+}
 
 const child = fork(worker, [], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
 let callbacks = 0;
@@ -52,6 +73,21 @@ console.log(
 console.log(
   "void handle",
   child.send(payload("void handle"), void handled("void sendHandle"), callback),
+);
+const handleTarget = { echo: "unmutated" };
+console.log(
+  "mutated by handle and keepOpen",
+  child.send(
+    handleTarget,
+    mutateHandle("mutated handle", handleTarget),
+    { keepOpen: mutateOption("mutated keepOpen", handleTarget) },
+    callback,
+  ),
+);
+const callbackTarget = { echo: "unmutated" };
+console.log(
+  "mutated by callback",
+  child.send(callbackTarget, null, lateCallback(callbackTarget, "mutated callback")),
 );
 console.log("last", child.send({ echo: "last" }));
 console.log("close", await closed(child), "callbacks", callbacks);

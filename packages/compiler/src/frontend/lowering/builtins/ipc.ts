@@ -32,8 +32,16 @@ function ignoredListenerReturn(type: IrType): boolean {
   return type.kind === "void" || (type.kind === "promise" && type.inner.kind === "void");
 }
 
-export function ipcJsonMessage(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
-  const value = lowerer.lowerExpr(node);
+/** Node serializes the message inside send(), after every argument
+ * expression has been evaluated: an argument that mutates the message changes
+ * what is sent. `value` is the lowered message value, so a caller that must
+ * evaluate other slots first can materialize it and stringify it at the end. */
+function ipcJsonStringify(
+  lowerer: Lowerer,
+  value: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr {
   if (!lowerer.jsonStringifySafe(value.type) && value.type.kind !== "dyn") {
     lowerer.unsupported(
       "SC1090",
@@ -211,23 +219,46 @@ export function ipcSendArguments(
       if (ts.isPropertyAssignment(property)) drop(property.initializer);
     }
   }
-  const message = ipcJsonMessage(lowerer, args[0]!, loc);
+  const messageValue = lowerer.lowerExpr(args[0]!);
   const effects: IrStmt[] = dropped.map((node) => ({
     kind: "exprStmt",
     expr: lowerer.lowerExpr(node),
     loc: locOf(node),
   }));
-  const callback = callbackNode === undefined ? null : ipcSendCallback(lowerer, callbackNode);
-  if (effects.length === 0) return { json: message, callback };
-  // The message is a value of the call's own argument list, so it is
-  // evaluated before the dropped slots; materializing it keeps that order
-  // when the effects move into a sequence.
-  const messageLocal = lowerer.declareHiddenLocal("%sendMessage", STRING);
+  const callbackValue = callbackNode === undefined ? null : ipcSendCallback(lowerer, callbackNode);
+  // Node evaluates every argument expression, then send() serializes the
+  // message. A dropped slot or a callback expression can mutate the message,
+  // so only the inline shape (no effect between the message and the call)
+  // serializes where the message is evaluated.
+  const callbackHasEffects = callbackNode !== undefined && !sideEffectFreeOptionValue(callbackNode);
+  if (effects.length === 0 && !callbackHasEffects) {
+    return {
+      json: ipcJsonStringify(lowerer, messageValue, args[0]!, loc),
+      callback: callbackValue,
+    };
+  }
+  // A unit-typed message has no standalone runtime value to hold in a local;
+  // store its dynamic value, which serializes the same way.
+  const stored =
+    messageValue.type.kind === "nullT" || messageValue.type.kind === "undefinedT"
+      ? lowerer.coerceToExpected(messageValue, DYN)
+      : messageValue;
+  const messageLocal = lowerer.declareHiddenLocal("%sendMessage", stored.type);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: messageLocal.id, init: stored, loc },
+    ...effects,
+  ];
+  let callback = callbackValue;
+  if (callbackValue !== null) {
+    const callbackLocal = lowerer.declareHiddenLocal("%sendCallback", callbackValue.type);
+    stmts.push({ kind: "varDecl", localId: callbackLocal.id, init: callbackValue, loc });
+    callback = varRef(callbackLocal.id, callbackValue.type, loc);
+  }
   return {
     json: {
       kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: messageLocal.id, init: message, loc }, ...effects],
-      result: varRef(messageLocal.id, STRING, loc),
+      stmts,
+      result: ipcJsonStringify(lowerer, varRef(messageLocal.id, stored.type, loc), args[0]!, loc),
       type: STRING,
       loc,
     },

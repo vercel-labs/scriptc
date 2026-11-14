@@ -1989,6 +1989,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* The launch configured an IPC slot (fork's fourth stdio entry), whether
+   * or not the channel was made: a fork that FAILED to spawn still answers
+   * Node's four-entry stdio array, whose fourth slot is null. */
+  bool ipc_slot;
   ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -3159,6 +3163,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   scr_arr_release(spawn_args);
   CloseHandle(child_read);
   CloseHandle(child_write);
+  /* A fork always has the IPC slot, even when the launch failed: Node's
+   * stdio array is built from the configured slots, not the live channel. */
+  child->ipc_slot = true;
   if (child->state == SCR_CHILD_RUNNING) {
     child->ipc = scr_ipc_new(scr_child_stream_new(parent_read),
                              scr_child_writer_new(parent_write));
@@ -5342,6 +5349,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* The launch configured an IPC slot (fork's fourth stdio entry), whether
+   * or not the channel was made: a fork that FAILED to spawn still answers
+   * Node's four-entry stdio array, whose fourth slot is null. */
+  bool ipc_slot;
   ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -7150,6 +7161,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   scr_arr_release(spawn_args);
   close(parent_to_child[0]);
   close(child_to_parent[1]);
+  /* A fork always has the IPC slot, even when the launch failed: Node's
+   * stdio array is built from the configured slots, not the live channel. */
+  child->ipc_slot = true;
   if (child->state == SCR_CHILD_RUNNING) {
     ScrChildStream *reader = scr_child_stream_new(child_to_parent[0]);
 #ifdef SCR_HAVE_KQUEUE
@@ -9690,11 +9704,13 @@ bool scr_child_ipc_connected(ScrChild *c) {
 
 /* ChildProcess.stdio's length: Node's stdio array has one entry per slot the
  * launch configured. Every child has the three standard slots; a forked
- * child also has the fourth, IPC slot, whose entry is null. An island child
- * answers with its own ChildProcess object's array, which Node owns. */
+ * child also has the fourth, IPC slot, whose entry is null. The slot is
+ * configured by the launch, so a fork that failed to spawn still answers
+ * four entries; the absent channel is not an unconfigured slot. An island
+ * child answers with its own ChildProcess object's array, which Node owns. */
 double scr_child_stdio_len(ScrChild *c) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_len(c->island));
-  return c->ipc != NULL ? 4 : 3;
+  return c->ipc_slot ? 4 : 3;
 }
 
 /* ChildProcess.stdio is ONE array per child, as Node's ChildProcess keeps

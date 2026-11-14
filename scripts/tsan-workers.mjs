@@ -27,6 +27,7 @@ import {
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { programDefines } from "../tests/harness/define-directive.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = join(root, "tests", "corpus");
@@ -34,8 +35,89 @@ const suppressions = join(root, "tests", "harness", "tsan.supp");
 /** The exit status ThreadSanitizer gives a process that reported a race. */
 const raceStatus = 66;
 
-/** Corpus programs that import worker_threads and need nothing this lane does not provide. */
+/** The directive head of a corpus program: its first two lines, the same head the differential harness reads.
+ * @param {string} source
+ * @returns {string[]} */
+export function directiveHead(source) {
+  return source.split("\n", 2);
+}
+
+/** Why the lane does not build this program, or null when it does. `host` defaults to this machine.
+ * Intl forms need the Linux x64 ICU pack; other hosts refuse them (SC3002), so they are skipped there
+ * the way the differential harness skips them. `// @exit` and the Node oracle flags do not change the
+ * build or the compiled binary's environment, so the lane leaves them to the differential suite.
+ * @param {string} source
+ * @param {{ platform: string, arch: string }} [host]
+ * @returns {string | null} */
+export function skipReason(source, host = { platform: process.platform, arch: process.arch }) {
+  const head = directiveHead(source);
+  // A Node island program loads Node from a libnode pack, which is not built with ThreadSanitizer.
+  if (head.some((line) => /^\/\/ @requires-libnode\s*$/.test(line))) {
+    return "loads Node from a libnode pack, which is not built with ThreadSanitizer";
+  }
+  // WebAssembly traps (an out-of-bounds access, a stack overflow) arrive as signals unless the runtime is
+  // built for AddressSanitizer, which checks explicitly (SCR_WASM_ASAN in scr_wasm.c). ThreadSanitizer's own
+  // handler reports such a signal as fatal.
+  if (/\bWebAssembly\b/.test(source)) {
+    return "WebAssembly traps arrive as signals under ThreadSanitizer";
+  }
+  if (
+    head.some((line) => /^\/\/ @requires-icu\s*$/.test(line)) &&
+    !(host.platform === "linux" && host.arch === "x64")
+  ) {
+    return "Intl forms need the Linux x64 ICU runtime pack; other hosts refuse them (SC3002)";
+  }
+  return null;
+}
+
+/** Extra `scriptc build` arguments the differential harness would pass for this program: `// @define`
+ * lines become `--define=process.env.NAME=<json>`, and `// @optimization: speed` selects that posture.
+ * @param {string} source
+ * @returns {string[]} */
+export function buildArguments(source) {
+  const head = directiveHead(source);
+  /** @type {string[]} */
+  const args = [];
+  if (head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line))) {
+    args.push("--optimization=speed");
+  }
+  const defines = programDefines(head);
+  if (defines !== null) {
+    for (const [key, value] of Object.entries(defines.define)) {
+      args.push(`--define=${key}=${JSON.stringify(value)}`);
+    }
+  }
+  return args;
+}
+
+/** Environment for running a compiled worker binary: the differential harness's `SCRIPTC_TEST_ENV`,
+ * any `// @env: NAME=VALUE[,NAME=VALUE]` pairs from the directive head, and the lane's `TSAN_OPTIONS`.
+ * @param {string} source
+ * @param {NodeJS.ProcessEnv} [base]
+ * @returns {NodeJS.ProcessEnv} */
+export function runEnvironment(source, base = process.env) {
+  /** @type {Record<string, string>} */
+  const directiveEnv = {};
+  for (const line of directiveHead(source)) {
+    const m = /^\/\/ @env:\s*(.+?)\s*$/.exec(line);
+    if (m === null) continue;
+    for (const pair of m[1].split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) directiveEnv[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    }
+  }
+  return {
+    ...base,
+    SCRIPTC_TEST_ENV: "from-harness",
+    ...directiveEnv,
+    TSAN_OPTIONS: `suppressions=${suppressions}:halt_on_error=0:exitcode=${raceStatus}:print_suppressions=0`,
+  };
+}
+
+/** Corpus programs that import worker_threads and need nothing this lane does not provide.
+ * @returns {string[]} */
 export function workerPrograms() {
+  /** @type {string[]} */
   const programs = [];
   for (const entry of readdirSync(corpus).sort()) {
     const path = join(corpus, entry);
@@ -43,18 +125,15 @@ export function workerPrograms() {
     if (!file.endsWith(".ts") || !existsSync(file)) continue;
     const source = readFileSync(file, "utf8");
     if (!/["'](?:node:)?worker_threads["']/.test(source)) continue;
-    // A Node island program loads Node from a libnode pack, which is not built with ThreadSanitizer.
-    if (/^\/\/ @requires-libnode\s*$/m.test(source)) continue;
-    // WebAssembly traps (an out-of-bounds access, a stack overflow) arrive as signals unless the runtime is
-    // built for AddressSanitizer, which checks explicitly (SCR_WASM_ASAN in scr_wasm.c). ThreadSanitizer's own
-    // handler reports such a signal as fatal.
-    if (/\bWebAssembly\b/.test(source)) continue;
+    if (skipReason(source) !== null) continue;
     programs.push(file);
   }
   return programs;
 }
 
-/** The text of the `clang` that stands in front of the real one. */
+/** The text of the `clang` that stands in front of the real one.
+ * @param {string} real
+ * @returns {string} */
 export function shimSource(real) {
   return `#!/bin/sh
 # Written by scripts/tsan-workers.mjs: the sanitized build's clang, with ThreadSanitizer for AddressSanitizer.
@@ -120,7 +199,9 @@ function run(command, args, { env, timeout }) {
   });
 }
 
-/** What a finished run means: null when it is fine, otherwise the reason it fails. */
+/** What a finished run means: null when it is fine, otherwise the reason it fails.
+ * @param {{ status: number | null, signal: string | null, timedOut: boolean, stderr: string }} result
+ * @returns {string | null} */
 export function verdict({ status, signal, timedOut, stderr }) {
   if (timedOut) return "ran out of time";
   if (stderr.includes("WARNING: ThreadSanitizer") || status === raceStatus) {
@@ -158,22 +239,20 @@ async function main() {
   }
   mkdirSync(out, { recursive: true });
   const buildEnv = { ...process.env, PATH: `${toolchain(out)}${delimiter}${process.env.PATH}` };
-  const runEnv = {
-    ...process.env,
-    TSAN_OPTIONS: `suppressions=${suppressions}:halt_on_error=0:exitcode=${raceStatus}:print_suppressions=0`,
-  };
   const failures = [];
   const queue = programs.map((program, index) => ({ program, index }));
   const worker = async () => {
     for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
       const name = relative(root, item.program);
       const binary = join(out, `program-${item.index}`);
+      const source = readFileSync(item.program, "utf8");
       const build = await run(
         process.execPath,
         [
           join(root, "packages", "cli", "dist", "main.js"),
           "build",
           item.program,
+          ...buildArguments(source),
           "--sanitize",
           "-o",
           binary,
@@ -182,7 +261,7 @@ async function main() {
       );
       let reason = build.status === 0 ? null : `build failed\n${build.stderr.slice(-4000)}`;
       if (reason === null) {
-        const result = await run(binary, [], { env: runEnv, timeout: 300_000 });
+        const result = await run(binary, [], { env: runEnvironment(source), timeout: 300_000 });
         reason = verdict(result);
         if (reason !== null) reason += `\n${result.stderr.slice(-8000)}`;
         rmSync(binary, { force: true });

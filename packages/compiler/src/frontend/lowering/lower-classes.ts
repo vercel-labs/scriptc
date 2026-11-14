@@ -474,22 +474,29 @@ function constructorReachesInstance(
   return ctor.parameters.nodes.some(parameterReaches) || visit(ctor.body);
 }
 
-/** Whether an instance index signature is `[key: string]: any` or
- * `[key: string]: unknown`: a string key, and a value the checked-dynamic
- * read answers as it is, an absent property included. */
-function indexSignatureReadsDynamic(
-  lowerer: Lowerer,
-  member: ts.IndexSignatureDeclaration,
-): boolean {
+/** Whether an instance index signature compiles: a `string` or `number`
+ * key (a JavaScript property key either way, so both name the instance's
+ * checked-dynamic properties), and a value type that is `any`, `unknown`
+ * or one the compiler maps. A typed value's read answers undefined for a
+ * missing property (Lowerer.classIndexSignatureRead). */
+/** Whether the union `unionId` has an arm for `type`, or for every arm of
+ * `type` when it is a union itself: a value of `type` converts into the
+ * union by its tag. */
+function unionHoldsEveryArm(lowerer: Lowerer, unionId: string, type: IrType): boolean {
+  const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
+  return arms.length > 0 && arms.every((arm) => lowerer.armTag(unionId, arm) >= 0);
+}
+
+function indexSignatureLowers(lowerer: Lowerer, member: ts.IndexSignatureDeclaration): boolean {
   if (!isInstanceIndexSignature(member)) return false;
   const parameter = member.parameters.nodes.length === 1 ? member.parameters.nodes[0] : undefined;
   if (!parameter?.type || !member.type) return false;
   const key = lowerer.checker.getTypeFromTypeNode(parameter.type);
+  if ((key.flags & (ts.TypeFlags.String | ts.TypeFlags.Number)) === 0) return false;
   const value = lowerer.checker.getTypeFromTypeNode(member.type);
-  return (
-    (key.flags & ts.TypeFlags.String) !== 0 &&
-    (value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
-  );
+  if ((value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  const mapped = lowerer.mapTypeOf(value);
+  return mapped !== null && mapped.kind !== "void";
 }
 
 /** `Symbol.hasInstance` over the standard global. */
@@ -3246,25 +3253,20 @@ export function collectClassShapeInner(
           !isJsSourceFile(ts.getSourceFileOfNode(member))
         ) {
           const isGet = ts.isGetAccessorDeclaration(member);
-          const type = lowerer.mapTypeOf(lowerer.typeOf(member.name));
-          const twin = staticMethods.get(`${isGet ? "set" : "get"}:${member.name.text}`);
-          const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
-          if (
-            type &&
-            type.kind !== "void" &&
-            (isGet || member.parameters.nodes.length === 1) &&
-            (twinType === null || typeEquals(twinType, type))
-          ) {
+          // A setter takes its parameter's type, which may differ from the
+          // getter's (tsc 5.1+ admits unrelated annotated halves): a write
+          // converts into it and a read answers the getter's type.
+          const parameter = isGet ? undefined : member.parameters.nodes[0];
+          const type = lowerer.mapTypeOf(
+            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(member.name),
+          );
+          if (type && type.kind !== "void" && (isGet || member.parameters.nodes.length === 1)) {
             staticMethods.set(
               `${isGet ? "get" : "set"}:${member.name.text}`,
               isGet
                 ? { params: [], ret: type, member }
                 : { params: [{ type, mode: "required" }], ret: VOID, member },
             );
-          } else if (twin && twinType !== null) {
-            // One property, one type: a pair whose halves disagree has no
-            // single storage type, so neither half lowers.
-            staticMethods.delete(`${isGet ? "set" : "get"}:${member.name.text}`);
           }
         }
         // GENERIC static methods monomorphize like top-level generic
@@ -4709,23 +4711,36 @@ export function collectClassShapeInner(
           if (isGet) sig.ret = DYN;
           else for (const parameter of sig.params) parameter.type = DYN;
         }
-        // One property, ONE type: tsc (5.1+) admits get/set pairs with
-        // unrelated annotated types; a property slot here has a single
-        // IR type, so the pair must agree exactly.
-        const twin = methods.get(`${isGet ? "set" : "get"}:${prop}`);
-        const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
-        const ownType = isGet ? sig.ret : sig.params[0]!.type;
-        if (twinType && !typeEquals(twinType, ownType)) {
-          const message = `getter/setter pairs with different types (the property '${prop}' must have one type)`;
-          if (confinesAccessor && !(inheritedAccessor && inheritedAccessor.declarer.decl == null)) {
-            refuseAccessor(twinType, unsupportedDiag("SC1090", locOf(member.name), message));
-            continue;
-          }
-          lowerer.unsupported("SC1090", member.name, message);
-        }
+        // A get/set pair may declare different types (tsc 5.1+ admits
+        // unrelated annotated halves, as WebIDL attributes whose setter
+        // converts its input do): each half keeps its own signature, a read
+        // calls the getter and a write converts its value into the setter's
+        // parameter type (classFieldTarget picks the type by the access).
         // Same exactness rule as methods — an accessor override keeps
         // the overridden accessor's type (getter return / setter param).
         const overridden = lowerer.findMethodOn(base, mName);
+        // A getter narrowed to part of its base's union return (`get
+        // ownerDocument(): Document` over `Document | null`), which tsc
+        // admits because the property type only narrows: it returns
+        // through the base's union ABI, as a method override narrowed the
+        // same way does, and a read the checker types as the narrower type
+        // narrows the value back. A setter whose parameter narrows keeps the
+        // refusal: the base's slot can hand it a value its type excludes.
+        // A getter narrowed to a subclass of its base's class return (`get
+        // pet(): Dog` over `Animal`) shares the base's pointer ABI, as a
+        // nominal covariant method return does.
+        if (
+          isGet &&
+          overridden &&
+          overridden.sig.params.length === 0 &&
+          !typeEquals(overridden.sig.ret, sig.ret) &&
+          ((overridden.sig.ret.kind === "union" &&
+            unionHoldsEveryArm(lowerer, overridden.sig.ret.unionId, sig.ret)) ||
+            (overridden.sig.ret.kind === "object" &&
+              sig.ret.kind === "object" &&
+              lowerer.isSubclassOf(sig.ret.className, overridden.sig.ret.className)))
+        )
+          sig.ret = overridden.sig.ret;
         if (
           overridden &&
           (overridden.sig.params.length !== sig.params.length ||
@@ -4733,7 +4748,7 @@ export function collectClassShapeInner(
             !typeEquals(overridden.sig.ret, sig.ret))
         ) {
           const message =
-            "overriding an accessor with a different type (the property type must match the base declaration exactly)";
+            "overriding an accessor with a different type (a getter may narrow its base getter's type; a setter's parameter must match the base declaration exactly)";
           if (confinesAccessor && overridden.declarer.decl != null) {
             refuseAccessor(
               isGet ? overridden.sig.ret : overridden.sig.params[0]!.type,
@@ -4756,14 +4771,15 @@ export function collectClassShapeInner(
         // a name is read and written where every undeclared property of a
         // class instance already lives, the instance's checked-dynamic view
         // (the member read's and write's own fallbacks; `(x as any).name`
-        // reaches the same property). The value type must be `any` or
-        // `unknown`: a read through any other type would have to convert an
-        // absent property into a type that has no `undefined`.
-        if (!indexSignatureReadsDynamic(lowerer, member)) {
+        // reaches the same property). A `number` key names the same
+        // properties (JavaScript keys are strings). A read through a typed
+        // value keeps the undefined of an absent property as the value type
+        // armed with undefined, as a record index-signature read does.
+        if (!indexSignatureLowers(lowerer, member)) {
           lowerer.unsupported(
             "SC1090",
             member,
-            "a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property)",
+            "a class index signature whose key is not 'string' or 'number', or whose value type does not compile",
           );
         }
       } else if (!ts.isSemicolonClassElement(member)) {
@@ -5115,6 +5131,16 @@ export function collectClassShapeInner(
           ? declSymbolOf(lowerer, decl)
           : undefined;
       const instType = classSym ? lowerer.checker.getDeclaredTypeOfSymbol(classSym) : undefined;
+      // A runtime-provided base (`extends Array`, a builtin with no program
+      // declaration, so no ClassInfo base): an assignment to a name its
+      // instance type declares (`this.length = 0`) writes the inherited
+      // property, as in Node, instead of declaring an own field over it.
+      const builtinBaseTypes =
+        base === null && instType && (instType.flags & ts.TypeFlags.Object) !== 0
+          ? lowerer.checker.getBaseTypes(instType as ts.InterfaceType)
+          : [];
+      const builtinBaseDeclares = (name: string): boolean =>
+        builtinBaseTypes.some((t) => lowerer.checker.getPropertyOfType(t, name) !== undefined);
       // LATE-BOUND properties (the checker's `__@name@id` spelling —
       // `this[kLimit] = v` where kLimit is a unique symbol const) by
       // their KEY symbol: the scan below needs the checker's property
@@ -5159,7 +5185,7 @@ export function collectClassShapeInner(
             if (errorRooted && name === "cause") continue;
             // Later assignments to an already-declared field (own or
             // inherited) are writes, not declarations.
-            if (fields.has(name) || hasAccessor(name)) continue;
+            if (fields.has(name) || hasAccessor(name) || builtinBaseDeclares(name)) continue;
             if (methods.has(name) || lowerer.findMethodOn(base, name)) {
               // An own JS callable shadows its prototype declaration.
               // Keep the method in the prototype and store the assigned
@@ -5336,6 +5362,7 @@ export function collectClassShapeInner(
         if (errorRooted && ts.symbolName(p) === "cause") continue;
         if (fields.has(ts.symbolName(p)) || methods.has(ts.symbolName(p))) continue;
         if (hasAccessor(ts.symbolName(p))) continue;
+        if (builtinBaseDeclares(ts.symbolName(p))) continue;
         if (
           base &&
           (base.fields.has(ts.symbolName(p)) || lowerer.findMethodOn(base, ts.symbolName(p)))
@@ -5717,6 +5744,48 @@ export function collectClassShapeInner(
  * unmapped, the fenced-JS-class story. Null answers (unmappable type
  * arguments, the instance cap, an uncollected family) make the whole
  * reference unmappable — per-site diagnostics own the fence. */
+/** The ERASED instantiation of a generic class: every one of its own type
+ * parameters bound to the checked-dynamic value, the class JavaScript runs
+ * for any type arguments (erasedGenericInstance is the same for generic
+ * functions). A generic class taken as a value (`{ Box }`, `readonly
+ * CustomEvent = CustomEvent`) is this class, and so is its static side
+ * `typeof Box`: a `new` through the value that infers nothing binds an
+ * unconstrained parameter to `unknown` (or an `any` default), which is the
+ * same instantiation. */
+export function erasedGenericClassType(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+): IrType | null {
+  const symbol = decl.name ? lowerer.checker.getSymbolAtLocation(decl.name) : undefined;
+  const declared = symbol ? lowerer.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
+  if (!declared) return null;
+  const own = new Set(
+    (decl.typeParameters?.nodes ?? []).map((tp) => lowerer.checker.getSymbolAtLocation(tp.name)),
+  );
+  const erased = genericClassInstanceType(lowerer, decl, declared, (type) =>
+    (type.flags & ts.TypeFlags.TypeParameter) !== 0 && own.has(type.getSymbol())
+      ? DYN
+      : lowerer.mapTypeOf(type),
+  );
+  if (erased?.kind === "object") lowerer.erasedGenericClasses.set(erased.className, decl);
+  return erased;
+}
+
+/** Every registered instantiation of the generic family whose erased
+ * instantiation is `className`, or null when `className` is not one. */
+export function erasedGenericFamily(lowerer: Lowerer, className: string): ClassInfo[] | null {
+  const decl = lowerer.erasedGenericClasses.get(className);
+  const family = decl ? lowerer.genericClassByDecl.get(decl) : undefined;
+  if (!family) return null;
+  const members: ClassInfo[] = [];
+  for (const instance of family.instances.values()) {
+    if (instance.poisoned) continue;
+    const info = instance.info ?? lowerer.classes.get(instance.name);
+    if (info) members.push(info);
+  }
+  return members;
+}
+
 export function genericClassInstanceType(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
@@ -6814,9 +6883,18 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
     lowerer.unsupported("SC1090", blame, "named self references inside function-local classes");
   }
   if (info.generic) {
-    // `typeof Box` — the uninstantiated FAMILY as a value: no thunk, no
-    // single constructor ABI. INSTANTIATIONS have class objects
-    // (`const B = Box<number>`, `new (v: number) => Box<number>` slots).
+    // `Box` as a value, the uninstantiated FAMILY: its erased
+    // instantiation's class object (erasedGenericClassType), the one class
+    // JavaScript holds whatever the type arguments. Instantiation
+    // expressions (`Box<number>`) keep their own instantiation.
+    const erased = info.decl ? erasedGenericClassType(lowerer, info.decl) : null;
+    const erasedInfo =
+      erased?.kind === "object"
+        ? (lowerer.classes.get(erased.className) ??
+          lowerer.flushDeferredClass(erased.className) ??
+          undefined)
+        : undefined;
+    if (erasedInfo && !erasedInfo.generic) return classValueRef(lowerer, erasedInfo, blame);
     lowerer.unsupported(
       "SC1090",
       blame,

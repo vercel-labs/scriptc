@@ -13135,6 +13135,7 @@ export function lowerObjectMethodCall(
         arrayClassOwner,
         lowerer.lowerExpr(access.expression),
         access.expression,
+        access.name.text,
       );
     const receiver = specializedReceiver ?? lowerer.lowerExpr(access.expression);
     const optional = lowerer.runtimeOptionalPropertyReceiver(

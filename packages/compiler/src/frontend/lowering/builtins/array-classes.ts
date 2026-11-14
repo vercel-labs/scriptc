@@ -15,6 +15,8 @@ import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
 import { storedClassValueType, type ClassInfo } from "../lower-classes.js";
+import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
+import { v8CalleeText } from "../expressions/narrowing.js";
 import {
   BOOL,
   DYN,
@@ -133,7 +135,63 @@ export function arrayClassReceiver(
       node,
       "members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class)",
     );
-  return arrayClassView(info, value, locOf(node));
+  return checkedArrayClassView(lowerer, info, value, node, member, action);
+}
+
+/** The class object of `value`, an array the checker types as an instance
+ * of `info`. The class's type is its array type, so a plain array reaches
+ * here as well: one parsed from JSON into a `C[]` parameter, or an array
+ * asserted to be the class (`xs as C`). Only an array whose class is `info`
+ * has the class's fields after its header, so any other array throws the
+ * catchable TypeError: Node's "is not a function" for a method call, and
+ * for a field or accessor, which Node would read as a missing property of
+ * the plain array, a TypeError naming the member. `this` inside the class
+ * (an instance viewed as its array) is an instance already. */
+function checkedArrayClassView(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  node: ts.Expression,
+  member: string,
+  action: "read" | "set",
+): IrExpr {
+  const loc = locOf(node);
+  if (
+    value.kind === "upcast" &&
+    value.value.type.kind === "object" &&
+    value.value.type.className === info.def.name
+  )
+    return value.value;
+  const objectType: IrType = { kind: "object", className: info.def.name };
+  const repeat = isSafeToRepeat(value);
+  const stable = repeat ? null : lowerer.declareHiddenLocal("%arrayClassRecv", value.type);
+  const ref = (): IrExpr =>
+    repeat ? value : { kind: "varRef", localId: stable!.id, type: value.type, loc };
+  const access = node.parent;
+  const call =
+    access !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access;
+  const className = info.def.jsName ?? info.def.name;
+  const message = call
+    ? `${v8CalleeText(access)} is not a function`
+    : `Cannot ${action} '${member}' of an array that is not a ${className} instance`;
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "instanceOf", value: ref(), className: info.def.name, type: BOOL, loc },
+    then: arrayClassView(info, ref(), loc),
+    else_: nodeThrowExpr(1, "", message, objectType, loc),
+    type: objectType,
+    loc,
+  };
+  if (stable === null) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: value, loc }],
+    result,
+    type: objectType,
+    loc,
+  };
 }
 
 function thisArray(info: ClassInfo, thisLocal: IrLocal, loc: SrcLoc): IrExpr {

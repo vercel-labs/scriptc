@@ -74,7 +74,8 @@ export interface NativeLinkFeatures {
    * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
-   * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+   * SCR_STREAM_WRITE_ERRORS build of the stream unit, which compiles the
+   * adapter handing that callback the completion's error. */
   streamWriteErrors?: boolean;
   /** The program holds a process output stream as a value, so it can
    * replace the stream's write method. With Node islands it links
@@ -211,6 +212,9 @@ export interface NativeLinkFeatures {
   /** Web streams in checked-dynamic code: scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** The stream/web statics (Readable/Writable/Duplex toWeb and fromWeb):
+   * scr_stream_web.c. */
+  streamWeb?: boolean;
   /** A program that builds a Blob or File: selects scr_fetch.c's
    * SCR_WEB_BODIES build, which sends the blob's bytes and its type as
    * Content-Type, as Node does. Absent (false) for programs that build

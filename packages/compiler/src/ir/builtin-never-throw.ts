@@ -85,6 +85,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childResume",
   "stream.childIsPaused",
   "stream.childFlowing",
+  // scr_stream_get_default_hwm reads the private the setter stored, and the
+  // dyn form only asks its argument for truthiness; neither coerces or
+  // allocates, so neither can fail.
+  "stream.getDefaultHwm",
+  "stream.getDefaultHwmDyn",
   // subprocess.channel answers the child's IPC state: undefined when it
   // never had a channel, null once it closed, else a handle over the
   // child. The island path reads the island ChildProcess's `channel`

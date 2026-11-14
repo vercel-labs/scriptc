@@ -1445,6 +1445,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "process.nextTick") return host.emitAsyncContextLibCall(e);
   if (
     e.fn === "sp.pipeline" ||
+    e.fn === "sp.pipelineMissing" ||
     e.fn.startsWith("sp.pipelineStages") ||
     e.fn.startsWith("sp.pipelineOpts") ||
     e.fn.startsWith("sp.finishedOpts")

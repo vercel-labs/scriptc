@@ -44,7 +44,13 @@
   `readableAborted`, `readableDidRead`, `readableEncoding`, and `writableAborted` read as in Node, on a typed stream and through an untyped value.
   `writableAborted` is `undefined` on a `Duplex`, `Transform`, or `PassThrough`, as in Node, so a `boolean` slot refuses that read with a TypeError.
   `stream[Symbol.asyncDispose]()` and `await using` work on a value typed as a stream class; on an untyped value they are unsupported.
-  `stream.setDefaultHighWaterMark`, `stream.duplexPair`, `readable.wrap`, `Readable.toWeb`, `Writable.toWeb`, `Writable.fromWeb`, `Duplex.fromWeb`, and `Duplex.toWeb` are unsupported.
+  `stream.getDefaultHighWaterMark` and `stream.setDefaultHighWaterMark` read and set the default every stream built afterwards takes, with Node's error for a value that is not a non-negative integer.
+  `stream.duplexPair` returns a connected pair of `Duplex` streams, each side reading what is written to the other.
+  `readable.wrap(source)` answers the receiver, which the source's `data`, `end`, `error`, `close`, and `destroy` events drive: a push past its high-water mark pauses the source, and its next read resumes it.
+  An old-style source that is not a native stream is unsupported.
+  `Readable.toWeb` adapts a node `Readable` to a `ReadableStream` in its default or `type: "bytes"` form, `Writable.toWeb` adapts a `Writable` to a `WritableStream` whose writes settle on the node stream's own callbacks, and `Duplex.toWeb` adapts a `Duplex` to a `{ readable, writable }` pair whose keys are writable then readable; a destroyed stream adapts to a closed web stream.
+  `Writable.fromWeb` and `Duplex.fromWeb` build the node stream over a web `WritableStream` or `ReadableWritablePair`, with `objectMode`, `highWaterMark`, `encoding`, `decodeStrings`, `allowHalfOpen`, and `signal` options.
+  The five adapters validate their arguments and options as Node does, down to the message.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

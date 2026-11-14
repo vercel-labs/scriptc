@@ -5720,6 +5720,39 @@ function buildLibFnSignatures() {
      * unit (addAbortListener). */
     "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
     "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
+    /** stream.getDefaultHighWaterMark(objectMode): the current default the
+     * next stream takes; setDefaultHighWaterMark(objectMode, value) moves
+     * it (Node's validateInteger(value, 'value', 0) — a non-number is
+     * ERR_INVALID_ARG_TYPE, a non-integer or out-of-range one
+     * ERR_OUT_OF_RANGE). The Dyn twins take the JS lane's arguments as
+     * checked-dynamic values (objectMode by truthiness). */
+    "stream.getDefaultHwm": { argTypes: [BOOL], result: F64 },
+    "stream.getDefaultHwmDyn": { argTypes: [DYN], result: F64 },
+    "stream.setDefaultHwm": { argTypes: [BOOL, F64], result: VOID },
+    "stream.setDefaultHwmDyn": { argTypes: [DYN, DYN], result: VOID },
+    /** stream.duplexPair's two sides (internal/streams/duplexpair.js): the
+     * first makes one DuplexSide from the options record, the second makes
+     * its peer from the same record and links the two. */
+    "stream.duplexPairSide": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Duplex" },
+    },
+    "stream.duplexPairPeer": {
+      argTypes: [DYN, { kind: "object", className: "%Duplex" }],
+      result: { kind: "object", className: "%Duplex" },
+    },
+    /** The stream/web statics (scr_stream_web.c): Node's
+     * internal/webstreams/adapters.js. The toWeb forms answer the web
+     * stream (+1); the fromWeb forms answer the node stream (+1, the IR
+     * expression names %Writable / %Duplex). `options` is checked and read
+     * with Node's own rules (a non-object throws ERR_INVALID_ARG_TYPE),
+     * so it crosses as a checked-dynamic value; the lowering passes Dyn
+     * undefined for an omitted argument. */
+    "stream.readableToWeb": { argTypes: [DYN, DYN], result: DYN },
+    "stream.writableToWeb": { argTypes: [DYN], result: DYN },
+    "stream.duplexToWeb": { argTypes: [DYN, DYN], result: DYN },
+    "stream.writableFromWeb": { argTypes: [DYN, DYN], result: VOID },
+    "stream.duplexFromWeb": { argTypes: [DYN, DYN], result: VOID },
     "stream.finished": { argTypes: [null, null], result: VOID },
     "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
     "stream.pipeline": { argTypes: [F64], result: VOID },
@@ -5757,6 +5790,9 @@ function buildLibFnSignatures() {
     "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
     "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
     "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+    /** pipeline's fewer-than-two-stages ladder in the promise form: an
+     * already-rejected promise (ERR_MISSING_ARGS). */
+    "sp.pipelineMissing": { argTypes: [], result: { kind: "promise", inner: VOID } },
     /** pipeline with function stages: [n, k, positions, flags, mask,
      * s1..sn, stage1..stagek, helpers..., box?, (signal, abort)?] (+ the
      * callback for the stream.* forms): the user's stage functions at the
@@ -5821,18 +5857,34 @@ function buildLibFnSignatures() {
     "readable.pushNull": { argTypes: [null], result: BOOL },
     "readable.pushU": { argTypes: [null, null], result: BOOL },
     "readable.pushDyn": { argTypes: [null, DYN], result: BOOL },
-    "readable.unshift": { argTypes: [null, BYTES_U8], result: VOID },
-    "readable.unshiftDyn": { argTypes: [null, DYN], result: VOID },
-    "readable.unshiftStr": { argTypes: [null, STRING], result: VOID },
+    /** unshift answers Node's canPushMore, as push does. */
+    "readable.unshift": { argTypes: [null, BYTES_U8], result: BOOL },
+    "readable.unshiftStr": { argTypes: [null, STRING], result: BOOL },
+    /** unshift(value[, encoding]): the chunk and the encoding dispatch by
+     * dyn tag (a falsy encoding keeps the stream's defaultEncoding, a
+     * non-string one reads as utf8, an unknown name throws). */
+    "readable.unshiftDyn": { argTypes: [null, DYN], result: BOOL },
+    "readable.unshiftDynEnc": { argTypes: [null, DYN, DYN], result: BOOL },
+    /** unshift(chunk, enc) with a literal encoding (the canonical name): the
+     * chunk is read with it, then converted to the stream's decoder
+     * encoding, as readableAddChunkUnshiftByteMode does. */
+    "readable.unshiftStrEnc": { argTypes: [null, STRING, STRING], result: BOOL },
     "stream.onDyn": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
     "readable.readDyn": { argTypes: [null, DYN], result: DYN },
     "readable.read": { argTypes: [null, F64], result: VOID },
     "readable.pause": { argTypes: [null], result: VOID },
     "readable.setEncoding": { argTypes: [null, STRING], result: VOID },
+    /** setEncoding with an encoding known only at run time: falsy installs
+     * no decoder, an unknown name throws ERR_UNKNOWN_ENCODING. */
+    "readable.setEncodingDyn": { argTypes: [null, DYN], result: VOID },
     /** push(chunk, enc) with a literal non-utf8 encoding, and the
      * defaultEncoding option's push side (how push(string) decodes —
      * Buffer.from(chunk, enc)); both carry the CANONICAL literal. */
     "readable.pushStrEnc": { argTypes: [null, STRING, STRING], result: BOOL },
+    /** push(chunk, enc) with a literal spelling Node's decoder does not
+     * know (or the empty string): the runtime's readableAddChunk decides,
+     * ignoring the encoding on an object-mode stream. */
+    "readable.pushDynEnc": { argTypes: [null, DYN, DYN], result: BOOL },
     "readable.pushEncoding": { argTypes: [null, STRING], result: VOID },
     /** The `encoding` option as the program spelled it, when that is not
      * the canonical name: what readableEncoding answers. Answers the
@@ -5947,6 +5999,10 @@ function buildLibFnSignatures() {
     "readable.opOnceOptions": { argTypes: [], result: DYN },
     "readable.resume": { argTypes: [null], result: VOID },
     "readable.isPaused": { argTypes: [null], result: BOOL },
+    /** readable.wrap(src): the old-style source's events drive the receiver,
+     * which answers itself (Node's proxy of the source's own methods is a
+     * no-op for a native stream). */
+    "readable.wrap": { argTypes: [null, null], result: VOID },
     "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },
     "readable.pipeGeneral": { argTypes: [null, null, BOOL], result: VOID },
     "readable.unpipe": { argTypes: [null], result: VOID },

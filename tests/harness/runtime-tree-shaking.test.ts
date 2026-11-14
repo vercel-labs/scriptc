@@ -163,7 +163,7 @@ nativeToolchainTest(
     // Symbol absence is the primary reachability contract. Keep a deliberately
     // roomy, platform-specific hello-world ceiling too: it catches losing
     // section GC without pinning an exact linker/SDK byte count. The Linux
-    // build is about 65KB with lld (CI's pinned LLVM provides it) and about
+    // build is about 75KB with lld (CI's pinned LLVM provides it) and about
     // 94KB with GNU ld, which keeps a unit's string literals whole once any of
     // them is reachable. Most of Linux hello's runtime code is the cycle
     // collector, which its exit path reaches (scr_lib_cleanup releases an

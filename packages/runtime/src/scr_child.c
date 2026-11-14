@@ -2390,6 +2390,14 @@ static void scr_child_stream_drain_now(ScrChildStream *s) {
   }
 }
 
+/* Settle-time drain of a reaped child's channel (the POSIX arm's twin):
+ * Windows pipes report a hangup with the data, so a read already reaches
+ * the EOF behind the last chunk in this pass and no read-callback
+ * deferral exists to step over. */
+static void scr_child_stream_drain_settle(ScrChildStream *s) {
+  scr_child_stream_drain_now(s);
+}
+
 void scr_child_stream_on_data(ScrChildStream *s, ScrClosure *cb /*moves*/,
                               ScrChildStreamDataFn fn, bool once) {
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -6124,6 +6132,24 @@ static void scr_child_stream_drain_now(ScrChildStream *s) {
   }
 }
 
+/* The settle drain of a channel whose child has been reaped. Unlike a read
+ * callback, this read does not end at a short read: the kqueue arm ends a
+ * pass's reads at one and leaves the EOF behind it for the next pass
+ * (scr_fork's short_read_yields, matching libuv's read callback), but here
+ * the child is gone, so its last chunk and the EOF after it are both
+ * readable now. Reading on to the EOF schedules the channel's 'disconnect'
+ * before the 'exit' this settle delivers — the order Node reports for a
+ * child that disconnects and then exits. Deferring it instead let a child
+ * reaped in the same pass as its last chunk reach 'exit' first, and the
+ * 'close' that followed ran before the delayed 'disconnect'. */
+static void scr_child_stream_drain_settle(ScrChildStream *s) {
+  if (s == NULL || !scr_child_stream_watching(s)) return;
+  bool yields = s->short_read_yields;
+  s->short_read_yields = false;
+  scr_child_stream_drain_now(s);
+  s->short_read_yields = yields;
+}
+
 /* The stream an event names, or NULL when that registration is gone (the
  * stream ended or lost its last consumer earlier in the pass). */
 static ScrChildStream *scr_child_stream_ready_find(ScrChildReady ready) {
@@ -9600,7 +9626,7 @@ static void scr_ipc_settle(ScrIpc *ipc) {
     ipc->eof = true;
     return;
   }
-  scr_child_stream_drain_now(ipc->reader);
+  scr_child_stream_drain_settle(ipc->reader);
   if (!scr_exc_pending()) scr_ipc_service_one(ipc);
 }
 

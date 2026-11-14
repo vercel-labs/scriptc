@@ -350,6 +350,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The other stream/web adapters (Readable/Writable/Duplex toWeb and the
+  // Writable/Duplex fromWeb directions).
+  ["scr_stream_web.c", "streamWeb"],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -634,6 +637,16 @@ export function variantsFor(source) {
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
     });
   }
+  // A program that also links the fetch unit reads its bodies' readers
+  // through that unit, apart from the web stream bridge that the classes
+  // install; every other program keeps the default object, byte for byte.
+  if (source === "scr_stream_web.c") {
+    variants.push({
+      id: "fetch",
+      when: { nativeFetch: true },
+      defines: ["SCR_STREAM_WEB_FETCH"],
+    });
+  }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.
   if (source === "scr_async.c") {
@@ -689,6 +702,11 @@ export function variantsFor(source) {
       when: { streamWriteErrors: true },
       defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
+    // The pair's empty-chunk test asks an object-mode array chunk for its
+    // length, which the object model build keeps apart from the dense prefix
+    // (scr_dyn.h's scr_dyn_arr_length). Pushed last, so each build above
+    // gets a counterpart.
+    withJsObjectModel(variants);
   }
   // fs.ReadStream / fs.WriteStream options that can hold a `signal`: the
   // fs stream unit applies it, with the event-target unit's abort listener;

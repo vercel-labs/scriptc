@@ -84,6 +84,35 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
+/* The String() answer to ERR_UNKNOWN_ENCODING, for a program whose stream use
+ * links no inspect unit (scr_inspect.h). scr_stream.c calls this builder from
+ * every program that uses streams, so the reference must be defined without
+ * the inspect unit: this weak definition is that reference, and scr_inspect.c
+ * defines the function strongly to render util.format's %s instead. A link
+ * that includes that unit replaces this one; the weak reference that used to
+ * live in scr_stream.c left an undefined symbol on Darwin. String() is the
+ * right text for a number, a boolean, a string, a Buffer and an object with
+ * its own toString; the inspect unit is what renders other objects at
+ * depth 0. */
+__attribute__((weak)) ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) {
+  ScrDyn *value = (ScrDyn *)enc;
+  ScrStr *text;
+  if (value->kind == SCR_DYN_NUM) {
+    char buf[40];
+    size_t n = scr_f64_to_str(value->v.num, buf);
+    text = scr_str_new(buf, n);
+  } else {
+    text = scr_dyn_string_coerce_js(value);
+  }
+  /* A conversion that called program code which threw leaves it to throw. */
+  if (!text) return NULL;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Unknown encoding: ");
+  scr_jb_put_str(&b, text);
+  scr_str_release(text);
+  return scr_jb_finish(&b);
+}
 /* Set by scr_module_namespace_dyn.c when this thread boxes a module
  * namespace. Thread-local like the boxes it answers for: a thread that
  * boxed no namespace has no branded value. */
@@ -8754,6 +8783,21 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
       bool keys = false;
       for (size_t i = 0; i < cb->v.obj.len && !keys; i++) keys = scr_dyn_obj_dict_entries(cb)[i].enumerable;
       d = keys ? "[Object: null prototype]" : "[Object: null prototype] {}";
+    } else if (scr_dyn_obj_get(cb, "%error", 6) != NULL) {
+      /* Node names the constructor of an error value, so its view reports
+       * the error class rather than "Object". */
+      ScrError *err = scr_errdyn_err_of(cb);
+      if (err != NULL && err->vt == &scr_error_vts[SCR_ERR_DOMEX]) {
+        d = "an instance of DOMException";
+      } else if (err != NULL) {
+        ScrStr *name = scr_error_default_name(err);
+        snprintf(detail, cap, "an instance of %.*s", (int)name->len, name->data);
+        scr_str_release(name);
+        d = detail;
+      } else {
+        d = "an instance of Error";
+      }
+      scr_error_release(err);
     } else {
       d = "an instance of Object";
     }

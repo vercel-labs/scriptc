@@ -647,7 +647,7 @@ function writeRefusals(snapshot) {
   writeFileSync(publishedRefusalsPath, rendered);
 }
 
-function publicDetail(tier) {
+function publicDetail(tier, row) {
   const source = tier.evidence ?? "";
   if (source === "derived:descendants") return "Derived from the exact API rows in this chapter.";
   if (tier.status === "island-served")
@@ -1033,6 +1033,47 @@ function publicDetail(tier) {
       return "Not implemented: a test pins the refusal a program using this API gets.";
     if (tier.status === "not-implemented")
       return "Not implemented in scriptc's static module-loader subset yet.";
+    if (source === "compiler-feature:stream.stream.Readable.from") {
+      return "Builds a Readable from strings, Buffers, arrays, Sets, Maps, generators and class iterables, with the objectMode, highWaterMark, encoding and signal options; a source known only at run time keeps the checked-dynamic form's option refusal.";
+    }
+    if (
+      source === "compiler-feature:stream.stream.getDefaultHighWaterMark" ||
+      source === "compiler-feature:stream.stream.setDefaultHighWaterMark"
+    ) {
+      return "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.";
+    }
+    if (source === "compiler-feature:stream.readable.wrap") {
+      return "Answers for an old-style source: its data and end events feed this stream, a push past this stream's high-water mark pauses the source, and its error, close, or destroy destroys this stream.";
+    }
+    if (source === "compiler-feature:stream.stream.duplexPair") {
+      return "Returns a connected Duplex pair whose sides carry the tested write, end, destroy, and option-validation behavior.";
+    }
+    if (
+      /^compiler-feature:stream\.stream\.(?:Readable|Writable|Duplex)\.(?:toWeb|fromWeb)$/.test(
+        source,
+      )
+    ) {
+      return "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.";
+    }
+    if (source === "compiler-feature:stream.stream.pipeline") {
+      return "Supports the stream-list forms with an array literal or a const list of stages, expanded as Node's pipelineImpl does, including the fewer-than-two-stages errors; a stage list built at run time is refused at compile time.";
+    }
+    if (
+      row?.chapter === "stream" &&
+      /^`(?:closed|destroyed|errored|readable[A-Za-z]*|writable[A-Za-z]*)` Type: \{[^}]*\}$/.test(
+        row.signature,
+      )
+    ) {
+      return "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.";
+    }
+    if (
+      row?.chapter === "stream" &&
+      /^Event: `'(?:close|data|drain|end|error|finish|pause|pipe|readable|resume|unpipe)'`$/.test(
+        row.signature,
+      )
+    ) {
+      return "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.";
+    }
     if (
       /^compiler-feature:stream\.stream\.(?:isDestroyed|isErrored|isDisturbed|isReadable|isWritable|Readable\.isDisturbed)$/.test(
         source,
@@ -1443,7 +1484,7 @@ function publicSnapshot(snapshot) {
       nodeStability: row.nodeStability,
       static: {
         status: row.static.status,
-        detail: publicDetail(row.static),
+        detail: publicDetail(row.static, row),
         verification: verificationBasis(row.static),
       },
     })),

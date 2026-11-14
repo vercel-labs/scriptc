@@ -212,6 +212,34 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${out} = call i1 @scr_child_ipc_connected(ptr ${child.name})`);
     return { name: out, type: e.type };
   }
+  if (e.fn === "child.stdioCached" || e.fn === "child.stdioArray" || e.fn === "child.stdioStore") {
+    const child = host.emitExpr(e.args[0]!);
+    if (e.fn === "child.stdioCached") {
+      host.declare(`declare zeroext i1 @scr_child_stdio_cached(ptr)`);
+      const out = B.tmp();
+      B.line(`${out} = call i1 @scr_child_stdio_cached(ptr ${child.name})`);
+      return { name: out, type: e.type };
+    }
+    if (e.fn === "child.stdioArray") {
+      host.declare(`declare ptr @scr_child_stdio_cached_array(ptr)`);
+      const out = B.tmp();
+      B.line(`${out} = call ptr @scr_child_stdio_cached_array(ptr ${child.name}) ; +1`);
+      return host.own({ name: out, type: e.type });
+    }
+    const array = host.emitExpr(e.args[1]!);
+    host.declare(`declare void @scr_child_stdio_store(ptr, ptr)`);
+    B.line(`call void @scr_child_stdio_store(ptr ${child.name}, ptr ${array.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "child.stdioLen") {
+    // child.stdio's length: 3 stdio slots, plus the IPC slot a fork has
+    // (scr_child.c's per-arm field: plain data, no program code).
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare double @scr_child_stdio_len(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call double @scr_child_stdio_len(ptr ${child.name})`);
+    return { name: out, type: e.type };
+  }
   if (e.fn === "child.channel") {
     // The Control handle as a checked-dynamic value (+1): undefined for a
     // child without an IPC channel, null after a disconnect.

@@ -5807,6 +5807,11 @@ function validateFunction(
       if (e.type.kind !== "dyn") err("libCall child.channel must return dyn", e.loc);
       return true;
     }
+    if (e.fn === "child.stdioArray") {
+      // The child's cached stdio array, at the call site's own array type.
+      if (e.type.kind !== "array") err(`libCall ${e.fn} must return the stdio array type`, e.loc);
+      return true;
+    }
     return false;
   }
 

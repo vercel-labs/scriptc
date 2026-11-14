@@ -1981,11 +1981,18 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* The launch configured an IPC slot (fork's fourth stdio entry), whether
+   * or not the channel was made: a fork that FAILED to spawn still answers
+   * Node's four-entry stdio array, whose fourth slot is null. */
+  bool ipc_slot;
   ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -2057,6 +2064,7 @@ void scr_child_release(ScrChild *c) {
     if (c->exec_args) scr_arr_release(c->exec_args);
     scr_str_release(c->spawnfile);
     if (c->spawnargs) scr_arr_release(c->spawnargs);
+    if (c->stdio_array) scr_arr_release(c->stdio_array);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -3155,6 +3163,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   scr_arr_release(spawn_args);
   CloseHandle(child_read);
   CloseHandle(child_write);
+  /* A fork always has the IPC slot, even when the launch failed: Node's
+   * stdio array is built from the configured slots, not the live channel. */
+  child->ipc_slot = true;
   if (child->state == SCR_CHILD_RUNNING) {
     child->ipc = scr_ipc_new(scr_child_stream_new(parent_read),
                              scr_child_writer_new(parent_write));
@@ -5328,6 +5339,9 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -5335,6 +5349,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* The launch configured an IPC slot (fork's fourth stdio entry), whether
+   * or not the channel was made: a fork that FAILED to spawn still answers
+   * Node's four-entry stdio array, whose fourth slot is null. */
+  bool ipc_slot;
   ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -5589,6 +5607,7 @@ void scr_child_release(ScrChild *c) {
     if (c->exec_args) scr_arr_release(c->exec_args);
     scr_str_release(c->spawnfile);
     if (c->spawnargs) scr_arr_release(c->spawnargs);
+    if (c->stdio_array) scr_arr_release(c->stdio_array);
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
@@ -7142,6 +7161,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   scr_arr_release(spawn_args);
   close(parent_to_child[0]);
   close(child_to_parent[1]);
+  /* A fork always has the IPC slot, even when the launch failed: Node's
+   * stdio array is built from the configured slots, not the live channel. */
+  child->ipc_slot = true;
   if (child->state == SCR_CHILD_RUNNING) {
     ScrChildStream *reader = scr_child_stream_new(child_to_parent[0]);
 #ifdef SCR_HAVE_KQUEUE
@@ -9678,6 +9700,36 @@ bool scr_child_ipc_present(ScrChild *c) {
 bool scr_child_ipc_connected(ScrChild *c) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_CONNECTED));
   return c->ipc != NULL && c->ipc->connected;
+}
+
+/* ChildProcess.stdio's length: Node's stdio array has one entry per slot the
+ * launch configured. Every child has the three standard slots; a forked
+ * child also has the fourth, IPC slot, whose entry is null. The slot is
+ * configured by the launch, so a fork that failed to spawn still answers
+ * four entries; the absent channel is not an unconfigured slot. An island
+ * child answers with its own ChildProcess object's array, which Node owns. */
+double scr_child_stdio_len(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_len(c->island));
+  return c->ipc_slot ? 4 : 3;
+}
+
+/* ChildProcess.stdio is ONE array per child, as Node's ChildProcess keeps
+ * one: the compiler builds it on the first read and stores it here, and
+ * every later read answers that array. The cache owns a reference; the
+ * child's release drops it with the child. */
+bool scr_child_stdio_cached(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_cached(c->island));
+  return c->stdio_array != NULL;
+}
+
+ScrArr *scr_child_stdio_cached_array(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->stdio_array(c->island));
+  return c->stdio_array != NULL ? scr_arr_retain(c->stdio_array) : NULL;
+}
+
+void scr_child_stdio_store(ScrChild *c, ScrArr *array) {
+  SCR_IF_ISLAND(c, scr_child_island_ops->stdio_store(c->island, array); return);
+  if (c->stdio_array == NULL) c->stdio_array = scr_arr_retain(array);
 }
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->send(c->island, json, NULL, NULL));

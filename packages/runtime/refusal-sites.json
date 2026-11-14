@@ -2324,7 +2324,7 @@
  {
   "file": "scr_json.c",
   "function": "scr_dyn_check_fail",
-  "message": " (a native Proxy keeps its traps only in an untyped value or a dictionary: declare the value 'any', or a Record<string, T>)",
+  "message": " (a native Proxy keeps its traps only in an untyped value, an interface or object type, or a dictionary, and a class type holds only instances of the class: declare the value 'any', an interface, or a Record<string, T>)",
   "code": "SC2020"
  },
  {

@@ -15804,13 +15804,16 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   if (scr_ni_dyn_handle(got))
     scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
                     "type or 'unknown' for it, or copy it with structuredClone)");
-  /* A native Proxy is a live object whose traps are the value: only an
-   * untyped slot or a string-keyed dictionary can hold one (the frontend
-   * marks the dictionary type), so a fixed-shape record conversion is a
-   * recognized limitation with a name, not a bare type mismatch. */
+  /* A native Proxy is a live object whose traps are the value: an untyped
+   * slot, an interface or object type, or a string-keyed dictionary holds
+   * one (the frontend marks the dictionary type). A program class type is
+   * the class's native layout, which only its instances have, so a
+   * conversion to one is a recognized limitation with a name, not a bare
+   * type mismatch, and the message names the types that do hold it. */
   if (proxy)
-    scr_jb_puts(&b, " (a native Proxy keeps its traps only in an untyped value or a "
-                    "dictionary: declare the value 'any', or a Record<string, T>)");
+    scr_jb_puts(&b, " (a native Proxy keeps its traps only in an untyped value, an interface or object "
+                    "type, or a dictionary, and a class type holds only instances of the class: declare "
+                    "the value 'any', an interface, or a Record<string, T>)");
   ScrStr *message = scr_jb_finish(&b);
   if (proxy) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "SC2020");

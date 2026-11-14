@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-proxy-views-behind-untyped-and-interface-returns/style.ts",
+  "<repo>/tests/corpus/native-proxy-views-behind-untyped-and-interface-returns/page.js",
+  "<repo>/tests/corpus/native-proxy-views-behind-untyped-and-interface-returns/main.ts"
+ ],
+ "diags": []
+}

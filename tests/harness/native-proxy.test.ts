@@ -97,7 +97,7 @@ try {
     expect(stdout).toBe(
       [
         "TypeError",
-        "expected Holder at $, got a native Proxy (a native Proxy keeps its traps only in an untyped value or a dictionary: declare the value 'any', or a Record<string, T>)",
+        "expected Holder at $, got a native Proxy (a native Proxy keeps its traps only in an untyped value, an interface or object type, or a dictionary, and a class type holds only instances of the class: declare the value 'any', an interface, or a Record<string, T>)",
         "SC2020",
         "",
       ].join("\n"),

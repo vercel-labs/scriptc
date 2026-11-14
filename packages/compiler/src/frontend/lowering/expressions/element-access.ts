@@ -342,18 +342,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // lower to the ONE process.envGet intrinsic. The read narrows like any
   // union-typed expression when the checker narrowed this occurrence.
   if (lowerer.isProcessEnv(expr.expression)) {
-    const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        expr.argumentExpression,
-        "indexing process.env with non-string keys",
-      );
-    }
     const get: IrExpr = {
       kind: "libCall",
-      fn: "process.envGet",
-      args: [key],
+      fn: envGetFn(lowerer, expr.argumentExpression),
+      args: [envKeyArg(lowerer, expr.argumentExpression)],
       type: lowerer.envValueType(),
       loc: locOf(expr),
     };
@@ -365,17 +357,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   {
     const live = heldEnvValueType(lowerer, expr.expression);
     if (live !== null) {
-      const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
-      if (key.type.kind === "string") {
-        const get: IrExpr = {
-          kind: "libCall",
-          fn: "process.envGet",
-          args: [key],
-          type: live,
-          loc: locOf(expr),
-        };
-        return lowerer.maybeNarrow(get, expr);
-      }
+      const get: IrExpr = {
+        kind: "libCall",
+        fn: envGetFn(lowerer, expr.argumentExpression),
+        args: [envKeyArg(lowerer, expr.argumentExpression)],
+        type: live,
+        loc: locOf(expr),
+      };
+      return lowerer.maybeNarrow(get, expr);
     }
   }
   // Expando function members in element clothing (`foo[strMem]`,
@@ -2806,26 +2795,31 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       heldEnvValueType(lowerer, target.expression) !== null)
   ) {
     const loc = locOf(expr);
-    const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        target.argumentExpression,
-        "indexing process.env with non-string keys",
-      );
+    // Node's env proxy ToStrings the key and the value (a Symbol on
+    // either side throws); string keys and values keep the fast setenv.
+    if (envKeyIsString(lowerer, target.argumentExpression)) {
+      const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
+      refuseDefinedEnvWrite(lowerer, key, target);
+      if (envKeyIsString(lowerer, expr.right)) {
+        const value = lowerer.lowerExpr(expr.right);
+        return {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+          loc,
+        };
+      }
+      const value = lowerer.lowerExprExpecting(expr.right, DYN);
+      return {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.envSetDyn", args: [key, value], type: VOID, loc },
+        loc,
+      };
     }
-    refuseDefinedEnvWrite(lowerer, key, target);
-    const value = lowerer.lowerExpr(expr.right);
-    if (value.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        expr.right,
-        `assigning '${lowerer.fmt(value.type)}' values to process.env (env values are strings — convert first: \`\${v}\`)`,
-      );
-    }
+    const key = lowerer.lowerExprExpecting(target.argumentExpression, DYN);
+    const value = lowerer.lowerExprExpecting(expr.right, DYN);
     return {
       kind: "exprStmt",
-      expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+      expr: { kind: "libCall", fn: "process.envSetKeyDyn", args: [key, value], type: VOID, loc },
       loc,
     };
   }
@@ -3555,6 +3549,26 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** Whether an environment key expression is statically a string — the
+ * getenv/setenv fast paths that need no conversion. */
+function envKeyIsString(lowerer: Lowerer, node: ts.Expression): boolean {
+  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string";
+}
+
+/** The key argument of an environment read: the plain string, or the
+ * checked-dynamic value whose ToString the runtime runs. Node's proxy
+ * answers undefined for a Symbol key (no conversion, no throw), which the
+ * dynamic getter mirrors. */
+function envKeyArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return envKeyIsString(lowerer, node)
+    ? lowerEnvironmentKey(lowerer, node)
+    : lowerer.lowerExprExpecting(node, DYN);
+}
+
+function envGetFn(lowerer: Lowerer, node: ts.Expression): "process.envGet" | "process.envGetDyn" {
+  return envKeyIsString(lowerer, node) ? "process.envGet" : "process.envGetDyn";
 }
 
 /** A number-keyed read of a union of arrays with a `(T | undefined)[]` arm

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-readonly-annotation.js"
+ ],
+ "diags": []
+}

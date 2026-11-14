@@ -122,12 +122,17 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackGlob",
   "fs.callbackValue",
   "process.deprecationFlag",
+  // process.finalization reports its ExperimentalWarnings through this
+  // unit's deferred warning queue.
+  "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
+  "process.offMultipleResolves",
   "process.offRejectionHandled",
   "process.offUncaughtException",
   "process.offUnhandledRejection",
   "process.offWarning",
+  "process.onMultipleResolves",
   "process.onRejectionHandled",
   "process.onUncaughtException",
   "process.prependUncaughtException",
@@ -135,6 +140,10 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onWarning",
   "process.setDeprecationFlag",
   "process.setEmitWarning",
+  // The uncaught-exception capture callback rides the same dispatch and
+  // teardown machinery as the uncaughtException listeners.
+  "process.hasUncaughtCapture",
+  "process.setUncaughtCapture",
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
@@ -143,6 +152,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.aborted",
   "util.debounce",
   "util.throttle",
+  // util.markPromiseAsHandled reads the checked-dynamic promise box.
+  "util.markPromiseAsHandled",
   "timers.immediatePromise",
   // A timer callback bound to its handle as `this`.
   "timers.thisCallback",
@@ -160,6 +171,14 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // new PerformanceMark and the PerformanceObserver family: their
+  // callbacks run from an immediate (scr_perf.c).
+  "perf.markNew",
+  "perf.observerNew",
+  "perf.observerObserve",
+  "perf.observerDisconnect",
+  "perf.observerTake",
+  "perf.listEntries",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",
@@ -259,11 +278,18 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "events.onceAny",
   "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStreamSignal",
   "fs.createReadStreamSignal",
   "fs.createWriteStreamSignal",
   "http.clientSignal",
+  // The net entries that read a signal option at run time (the socket and
+  // server close on abort through events.addAbortListener).
+  "net.connectDyn",
+  "net.connectDynCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "http.requestDyn",
   "http.requestDynCb",
   "https.requestDyn",
@@ -424,6 +450,10 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.definePropsShapes",
   "dyn.definePrototypeProps",
   "dyn.functionApply",
+  // Object.prototype.isPrototypeOf's walk and Function.prototype as a
+  // value live in scr_dyn_invoke.c.
+  "dyn.isPrototypeOf",
+  "dyn.functionPrototype",
   "dyn.globalConstructor",
   "dyn.namespaceDefine",
   "dyn.namespaceNew",
@@ -441,6 +471,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
   "toString",
   "valueOf",
@@ -490,6 +521,7 @@ export const ARRAY_PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
 
 /** Entry points that link the child-process unit (with CHILD_PROCESS_LIB_PREFIXES): the fork IPC channel on the process object. */
 const CHILD_PROCESS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.channel",
   "process.connected",
   "process.disconnect",
   "process.forkTarget",
@@ -537,9 +569,18 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // A symbol event name's registry key (scr_str_symbol_key lives in the
   // string unit, but the emitter registry holds the symbol itself).
   "emitter.symName",
+  // events.on's iterator answers Symbol.asyncIterator and reads
+  // Symbol.for('nodejs.watermarkData'); a symbol event name keeps its
+  // symbol identity.
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
+  // process.ref/unref read the nodejs.ref / nodejs.unref symbols.
+  "process.ref",
+  "process.unref",
 ]);
 
 /** Entry points that link the querystring unit. */
@@ -811,10 +852,14 @@ function mentionsTextDecoder(t: IrType, tables: TypeTables): boolean {
 /** The libCall fns served by the OPTIONAL events unit (scr_events.c):
  * process signal/exit listeners and the piped-stdin surface. */
 const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "process.offBeforeExit",
   "process.offExit",
   "process.offSignal",
+  "process.finalization",
+  "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",
+  "process.prependBeforeExit",
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
@@ -984,10 +1029,22 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.secureHeapUsed",
+  "crypto.setEngine",
+  "crypto.fipsGet",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   "crypto.diffieHellman",
 ]);
 
@@ -1614,7 +1671,13 @@ const RUNTIME_FEATURE_RULES = {
    * own, so a program that never passes those options keeps the default
    * object, byte for byte. */
   childOptionExt: rule({
-    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+    fns: [
+      "cp.spawnSyncExt",
+      "cp.spawnSyncExtEnv",
+      "cp.execFileCwd",
+      "cp.execFileOpts",
+      "cp.spawnArmed",
+    ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
@@ -1691,6 +1754,22 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
+  /** dns.Resolver and the resolve/reverse/setServers forms (the stub
+   * resolver): scr_dns_resolve.c over the dgram unit, so programs that
+   * only look up names keep their exact link line. */
+  dnsResolve: rule({
+    fns: [
+      "dns.resolveChk",
+      "dns.resolvePromise",
+      "dns.resolveRrChk",
+      "dns.resolveRrPromise",
+      "dns.resolverNew",
+      "dns.resolverIs",
+      "dns.setServers",
+      "dns.promisesSetServers",
+      "dns.promisesGetServers",
+    ],
+  }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -1700,20 +1779,28 @@ const RUNTIME_FEATURE_RULES = {
     // The legacy url functions, crypto.createCipheriv,
     // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
-    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
-    // handles and promises through it.
+    // encrypt and decrypt link scr_cipher.c too), as do the
+    // checked-dynamic Hmac constructors when their key is a CryptoKey
+    // (DEP0203, scr_lib.c); scr_wasm.c boxes its handles and promises
+    // through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.hmacNewDyn",
+      "crypto.hmacNewAny",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      // crypto.fips reports DEP0093 once per process on its first read.
+      "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      "crypto.signOneshotCb",
+      "crypto.verifyOneshotCb",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",
@@ -1784,6 +1871,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
+      // A native Proxy converts and forwards Get through the invoke unit's
+      // Object.prototype table (scr_dyn_inherited_member_hook).
+      "dyn.proxyNew",
       "buffer.prototypeMember",
       "buffer.prototypeObject",
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
@@ -1791,6 +1881,12 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // scr_event_target.c's events.on reads the receiver's pause() and
+      // resume() through scr_dyn_invoke when the compiler handed it no
+      // method value.
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
       // scr_js_wrapper.c answers other values' tags through
       // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
       "wrapper.objectTag",
@@ -1905,6 +2001,11 @@ const RUNTIME_FEATURE_RULES = {
    * Symbol.for for scr_bytes_dyn.c, which registers
    * Symbol(nodejs.util.inspect.custom) as one of its keys. */
   bufferPrototypeObject: rule({ fns: ["buffer.prototypeObject"] }),
+  /** util.inspect read as a value (insp.inspectFunction): the function
+   * object the runtime builds carries
+   * Symbol.for('nodejs.util.inspect.custom') as `custom`, so the program
+   * installs the symbol unit's Symbol.for for it. */
+  inspectFunctionValue: rule({ fns: ["insp.inspectFunction"] }),
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
@@ -1945,7 +2046,24 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    // The events-module helpers whose receiver is resolved at runtime
+    // answer a NodeEventTarget (a MessagePort) or a Worker through its
+    // emitter, so those calls link the emitter unit as well.
+    fns: [
+      ...STREAM_LIB_FNS,
+      ...BUILTIN_CLASS_LIB_FNS,
+      "event.targetListeners",
+      "event.targetListenersDyn",
+      "event.targetListenerCount",
+      "event.targetListenerCountDyn",
+      "event.targetGetMax",
+      "event.targetSetMax",
+      "event.onceTarget",
+      "event.onceTargetSignal",
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
+    ],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
@@ -1956,14 +2074,21 @@ const RUNTIME_FEATURE_RULES = {
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
     // util.debounce and util.throttle register options.signal's listener.
+    // events.on's typed-emitter iterator lives in scr_event_target.c too.
     fns: [
       "events.addAbortListener",
+      "events.onTyped",
       "util.aborted",
       "util.debounce",
       "util.throttle",
       ...ABORT_SIGNAL_LIB_FNS,
     ],
     prefixes: ["event."],
+    // spawn's `signal` option registers through addAbortListener. A call
+    // keeps the slot (the lowering always passes fifteen arguments); an IR
+    // fixture may spell fewer, and an absent one means no signal.
+    libCall: (node) =>
+      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
@@ -1975,12 +2100,25 @@ const RUNTIME_FEATURE_RULES = {
    * byte for byte. */
   webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
-   * A WritableStream controller's signal is one (scr_webstreams.c). */
-  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
+   * A WritableStream controller's signal is one (scr_webstreams.c), and
+   * util.transferableAbortSignal/Controller are the util face of the same
+   * handles. */
+  abortSignal: rule({
+    prefixes: ["abort.", "webstream."],
+    fns: ["util.transferableAbortSignal", "util.transferableAbortController"],
+  }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
-  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
-  eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
+  /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
+   * argument check through the checked-dynamic description, so the
+   * dyn-async unit comes with it. */
+  utilMarkPromiseAsHandled: rule({ fns: ["util.markPromiseAsHandled"] }),
+  /** util.setTraceSigInt (scr_util_trace_sigint.c): a no-op for compiled
+   * programs, kept behind its own unit so nothing else links it. */
+  utilTraceSigInt: rule({ fns: ["util.setTraceSigInt"] }),
+  /** events.once(emitter, name, options), and events.once over a name the
+   * program does not resolve to a typed tuple (scr_events_once_signal.c). */
+  eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
@@ -2217,10 +2355,12 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
    * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
-   * builds its Dirent there. */
+   * builds its Dirent there. A native Proxy's conversion reads
+   * Symbol.toPrimitive and Symbol.toStringTag through its get trap, which
+   * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2239,10 +2379,13 @@ const RUNTIME_FEATURE_RULES = {
   }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
-  /** util.promisify over an untyped function (scr_util_promisify.c): its
-   * promises go through the dyn-async unit and its calls through the
-   * dyn-invoke unit. */
-  utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
+  /** util.promisify's custom protocol (scr_util_promisify_custom.c), in both
+   * lowerings: the untyped one (scr_util_promisify.c) reads it through the
+   * dyn-async and dyn-invoke units, and the typed one runs it over the
+   * boxed function before it builds its static wrapper. */
+  utilPromisify: rule({
+    fns: ["util.promisifyDyn", "util.promisifyCustom", "util.promisifyMark"],
+  }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,
@@ -2318,7 +2461,7 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
-  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn", "module.namespaceCopy"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c), which also own
    * Number.prototype and Boolean.prototype: the value a JavaScript source
    * reads through dyn.builtinPrototype, and the compiled constructor's
@@ -2355,6 +2498,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Fingerprint256",
       "crypto.x509Fingerprint512",
       "crypto.x509InfoAccess",
+      "crypto.x509KeyUsage",
       "crypto.x509Issuer",
       "crypto.x509Raw",
       "crypto.x509RawDer",
@@ -2398,10 +2542,16 @@ const RUNTIME_FEATURE_RULES = {
       "fs.appendFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.appendFileBytesOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
       "fs.writeFileSyncDataFlags",
       "fsp.writeFileDataFlags",
       "fs.writeFileDataOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.writeFileDataOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
@@ -2432,6 +2582,8 @@ const RUNTIME_FEATURE_RULES = {
       "fsp.writeFileDataFlags",
       "fs.writeFileDataOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.writeFileDataOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
       "fs.writeFileSyncFdData",
     ],
   }),
@@ -2488,6 +2640,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgramDyn: false,
     textCodecDyn: false,
     dnsPromises: false,
+    dnsResolve: false,
     dynAsync: false,
     promiseGeneric: false,
     dynBuiltinClass: false,
@@ -2529,6 +2682,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webStreams: false,
     abortSignal: false,
     utilTiming: false,
+    utilMarkPromiseAsHandled: false,
+    utilTraceSigInt: false,
     mockTimers: false,
     net: false,
     netLookup: false,
@@ -2580,6 +2735,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBufferMembers: false,
     genReceiver: false,
     bufferPrototypeObject: false,
+    inspectFunctionValue: false,
     fsPathValue: false,
     builtinValues: false,
     computedRequire: false,

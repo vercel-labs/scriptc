@@ -1,6 +1,7 @@
 /* node:util/types — native runtime brands. Other forms retain their
  * per-member lowering boundaries. */
 declare module "util/types" {
+  export function isArgumentsObject(value: unknown): value is IArguments;
   export function isAnyArrayBuffer(value: unknown): boolean;
   export function isArrayBuffer(value: unknown): value is ArrayBuffer;
   export function isArrayBufferView(value: unknown): value is ArrayBufferView;

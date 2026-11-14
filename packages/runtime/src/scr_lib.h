@@ -51,7 +51,12 @@ const char *scr_lib_arg(int i);
  * right after scr_lib_init, before process.argv is first read. True when
  * the flag was there. */
 bool scr_lib_take_flag(const char *flag);
-/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+/* Takes a leading `name=value` argument out of process.argv the same way,
+ * with *value (when not NULL) naming the text after the '='. True when the
+ * option was there. */
+bool scr_lib_take_flag_value(const char *name, const char **value);
+/* process.execArgv: the flags scr_lib_take_flag* took, in order, or [] (+1,
+ * fresh). */
 ScrArr *scr_process_exec_argv(void);
 /* process.allowedNodeEnvironmentFlags: one interned set of the option
  * names the compatibility target accepts in NODE_OPTIONS (+1 per read). */
@@ -127,6 +132,14 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* The checked-dynamic env accessors (process.env[key], process.env[KEY] =
+ * value, delete process.env[key]): Node's env object converts a string
+ * key with ToString (symbol keys are ignored by get/delete and throw from
+ * set) and every stored value with ToString. */
+ScrStr *scr_env_get_dyn(const ScrDyn *key);
+void scr_env_set_dyn(const ScrStr *name, const ScrDyn *value);
+void scr_env_set_key_dyn(const ScrDyn *key, const ScrDyn *value);
+void scr_env_unset_dyn(const ScrDyn *key);
 /* The process environment's value for one UTF-8, NUL-terminated name, copied:
  * +1 for the caller to free, NULL when the variable is absent. The Win32
  * environment on Windows, getenv(3) elsewhere, so a worker that shares the
@@ -167,9 +180,21 @@ ScrDyn *scr_process_versions(void);
  * borrowed. */
 bool scr_process_kill(double pid, double signum);
 bool scr_process_kill_named(double pid, const ScrStr *signal);
+/* The checked-dynamic argument forms: Node's `pid != (pid | 0)` loose gate
+ * and `sig === (sig | 0)` / `constants[sig]` signal resolution. */
+bool scr_process_kill_sig_dyn(double pid, const ScrDyn *signal);
+bool scr_process_kill_dyn(const ScrDyn *pid, const ScrDyn *signal);
 /* fflush stdout, then _Exit((int)code): no atexit handlers run — the RC
  * audit is deliberately skipped (exiting mid-program leaves live values). */
 void scr_process_exit(double code);
+/* process.abort(): flush the program's output, then terminate by SIGABRT.
+ * Node's stack-trace dump is not reproduced (it names Node's addresses). */
+void scr_process_abort(void);
+/* process.exit(value): the exitCode setter's conversion first (null and
+ * undefined clear the code, a numeric string is Number()'d, anything else
+ * that is not an integer number throws its validation error), then the
+ * same exit sequence. */
+void scr_process_exit_dyn(const ScrDyn *code);
 /* Nonzero hands the address-space teardown after scr_process_exit to a
  * helper process (Linux, `--detached-exit`). scr_lib.c defines a weak 0;
  * the program object of such an executable defines it as 1. */
@@ -184,6 +209,11 @@ double scr_process_exit_code_or_zero(void);
  * the code reads undefined until an assignment (or a nonzero exit status
  * the runtime chose, such as an uncaught exception's 1). */
 void scr_process_set_exit_code_tracked(double code);
+/* The checked-dynamic exitCode write (Node's setter conversion:
+ * null/undefined clear, a numeric string is Number()'d, everything else
+ * must be an integer number in the safe range). */
+void scr_process_set_exit_code_dyn(const ScrDyn *code);
+void scr_process_set_exit_code_dyn_tracked(const ScrDyn *code);
 bool scr_process_has_exit_code(void);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
@@ -192,6 +222,11 @@ bool scr_process_exiting(void);
 /* umask(2): mask < 0 reads without setting; otherwise sets and answers
  * the previous mask. Never throws. */
 double scr_process_umask(double mask);
+/* process.umask(mask)'s parseFileMode gate (validateUint32, with Node's
+ * ERR_OUT_OF_RANGE texts), and its checked-dynamic form (undefined reads;
+ * null is rejected as undefined; an octal string is parseInt(., 8)). */
+double scr_process_umask_chk(double mask);
+double scr_process_umask_dyn(const ScrDyn *mask);
 /* The process introspection statics (scr_lib.c; Node's units). uptime:
  * fractional seconds since the binary's load-time anchor. The CPU clocks
  * answer microseconds; the *_diff forms subtract a prior sample, and
@@ -212,7 +247,18 @@ double scr_perf_now(void);
  * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
  * 4 count, 5 exceeds. */
 void scr_perf_loop_mark(void);
+/* Marks the loop's end for a program that never runs the loop (synchronous):
+ * the emitted main calls it just before the exit listeners. */
+void scr_perf_loop_end(void);
+/* The loop's event-loop metrics hook (scr_async.c): `turn` runs once per loop
+ * turn, `exit` once when the loop stops. scr_perf_loop_mark installs them in
+ * programs that read the metrics; otherwise both stay NULL and the loop is
+ * byte-identical. */
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void));
 double scr_perf_loop_start(void);
+double scr_perf_node_loop_start(void);
+double scr_perf_loop_exit(void);
+double scr_perf_loop_count(void);
 double scr_perf_idle_time(void);
 double scr_eld_new(double resolution);
 bool scr_eld_enable(double handle);
@@ -228,6 +274,10 @@ double scr_eld_stat(double handle, double which);
  * timeline call. which: 0 getEntries, 1 getEntriesByName, 2
  * getEntriesByType. Accessor results are +1. */
 double scr_perf_mark(ScrDyn *args);
+/* new PerformanceMark(name, options?): Node's constructor — the mark
+ * timings update, the global buffer does not — answers 1 with the new
+ * entry readable through the accessors at index 0 (MAY THROW). */
+double scr_perf_mark_new(ScrDyn *args);
 double scr_perf_measure(ScrDyn *args);
 double scr_perf_entries(ScrDyn *args, double which);
 void scr_perf_clear_marks(ScrDyn *args);
@@ -243,6 +293,37 @@ ScrDyn *scr_perf_entry_detail(double i);
  * mark() and measure() did. */
 void scr_perf_entry_keep(ScrDyn *ref);
 ScrDyn *scr_perf_entry_ref(double i);
+/* perf_hooks PerformanceObserver (scr_perf.c). observer_new(args) is
+ * Node's constructor over the call's checked-dynamic argument vector and
+ * answers the observer handle (MAY THROW Node's callback type error). The
+ * methods take the observer (or entry-list) handle and apply Node's
+ * validation:
+ * observe(obs, args) takes observe's dyn argument vector, take(obs) moves
+ * the observer's buffered entries into the answer view and list_entries
+ * (list, args, which) fills it from an entry list (which: 0 getEntries,
+ * 1 getEntriesByName, 2 getEntriesByType), both answering a count the
+ * scr_perf_entry_* accessors read; disconnect(obs). Buffered entries
+ * reach an observer at the mark or measure that produced them and its
+ * callback runs from an immediate, as Node's. observer_is(value, which)
+ * is `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1). */
+ScrDyn *scr_perf_observer_new(ScrDyn *args);
+void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args);
+void scr_perf_observer_disconnect(ScrDyn *observer);
+double scr_perf_observer_take(ScrDyn *observer);
+double scr_perf_list_entries(ScrDyn *list, ScrDyn *args, double which);
+/* The class tests for values whose static type is not the class (a union or
+ * a checked-dynamic slot). scr_dyn_perf_handle_is(value, which) is
+ * `value instanceof PerformanceObserver` (0) or
+ * `PerformanceObserverEntryList` (1); scr_dyn_perf_entry_is(value, which)
+ * is `instanceof PerformanceEntry` (0), `PerformanceMark` (1) or
+ * `PerformanceMeasure` (2) through the entry prototypes the dyn core
+ * installs, and scr_dyn_perf_entry_finish gives a converted entry row that
+ * prototype. All three live in scr_json.c (the dyn core), which is linked
+ * whether or not a program calls perf_hooks. */
+bool scr_dyn_perf_handle_is(const ScrDyn *value, double which);
+bool scr_dyn_perf_entry_is(const ScrDyn *value, double which);
+void scr_dyn_perf_entry_finish(ScrDyn *object);
 uint64_t scr_hrtime_ns(void);
 ScrDyn *scr_process_hrtime_value(void);
 double scr_cpu_user(void);
@@ -254,6 +335,12 @@ double scr_thread_cpu_system(void);
 double scr_thread_cpu_user_diff(double prev);
 double scr_thread_cpu_system_diff(double prev);
 void scr_cpu_prev_validate(double user, double system);
+/* The checked-dynamic prev argument: Node validates only a truthy
+ * prevValue (reading .user then .system), samples the clock once after,
+ * and both field diffs subtract from that sample. `thread` selects the
+ * per-thread clock. */
+void scr_cpu_prev_prepare_dyn(const ScrDyn *prev, double thread);
+double scr_cpu_usage_field(double which);
 double scr_process_rusage(double idx);
 double scr_available_memory(void);
 double scr_constrained_memory(void);
@@ -280,6 +367,9 @@ double scr_process_ppid(void);
  * (library sessions). +1 / borrowed. */
 ScrStr *scr_process_title(void);
 void scr_process_set_title(const ScrStr *title);
+/* process.title = value: Node's ToString conversion first (a symbol
+ * throws its conversion TypeError). */
+void scr_process_set_title_dyn(const ScrDyn *title);
 /* process.argv0: the original argv[0] the binary was started with. +1. */
 ScrStr *scr_process_argv0(void);
 /* process.release: the stable { name, lts, sourceUrl, headersUrl[,
@@ -294,13 +384,47 @@ ScrDyn *scr_process_features(void);
 double scr_process_geteuid(void);
 double scr_process_getegid(void);
 ScrArr *scr_process_getgroups(void);
+/* The credential setters node:internal/process/per_thread wraps
+ * (setuid/seteuid/setgid/setegid/setgroups/initgroups): the checks are
+ * Node's, a number is the id itself, a string is looked up by name, and a
+ * failure throws Node's ERR_UNKNOWN_CREDENTIAL or ErrnoException. All
+ * borrow the checked-dynamic argument. Windows/WASI have none of the
+ * members, so the calls throw Node's missing-member TypeError. */
+void scr_process_setuid(ScrDyn *id);
+void scr_process_seteuid(ScrDyn *id);
+void scr_process_setgid(ScrDyn *id);
+void scr_process_setegid(ScrDyn *id);
+void scr_process_setgroups(ScrDyn *groups);
+void scr_process_initgroups(ScrDyn *user, ScrDyn *extra_group);
+/* process.debugPort: the inspector port (9229 until written); the write
+ * converts like Int32Value and throws Node's ERR_OUT_OF_RANGE outside
+ * {0} ∪ [1024, 65535], keeping the old value. */
+double scr_process_debug_port(void);
+void scr_process_set_debug_port(ScrDyn *port);
+/* process.sourceMapsEnabled: getter-only flag (false until
+ * setSourceMapsEnabled(boolean) writes it; any other type throws Node's
+ * ERR_INVALID_ARG_TYPE). */
+bool scr_process_source_maps_enabled(void);
+void scr_process_set_source_maps_enabled(ScrDyn *enabled);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);
+/* process.chdir(value): validateString first (Node's ERR_INVALID_ARG_TYPE
+ * for a non-string), then the chdir above. */
+void scr_process_chdir_dyn(const ScrDyn *dir);
 /* net's process-wide happy-eyeballs attempt budget (default 250ms) — in
  * the core unit so the knob never links scr_net.c. Never throw. */
 double scr_net_get_autosel_timeout(void);
 void scr_net_set_autosel_timeout(double ms);
+/* The checked-dynamic form: a non-number throws Node's ERR_INVALID_ARG_TYPE
+ * ("The \"value\" argument must be of type number. Received type string
+ * ('x')"), then the double form's validateInt32 ladder runs. */
+void scr_net_set_autosel_timeout_dyn(const ScrDyn *value);
+/* net's process-wide autoSelectFamily default (true, Node's). The setter
+ * takes Node's validateBoolean over a checked-dynamic argument and throws
+ * ERR_INVALID_ARG_TYPE catchably. */
+bool scr_net_get_default_autosel(void);
+void scr_net_set_default_autosel(const ScrDyn *value);
 
 /* Synchronous fs, utf8-only (paths and contents are ScrStr bytes). All
  * ScrStr arguments are BORROWED; string/array results return +1. On
@@ -371,6 +495,10 @@ ScrStr *scr_fs_read_fd(double fd);
  * creates). */
 void scr_fs_unlink(ScrStr *path);
 void scr_fs_chmod(ScrStr *path, double mode);
+/* chmodSync/chmod with a `string | number` mode the compiler routed by its
+ * static type: the string form parses Node's octal mode at run time. */
+void scr_fs_chmod_str_mode(ScrStr *path, ScrStr *mode);
+void scr_fs_fchmod_str_mode(double fd, ScrStr *mode);
 void scr_fs_chown(ScrStr *path, double uid, double gid);
 void scr_fs_lchown(ScrStr *path, double uid, double gid);
 void scr_fs_fchown(double fd, double uid, double gid);
@@ -380,6 +508,13 @@ void scr_fs_fchown(double fd, double uid, double gid);
 bool scr_fs_owner_id_valid(double id, const char *name);
 bool scr_fs_access_mode_valid(double mode);
 bool scr_fs_truncate_len_valid(double length);
+/* parseFileMode's numeric and octal-string arms (scr_fs_parse_file_mode in
+ * scr_bytes_io.c layers the nullish/default handling on top). False with
+ * the error thrown; a passing mode reaches *out as Node's `value + 0`. */
+bool scr_fs_mode_number_valid(double mode, const char *name, double *out);
+bool scr_fs_mode_octal(const ScrStr *text, const char *name, double *out);
+/* stringToFlags' numeric arm: validateInt32 over the raw open(2) bits. */
+bool scr_fs_flags_number_valid(double flags, double *out);
 void scr_fs_truncate(ScrStr *path, double length);
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest);
 /* copyFileSync(src, dest, mode): libuv's copyfile flag bits (EXCL 1,
@@ -427,8 +562,41 @@ void scr_fs_write_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *en
                                     double mode, ScrStr *flags);
 void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
                                      double mode, ScrStr *flags);
+/* The same option writes with a `mode` and/or a `flag` whose static type the
+ * call site did not pin down: parseFileMode's and stringToFlags' ladders over
+ * the dynamic values (octal string, open(2) bits, nullish or falsy default),
+ * validated in Node's encoding, flag, mode order. */
+void scr_fs_write_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                        const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                         const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_write_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data,
+                                               ScrStr *encoding, const ScrDyn *mode,
+                                               const ScrDyn *flags);
+void scr_fs_write_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                             const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
+/* mkdirSync's resolved options object: the mode parses under
+ * "options.mode", `recursive` selects Node's walk, and the result is the
+ * first directory created (+1) in the recursive form, NULL otherwise (or
+ * on failure, the exception pending). */
+ScrStr *scr_fs_mkdir_obj_number(ScrStr *path, double mode, bool recursive);
+ScrStr *scr_fs_mkdir_obj_octal(ScrStr *path, ScrStr *mode, bool recursive);
+/* The statement forms of the same calls: the first created directory is
+ * released by the runtime. */
+void scr_fs_mkdir_obj_number_void(ScrStr *path, double mode, bool recursive);
+void scr_fs_mkdir_obj_octal_void(ScrStr *path, ScrStr *mode, bool recursive);
+/* mkdirSync's top-level mode forms in value position: never recursive, so
+ * the answer is undefined (NULL). */
+ScrStr *scr_fs_mkdir_mode_value(ScrStr *path, double mode);
+ScrStr *scr_fs_mkdir_str_value(ScrStr *path, ScrStr *mode);
+/* mkdirSync(p, "700"): the bare octal option. */
+void scr_fs_mkdir_mode_octal(ScrStr *path, ScrStr *mode);
 /* The same walk, answering the first directory created (+1) or NULL
  * when the path already existed (or on failure, the exception pending). */
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);
@@ -451,6 +619,9 @@ void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 /* The mode the last TTY setRawMode call set (process.stdin.isRaw). */
 bool scr_process_stdin_raw(void);
+/* Put the terminal back in the mode it had before the first raw entry
+ * (libuv's uv_tty_reset_mode): at process exit and on process.exit(). */
+void scr_process_stdin_restore_mode(void);
 
 /* Terminal width for process.stdout/stderr.columns (fd 1/2):
  * ioctl(TIOCGWINSZ), -1 when the fd is not a TTY or the ioctl refuses —
@@ -577,6 +748,12 @@ ScrStats *scr_stats_zero(void);
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
 ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
+/* A checked-dynamic Stats object back into the snapshot the typed members
+ * read: +1, or NULL with the checked conversion's TypeError pending. The
+ * `_opt` form answers NULL (no exception) for the dynamic undefined a
+ * suppressed missing entry answers. */
+ScrStats *scr_stats_from_dyn(const ScrDyn *object);
+ScrStats *scr_stats_from_dyn_opt(const ScrDyn *object);
 
 /* fs/promises: the SAME sync operations, minting an already-settled
  * promise — success fulfills, failure REJECTS with the would-be thrown

@@ -131,16 +131,16 @@ function probeFile(probe: Probe): string {
 
 test("unsupported RequestInit keys remain fenced when const-computed", () => {
   const file = probeFile({
-    id: "stdlib.fetch.request-init.cache.computed",
+    id: "stdlib.fetch.request-init.integrity.computed",
     source:
-      '/// <reference types="node" />\nconst option = "cache" as const;\nvoid fetch("http://127.0.0.1", { [option]: "no-store" });\n',
+      '/// <reference types="node" />\nconst option = "integrity" as const;\nvoid fetch("http://127.0.0.1", { [option]: "no-store" });\n',
   });
-  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  const entry = entryById.get("stdlib.fetch.request-init.integrity");
   expect(entry).toBeDefined();
   {
     const { coverage } = analyze(file, {});
     expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
-    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'cache'");
+    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'integrity'");
   }
 });
 
@@ -152,12 +152,15 @@ test("unsupported RequestInit keys remain fenced through imported const aliases"
     join(root, "tsconfig.json"),
     `${JSON.stringify({ compilerOptions: { strict: true, skipLibCheck: true } }, null, 2)}\n`,
   );
-  writeFileSync(initFile, 'export const init = { method: "GET", cache: "no-store" } as const;\n');
+  writeFileSync(
+    initFile,
+    'export const init = { method: "GET", integrity: "no-store" } as const;\n',
+  );
   writeFileSync(
     mainFile,
     'import { init } from "./init.js";\nvoid fetch("http://127.0.0.1", init);\n',
   );
-  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  const entry = entryById.get("stdlib.fetch.request-init.integrity");
   expect(entry).toBeDefined();
   {
     const { coverage } = analyze(mainFile, {});
@@ -166,25 +169,25 @@ test("unsupported RequestInit keys remain fenced through imported const aliases"
       coverage.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     ).toBe(false);
     expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
-    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'cache'");
+    expect(coverage.diagnostics[0]!.message).toContain("RequestInit option 'integrity'");
   }
 });
 
 test("RequestInit fences statically traceable property and conditional values", () => {
   const file = probeFile({
-    id: "stdlib.fetch.request-init.cache.traced-expressions",
+    id: "stdlib.fetch.request-init.integrity.traced-expressions",
     source:
       '/// <reference types="node" />\n' +
-      'const options = { init: { cache: "no-store" } } as const;\n' +
+      'const options = { init: { integrity: "no-store" } } as const;\n' +
       'void fetch("http://127.0.0.1", options.init);\n' +
       "const enabled = true;\n" +
-      'const init: RequestInit = enabled ? { cache: "no-store" } : { method: "GET" };\n' +
+      'const init: RequestInit = enabled ? { integrity: "no-store" } : { method: "GET" };\n' +
       'void fetch("http://127.0.0.1", init);\n' +
       "const disabled = false;\n" +
-      'const safe: RequestInit = disabled ? { cache: "no-store" } : { method: "GET" };\n' +
+      'const safe: RequestInit = disabled ? { integrity: "no-store" } : { method: "GET" };\n' +
       'void fetch("http://127.0.0.1", safe);\n',
   });
-  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  const entry = entryById.get("stdlib.fetch.request-init.integrity");
   expect(entry).toBeDefined();
   const { coverage } = analyze(file);
   expect(coverage.preflightFailed).toBe(false);
@@ -194,20 +197,20 @@ test("RequestInit fences statically traceable property and conditional values", 
 
 test("RequestInit traces properties through annotated const wrappers", () => {
   const file = probeFile({
-    id: "stdlib.fetch.request-init.cache.annotated-wrapper",
+    id: "stdlib.fetch.request-init.integrity.annotated-wrapper",
     source:
       '/// <reference types="node" />\n' +
-      'const options: { init: RequestInit } = { init: { cache: "no-store" } };\n' +
+      'const options: { init: RequestInit } = { init: { integrity: "no-store" } };\n' +
       'void fetch("http://127.0.0.1", options.init);\n',
   });
-  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  const entry = entryById.get("stdlib.fetch.request-init.integrity");
   expect(entry).toBeDefined();
   const { coverage } = analyze(file);
   expect(coverage.preflightFailed).toBe(false);
   expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual([entry!.code]);
   expect(coverage.diagnostics).toHaveLength(1);
   expect(coverage.diagnostics[0]!.message).toContain(
-    "RequestInit option 'cache' in a static build",
+    "RequestInit option 'integrity' in a static build",
   );
 });
 
@@ -216,7 +219,7 @@ test("RequestInit wrapper tracing respects a later property override", () => {
     id: "stdlib.fetch.request-init.annotated-wrapper-override",
     source:
       '/// <reference types="node" />\n' +
-      'const base: { init: RequestInit } = { init: { cache: "no-store" } };\n' +
+      'const base: { init: RequestInit } = { init: { integrity: "no-store" } };\n' +
       'const options: { init: RequestInit } = { ...base, init: { method: "GET" } };\n' +
       'void fetch("http://127.0.0.1", options.init);\n',
   });
@@ -233,8 +236,8 @@ test("RequestInit spread tracing respects a later undefined override", () => {
     id: "stdlib.fetch.request-init.spread-undefined-override",
     source:
       '/// <reference types="node" />\n' +
-      'const unsupported = { cache: "no-store" } as const;\n' +
-      'void fetch("http://127.0.0.1", { ...unsupported, cache: undefined });\n',
+      'const unsupported = { integrity: "no-store" } as const;\n' +
+      'void fetch("http://127.0.0.1", { ...unsupported, integrity: undefined });\n',
   });
   {
     const coverage = analyze(file, {}).coverage;
@@ -249,8 +252,8 @@ test("RequestInit tracing stops at property-mutated const objects", () => {
     id: "stdlib.fetch.request-init.mutated-const",
     source:
       '/// <reference types="node" />\n' +
-      'const init: RequestInit = { cache: "no-store" };\n' +
-      "init.cache = undefined;\n" +
+      'const init: RequestInit = { integrity: "no-store" };\n' +
+      "init.integrity = undefined;\n" +
       'void fetch("http://127.0.0.1", init);\n',
   });
   {
@@ -263,17 +266,17 @@ test("RequestInit tracing stops at property-mutated const objects", () => {
 
 test("RequestInit traces const object and tuple binding aliases", () => {
   const file = probeFile({
-    id: "stdlib.fetch.request-init.cache.destructured-alias",
+    id: "stdlib.fetch.request-init.integrity.destructured-alias",
     source:
       '/// <reference types="node" />\n' +
-      'const options = { wrapper: { init: { cache: "no-store" } } } as const;\n' +
+      'const options = { wrapper: { init: { integrity: "no-store" } } } as const;\n' +
       "const { wrapper: { init } } = options;\n" +
       'void fetch("http://127.0.0.1", init);\n' +
-      'const tuple = [{ cache: "no-store" }] as const;\n' +
+      'const tuple = [{ integrity: "no-store" }] as const;\n' +
       "const [tupleInit] = tuple;\n" +
       'void fetch("http://127.0.0.1", tupleInit);\n',
   });
-  const entry = entryById.get("stdlib.fetch.request-init.cache");
+  const entry = entryById.get("stdlib.fetch.request-init.integrity");
   expect(entry).toBeDefined();
   {
     const coverage = analyze(file, {}).coverage;
@@ -483,8 +486,8 @@ test("constructing a spread RequestInit does not apply fetch conversion fences",
   const file = join(root, "main.ts");
   writeFileSync(
     file,
-    'interface RequestInit { cache?: "no-store"; }\n' +
-      'const base = { cache: "no-store" } as const;\n' +
+    'interface RequestInit { integrity?: "no-store"; }\n' +
+      'const base = { integrity: "no-store" } as const;\n' +
       "const init: RequestInit = { ...base };\n" +
       "void init;\n",
   );
@@ -564,6 +567,13 @@ describe("determinism attestation ↔ fence parity", () => {
       // (date-values.ts) without reading ambient state. The local's
       // initializer is the Date expression the fences witness.
       "date.fromTime",
+      // Extracts the native Stats snapshot from the checked-dynamic object
+      // a stat call's run-time options ladder already answered: no ambient
+      // filesystem state is read, and the statSync/lstatSync/fstatSync (or
+      // callback) spelling that produced the object is the surface the
+      // fences witness.
+      "fs.statsFromDyn",
+      "fs.statsFromDynOpt",
     ]);
     const missing = Object.keys(libFnSignatures()).filter(
       (fn) =>

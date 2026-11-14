@@ -42,14 +42,20 @@
 
 /* ── errors ───────────────────────────────────────────────────────────── */
 
+/* Set while a callback-style operation runs: Node hands its job callbacks
+ * the OpenSSL error without the library, reason and code properties. */
+static SCR_TL bool sp_job_error = false;
+
 static void sp_throw(int kind, const char *code, const char *message) {
-  scr_throw_error_msg_code(kind, message, strlen(message), code);
+  /* A crypto job's callback gets the error without its code property. */
+  if (code && !sp_job_error) scr_throw_error_msg_code(kind, message, strlen(message), code);
+  else scr_throw_error_msg(kind, message, strlen(message));
 }
 
 /* An OpenSSL error as Node's ThrowCryptoError reports it,
  * "error:<packed>:<library>::<reason>", with own library, reason and code
  * properties in Node's key order. A crypto job's callback gets the error
- * without them (`props` false), as from Node's async jobs. */
+ * without them, as from Node's async jobs. */
 static void sp_throw_openssl(const char *packed, const char *library, const char *reason, const char *code,
                              bool props) {
   char message[160];
@@ -57,7 +63,7 @@ static void sp_throw_openssl(const char *packed, const char *library, const char
   ScrStr *text = scr_str_new(message, strlen(message));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
   scr_str_release(text);
-  if (props) {
+  if (props && !sp_job_error) {
     const char *keys[] = {"library", "reason", "code"};
     const char *values[] = {library, reason, code};
     for (size_t i = 0; i < 3; i++) {
@@ -81,7 +87,7 @@ void scr_pki_throw_fmt(int kind, const char *code, const char *fmt, ...) {
   if (!message) scr_trap("scriptc: out of memory\n");
   vsnprintf(message, (size_t)n + 1, fmt, ap);
   va_end(ap);
-  if (code) scr_throw_error_msg_code(kind, message, (size_t)n, code);
+  if (code && !sp_job_error) scr_throw_error_msg_code(kind, message, (size_t)n, code);
   else scr_throw_error_msg(kind, message, (size_t)n);
   free(message);
 }
@@ -96,6 +102,31 @@ static ScrStr *sp_received(const ScrDyn *got, bool range) {
   if (range && got->kind == SCR_DYN_NUM) return scr_str_new(text, scr_num_received(got->v.num, text));
   const char *lite = scr_dyn_inspect_lite(got, text, sizeof text);
   return scr_str_new(lite, strlen(lite));
+}
+
+/* Node's normalizeEncoding: the canonical name, or NULL. */
+static const char *sp_normalize_encoding(const ScrStr *name) {
+  static const struct {
+    const char *from;
+    const char *to;
+  } map[] = {
+      {"utf8", "utf8"},       {"utf-8", "utf8"},          {"hex", "hex"},
+      {"base64", "base64"},   {"base64url", "base64url"}, {"latin1", "latin1"},
+      {"binary", "latin1"},   {"ascii", "ascii"},         {"utf16le", "utf16le"},
+      {"utf-16le", "utf16le"}, {"ucs2", "utf16le"},       {"ucs-2", "utf16le"},
+  };
+  for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+    size_t from_len = strlen(map[i].from);
+    if (name->len != from_len) continue;
+    bool same = true;
+    for (size_t j = 0; same && j < from_len; j++) {
+      char c = name->data[j];
+      if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+      same = c == map[i].from[j];
+    }
+    if (same) return map[i].to;
+  }
+  return NULL;
 }
 
 /* ERR_INVALID_ARG_VALUE for an option ("The property 'options.type' is
@@ -2022,37 +2053,113 @@ static ScrBytes *sp_source_bytes(const ScrDyn *v, const ScrDyn *encoding) {
 
 static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const ScrDyn *format, bool private_input);
 
-static const char sp_key_input_types[] =
-    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, or URL";
+/* Which API reads a key: each has its own argument name, type list and
+ * KeyObject rules, as Node's prepareAsymmetricKey passes them. */
+typedef enum { SP_KEY_SIGN, SP_KEY_VERIFY, SP_KEY_CREATE_PRIVATE, SP_KEY_CREATE_PUBLIC } SpKeyContext;
 
-/* createPrivateKey / createPublicKey: a PEM string or buffer, or
- * { key, format, type, encoding, passphrase }; createPublicKey also takes
- * a private KeyObject. */
-static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
+/* Node's key type lists per API (lib/internal/crypto/keys.js). */
+static const char *sp_key_types(SpKeyContext ctx) {
+  switch (ctx) {
+    case SP_KEY_SIGN:
+      return "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, CryptoKey, or URL";
+    case SP_KEY_VERIFY:
+    case SP_KEY_CREATE_PUBLIC:
+      return "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, or CryptoKey";
+    case SP_KEY_CREATE_PRIVATE:
+    default:
+      return "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, or URL";
+  }
+}
+
+static bool sp_key_private_context(SpKeyContext ctx) {
+  return ctx == SP_KEY_SIGN || ctx == SP_KEY_CREATE_PRIVATE;
+}
+
+/* Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE. */
+static void sp_invalid_key_object(const char *got, const char *expected) {
+  scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+                    "Invalid key object type %s, expected %s.", got, expected);
+}
+
+/* The KeyObject rules of a context: createPrivateKey takes none,
+ * createPublicKey and signing need a private key, and verification takes
+ * either a private or a public one. */
+static bool sp_key_object_ok(const ScrDyn *value, SpKeyContext ctx, const char *name) {
+  if (ctx == SP_KEY_CREATE_PRIVATE) {
+    scr_dyn_arg_type_fail(name, sp_key_types(ctx), value);
+    return false;
+  }
+  const char *expected = ctx == SP_KEY_VERIFY ? "private or public" : "private";
+  SpKey *object = sp_key_of(value);
+  if (!object) {
+    sp_invalid_key_object("secret", expected);
+    return false;
+  }
+  if (!object->private_key && ctx != SP_KEY_VERIFY) {
+    sp_invalid_key_object("public", expected);
+    return false;
+  }
+  return true;
+}
+
+/* prepareAsymmetricKey's shape checks without decoding: the context's
+ * KeyObject rules, null's destructuring error, and the type list for
+ * anything that is neither key material nor an options object. */
+static bool sp_key_shape_ok(const ScrDyn *value, SpKeyContext ctx, const char *name) {
+  if (sp_key_of(value) || scr_crypto_is_key_object(value)) return sp_key_object_ok(value, ctx, name);
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value)) return true;
+  if (value->kind == SCR_DYN_NULL) {
+    scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot destructure property 'key' of '%s' as it is null.", name);
+    return false;
+  }
+  if (value->kind != SCR_DYN_OBJ) {
+    scr_dyn_arg_type_fail(name, sp_key_types(ctx), value);
+    return false;
+  }
+  const ScrDyn *data = sp_opt(value, "key");
+  if (sp_key_of(data) || scr_crypto_is_key_object(data)) return sp_key_object_ok(data, ctx, name);
+  const ScrDyn *format = sp_opt(value, "format");
+  bool special = sp_is_str(format, "jwk") || sp_is_str(format, "raw-public") ||
+                 sp_is_str(format, "raw-private") || sp_is_str(format, "raw-seed");
+  if (!special && data->kind != SCR_DYN_STR && data->kind != SCR_DYN_BYTES && !scr_buffer_storage_is(data)) {
+    char inner[96];
+    snprintf(inner, sizeof inner, "%s.key", name);
+    scr_dyn_arg_type_fail(inner, sp_key_types(ctx), data);
+    return false;
+  }
+  return true;
+}
+
+/* createPrivateKey / createPublicKey, and the key preparation of signing
+ * operations: a PEM string or buffer, or { key, format, type, encoding,
+ * passphrase }; createPublicKey also takes a private KeyObject. The
+ * default format is PEM, which rejects unarmored input, DER included;
+ * `{ format: 'der', type }` reads DER. */
+static ScrDyn *sp_create_key(ScrDyn *input, SpKeyContext ctx, const char *name) {
+  bool private_key = sp_key_private_context(ctx);
   if (input->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(input);
     if (!value) return NULL;
-    ScrDyn *result = sp_create_key(value, private_key);
+    ScrDyn *result = sp_create_key(value, ctx, name);
     scr_dyn_release(value);
     return result;
   }
-  SpKey *object = sp_key_of(input);
-  if (object) {
-    if (private_key) {
-      scr_dyn_arg_type_fail("key", sp_key_input_types, input);
-      return NULL;
+  if (input->kind == SCR_DYN_NULL) {
+    scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot destructure property 'key' of '%s' as it is null.", name);
+    return NULL;
+  }
+  if (sp_key_of(input) || scr_crypto_is_key_object(input)) {
+    if (!sp_key_object_ok(input, ctx, name)) return NULL;
+    SpKey *object = sp_key_of(input);
+    if (ctx == SP_KEY_CREATE_PUBLIC) {
+      SpKey *pub = sp_public_of(object);
+      if (!pub) {
+        sp_unsupported_input();
+        return NULL;
+      }
+      return sp_key_box(pub);
     }
-    if (!object->private_key) {
-      sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
-               "Invalid key object type public, expected private.");
-      return NULL;
-    }
-    SpKey *pub = sp_public_of(object);
-    if (!pub) {
-      sp_unsupported_input();
-      return NULL;
-    }
-    return sp_key_box(pub);
+    return sp_key_box(sp_key_retain(object));
   }
   const ScrDyn *data = input;
   const ScrDyn *format = scr_dyn_undefined();
@@ -2070,8 +2177,7 @@ static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
       sp_property_invalid("key.passphrase", passphrase);
       return NULL;
     }
-    SpKey *inner = sp_key_of(data);
-    if (inner) return sp_create_key((ScrDyn *)data, private_key);
+    if (sp_key_of(data) || scr_crypto_is_key_object(data)) return sp_create_key((ScrDyn *)data, ctx, name);
     if (sp_is_str(format, "jwk")) {
       SpKey *k = sp_key_from_jwk(data, private_key);
       return k ? sp_key_box(k) : NULL;
@@ -2102,7 +2208,23 @@ static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
   if (!bytes) {
     if (data->kind == SCR_DYN_STR || data->kind == SCR_DYN_BYTES || scr_buffer_storage_is(data))
       return NULL; /* the decoder threw */
-    scr_dyn_arg_type_fail(data == input ? "key" : "key.key", sp_key_input_types, data);
+    if (data == input) scr_dyn_arg_type_fail(name, sp_key_types(ctx), data);
+    else {
+      char inner[96];
+      snprintf(inner, sizeof inner, "%s.key", name);
+      scr_dyn_arg_type_fail(inner, sp_key_types(ctx), data);
+    }
+    return NULL;
+  }
+  /* The default format is PEM: OpenSSL's PEM decoder rejects input
+   * without armor, DER bytes included. */
+  bool armored = sp_is_str(format, "der");
+  for (size_t i = 0; !armored && i + 11 <= (size_t)scr_bytes_byte_len(bytes); i++)
+    if (memcmp(bytes->data + i, "-----BEGIN ", 11) == 0) armored = true;
+  if (!armored) {
+    /* The PEM decoder's own error: the unsupported reason with its stack. */
+    sp_unsupported_key_input(bytes->data, (size_t)scr_bytes_byte_len(bytes));
+    scr_bytes_release(bytes);
     return NULL;
   }
   ScrBytes *pass = NULL;
@@ -2120,9 +2242,9 @@ static ScrDyn *sp_create_key(ScrDyn *input, bool private_key) {
   return k ? sp_key_box(k) : NULL;
 }
 
-ScrDyn *scr_crypto_create_private_key(ScrDyn *key) { return sp_create_key(key, true); }
+ScrDyn *scr_crypto_create_private_key(ScrDyn *key) { return sp_create_key(key, SP_KEY_CREATE_PRIVATE, "key"); }
 
-ScrDyn *scr_crypto_create_public_key(ScrDyn *key) { return sp_create_key(key, false); }
+ScrDyn *scr_crypto_create_public_key(ScrDyn *key) { return sp_create_key(key, SP_KEY_CREATE_PUBLIC, "key"); }
 
 /* ── raw keys ─────────────────────────────────────────────────────────── */
 
@@ -2595,11 +2717,7 @@ static const ScrDynHandleOps sp_public_ops = {
 
 /* createHmac with a private or public key (scr_crypto_reject_asymmetric_secret). */
 static void sp_reject_as_secret(const ScrDyn *key) {
-  bool private_key = key->v.handle.tag == SCR_DYNH_PRIVATE_KEY;
-  scr_throw_error_msg_code(SCR_ERR_TYPE,
-                           private_key ? "Invalid key object type private, expected secret."
-                                       : "Invalid key object type public, expected secret.",
-                           private_key ? 49 : 48, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
+  scr_crypto_invalid_key_object_type(key->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
 }
 
 static void sp_key_install(void) {
@@ -3178,9 +3296,19 @@ static bool sp_digest_of(const ScrStr *name, mbedtls_md_type_t *md) {
   return false;
 }
 
-/* The algorithm argument of crypto.sign/verify: a digest name, or
- * null/undefined for the key type's default (SHA-256). */
-static bool sp_algorithm(const ScrDyn *alg, mbedtls_md_type_t *md) {
+/* The algorithm argument of crypto.sign/verify: its type is checked
+ * first, its digest name only after the key is read. */
+static bool sp_algorithm_arg(const ScrDyn *alg) {
+  if (alg->kind == SCR_DYN_UNDEF || alg->kind == SCR_DYN_NULL) return true;
+  if (alg->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("algorithm", "of type string", alg);
+    return false;
+  }
+  return true;
+}
+
+/* A digest name, or null/undefined for the key type's default (SHA-256). */
+static bool sp_algorithm_digest(const ScrDyn *alg, mbedtls_md_type_t *md) {
   if (alg->kind == SCR_DYN_UNDEF || alg->kind == SCR_DYN_NULL) {
     *md = MBEDTLS_MD_SHA256;
     return true;
@@ -3206,90 +3334,137 @@ static bool sp_algorithm(const ScrDyn *alg, mbedtls_md_type_t *md) {
 
 typedef struct {
   SpKey *key;   /* +1 */
-  int padding;  /* RSA_PKCS1_PADDING (1) or RSA_PKCS1_PSS_PADDING (6) */
-  int salt;     /* -1 digest length, -2 maximum (sign) or auto (verify),
-                 * -4 the digest length or the maximum, if smaller */
+  int padding;  /* the EVP padding mode once resolved */
+  int salt;     /* Node's saltLength: a length, or -1 digest, -2 max/auto,
+                 * -3 max, -4 digest-or-max */
   bool p1363;   /* dsaEncoding: "ieee-p1363" */
   bool padding_given, salt_given;
+  bool context; /* a non-empty options.context, which OpenSSL rejects */
   mbedtls_md_type_t mgf1; /* PSS's MGF1 digest; NONE for the message's */
 } SpSigKey;
 
-/* The key argument of a signing operation: a KeyObject, key material, or
- * { key, dsaEncoding, padding, saltLength, ...createKey options }. */
-static bool sp_sig_key_plain(const ScrDyn *value, bool sign, SpSigKey *out);
+/* The signing API a key argument comes from: its context rules and the
+ * argument name its type errors use ("key" for crypto.sign, "privateKey"
+ * for Sign.prototype.sign). */
+typedef struct {
+  bool sign;
+  SpKeyContext key;
+  const char *name;
+} SpSigContext;
 
-static bool sp_sig_key(const ScrDyn *value, bool sign, SpSigKey *out) {
-  out->key = NULL;
-  ScrDyn *plain = sp_plain(value);
-  if (!plain) return false;
-  bool ok = sp_sig_key_plain(plain, sign, out);
-  scr_dyn_release(plain);
-  return ok;
-}
-
-/* The key of Sign.prototype.sign and crypto.sign: Node tests it for
- * truthiness before it looks at its type. */
-static bool sp_sign_key(const ScrDyn *value, SpSigKey *out) {
-  out->key = NULL;
-  if (!scr_dyn_truthy(value)) {
-    sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_SIGN_KEY_REQUIRED", "No key provided to sign");
+/* Node's getIntOption: an option read as a C++ int32 (V8's `value ===
+ * value >> 0`). An int32 value passes, including the negative sentinels
+ * saltLength uses; a bigint throws V8's mixing TypeError; anything else
+ * throws ERR_INVALID_ARG_VALUE. -0 compares equal but is not an int32
+ * value, so the binding ignores it, as it does any other value it does
+ * not convert. */
+static bool sp_int_option(const ScrDyn *options, const char *name, bool *given, int *value) {
+  /* The property is the last segment of the display name ("options.padding"
+   * names the padding property). */
+  const char *dot = strrchr(name, '.');
+  const ScrDyn *v = sp_opt(options, dot ? dot + 1 : name);
+  *given = false;
+  if (v->kind == SCR_DYN_UNDEF) return true;
+  if (v->kind == SCR_DYN_BIGINT) {
+    sp_throw(SCR_ERR_TYPE, NULL, "Cannot mix BigInt and other types, use explicit conversions");
     return false;
   }
-  return sp_sig_key(value, true, out);
+  if (v->kind != SCR_DYN_NUM || !isfinite(v->v.num) || v->v.num != trunc(v->v.num) ||
+      v->v.num < -2147483648.0 || v->v.num > 2147483647.0) {
+    sp_property_invalid(name, v);
+    return false;
+  }
+  *given = !(v->v.num == 0 && signbit(v->v.num));
+  *value = (int)v->v.num;
+  return true;
 }
 
-static bool sp_sig_key_plain(const ScrDyn *value, bool sign, SpSigKey *out) {
-  out->key = NULL;
-  out->padding = 1;
-  out->salt = sign ? -2 : -2;
-  out->p1363 = false;
-  out->padding_given = false;
-  out->salt_given = false;
-  out->mgf1 = MBEDTLS_MD_NONE;
-  const ScrDyn *options = NULL;
-  if (sp_is_object(value) && !sp_key_of(value) && !scr_buffer_storage_is(value)) {
-    options = value;
+/* Node's getSignVerifyOptions: padding, saltLength, dsaEncoding and the
+ * context, in that order, read from the key/options argument before the
+ * key is decoded. A null or undefined argument throws where Node reads
+ * options.padding first. */
+static bool sp_sig_options(const ScrDyn *value, SpSigKey *out, bool sign) {
+  (void)sign;
+  if (value->kind == SCR_DYN_NULL) {
+    sp_throw(SCR_ERR_TYPE, NULL, "Cannot read properties of null (reading 'padding')");
+    return false;
+  }
+  if (value->kind == SCR_DYN_UNDEF) {
+    sp_throw(SCR_ERR_TYPE, NULL, "Cannot read properties of undefined (reading 'padding')");
+    return false;
+  }
+  int number = 0;
+  bool given = false;
+  const ScrDyn *raw_padding = sp_opt(value, "padding");
+  if (!sp_int_option(value, "options.padding", &given, &number)) return false;
+  /* The binding's IsUint32 ignores negative values. */
+  out->padding_given = given && number >= 0;
+  out->padding = out->padding_given ? number : 1;
+  const ScrDyn *raw_salt = sp_opt(value, "saltLength");
+  bool salt_defined = raw_salt->kind != SCR_DYN_UNDEF;
+  if (!sp_int_option(value, "options.saltLength", &given, &number)) return false;
+  out->salt_given = given;
+  out->salt = given ? number : -1;
+  /* getSaltLength: an unset saltLength under padding: 6 is MAX_SIGN. */
+  if (!salt_defined && raw_padding->kind == SCR_DYN_NUM && raw_padding->v.num == 6) {
+    out->salt = -2;
+    out->salt_given = true;
+  }
+  if (sp_is_object(value)) {
     const ScrDyn *dsa = sp_opt(value, "dsaEncoding");
     if (sp_is_str(dsa, "ieee-p1363")) out->p1363 = true;
     else if (!sp_absent(dsa) && !sp_is_str(dsa, "der")) {
       sp_property_invalid("options.dsaEncoding", dsa);
       return false;
     }
-    const ScrDyn *padding = sp_opt(value, "padding");
-    if (!sp_absent(padding)) {
-      if (padding->kind != SCR_DYN_NUM || (padding->v.num != 1 && padding->v.num != 6)) {
-        sp_not_supported("signatures with this padding");
-        return false;
-      }
-      out->padding = (int)padding->v.num;
-      out->padding_given = true;
-    }
-    const ScrDyn *salt = sp_opt(value, "saltLength");
-    if (!sp_absent(salt)) {
-      if (salt->kind != SCR_DYN_NUM || salt->v.num != (double)(int)salt->v.num || salt->v.num < -2) {
-        sp_not_supported("signatures with this saltLength");
-        return false;
-      }
-      out->salt = (int)salt->v.num;
-      out->salt_given = true;
-    }
   }
-  SpKey *direct = sp_key_of(options ? sp_opt(options, "key") : value);
-  if (direct) {
-    if (sign && !direct->private_key) {
-      sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
-               "Invalid key object type public, expected private.");
+  const ScrDyn *context = sp_opt(value, "context");
+  if (!sp_absent(context)) {
+    if (context->kind != SCR_DYN_BYTES && !scr_buffer_storage_is(context)) {
+      scr_dyn_prop_type_fail("options.context", "an instance of Buffer, TypedArray, or DataView", context);
       return false;
     }
-    sp_key_retain(direct);
-    out->key = direct;
-    return true;
+    ScrBytes *bytes = scr_bytes_buffer_source(context);
+    out->context = scr_bytes_byte_len(bytes) > 0;
+    scr_bytes_release(bytes);
   }
-  ScrDyn *created = sp_create_key((ScrDyn *)value, sign);
+  return true;
+}
+
+static void sp_sig_init(SpSigKey *out) {
+  out->key = NULL;
+  out->padding = 1;
+  out->salt = -1;
+  out->p1363 = false;
+  out->padding_given = false;
+  out->salt_given = false;
+  out->context = false;
+  out->mgf1 = MBEDTLS_MD_NONE;
+}
+
+/* Resolves and decodes the key material of a signing operation. */
+static bool sp_sig_decode(const ScrDyn *value, const SpSigContext *ctx, SpSigKey *out) {
+  ScrDyn *created = sp_create_key((ScrDyn *)value, ctx->key, ctx->name);
   if (!created) return false;
   out->key = sp_key_retain(sp_key_of(created));
   scr_dyn_release(created);
   return true;
+}
+
+/* A key argument read whole: its options, then its key material. */
+static bool sp_sig_key_plain(const ScrDyn *value, const SpSigContext *ctx, SpSigKey *out) {
+  sp_sig_init(out);
+  if (!sp_sig_options(value, out, ctx->sign)) return false;
+  return sp_sig_decode(value, ctx, out);
+}
+
+static bool sp_sig_key(const ScrDyn *value, const SpSigContext *ctx, SpSigKey *out) {
+  out->key = NULL;
+  ScrDyn *plain = sp_plain(value);
+  if (!plain) return false;
+  bool ok = sp_sig_key_plain(plain, ctx, out);
+  scr_dyn_release(plain);
+  return ok;
 }
 
 /* DER ECDSA-Sig-Value ⇄ IEEE P1363 r || s. */
@@ -3338,41 +3513,234 @@ static int sp_p1363_to_der(const unsigned char *sig, size_t len, unsigned char *
 
 static size_t sp_ec_size(SpKey *k) { return (mbedtls_pk_ec(k->pk)->MBEDTLS_PRIVATE(grp).nbits + 7) / 8; }
 
-/* An RSA-PSS key's restrictions on a signature over a `md` digest, as
- * OpenSSL's provider applies them: PSS padding only (the default), and
- * for a key with RSASSA-PSS-params its digest, its MGF1 digest and salts
- * of at least its own (the default). Without parameters a signature
- * salts with the digest's length, or the most the key holds when that is
- * less (RSA_PSS_SALTLEN_AUTO_DIGEST_MAX). False with OpenSSL's error
- * pending. */
-static bool sp_pss_key_rules(SpSigKey *key, mbedtls_md_type_t md, size_t hash_len, bool sign) {
-  const SpKey *k = key->key;
-  if (!k->rsa_pss) return true;
-  if (key->padding_given && key->padding != 6) {
-    sp_throw_openssl("1C8000A5", "Provider routines", "illegal or unsupported padding mode",
-                     "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE", true);
-    return false;
-  }
-  key->padding = 6;
-  if (!k->pss_params) {
-    if (!key->salt_given) key->salt = sign ? -4 : -2;
+/* The most salt a PSS signature over a `hash_len` digest can hold,
+ * negative when the digest alone overflows the key. */
+static int sp_rsa_max_salt(mbedtls_rsa_context *rsa, size_t hash_len) {
+  size_t bytes = mbedtls_rsa_get_len(rsa);
+  size_t bits = mbedtls_rsa_get_bitlen(rsa);
+  return (int)(bytes - hash_len - 2 - ((bits - 1) % 8 == 0 ? 1 : 0));
+}
+
+static void sp_invalid_salt_length(void) {
+  sp_throw_openssl("1C800070", "Provider routines", "invalid salt length", "ERR_OSSL_INVALID_SALT_LENGTH", true);
+}
+
+static void sp_pss_salt_too_small(void) {
+  sp_throw_openssl("1C8000AC", "Provider routines", "pss saltlen too small", "ERR_OSSL_PSS_SALTLEN_TOO_SMALL", true);
+}
+
+static void sp_data_too_large(void) {
+  sp_throw_openssl("0200006E", "rsa routines", "data too large for key size",
+                   "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE", true);
+}
+
+/* Resolves the RSA padding mode from Node's padding option and the key
+ * type, as OpenSSL's provider does: EC, Ed and X25519 keys ignore it; a
+ * plain RSA key takes PKCS#1 v1.5 (the default), PSS or X9.31; an
+ * RSA-PSS key takes PSS only. */
+static bool sp_sig_padding(SpSigKey *key) {
+  if (!sp_is_rsa(key->key)) return true;
+  if (key->key->rsa_pss) {
+    if (key->padding_given && key->padding != 0 && key->padding != 6) {
+      sp_throw_openssl("1C8000A5", "Provider routines", "illegal or unsupported padding mode",
+                       "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE", true);
+      return false;
+    }
+    key->padding = 6;
     return true;
   }
+  if (!key->padding_given) {
+    key->padding = 1;
+    return true;
+  }
+  if (key->padding == 1 || key->padding == 5 || key->padding == 6) return true;
+  if (key->padding == 3) {
+    sp_throw_openssl("1C8000A8", "Provider routines", "invalid padding mode", "ERR_OSSL_INVALID_PADDING_MODE", true);
+    return false;
+  }
+  sp_throw_openssl("1C8000A5", "Provider routines", "illegal or unsupported padding mode",
+                   "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE", true);
+  return false;
+}
+
+/* An RSA-PSS key with RSASSA-PSS-params admits one digest, and applies its
+ * own MGF1 digest to the signature. */
+static bool sp_pss_key_digest(SpSigKey *key, mbedtls_md_type_t md) {
+  const SpKey *k = key->key;
+  if (!k->pss_params) return true;
   if (md != k->pss_md) {
     sp_throw_openssl("1C8000AE", "Provider routines", "digest not allowed", "ERR_OSSL_DIGEST_NOT_ALLOWED", true);
     return false;
   }
   key->mgf1 = k->pss_mgf1;
-  /* RSA_PSS_SALTLEN_AUTO (-2) is exempt from the key's minimum, as in
-   * OpenSSL: verification recovers the salt length from the signature and
-   * accepts any length (corpus 8178). */
+  return true;
+}
+
+/* The salt length a PSS signature uses while signing, or verifies against
+ * (-1 for "any"), from Node's saltLength and the key. OpenSSL's
+ * sentinels: -1 the digest length, -2 the maximum while signing, -3 the
+ * maximum, -4 the smaller of the digest length and the maximum. A key
+ * with parameters signs with its own salt length by default and requires
+ * at least that much; signing with -2 or -4 is an invalid salt length
+ * there. False with OpenSSL's error pending. */
+static bool sp_pss_salt(SpSigKey *key, size_t hash_len, int max, bool sign, int *salt) {
+  const SpKey *k = key->key;
+  int minimum = k->pss_params ? k->pss_salt : 0;
+  int value = key->salt;
   if (!key->salt_given) {
-    key->salt = k->pss_salt;
-  } else if (key->salt != -2 && (key->salt == -1 ? (int)hash_len : key->salt) < k->pss_salt) {
-    sp_throw_openssl("1C8000AC", "Provider routines", "pss saltlen too small", "ERR_OSSL_PSS_SALTLEN_TOO_SMALL", true);
+    if (k->pss_params) value = k->pss_salt;
+    else if (!sign) value = -2;
+    else value = k->rsa_pss ? -4 : -1;
+  }
+  if (value <= -5) {
+    sp_invalid_salt_length();
     return false;
   }
+  int resolved;
+  switch (value) {
+    case -1:
+      resolved = (int)hash_len;
+      break;
+    case -2:
+      if (!sign) {
+        *salt = -1;
+        return true;
+      }
+      if (k->pss_params) {
+        sp_invalid_salt_length();
+        return false;
+      }
+      resolved = max;
+      break;
+    case -3:
+      resolved = max;
+      break;
+    case -4:
+      if (!sign) {
+        *salt = -1;
+        return true;
+      }
+      if (k->pss_params) {
+        sp_invalid_salt_length();
+        return false;
+      }
+      resolved = hash_len < (size_t)max ? (int)hash_len : max;
+      break;
+    default:
+      resolved = value;
+      break;
+  }
+  if (sign && (resolved < 0 || resolved > max)) {
+    sp_data_too_large();
+    return false;
+  }
+  if (resolved < minimum) {
+    sp_pss_salt_too_small();
+    return false;
+  }
+  *salt = resolved;
   return true;
+}
+
+/* X9.31 accepts only the SHA-1 and SHA-2 digests up to SHA-512. */
+static bool sp_x931_digest(mbedtls_md_type_t md) {
+  if (md == MBEDTLS_MD_SHA1 || md == MBEDTLS_MD_SHA256 || md == MBEDTLS_MD_SHA384 || md == MBEDTLS_MD_SHA512)
+    return true;
+  sp_throw_openssl("1C8000AA", "Provider routines", "invalid x931 digest", "ERR_OSSL_INVALID_X931_DIGEST", true);
+  return false;
+}
+
+static void sp_rsa_error(const char *packed, const char *reason, const char *code);
+
+/* The X9.31 hash identifier byte OpenSSL writes after the digest. */
+static int sp_x931_hash_id(mbedtls_md_type_t md) {
+  switch (md) {
+  case MBEDTLS_MD_SHA1:
+    return 0x33;
+  case MBEDTLS_MD_SHA256:
+    return 0x34;
+  case MBEDTLS_MD_SHA512:
+    return 0x35;
+  case MBEDTLS_MD_SHA384:
+    return 0x36;
+  default:
+    return -1;
+  }
+}
+
+/* OpenSSL's X9.31 encoding of a digest in a `bytes`-long block: the digest
+ * followed by its hash identifier byte, wrapped in 0x6B || 0xBB... || 0xBA
+ * ... 0xCC, or in a bare 0x6A ... 0xCC when the block is exactly three
+ * bytes longer than the digest (RSA_padding_add_X931's j == 0 form).
+ * Answers false with Node's error when the block cannot hold it. */
+static bool sp_x931_encode(mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
+                           unsigned char *em, size_t bytes) {
+  int id = sp_x931_hash_id(md);
+  if (bytes < hash_len + 1) {
+    sp_throw_openssl("1C8000AB", "Provider routines", "key size too small", "ERR_OSSL_KEY_SIZE_TOO_SMALL", true);
+    return false;
+  }
+  if (id < 0 || bytes < hash_len + 3) {
+    sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+    return false;
+  }
+  size_t j = bytes - hash_len - 3;
+  if (j == 0) {
+    em[0] = 0x6A;
+    memcpy(em + 1, hash, hash_len);
+  } else {
+    em[0] = 0x6B;
+    memset(em + 1, 0xBB, j - 1);
+    em[j] = 0xBA;
+    memcpy(em + j + 1, hash, hash_len);
+  }
+  em[bytes - 2] = (unsigned char)id;
+  em[bytes - 1] = 0xCC;
+  return true;
+}
+
+/* OpenSSL's RSA_padding_check_X931 plus the rsa_ossl_public_decrypt
+ * quirk that applies before it: when the recovered block's low nibble is
+ * not 0xC, the block is replaced by the modulus complement, which is how
+ * the legacy code handles a negated BIGNUM. The block must then carry the
+ * X9.31 header, the digest followed by its hash identifier byte, and the
+ * 0xCC trailer. Answers whether it does. */
+static bool sp_x931_check(mbedtls_rsa_context *rsa, mbedtls_md_type_t md, const unsigned char *hash,
+                          size_t hash_len, unsigned char *em, size_t bytes) {
+  int id = sp_x931_hash_id(md);
+  if (id < 0 || bytes < 3) return false;
+  if ((em[bytes - 1] & 0x0F) != 0x0C) {
+    /* em = rsa->N - em, byte-for-byte through the MPI. */
+    mbedtls_mpi block, modulus, complement;
+    mbedtls_mpi_init(&block);
+    mbedtls_mpi_init(&modulus);
+    mbedtls_mpi_init(&complement);
+    int r = mbedtls_mpi_read_binary(&block, em, bytes);
+    if (r == 0) r = mbedtls_mpi_copy(&modulus, &rsa->MBEDTLS_PRIVATE(N));
+    if (r == 0) r = mbedtls_mpi_sub_mpi(&complement, &modulus, &block);
+    if (r == 0) r = mbedtls_mpi_write_binary(&complement, em, bytes);
+    mbedtls_mpi_free(&block);
+    mbedtls_mpi_free(&modulus);
+    mbedtls_mpi_free(&complement);
+    if (r != 0) return false;
+  }
+  const unsigned char *content;
+  size_t length;
+  if (em[0] == 0x6A) {
+    length = bytes - 2;
+    content = em + 1;
+  } else if (em[0] == 0x6B) {
+    size_t filler = bytes - 3;
+    size_t i = 0;
+    while (i < filler && em[1 + i] == 0xBB) i++;
+    if (i == 0 || i == filler || em[1 + i] != 0xBA) return false;
+    length = filler - i;
+    content = em + 2 + i;
+  } else {
+    return false;
+  }
+  return em[bytes - 1] == 0xCC && length == hash_len + 1 && content[length - 1] == (unsigned char)id &&
+         memcmp(content, hash, hash_len) == 0;
 }
 
 /* Applies the RSA padding of a signature operation. */
@@ -3495,30 +3863,46 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
   unsigned char sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
   size_t sig_len = 0;
   int r;
-  if (!sp_pss_key_rules(key, md, hash_len, true)) return NULL;
+  /* EVP_PKEY_CTX_set1_id comes before the padding, and the provider has
+   * no context for these operations. */
+  if (key->context) {
+    if (sp_job_error) sp_throw(SCR_ERR_ERROR, NULL, "Deriving bits failed");
+    else sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED", "Context parameter is unsupported");
+    return NULL;
+  }
+  if (!sp_pss_key_digest(key, md)) return NULL;
+  if (!sp_sig_padding(key)) return NULL;
   if (!sp_rsa_padding(key, md)) {
     sp_unsupported_input();
     return NULL;
   }
   if (sp_is_rsa(key->key) && key->padding == 6) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
-    int salt = key->salt;
     size_t bytes = mbedtls_rsa_get_len(rsa);
-    size_t bits = mbedtls_pk_get_bitlen(&key->key->pk);
-    size_t max = bytes - hash_len - 2 - ((bits - 1) % 8 == 0 ? 1 : 0);
-    if (salt == -1) salt = (int)hash_len;
-    else if (salt == -2) salt = (int)max;
-    else if (salt == -4) salt = (int)(hash_len < max ? hash_len : max);
-    if (salt < 0 || (size_t)salt > max) {
-      sp_throw(SCR_ERR_ERROR, "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE",
-               "error:1C8000A5:Provider routines::data too large for key size");
-      return NULL;
-    }
+    int max = sp_rsa_max_salt(rsa, hash_len);
+    int salt;
+    if (!sp_pss_salt(key, hash_len, max, true, &salt)) return NULL;
     r = key->mgf1 != MBEDTLS_MD_NONE && key->mgf1 != md
             ? sp_pss_sign_mgf1(rsa, md, key->mgf1, hash, hash_len, salt, sig)
             : mbedtls_rsa_rsassa_pss_sign_ext(rsa, sp_random, NULL, md, (unsigned)hash_len, hash, salt, sig);
     sig_len = bytes;
+  } else if (sp_is_rsa(key->key) && key->padding == 5) {
+    /* X9.31: the encoded digest, then the private operation. */
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
+    size_t bytes = mbedtls_rsa_get_len(rsa);
+    if (!sp_x931_digest(md)) return NULL;
+    unsigned char em[MBEDTLS_MPI_MAX_SIZE];
+    if (!sp_x931_encode(md, hash, hash_len, em, bytes)) return NULL;
+    r = mbedtls_rsa_private(rsa, sp_random, NULL, em, sig);
+    mbedtls_platform_zeroize(em, sizeof em);
+    sig_len = bytes;
   } else {
+    if (sp_is_rsa(key->key) && key->padding == 1 &&
+        mbedtls_rsa_get_len(mbedtls_pk_rsa(key->key->pk)) < hash_len + 11) {
+      sp_throw_openssl("02000070", "rsa routines", "digest too big for rsa key",
+                       "ERR_OSSL_RSA_DIGEST_TOO_BIG_FOR_RSA_KEY", true);
+      return NULL;
+    }
     r = mbedtls_pk_sign(&key->key->pk, md, hash, hash_len, sig, sizeof sig, &sig_len, sp_random, NULL);
   }
   if (r != 0) {
@@ -3537,22 +3921,60 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
   return sp_dyn_buffer(sig, sig_len);
 }
 
+/* The signature as the modulus-long block OpenSSL recovers it from:
+ * RSA_public_decrypt reads the value with BN_bin2bn, so a signature whose
+ * leading zero bytes were dropped still verifies, and one longer than the
+ * modulus does not. */
+static bool sp_rsa_sig_block(const unsigned char *sig, size_t sig_len, size_t bytes, unsigned char *block) {
+  if (sig_len > bytes) return false;
+  memset(block, 0, bytes);
+  memcpy(block + bytes - sig_len, sig, sig_len);
+  return true;
+}
+
 /* Verifies a digest against a signature; false for a signature that does
  * not verify or does not parse. */
 static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
                            const unsigned char *sig, size_t sig_len) {
-  if (!sp_pss_key_rules(key, md, hash_len, false)) return false;
+  if (key->context) {
+    if (sp_job_error) sp_throw(SCR_ERR_ERROR, NULL, "Deriving bits failed");
+    else sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED", "Context parameter is unsupported");
+    return false;
+  }
+  if (!sp_pss_key_digest(key, md)) return false;
+  if (!sp_sig_padding(key)) return false;
   if (!sp_rsa_padding(key, md)) return false;
   if (sp_is_rsa(key->key) && key->padding == 6) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
-    if (sig_len != mbedtls_rsa_get_len(rsa)) return false;
-    int salt = key->salt;
-    if (salt == -1) salt = (int)hash_len;
-    else if (salt == -2) salt = MBEDTLS_RSA_SALT_LEN_ANY;
+    size_t bytes = mbedtls_rsa_get_len(rsa);
+    unsigned char block[MBEDTLS_MPI_MAX_SIZE];
+    if (!sp_rsa_sig_block(sig, sig_len, bytes, block)) return false;
+    int salt;
+    if (!sp_pss_salt(key, hash_len, sp_rsa_max_salt(rsa, hash_len), false, &salt)) return false;
+    bool ok;
     if (key->mgf1 != MBEDTLS_MD_NONE && key->mgf1 != md)
-      return sp_pss_verify_mgf1(rsa, md, key->mgf1, hash, hash_len, salt == MBEDTLS_RSA_SALT_LEN_ANY ? -2 : salt,
-                                sig, sig_len);
-    return mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, salt, sig) == 0;
+      ok = sp_pss_verify_mgf1(rsa, md, key->mgf1, hash, hash_len, salt, block, bytes);
+    else {
+      int any = salt < 0 ? MBEDTLS_RSA_SALT_LEN_ANY : salt;
+      ok = mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, (unsigned)hash_len, hash, md, any, block) == 0;
+    }
+    mbedtls_platform_zeroize(block, sizeof block);
+    return ok;
+  }
+  if (sp_is_rsa(key->key) && key->padding == 5) {
+    /* X9.31: recover the block, take its modulus complement when OpenSSL
+     * would, and check the header, filler, digest, hash identifier and
+     * trailer. */
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
+    size_t bytes = mbedtls_rsa_get_len(rsa);
+    if (!sp_x931_digest(md)) return false;
+    unsigned char block[MBEDTLS_MPI_MAX_SIZE];
+    if (!sp_rsa_sig_block(sig, sig_len, bytes, block)) return false;
+    unsigned char em[MBEDTLS_MPI_MAX_SIZE];
+    bool ok = mbedtls_rsa_public(rsa, block, em) == 0 && sp_x931_check(rsa, md, hash, hash_len, em, bytes);
+    mbedtls_platform_zeroize(em, sizeof em);
+    mbedtls_platform_zeroize(block, sizeof block);
+    return ok;
   }
   if (sp_is_ec(key->key) && key->p1363) {
     unsigned char der[2 * 66 + 16];
@@ -3574,7 +3996,22 @@ static bool sp_reject_x25519(SpSigKey *k) {
   return true;
 }
 
-static const char sp_data_types[] = "an instance of Buffer, TypedArray, or DataView";
+/* Node's getArrayBufferOrView type list for data and signatures. */
+static const char sp_data_types[] = "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView";
+
+/* getArrayBufferOrView(value, name, 'utf8'): a string's UTF-8 bytes, or a
+ * view's or ArrayBuffer's. +1, or NULL with Node's arg-type error. */
+static ScrBytes *sp_arg_bytes(const ScrDyn *value, const char *name) {
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *bytes = scr_bytes_from_str(value->v.str, utf8);
+    scr_str_release(utf8);
+    return bytes;
+  }
+  if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value)) return scr_bytes_buffer_source(value);
+  scr_dyn_arg_type_fail(name, sp_data_types, value);
+  return NULL;
+}
 
 /* Ed25519 signs the message itself: an algorithm other than null or
  * undefined is OpenSSL's invalid digest (false, error pending). */
@@ -3584,82 +4021,1352 @@ static bool sp_ed_digest_given(const ScrDyn *algorithm) {
   return false;
 }
 
-/* crypto.sign(algorithm, data, key): the signature Buffer. */
-ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key) {
+/* The state of a one-shot signature operation after its synchronous
+ * argument checks. */
+typedef struct {
+  SpSigKey key;
   mbedtls_md_type_t md;
-  if (!sp_algorithm(algorithm, &md)) return NULL;
-  if (data->kind != SCR_DYN_BYTES) {
-    scr_dyn_arg_type_fail("data", sp_data_types, data);
+  ScrBytes *bytes;       /* +1 */
+  const ScrDyn *algorithm; /* borrowed */
+} SpSignOp;
+
+typedef struct {
+  SpSigKey key;
+  mbedtls_md_type_t md;
+  ScrBytes *bytes;       /* +1 */
+  ScrBytes *signature;   /* +1 */
+  const ScrDyn *algorithm; /* borrowed */
+} SpVerifyOp;
+
+/* crypto.sign's argument checks, in Node's order: data, the key's
+ * truthiness, its options, the key itself and its digest. The algorithm's
+ * type was checked by the caller. */
+static bool sp_sign_prepare(const ScrDyn *algorithm, const ScrDyn *data, const ScrDyn *key, SpSignOp *op) {
+  static const SpSigContext ctx = {true, SP_KEY_SIGN, "key"};
+  op->bytes = sp_arg_bytes(data, "data");
+  if (!op->bytes) return false;
+  ScrDyn *plain = sp_plain(key);
+  if (!plain) {
+    scr_bytes_release(op->bytes);
+    op->bytes = NULL;
+    return false;
+  }
+  sp_sig_init(&op->key);
+  bool ok = false;
+  if (!scr_dyn_truthy(plain)) {
+    sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_SIGN_KEY_REQUIRED", "No key provided to sign");
+  } else if (sp_sig_options(plain, &op->key, true) && sp_sig_decode(plain, &ctx, &op->key) &&
+             sp_algorithm_digest(algorithm, &op->md)) {
+    ok = true;
+  }
+  scr_dyn_release(plain);
+  if (ok) {
+    /* A null algorithm signs with an RSA-PSS key's own digest. */
+    if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && op->key.key->pss_params)
+      op->md = op->key.key->pss_md;
+    op->algorithm = algorithm;
+  } else {
+    scr_bytes_release(op->bytes);
+    op->bytes = NULL;
+    if (op->key.key) {
+      sp_key_release(op->key.key);
+      op->key.key = NULL;
+    }
+  }
+  return ok;
+}
+
+/* The operation itself, where OpenSSL's errors arise. */
+static ScrDyn *sp_sign_run(SpSignOp *op) {
+  ScrBytes *bytes = op->bytes;
+  op->bytes = NULL;
+  if (sp_is_x(op->key.key)) {
+    sp_key_release(op->key.key);
+    scr_bytes_release(bytes);
+    sp_throw_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", true);
     return NULL;
   }
-  SpSigKey k;
-  if (!sp_sign_key(key, &k)) return NULL;
-  if (sp_reject_x25519(&k)) return NULL;
-  /* A null algorithm signs with an RSA-PSS key's own digest. */
-  if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && k.key->pss_params)
-    md = k.key->pss_md;
-  ScrBytes *bytes = scr_bytes_buffer_source(data);
-  if (sp_is_ed(k.key)) {
+  if (sp_is_ed(op->key.key)) {
     ScrDyn *result = NULL;
-    const ScrPkiEd25519 *ed = sp_ed_digest_given(algorithm) ? sp_ed() : NULL;
+    const ScrPkiEd25519 *ed = sp_ed_digest_given(op->algorithm) ? sp_ed() : NULL;
     if (ed) {
       uint8_t sig[64];
-      ed->sign(sig, k.key->ed_seed, k.key->ed_pub, bytes->data, (size_t)scr_bytes_byte_len(bytes));
+      ed->sign(sig, op->key.key->ed_seed, op->key.key->ed_pub, bytes->data, (size_t)scr_bytes_byte_len(bytes));
       result = sp_dyn_buffer(sig, 64);
     }
     scr_bytes_release(bytes);
-    sp_key_release(k.key);
+    sp_key_release(op->key.key);
     return result;
   }
   unsigned char hash[MBEDTLS_MD_MAX_SIZE];
-  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(op->md);
   mbedtls_md(info, bytes->data, (size_t)scr_bytes_byte_len(bytes), hash);
   scr_bytes_release(bytes);
-  ScrDyn *result = sp_sign_hash(&k, md, hash, mbedtls_md_get_size(info));
-  sp_key_release(k.key);
+  ScrDyn *result = sp_sign_hash(&op->key, op->md, hash, mbedtls_md_get_size(info));
+  sp_key_release(op->key.key);
   return result;
+}
+
+/* crypto.sign(algorithm, data, key): the signature Buffer. */
+ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key) {
+  if (!sp_algorithm_arg(algorithm)) return NULL;
+  SpSignOp op;
+  if (!sp_sign_prepare(algorithm, data, key, &op)) return NULL;
+  return sp_sign_run(&op);
+}
+
+/* crypto.verify's argument checks, in Node's order: data, the key's
+ * options (before its truthiness, so a null or undefined key throws the
+ * options read), the signature, the key itself and its digest. */
+static bool sp_verify_prepare(const ScrDyn *algorithm, const ScrDyn *data, const ScrDyn *key,
+                              const ScrDyn *signature, SpVerifyOp *op) {
+  static const SpSigContext ctx = {false, SP_KEY_VERIFY, "key"};
+  op->bytes = sp_arg_bytes(data, "data");
+  if (!op->bytes) return false;
+  op->signature = NULL;
+  ScrDyn *plain = sp_plain(key);
+  if (!plain) {
+    scr_bytes_release(op->bytes);
+    op->bytes = NULL;
+    return false;
+  }
+  sp_sig_init(&op->key);
+  bool ok = false;
+  if (sp_sig_options(plain, &op->key, false)) {
+    op->signature = sp_arg_bytes(signature, "signature");
+    if (op->signature && sp_sig_decode(plain, &ctx, &op->key) && sp_algorithm_digest(algorithm, &op->md)) ok = true;
+  }
+  scr_dyn_release(plain);
+  if (ok) {
+    if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && op->key.key->pss_params)
+      op->md = op->key.key->pss_md;
+    op->algorithm = algorithm;
+  } else {
+    scr_bytes_release(op->bytes);
+    op->bytes = NULL;
+    if (op->signature) scr_bytes_release(op->signature);
+    op->signature = NULL;
+    if (op->key.key) {
+      sp_key_release(op->key.key);
+      op->key.key = NULL;
+    }
+  }
+  return ok;
+}
+
+static ScrDyn *sp_verify_run(SpVerifyOp *op) {
+  ScrBytes *bytes = op->bytes, *sig = op->signature;
+  op->bytes = op->signature = NULL;
+  if (sp_is_x(op->key.key)) {
+    sp_key_release(op->key.key);
+    scr_bytes_release(bytes);
+    scr_bytes_release(sig);
+    sp_throw_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", true);
+    return NULL;
+  }
+  if (sp_is_ed(op->key.key)) {
+    ScrDyn *result = NULL;
+    const ScrPkiEd25519 *ed = sp_ed_digest_given(op->algorithm) ? sp_ed() : NULL;
+    if (ed)
+      result = scr_dyn_new_bool(sp_ed_verify(ed, op->key.key->ed_pub, bytes->data, (size_t)scr_bytes_byte_len(bytes),
+                                             sig->data, (size_t)scr_bytes_byte_len(sig)));
+    scr_bytes_release(bytes);
+    scr_bytes_release(sig);
+    sp_key_release(op->key.key);
+    return result;
+  }
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(op->md);
+  mbedtls_md(info, bytes->data, (size_t)scr_bytes_byte_len(bytes), hash);
+  bool ok = sp_verify_hash(&op->key, op->md, hash, mbedtls_md_get_size(info), sig->data,
+                           (size_t)scr_bytes_byte_len(sig));
+  scr_bytes_release(bytes);
+  scr_bytes_release(sig);
+  sp_key_release(op->key.key);
+  return scr_exc_pending() ? NULL : scr_dyn_new_bool(ok);
 }
 
 /* crypto.verify(algorithm, data, key, signature): a boolean. */
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature) {
-  mbedtls_md_type_t md;
-  if (!sp_algorithm(algorithm, &md)) return NULL;
-  if (data->kind != SCR_DYN_BYTES) {
-    scr_dyn_arg_type_fail("data", sp_data_types, data);
+  if (!sp_algorithm_arg(algorithm)) return NULL;
+  SpVerifyOp op;
+  if (!sp_verify_prepare(algorithm, data, key, signature, &op)) return NULL;
+  return sp_verify_run(&op);
+}
+
+/* The operation of a callback-style call: its result, or the error it
+ * raised, which Node's job completion passes to the callback as a plain
+ * Error without the OpenSSL properties. */
+static ScrDyn *sp_callback_error(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
+/* crypto.sign(algorithm, data, key, callback); crypto.verify(...,
+ * signature, callback): argument errors throw, and the callback receives
+ * (null, result) or (error) in a later macrotask. */
+void scr_crypto_sign_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback) {
+  if (!sp_algorithm_arg(algorithm)) return;
+  if (!scr_dyn_is_callable(callback)) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
+  SpSignOp op;
+  if (!sp_sign_prepare(algorithm, data, key, &op)) return;
+  sp_job_error = true;
+  ScrDyn *result = sp_sign_run(&op);
+  sp_job_error = false;
+  if (!result) {
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), sp_callback_error(), NULL);
+    return;
+  }
+  scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), scr_dyn_new_null(), result);
+}
+
+void scr_crypto_verify_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                     ScrDyn *callback) {
+  if (!sp_algorithm_arg(algorithm)) return;
+  if (!scr_dyn_is_callable(callback)) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
+  SpVerifyOp op;
+  if (!sp_verify_prepare(algorithm, data, key, signature, &op)) return;
+  sp_job_error = true;
+  ScrDyn *result = sp_verify_run(&op);
+  sp_job_error = false;
+  if (!result) {
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), sp_callback_error(), NULL);
+    return;
+  }
+  scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), scr_dyn_new_null(), result);
+}
+
+/* crypto.sign(algorithm, data, key, callback) and crypto.verify(...,
+ * signature, callback) where the callback is a value whose type is known
+ * only at run time. Node reads a function as the asynchronous form, an
+ * undefined as the synchronous one, and anything else as an argument
+ * error; the synchronous form answers its result, the asynchronous one
+ * undefined. */
+ScrDyn *scr_crypto_sign_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback) {
+  if (callback && callback->kind == SCR_DYN_UNDEF) return scr_crypto_sign_oneshot(algorithm, data, key);
+  scr_crypto_sign_oneshot_async(algorithm, data, key, callback);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_crypto_verify_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                        ScrDyn *callback) {
+  if (callback && callback->kind == SCR_DYN_UNDEF)
+    return scr_crypto_verify_oneshot(algorithm, data, key, signature);
+  scr_crypto_verify_oneshot_async(algorithm, data, key, signature, callback);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* ── RSA public-key encryption ─────────────────────────────────────────
+ * publicEncrypt, privateDecrypt, privateEncrypt and publicDecrypt: the RSA
+ * operation with the key's public half (encrypt and recover) or its private
+ * half (decrypt and sign), padded as PKCS#1 v1.5, OAEP, or not at all.
+ * Node runs these through EVP_PKEY_encrypt, EVP_PKEY_decrypt,
+ * EVP_PKEY_sign and EVP_PKEY_verify_recover with OpenSSL's provider, so
+ * the padding and length checks, the errors it reports, and its implicit
+ * rejection of badly padded PKCS#1 v1.5 ciphertexts are reproduced here. */
+
+/* EVP's padding modes (RSA_PKCS1_* in openssl/rsa.h). */
+enum {
+  SP_PAD_PKCS1 = 1,
+  SP_PAD_NONE = 3,
+  SP_PAD_OAEP = 4,
+  SP_PAD_X931 = 5,
+  SP_PAD_PSS = 6,
+  SP_PAD_TLS = 7,
+};
+
+/* The four calls, which decide the key's half and the defaults. */
+enum {
+  SP_RSA_ENCRYPT,
+  SP_RSA_DECRYPT,
+  SP_RSA_SIGN,
+  SP_RSA_RECOVER,
+};
+
+/* Node's key type lists: a private operation takes a URL too (an OpenSSL
+ * STORE reference), and its option names are "privateKey". */
+static const char sp_rsa_public_types[] =
+    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, or CryptoKey";
+static const char sp_rsa_private_types[] =
+    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, CryptoKey, or URL";
+static const char sp_rsa_buffer_types[] =
+    "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView";
+
+typedef struct {
+  SpKey *key;              /* +1 */
+  int padding;
+  mbedtls_md_type_t md;    /* OAEP's digest; SHA-1 unless oaepHash */
+  mbedtls_md_type_t mgf1;  /* OAEP's MGF1 digest; md unless mgf1Hash */
+  ScrBytes *label;         /* +1, or NULL for OAEP's empty label */
+} SpRsaOp;
+
+/* An OpenSSL error as Node prints these: "error:<packed>:<library>::<reason>". */
+static void sp_rsa_openssl(const char *packed, const char *library, const char *reason, const char *code) {
+  sp_throw_openssl(packed, library, reason, code, true);
+}
+
+/* One from the RSA implementation itself. */
+static void sp_rsa_error(const char *packed, const char *reason, const char *code) {
+  sp_rsa_openssl(packed, "rsa routines", reason, code);
+}
+
+/* One from the provider layer above it. */
+static void sp_rsa_provider(const char *packed, const char *reason, const char *code) {
+  sp_rsa_openssl(packed, "Provider routines", reason, code);
+}
+
+/* What Node reports when the provider raised nothing at all (an operation
+ * its init refused without pushing an error): a bare error with no code. */
+static void sp_rsa_opaque(void) {
+  scr_pki_throw_fmt(SCR_ERR_ERROR, NULL, "error:00000000:lib(0)::reason(0)");
+}
+
+/* The lengths of names OpenSSL sees as C strings end at a NUL byte. */
+static size_t sp_rsa_name_len(const ScrStr *name) {
+  size_t len = 0;
+  while (len < name->len && name->data[len] != '\0') len++;
+  return len;
+}
+
+/* Is `name` the C string `text`, without regard to case? */
+static bool sp_rsa_name_is(const ScrStr *name, const char *text) {
+  size_t len = sp_rsa_name_len(name);
+  size_t n = strlen(text);
+  if (len != n) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = name->data[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    if (c != text[i]) return false;
+  }
+  return true;
+}
+
+/* The digest names EVP_get_digestbyname resolves for oaepHash and
+ * mgf1Hash, with the aliases its name database holds for them: the digest
+ * names, the dashed SHA-2 spellings, and the signature names, which share
+ * the digest's object. */
+static const SpDigest sp_oaep_digests[] = {
+    {"md5", MBEDTLS_MD_MD5},
+    {"rsa-md5", MBEDTLS_MD_MD5},
+    {"md5withrsaencryption", MBEDTLS_MD_MD5},
+    {"sha1", MBEDTLS_MD_SHA1},
+    {"sha-1", MBEDTLS_MD_SHA1},
+    {"rsa-sha1", MBEDTLS_MD_SHA1},
+    {"sha1withrsaencryption", MBEDTLS_MD_SHA1},
+    {"sha224", MBEDTLS_MD_SHA224},
+    {"sha-224", MBEDTLS_MD_SHA224},
+    {"sha2-224", MBEDTLS_MD_SHA224},
+    {"rsa-sha224", MBEDTLS_MD_SHA224},
+    {"sha224withrsaencryption", MBEDTLS_MD_SHA224},
+    {"sha256", MBEDTLS_MD_SHA256},
+    {"sha-256", MBEDTLS_MD_SHA256},
+    {"sha2-256", MBEDTLS_MD_SHA256},
+    {"rsa-sha256", MBEDTLS_MD_SHA256},
+    {"sha256withrsaencryption", MBEDTLS_MD_SHA256},
+    {"sha384", MBEDTLS_MD_SHA384},
+    {"sha-384", MBEDTLS_MD_SHA384},
+    {"sha2-384", MBEDTLS_MD_SHA384},
+    {"rsa-sha384", MBEDTLS_MD_SHA384},
+    {"sha384withrsaencryption", MBEDTLS_MD_SHA384},
+    {"sha512", MBEDTLS_MD_SHA512},
+    {"sha-512", MBEDTLS_MD_SHA512},
+    {"sha2-512", MBEDTLS_MD_SHA512},
+    {"rsa-sha512", MBEDTLS_MD_SHA512},
+    {"sha512withrsaencryption", MBEDTLS_MD_SHA512},
+    {"ripemd160", MBEDTLS_MD_RIPEMD160},
+    {"ripemd", MBEDTLS_MD_RIPEMD160},
+    {"rmd160", MBEDTLS_MD_RIPEMD160},
+    {"sha3-224", MBEDTLS_MD_SHA3_224},
+    {"sha3-256", MBEDTLS_MD_SHA3_256},
+    {"sha3-384", MBEDTLS_MD_SHA3_384},
+    {"sha3-512", MBEDTLS_MD_SHA3_512},
+};
+
+/* The message digest `name` resolves to, or NULL with the error Node
+ * reports for it pending. */
+static const mbedtls_md_info_t *sp_oaep_md(const ScrStr *name) {
+  for (size_t i = 0; i < sizeof sp_oaep_digests / sizeof sp_oaep_digests[0]; i++) {
+    if (!sp_rsa_name_is(name, sp_oaep_digests[i].name)) continue;
+    return mbedtls_md_info_from_type(sp_oaep_digests[i].md);
+  }
+  /* A digest OpenSSL knows whose size the provider cannot use: the XOFs,
+     which have no single size. */
+  if (sp_rsa_name_is(name, "shake128") || sp_rsa_name_is(name, "shake-128") || sp_rsa_name_is(name, "shake256") ||
+      sp_rsa_name_is(name, "shake-256")) {
+    sp_rsa_error("020000B5", "invalid length", "ERR_OSSL_RSA_INVALID_LENGTH");
     return NULL;
   }
-  SpSigKey k;
-  if (!sp_sig_key(key, false, &k)) return NULL;
-  if (signature->kind != SCR_DYN_BYTES) {
-    sp_key_release(k.key);
-    scr_dyn_arg_type_fail("signature", sp_data_types, signature);
+  /* Digests only the legacy provider offers, which this build does not
+     load. */
+  if (sp_rsa_name_is(name, "md4") || sp_rsa_name_is(name, "md4withrsaencryption") ||
+      sp_rsa_name_is(name, "whirlpool")) {
+    sp_rsa_openssl("0308010C", "digital envelope routines", "unsupported", "ERR_OSSL_EVP_UNSUPPORTED");
     return NULL;
   }
-  if (sp_reject_x25519(&k)) return NULL;
-  if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && k.key->pss_params)
-    md = k.key->pss_md;
-  ScrBytes *bytes = scr_bytes_buffer_source(data);
-  ScrBytes *sig = scr_bytes_buffer_source(signature);
-  if (sp_is_ed(k.key)) {
-    ScrDyn *result = NULL;
-    const ScrPkiEd25519 *ed = sp_ed_digest_given(algorithm) ? sp_ed() : NULL;
-    if (ed)
-      result = scr_dyn_new_bool(sp_ed_verify(ed, k.key->ed_pub, bytes->data,
-                                             (size_t)scr_bytes_byte_len(bytes), sig->data,
-                                             (size_t)scr_bytes_byte_len(sig)));
-    scr_bytes_release(bytes);
-    scr_bytes_release(sig);
-    sp_key_release(k.key);
-    return result;
+  sp_throw(SCR_ERR_ERROR, "ERR_OSSL_EVP_INVALID_DIGEST", "Invalid digest used");
+  return NULL;
+}
+
+/* Node's `key.padding || defaultPadding`, then Uint32Value: a falsy value
+ * keeps the default, and any other converts with ToNumber and truncates
+ * modulo 2^32 (a NaN, as an object gives, is 0). */
+static bool sp_rsa_padding_of(const ScrDyn *value, int fallback, int *out) {
+  *out = fallback;
+  if (!scr_dyn_truthy(value)) return true;
+  double n = scr_dyn_number_coerce(value);
+  if (scr_exc_pending()) return false;
+  if (!isfinite(n)) {
+    n = 0;
+  } else {
+    n = fmod(trunc(n), 4294967296.0);
+    if (n < 0) n += 4294967296.0;
   }
-  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
-  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
-  mbedtls_md(info, bytes->data, (size_t)scr_bytes_byte_len(bytes), hash);
-  bool ok = sp_verify_hash(&k, md, hash, mbedtls_md_get_size(info), sig->data, (size_t)scr_bytes_byte_len(sig));
-  scr_bytes_release(bytes);
-  scr_bytes_release(sig);
-  sp_key_release(k.key);
-  return scr_exc_pending() ? NULL : scr_dyn_new_bool(ok);
+  *out = (int)(uint32_t)n;
+  return true;
+}
+
+static void sp_rsa_release(SpRsaOp *op) {
+  sp_key_release(op->key);
+  op->key = NULL;
+  if (op->label) scr_bytes_release(op->label);
+  op->label = NULL;
+}
+
+/* createPrivateKey & co. for a private operation, which Node's decoder
+ * also feeds a public key: the operation itself then reports that the key
+ * has no private half. A failure that is not a missing private half is
+ * the key's own error, and stays. */
+static ScrDyn *sp_create_key_either(ScrDyn *input, bool private_key) {
+  const char *name = private_key ? "privateKey" : "key";
+  ScrDyn *k = sp_create_key(input, private_key ? SP_KEY_CREATE_PRIVATE : SP_KEY_CREATE_PUBLIC, name);
+  if (k || !private_key || !scr_exc_pending()) return k;
+  ScrCaught *first = scr_exc_take();
+  ScrDyn *pub = sp_create_key(input, SP_KEY_CREATE_PUBLIC, name);
+  bool failed = scr_exc_pending();
+  if (pub && !failed) {
+    scr_caught_release(first);
+    return pub;
+  }
+  if (pub) scr_dyn_release(pub);
+  if (failed) scr_caught_release(scr_exc_take());
+  scr_rethrow(first);
+  scr_caught_release(first);
+  return NULL;
+}
+
+/* The key argument of the four calls: Node's rsaFunctionFor reads padding,
+ * oaepHash, mgf1Hash, oaepLabel and encoding off it, and
+ * prepareAsymmetricKey resolves the key (a KeyObject, key material, or an
+ * options object, whose own `key` may be a KeyObject again). The buffer
+ * becomes *data, +1. */
+static bool sp_rsa_prepare(const ScrDyn *key_arg, const ScrDyn *buffer, int operation, SpRsaOp *op,
+                           ScrBytes **data) {
+  op->key = NULL;
+  op->label = NULL;
+  op->padding = operation == SP_RSA_ENCRYPT || operation == SP_RSA_DECRYPT ? SP_PAD_OAEP : SP_PAD_PKCS1;
+  op->md = MBEDTLS_MD_SHA1;
+  op->mgf1 = MBEDTLS_MD_SHA1;
+  *data = NULL;
+  bool private_op = operation == SP_RSA_DECRYPT || operation == SP_RSA_SIGN;
+  const char *name = private_op ? "privateKey" : "key";
+  const char *types = private_op ? sp_rsa_private_types : sp_rsa_public_types;
+
+  ScrDyn *plain = sp_plain(key_arg);
+  if (!plain) return false;
+
+  SpKey *direct = sp_key_of(plain);
+  if (direct) {
+    /* validateAsymmetricKeyType: a private operation needs a private key. */
+    if (private_op && !direct->private_key) {
+      sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+               "Invalid key object type public, expected private.");
+      scr_dyn_release(plain);
+      return false;
+    }
+    sp_key_retain(direct);
+    op->key = direct;
+  } else if (plain->kind == SCR_DYN_HANDLE && plain->v.handle.tag == SCR_DYNH_KEY_OBJECT) {
+    /* A secret KeyObject is not a key these calls take. */
+    sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+             private_op ? "Invalid key object type secret, expected private."
+                        : "Invalid key object type secret, expected private or public.");
+    scr_dyn_release(plain);
+    return false;
+  }
+
+  bool options = false;
+  const ScrDyn *encoding = scr_dyn_undefined();
+  if (!op->key) {
+    bool material = plain->kind == SCR_DYN_STR || plain->kind == SCR_DYN_BYTES || scr_buffer_storage_is(plain);
+    if (!material) {
+      if (plain->kind == SCR_DYN_NULL) {
+        scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "Cannot destructure property 'key' of '%s' as it is null.", name);
+        scr_dyn_release(plain);
+        return false;
+      }
+      if (plain->kind != SCR_DYN_OBJ && plain->kind != SCR_DYN_ARR) {
+        scr_dyn_arg_type_fail(name, types, plain);
+        scr_dyn_release(plain);
+        return false;
+      }
+      /* An options object. Its `key` may be a KeyObject, whose type Node
+         validates before it reads anything else, and which stands in for
+         the key material. */
+      options = true;
+      const ScrDyn *inner = sp_opt(plain, "key");
+      SpKey *inner_key = sp_key_of(inner);
+      if (inner_key) {
+        if (private_op && !inner_key->private_key) {
+          sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+                   "Invalid key object type public, expected private.");
+          scr_dyn_release(plain);
+          return false;
+        }
+        sp_key_retain(inner_key);
+        op->key = inner_key;
+      } else if (inner->kind == SCR_DYN_HANDLE && inner->v.handle.tag == SCR_DYNH_KEY_OBJECT) {
+        sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+                 private_op ? "Invalid key object type secret, expected private."
+                            : "Invalid key object type secret, expected private or public.");
+        scr_dyn_release(plain);
+        return false;
+      } else {
+        /* Key material. Node's own object-form checks (the JWK and raw
+           format paths, and the decoder) follow. */
+        const ScrDyn *format = sp_opt(plain, "format");
+        bool special = sp_is_str(format, "jwk") || sp_is_str(format, "raw-public") ||
+                       sp_is_str(format, "raw-private") || sp_is_str(format, "raw-seed");
+        bool material = inner->kind == SCR_DYN_STR || inner->kind == SCR_DYN_BYTES || scr_buffer_storage_is(inner);
+        if (!special && !material) {
+          char key_name[32];
+          snprintf(key_name, sizeof key_name, "%s.key", name);
+          scr_dyn_arg_type_fail(key_name, types, inner);
+          scr_dyn_release(plain);
+          return false;
+        }
+      }
+      encoding = sp_opt(plain, "encoding");
+    }
+    if (!op->key) {
+      ScrDyn *created = sp_create_key_either(plain, private_op);
+      if (!created) {
+        scr_dyn_release(plain);
+        return false;
+      }
+      op->key = sp_key_of(created);
+      sp_key_retain(op->key);
+      scr_dyn_release(created);
+    }
+  }
+
+  /* Node destructures the options before it converts `padding`, and that
+     conversion can run a caller-supplied valueOf, which may delete any of
+     these members from `plain`. Hold our own reference to each value so
+     the conversion cannot free one that is still used below. */
+  ScrDyn *padding = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "padding") : scr_dyn_undefined()));
+  ScrDyn *oaep_hash = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "oaepHash") : scr_dyn_undefined()));
+  ScrDyn *mgf1_hash = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "mgf1Hash") : scr_dyn_undefined()));
+  ScrDyn *oaep_label = scr_dyn_retain((ScrDyn *)(options ? sp_opt(plain, "oaepLabel") : scr_dyn_undefined()));
+  ScrDyn *encoding_hold = scr_dyn_retain((ScrDyn *)encoding);
+  bool ok = sp_rsa_padding_of(padding, op->padding, &op->padding);
+  /* Node validates the option strings, and converts the label with the
+     key's encoding, before it looks at the buffer. */
+  if (ok && !sp_absent(oaep_hash) && oaep_hash->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("key.oaepHash", "of type string", oaep_hash);
+    ok = false;
+  }
+  if (ok && !sp_absent(mgf1_hash) && mgf1_hash->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("key.mgf1Hash", "of type string", mgf1_hash);
+    ok = false;
+  }
+  if (ok && !sp_absent(oaep_label)) {
+    op->label = sp_source_bytes(oaep_label, encoding_hold);
+    if (!op->label) {
+      if (!scr_exc_pending()) scr_dyn_arg_type_fail("key.oaepLabel", sp_rsa_buffer_types, oaep_label);
+      ok = false;
+    }
+  }
+  if (ok) {
+    *data = sp_source_bytes(buffer, encoding_hold);
+    if (!*data) {
+      if (!scr_exc_pending()) scr_dyn_arg_type_fail("buffer", sp_rsa_buffer_types, buffer);
+      ok = false;
+    }
+  }
+  /* A PKCS#1 v1.5 decryption sets its implicit rejection up before the
+     digests resolve, so its key type is the first thing that can fail. */
+  if (ok && operation == SP_RSA_DECRYPT && op->padding == SP_PAD_PKCS1 && !sp_is_rsa(op->key)) {
+    if (op->key->rsa_pss)
+      sp_rsa_provider("1C8000B2", "operation not supported for this keytype",
+                      "ERR_OSSL_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    else
+      sp_rsa_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    ok = false;
+  }
+  /* The digests resolve after the key is decoded, and the MGF1 digest
+     follows the message digest unless it names its own. */
+  if (ok && !sp_absent(oaep_hash)) {
+    const mbedtls_md_info_t *md = sp_oaep_md(oaep_hash->v.str);
+    if (md) op->md = mbedtls_md_get_type(md);
+    else ok = false;
+  }
+  if (ok && !sp_absent(mgf1_hash)) {
+    const mbedtls_md_info_t *md = sp_oaep_md(mgf1_hash->v.str);
+    if (md) op->mgf1 = mbedtls_md_get_type(md);
+    else ok = false;
+  } else if (ok) {
+    op->mgf1 = op->md;
+  }
+  scr_dyn_release(padding);
+  scr_dyn_release(oaep_hash);
+  scr_dyn_release(mgf1_hash);
+  scr_dyn_release(oaep_label);
+  scr_dyn_release(encoding_hold);
+  scr_dyn_release(plain);
+  if (!ok) {
+    if (*data) scr_bytes_release(*data);
+    *data = NULL;
+    sp_rsa_release(op);
+    return false;
+  }
+  return true;
+}
+
+/* The k-byte big-endian block of `in`, which is no longer than k. */
+static void sp_rsa_block_of(const ScrBytes *in, unsigned char *block, size_t k) {
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  memset(block, 0, k);
+  if (len) memcpy(block + k - len, in->data, len);
+}
+
+/* Is the block at least the modulus? (OpenSSL's RSA_R_DATA_TOO_LARGE_FOR_MODULUS.) */
+static bool sp_rsa_block_too_large(mbedtls_rsa_context *rsa, const unsigned char *block, size_t k) {
+  mbedtls_mpi v;
+  mbedtls_mpi_init(&v);
+  bool ge = mbedtls_mpi_read_binary(&v, block, k) == 0 &&
+            mbedtls_mpi_cmp_mpi(&v, &rsa->MBEDTLS_PRIVATE(N)) >= 0;
+  mbedtls_mpi_free(&v);
+  return ge;
+}
+
+/* The private-key operation on a block, or the missing-private-key error
+ * when the key has only its public half. */
+static bool sp_rsa_private_op(const SpKey *key, const unsigned char *block, unsigned char *out) {
+  if (!key->private_key) {
+    sp_rsa_error("020000B3", "missing private key", "ERR_OSSL_RSA_MISSING_PRIVATE_KEY");
+    return false;
+  }
+  if (mbedtls_rsa_private(mbedtls_pk_rsa(key->pk), sp_random, NULL, block, out) != 0) {
+    sp_rsa_opaque();
+    return false;
+  }
+  return true;
+}
+
+/* The public-key operation on a block. */
+static bool sp_rsa_public_op(mbedtls_rsa_context *rsa, const unsigned char *block, unsigned char *out) {
+  if (mbedtls_rsa_public(rsa, block, out) != 0) {
+    sp_rsa_opaque();
+    return false;
+  }
+  return true;
+}
+
+/* OAEP's encoding (RFC 8017 7.1.1), whose checks the provider makes before
+ * the public-key operation. */
+static bool sp_oaep_encode(const SpRsaOp *op, const ScrBytes *in, unsigned char *em, size_t k) {
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(op->md);
+  size_t h = mbedtls_md_get_size(info);
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  if ((int64_t)len > (int64_t)(k - 1) - 2 * (int64_t)h - 1) {
+    sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+    return false;
+  }
+  memset(em, 0, k);
+  unsigned char *seed = em + 1;
+  unsigned char *db = em + 1 + h;
+  size_t db_len = k - h - 1;
+  /* DB = lHash || PS || 0x01 || M, with PS the zeros above. */
+  mbedtls_md(info, op->label ? op->label->data : NULL,
+             op->label ? (size_t)scr_bytes_byte_len(op->label) : 0, db);
+  db[db_len - len - 1] = 0x01;
+  if (len) memcpy(db + db_len - len, in->data, len);
+  sp_random(NULL, seed, h);
+  if (sp_mgf1_xor(op->mgf1, seed, h, db, db_len) != 0) return false;
+  if (sp_mgf1_xor(op->mgf1, db, db_len, seed, h) != 0) return false;
+  return true;
+}
+
+/* OpenSSL's constant-time building blocks (crypto/constant_time.c): the
+ * padding checks below run on values derived from a secret, so the masks are
+ * computed without branches and a select keeps both operands live. */
+static unsigned int sp_ct_barrier(unsigned int a) {
+#if defined(__GNUC__)
+  unsigned int r;
+  __asm__("" : "=r"(r) : "0"(a));
+#else
+  volatile unsigned int r = a;
+#endif
+  return r;
+}
+
+static unsigned int sp_ct_msb(unsigned int a) { return 0 - (a >> (sizeof(a) * 8 - 1)); }
+
+static unsigned int sp_ct_lt(unsigned int a, unsigned int b) {
+  return sp_ct_msb(a ^ ((a ^ b) | ((a - b) ^ b)));
+}
+
+static unsigned int sp_ct_ge(unsigned int a, unsigned int b) { return ~sp_ct_lt(a, b); }
+
+static unsigned int sp_ct_is_zero(unsigned int a) { return sp_ct_msb(~a & (a - 1)); }
+
+static unsigned int sp_ct_select(unsigned int mask, unsigned int a, unsigned int b) {
+  return (sp_ct_barrier(mask) & a) | (sp_ct_barrier(~mask) & b);
+}
+
+static unsigned char sp_ct_select_8(unsigned int mask, unsigned char a, unsigned char b) {
+  return (unsigned char)sp_ct_select(mask, a, b);
+}
+
+/* OAEP's decoding (RFC 8017 7.1.2) of the k-byte message. Every check that
+ * fails is the provider's one decoding error, and the checks are made the way
+ * OpenSSL's RSA_padding_check_PKCS1_OAEP_mgf1 makes them: a rejected block
+ * takes the same time as an accepted one. */
+static ScrDyn *sp_oaep_decode(const SpRsaOp *op, const unsigned char *em, size_t k) {
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(op->md);
+  size_t h = mbedtls_md_get_size(info);
+  if (k < 2 * h + 2) {
+    sp_rsa_error("02000079", "oaep decoding error", "ERR_OSSL_RSA_OAEP_DECODING_ERROR");
+    return NULL;
+  }
+  size_t db_len = k - h - 1;
+  size_t limit = db_len - h - 1; /* the longest message the block can hold */
+  unsigned char *work = malloc(h + db_len);
+  if (!work) scr_trap("scriptc: out of memory\n");
+  unsigned char *seed = work;
+  unsigned char *db = work + h;
+  memcpy(seed, em + 1, h);
+  memcpy(db, em + 1 + h, db_len);
+  /* seed ^= MGF1(maskedDB); DB ^= MGF1(seed) */
+  sp_mgf1_xor(op->mgf1, db, db_len, seed, h);
+  sp_mgf1_xor(op->mgf1, seed, h, db, db_len);
+
+  /* Manger's attack reads a branch on the leading byte, so it is compared
+   * without one, as is the label hash. */
+  unsigned int good = sp_ct_is_zero(em[0]);
+  unsigned char lhash[MBEDTLS_MD_MAX_SIZE];
+  mbedtls_md(info, op->label ? op->label->data : NULL,
+             op->label ? (size_t)scr_bytes_byte_len(op->label) : 0, lhash);
+  unsigned int diff = 0;
+  for (size_t i = 0; i < h; i++) diff |= (unsigned int)(db[i] ^ lhash[i]);
+  good &= sp_ct_is_zero(diff);
+  mbedtls_platform_zeroize(lhash, sizeof lhash);
+
+  /* DB = lHash || PS || 0x01 || M. The separator is the first byte that is
+   * not a zero of the padding and not the 0x01, and every byte of DB is
+   * read for it. */
+  unsigned int found_one_byte = 0;
+  unsigned int one_index = 0;
+  for (size_t i = h; i < db_len; i++) {
+    unsigned int equals_one = sp_ct_is_zero((unsigned int)db[i] ^ 0x01);
+    unsigned int equals_zero = sp_ct_is_zero(db[i]);
+    one_index = sp_ct_select(~found_one_byte & equals_one, (unsigned int)i, one_index);
+    found_one_byte |= equals_one;
+    good &= found_one_byte | equals_zero;
+  }
+  good &= found_one_byte;
+
+  unsigned int msg_index = one_index + 1;
+  unsigned int mlen = (unsigned int)db_len - msg_index;
+  good &= sp_ct_ge((unsigned int)limit, mlen); /* the message fits output */
+
+  /* Move the message to the offset the copy below reads with a barrel shift,
+   * so that neither does the copy address depend on the separator found. A
+   * rejected block does not move anything, which the masks make no faster. */
+  unsigned int shift = sp_ct_select(good, (unsigned int)(db_len - h - 1) - mlen, 0);
+  for (size_t step = 1; step < limit; step <<= 1) {
+    unsigned int mask = ~sp_ct_is_zero((unsigned int)step & shift);
+    for (size_t i = h + 1; i < db_len - step; i++) db[i] = sp_ct_select_8(mask, db[i + step], db[i]);
+  }
+
+  /* Copy the message in place; the bytes past its end are selected away, so
+   * the copy reads and writes the same bytes whichever way the check went. */
+  size_t room = limit ? limit : 1;
+  unsigned char *message = malloc(room);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < limit; i++)
+    message[i] = sp_ct_select_8(good & sp_ct_lt((unsigned int)i, mlen), db[h + 1 + i], 0);
+  mbedtls_platform_zeroize(work, h + db_len);
+  free(work);
+  if (!good) {
+    mbedtls_platform_zeroize(message, room);
+    free(message);
+    sp_rsa_error("02000079", "oaep decoding error", "ERR_OSSL_RSA_OAEP_DECODING_ERROR");
+    return NULL;
+  }
+  ScrDyn *out = sp_dyn_buffer(message, mlen);
+  mbedtls_platform_zeroize(message, room);
+  free(message);
+  return out;
+}
+
+/* PKCS#1 v1.5 type 2 padding (encryption): 00 || 02 || PS || 00 || M. */
+static bool sp_pkcs1_encrypt(const ScrBytes *in, unsigned char *em, size_t k) {
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  if ((int64_t)len > (int64_t)k - 11) {
+    sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+    return false;
+  }
+  size_t ps = k - len - 3;
+  em[0] = 0x00;
+  em[1] = 0x02;
+  for (size_t i = 0; i < ps; i++) {
+    unsigned char b = 0;
+    while (b == 0) sp_random(NULL, &b, 1);
+    em[2 + i] = b;
+  }
+  em[2 + ps] = 0x00;
+  if (len) memcpy(em + 3 + ps, in->data, len);
+  return true;
+}
+
+/* PKCS#1 v1.5 type 1 padding (signing): 00 || 01 || PS || 00 || M. */
+static bool sp_pkcs1_sign(const ScrBytes *in, unsigned char *em, size_t k) {
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  if ((int64_t)len > (int64_t)k - 11) {
+    sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+    return false;
+  }
+  size_t ps = k - len - 3;
+  memset(em, 0xff, k);
+  em[0] = 0x00;
+  em[1] = 0x01;
+  em[2 + ps] = 0x00;
+  if (len) memcpy(em + 3 + ps, in->data, len);
+  return true;
+}
+
+/* PKCS#1 v1.5 type 1's check (recovery): the message, or the error the
+ * recovery reports for the first check that fails. */
+static ScrDyn *sp_pkcs1_recover(const unsigned char *buf, size_t k) {
+  size_t p = 0;
+  size_t flen = k;
+  if (k < 11) {
+    /* The type 1 check's shortest answer: no message disappears. */
+    sp_rsa_error("02000065", "padding check failed", "ERR_OSSL_RSA_PADDING_CHECK_FAILED");
+    return NULL;
+  }
+  /* Accept inputs with and without the leading 0 byte; a recovered block
+     always has it. */
+  if (buf[p] != 0x00) {
+    sp_rsa_error("0200008A", "invalid padding", "ERR_OSSL_RSA_INVALID_PADDING");
+    return NULL;
+  }
+  p++;
+  flen--;
+  if (flen + 1 != k || buf[p] != 0x01) {
+    sp_rsa_error("0200006A", "block type is not 01", "ERR_OSSL_RSA_BLOCK_TYPE_IS_NOT_01");
+    return NULL;
+  }
+  p++;
+  size_t j = flen - 1; /* one for the type */
+  size_t i = 0;
+  for (; i < j; i++, p++) {
+    if (buf[p] != 0xff) {
+      if (buf[p] == 0x00) {
+        p++;
+        break;
+      }
+      sp_rsa_error("02000066", "bad fixed header decrypt", "ERR_OSSL_RSA_BAD_FIXED_HEADER_DECRYPT");
+      return NULL;
+    }
+  }
+  if (i == j) {
+    sp_rsa_error("02000068", "null before block missing", "ERR_OSSL_RSA_NULL_BEFORE_BLOCK_MISSING");
+    return NULL;
+  }
+  if (i < 8) {
+    sp_rsa_error("02000067", "bad pad byte count", "ERR_OSSL_RSA_BAD_PAD_BYTE_COUNT");
+    return NULL;
+  }
+  i++; /* the separator */
+  j -= i;
+  if (j > k) {
+    sp_rsa_error("02000069", "data too large", "ERR_OSSL_RSA_DATA_TOO_LARGE");
+    return NULL;
+  }
+  return sp_dyn_buffer(buf + p, j);
+}
+
+/* The HMAC-SHA256 stream OpenSSL's implicit rejection draws from (its
+ * ossl_rsa_prf): be16(iter) || label || be16(bitlen) per block. */
+static int sp_rsa_prf(const unsigned char kdk[32], const char *label, size_t llen, unsigned char *out, size_t len,
+                      uint16_t bitlen) {
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  int r = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+  unsigned char block[32];
+  unsigned char bits[2] = {(unsigned char)(bitlen >> 8), (unsigned char)bitlen};
+  for (size_t iter = 0; r == 0 && iter * 32 < len; iter++) {
+    unsigned char be[2] = {(unsigned char)(iter >> 8), (unsigned char)iter};
+    if ((r = mbedtls_md_hmac_starts(&ctx, kdk, 32)) == 0 &&
+        (r = mbedtls_md_hmac_update(&ctx, be, 2)) == 0 &&
+        (r = mbedtls_md_hmac_update(&ctx, (const unsigned char *)label, llen)) == 0 &&
+        (r = mbedtls_md_hmac_update(&ctx, bits, 2)) == 0)
+      r = mbedtls_md_hmac_finish(&ctx, block);
+    if (r != 0) break;
+    size_t pos = iter * 32;
+    size_t n = len - pos < 32 ? len - pos : 32;
+    memcpy(out + pos, block, n);
+  }
+  mbedtls_platform_zeroize(block, sizeof block);
+  mbedtls_md_free(&ctx);
+  return r;
+}
+
+/* OpenSSL's implicit rejection key derivation: HMAC-SHA256 keyed by
+ * SHA-256 of the private exponent over the ciphertext zero-padded to the
+ * modulus length. False when the key carries no private exponent, which
+ * does not depend on the ciphertext. */
+static bool sp_rsa_kdk(mbedtls_rsa_context *rsa, const unsigned char *ct, size_t ct_len, size_t k,
+                       unsigned char kdk[32]) {
+  unsigned char d[MBEDTLS_MPI_MAX_SIZE];
+  if (mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(D), d, k) != 0) {
+    sp_rsa_error("020000B3", "missing private key", "ERR_OSSL_RSA_MISSING_PRIVATE_KEY");
+    return false;
+  }
+  unsigned char d_hash[32];
+  mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), d, k, d_hash);
+  mbedtls_platform_zeroize(d, k);
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  int r = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+  if (r == 0) r = mbedtls_md_hmac_starts(&ctx, d_hash, 32);
+  if (r == 0 && ct_len < k) {
+    static const unsigned char zeros[MBEDTLS_MPI_MAX_SIZE] = {0};
+    r = mbedtls_md_hmac_update(&ctx, zeros, k - ct_len);
+  }
+  if (r == 0) r = mbedtls_md_hmac_update(&ctx, ct, ct_len);
+  if (r == 0) r = mbedtls_md_hmac_finish(&ctx, kdk);
+  mbedtls_md_free(&ctx);
+  mbedtls_platform_zeroize(d_hash, sizeof d_hash);
+  if (r != 0) scr_trap("scriptc: crypto: PKCS#1 v1.5 key derivation failed\n");
+  return true;
+}
+
+/* PKCS#1 v1.5 type 2's check of a decrypted block, with the implicit
+ * rejection a failure ends in: a synthetic plaintext, always the same for a
+ * given ciphertext, derived from the private exponent and the ciphertext so
+ * that a caller cannot tell the padding failed. The synthetic message is
+ * generated for every call, the check reads the whole block without
+ * branching, and the message, its start and its length are chosen with
+ * masks, so a decryption takes the same time whichever way the padding
+ * checks (OpenSSL's ossl_rsa_padding_check_PKCS1_type_2). */
+static ScrDyn *sp_pkcs1_decrypt(mbedtls_rsa_context *rsa, const unsigned char *buf, size_t k, const ScrBytes *ct) {
+  unsigned char kdk[32];
+  if (!sp_rsa_kdk(rsa, ct->data, (size_t)scr_bytes_byte_len(ct), k, kdk)) return NULL;
+
+  unsigned char *synthetic = malloc(k);
+  unsigned char *candidates = malloc(256);
+  if (!synthetic || !candidates) scr_trap("scriptc: out of memory\n");
+  if (sp_rsa_prf(kdk, "message", 7, synthetic, k, (uint16_t)(k * 8)) != 0 ||
+      sp_rsa_prf(kdk, "length", 6, candidates, 256, 256 * 8) != 0)
+    scr_trap("scriptc: crypto: PKCS#1 v1.5 rejection stream failed\n");
+  mbedtls_platform_zeroize(kdk, sizeof kdk);
+
+  /* The synthetic message ends at the last generated length below k - 10. */
+  uint16_t max_sep_offset = (uint16_t)(k - 10);
+  uint16_t length_mask = max_sep_offset;
+  length_mask |= length_mask >> 1;
+  length_mask |= length_mask >> 2;
+  length_mask |= length_mask >> 4;
+  length_mask |= length_mask >> 8;
+  unsigned int synthetic_length = 0;
+  for (size_t i = 0; i < 256; i += 2) {
+    uint16_t candidate = (uint16_t)((candidates[i] << 8) | candidates[i + 1]) & length_mask;
+    synthetic_length = sp_ct_select(sp_ct_lt(candidate, max_sep_offset), candidate, synthetic_length);
+  }
+  free(candidates);
+
+  /* 00 || 02 || PS || 00, with at least eight bytes of PS. */
+  unsigned int good = sp_ct_is_zero(buf[0]);
+  good &= sp_ct_is_zero((unsigned int)buf[1] ^ 0x02);
+  unsigned int found_zero_byte = 0;
+  unsigned int zero_index = 0;
+  for (size_t i = 2; i < k; i++) {
+    unsigned int equals_zero = sp_ct_is_zero(buf[i]);
+    zero_index = sp_ct_select(~found_zero_byte & equals_zero, (unsigned int)i, zero_index);
+    found_zero_byte |= equals_zero;
+  }
+  good &= sp_ct_ge(zero_index, 2 + 8);
+  unsigned int msg_index = zero_index + 1;
+  /* The message has to fit the output, which is as long as the modulus. */
+  good &= sp_ct_ge((unsigned int)k, (unsigned int)k - msg_index);
+  msg_index = sp_ct_select(good, msg_index, (unsigned int)k - synthetic_length);
+
+  /* Every output byte reads the real block and the synthetic message, so
+   * neither the padding's validity nor the message's content decides a
+   * branch or a cache access. */
+  unsigned char *message = malloc(k);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  size_t length = 0;
+  for (size_t i = msg_index; i < k && length < k; i++, length++)
+    message[length] = sp_ct_select_8(good, buf[i], synthetic[i]);
+  free(synthetic);
+  ScrDyn *out = sp_dyn_buffer(message, length);
+  free(message);
+  return out;
+}
+
+/* publicEncrypt: EVP_PKEY_encrypt. */
+static ScrDyn *sp_rsa_encrypt(SpRsaOp *op, const ScrBytes *in) {
+  if (op->key->rsa_pss) {
+    sp_rsa_provider("1C8000B2", "operation not supported for this keytype",
+                    "ERR_OSSL_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    return NULL;
+  }
+  if (!sp_is_rsa(op->key)) {
+    sp_rsa_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                   "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    return NULL;
+  }
+  if (op->padding == SP_PAD_PSS) {
+    /* The provider's init refuses to set up a PSS encryption without
+       raising anything. */
+    sp_rsa_opaque();
+    return NULL;
+  }
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(op->key->pk);
+  size_t k = mbedtls_rsa_get_len(rsa);
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  unsigned char *em = malloc(k);
+  unsigned char *out = malloc(k);
+  if (!em || !out) scr_trap("scriptc: out of memory\n");
+  bool ok = true;
+  switch (op->padding) {
+  case SP_PAD_OAEP:
+    ok = sp_oaep_encode(op, in, em, k);
+    break;
+  case SP_PAD_PKCS1:
+    ok = sp_pkcs1_encrypt(in, em, k);
+    break;
+  case SP_PAD_NONE:
+    if (len > k) {
+      sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+      ok = false;
+    } else if (len < k) {
+      sp_rsa_error("0200007A", "data too small for key size", "ERR_OSSL_RSA_DATA_TOO_SMALL_FOR_KEY_SIZE");
+      ok = false;
+    } else {
+      memcpy(em, in->data, k);
+    }
+    break;
+  default:
+    sp_rsa_error("02000076", "unknown padding type", "ERR_OSSL_RSA_UNKNOWN_PADDING_TYPE");
+    ok = false;
+    break;
+  }
+  ScrDyn *result = NULL;
+  if (ok) {
+    if (sp_rsa_block_too_large(rsa, em, k)) {
+      sp_rsa_error("02000084", "data too large for modulus", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_MODULUS");
+    } else if (sp_rsa_public_op(rsa, em, out)) {
+      result = sp_dyn_buffer(out, k);
+    }
+  }
+  free(em);
+  free(out);
+  return result;
+}
+
+/* privateDecrypt: EVP_PKEY_decrypt. */
+static ScrDyn *sp_rsa_decrypt(SpRsaOp *op, const ScrBytes *in) {
+  if (op->key->rsa_pss) {
+    sp_rsa_provider("1C8000B2", "operation not supported for this keytype",
+                    "ERR_OSSL_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    return NULL;
+  }
+  if (!sp_is_rsa(op->key)) {
+    sp_rsa_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                   "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    return NULL;
+  }
+  if (op->padding == SP_PAD_PSS) {
+    sp_rsa_opaque();
+    return NULL;
+  }
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(op->key->pk);
+  size_t k = mbedtls_rsa_get_len(rsa);
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  /* The raw private operation's checks come before the padding. */
+  if (len > k) {
+    sp_rsa_error("0200006C", "data greater than mod len", "ERR_OSSL_RSA_DATA_GREATER_THAN_MOD_LEN");
+    return NULL;
+  }
+  if (len < 1) {
+    sp_rsa_error("0200006F", "data too small", "ERR_OSSL_RSA_DATA_TOO_SMALL");
+    return NULL;
+  }
+  unsigned char *block = malloc(k);
+  unsigned char *out = malloc(k);
+  if (!block || !out) scr_trap("scriptc: out of memory\n");
+  ScrDyn *result = NULL;
+  sp_rsa_block_of(in, block, k);
+  if (!sp_rsa_block_too_large(rsa, block, k)) {
+    if (sp_rsa_private_op(op->key, block, out)) {
+      switch (op->padding) {
+      case SP_PAD_OAEP:
+        result = sp_oaep_decode(op, out, k);
+        break;
+      case SP_PAD_PKCS1:
+        result = sp_pkcs1_decrypt(rsa, out, k, in);
+        break;
+      case SP_PAD_NONE:
+        result = sp_dyn_buffer(out, k);
+        break;
+      case SP_PAD_TLS:
+        sp_rsa_provider("1C8000A1", "bad tls client version", "ERR_OSSL_BAD_TLS_CLIENT_VERSION");
+        break;
+      default:
+        sp_rsa_error("02000076", "unknown padding type", "ERR_OSSL_RSA_UNKNOWN_PADDING_TYPE");
+        break;
+      }
+    }
+  } else {
+    sp_rsa_error("02000084", "data too large for modulus", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_MODULUS");
+  }
+  free(block);
+  free(out);
+  return result;
+}
+
+/* privateEncrypt: EVP_PKEY_sign, the raw private operation with a type 1
+ * padding. */
+static ScrDyn *sp_rsa_sign(SpRsaOp *op, const ScrBytes *in) {
+  if (op->key->rsa_pss) {
+    if (op->padding == SP_PAD_PSS)
+      sp_rsa_provider("1C8000A6", "invalid digest length", "ERR_OSSL_INVALID_DIGEST_LENGTH");
+    else
+      sp_rsa_provider("1C8000A5", "illegal or unsupported padding mode",
+                      "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE");
+    return NULL;
+  }
+  if (!sp_is_rsa(op->key)) {
+    /* X25519 keys have no signature operation at all; the other key
+       types' init then refuses the RSA padding without raising. */
+    if (sp_is_x(op->key))
+      sp_rsa_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    else
+      sp_rsa_opaque();
+    return NULL;
+  }
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(op->key->pk);
+  size_t k = mbedtls_rsa_get_len(rsa);
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  unsigned char *em = malloc(k);
+  unsigned char *out = malloc(k);
+  if (!em || !out) scr_trap("scriptc: out of memory\n");
+  bool ok = true;
+  switch (op->padding) {
+  case SP_PAD_PKCS1:
+    ok = sp_pkcs1_sign(in, em, k);
+    break;
+  case SP_PAD_NONE:
+    if (len > k) {
+      sp_rsa_error("0200006E", "data too large for key size", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE");
+      ok = false;
+    } else if (len < k) {
+      sp_rsa_error("0200007A", "data too small for key size", "ERR_OSSL_RSA_DATA_TOO_SMALL_FOR_KEY_SIZE");
+      ok = false;
+    } else {
+      memcpy(em, in->data, k);
+    }
+    break;
+  case SP_PAD_X931:
+    sp_rsa_provider("1C8000AA", "invalid x931 digest", "ERR_OSSL_INVALID_X931_DIGEST");
+    ok = false;
+    break;
+  case SP_PAD_PSS:
+    sp_rsa_provider("1C8000A6", "invalid digest length", "ERR_OSSL_INVALID_DIGEST_LENGTH");
+    ok = false;
+    break;
+  default:
+    sp_rsa_provider("1C8000A5", "illegal or unsupported padding mode",
+                    "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE");
+    ok = false;
+    break;
+  }
+  ScrDyn *result = NULL;
+  if (ok) {
+    if (sp_rsa_block_too_large(rsa, em, k)) {
+      sp_rsa_error("02000084", "data too large for modulus", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_MODULUS");
+    } else if (sp_rsa_private_op(op->key, em, out)) {
+      result = sp_dyn_buffer(out, k);
+    }
+  }
+  free(em);
+  free(out);
+  return result;
+}
+
+/* publicDecrypt: EVP_PKEY_verify_recover, the public-key operation whose
+ * result is the padded message. */
+static ScrDyn *sp_rsa_recover(SpRsaOp *op, const ScrBytes *in) {
+  if (op->key->rsa_pss) {
+    sp_rsa_provider("1C8000B2", "operation not supported for this keytype",
+                    "ERR_OSSL_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    return NULL;
+  }
+  if (!sp_is_rsa(op->key)) {
+    if (sp_is_x(op->key))
+      sp_rsa_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
+                     "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE");
+    else
+      sp_rsa_openssl("030000ED", "digital envelope routines", "provider signature not supported",
+                     "ERR_OSSL_EVP_PROVIDER_SIGNATURE_NOT_SUPPORTED");
+    return NULL;
+  }
+  if (op->padding == SP_PAD_X931) {
+    sp_rsa_provider("1C8000AA", "invalid x931 digest", "ERR_OSSL_INVALID_X931_DIGEST");
+    return NULL;
+  }
+  if (op->padding != SP_PAD_PKCS1 && op->padding != SP_PAD_NONE) {
+    sp_rsa_provider("1C8000A5", "illegal or unsupported padding mode",
+                    "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE");
+    return NULL;
+  }
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(op->key->pk);
+  size_t k = mbedtls_rsa_get_len(rsa);
+  size_t len = (size_t)scr_bytes_byte_len(in);
+  if (len > k) {
+    sp_rsa_error("0200006C", "data greater than mod len", "ERR_OSSL_RSA_DATA_GREATER_THAN_MOD_LEN");
+    return NULL;
+  }
+  unsigned char *block = malloc(k);
+  unsigned char *out = malloc(k);
+  if (!block || !out) scr_trap("scriptc: out of memory\n");
+  ScrDyn *result = NULL;
+  sp_rsa_block_of(in, block, k);
+  if (sp_rsa_block_too_large(rsa, block, k)) {
+    sp_rsa_error("02000084", "data too large for modulus", "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_MODULUS");
+  } else if (sp_rsa_public_op(rsa, block, out)) {
+    if (op->padding == SP_PAD_PKCS1)
+      result = sp_pkcs1_recover(out, k);
+    else
+      result = sp_dyn_buffer(out, k);
+  }
+  free(block);
+  free(out);
+  return result;
+}
+
+/* The four crypto functions, which differ only in the operation and its
+ * default padding. */
+static ScrDyn *sp_rsa_call(const ScrDyn *key, const ScrDyn *buffer, int operation) {
+  SpRsaOp op;
+  ScrBytes *data = NULL;
+  if (!sp_rsa_prepare(key, buffer, operation, &op, &data)) return NULL;
+  ScrDyn *result = NULL;
+  switch (operation) {
+  case SP_RSA_ENCRYPT:
+    result = sp_rsa_encrypt(&op, data);
+    break;
+  case SP_RSA_DECRYPT:
+    result = sp_rsa_decrypt(&op, data);
+    break;
+  case SP_RSA_SIGN:
+    result = sp_rsa_sign(&op, data);
+    break;
+  default:
+    result = sp_rsa_recover(&op, data);
+    break;
+  }
+  scr_bytes_release(data);
+  sp_rsa_release(&op);
+  return result;
+}
+
+ScrDyn *scr_crypto_public_encrypt(ScrDyn *key, ScrDyn *buffer) {
+  return sp_rsa_call(key, buffer, SP_RSA_ENCRYPT);
+}
+
+ScrDyn *scr_crypto_private_decrypt(ScrDyn *key, ScrDyn *buffer) {
+  return sp_rsa_call(key, buffer, SP_RSA_DECRYPT);
+}
+
+ScrDyn *scr_crypto_private_encrypt(ScrDyn *key, ScrDyn *buffer) {
+  return sp_rsa_call(key, buffer, SP_RSA_SIGN);
+}
+
+ScrDyn *scr_crypto_public_decrypt(ScrDyn *key, ScrDyn *buffer) {
+  return sp_rsa_call(key, buffer, SP_RSA_RECOVER);
+}
+
+/* ── The introspection statics ────────────────────────────────────────── */
+
+/* ERR_CRYPTO_ENGINE_UNKNOWN's message carries the id verbatim, NUL bytes
+ * included (Node's template literal does). */
+static void sp_throw_engine_unknown(const ScrStr *id) {
+  static const char prefix[] = "Engine \"";
+  static const char suffix[] = "\" was not found";
+  size_t head = sizeof prefix - 1, tail = sizeof suffix - 1;
+  size_t length = head + id->len + tail;
+  char *message = malloc(length + 1);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  memcpy(message, prefix, head);
+  if (id->len > 0) memcpy(message + head, id->data, id->len);
+  memcpy(message + head + id->len, suffix, tail + 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, length, "ERR_CRYPTO_ENGINE_UNKNOWN");
+  free(message);
+}
+
+/* lib/internal/crypto/util.js setEngine: validateString(id), a truthy
+ * flags validates as a number, flags >>> 0, and ENGINE_by_id(id) — which
+ * is case-sensitive and stops at the first NUL. OpenSSL 3 registers only
+ * the "dynamic" engine in this runtime, so that id answers undefined and
+ * every other id reports ERR_CRYPTO_ENGINE_UNKNOWN. */
+void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags) {
+  if (engine == NULL || engine->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("id", "of type string", engine);
+    return;
+  }
+  if (flags != NULL && scr_dyn_truthy(flags) && flags->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("flags", "of type number", flags);
+    return;
+  }
+  const ScrStr *id = engine->v.str;
+  size_t length = 0;
+  while (length < id->len && id->data[length] != '\0') length++;
+  if (length == 7 && memcmp(id->data, "dynamic", 7) == 0) return;
+  sp_throw_engine_unknown(id);
+}
+
+/* crypto.fips is getFips() behind a deprecation wrapper: the DEP0093
+ * report is emitted once per process, at the first read. */
+double scr_crypto_fips_get(void) {
+  static bool reported = false;
+  if (!reported) {
+    reported = true;
+    static const char text[] = "The crypto.fips is deprecated. Please use crypto.getFips()";
+    ScrStr *message = scr_str_new(text, sizeof text - 1);
+    scr_emit_warning("DeprecationWarning", "DEP0093", message);
+    scr_str_release(message);
+  }
+  return 0;
 }
 
 /* ── Sign and Verify objects ──────────────────────────────────────────── */
@@ -3717,19 +5424,160 @@ static void sp_not_initialised(void) {
   sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_INVALID_STATE", "Not initialised");
 }
 
-/* update(data[, inputEncoding]): strings encode with the encoding (UTF-8
- * by default). */
+/* An object's toString the program defined, as an own or inherited
+ * function property. */
+static bool sp_custom_to_string(ScrDyn *value) {
+  if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *member = scr_dyn_obj_read(value, "toString", 8);
+  bool custom = member && member->kind == SCR_DYN_FUNC;
+  scr_dyn_release(member);
+  return custom;
+}
+
+/* Whether value is a class instance whose class defines toString. */
+static bool sp_class_to_string(const ScrDyn *value) {
+  ScrStr *name = scr_str_new("toString", 8);
+  bool method = scr_dyn_typed_ref_class_has(value, name);
+  scr_str_release(name);
+  return method;
+}
+
+/* ERR_UNKNOWN_ENCODING for an encoding value that is not a string:
+ * util.format's %s shape, which reads a program-defined toString and
+ * inspects anything else. */
+static void sp_unknown_encoding(const ScrDyn *value) {
+  ScrStr *rendered = NULL;
+  char sketch[160];
+  const char *text;
+  if (sp_custom_to_string((ScrDyn *)value)) rendered = scr_dyn_string_coerce_js(value);
+  size_t text_len;
+  if (rendered) {
+    text = rendered->data;
+    text_len = rendered->len;
+  } else if (value->kind == SCR_DYN_STR) {
+    text = value->v.str->data;
+    text_len = value->v.str->len;
+  } else if (value->kind == SCR_DYN_NUM) {
+    scr_num_received(value->v.num, sketch);
+    text = sketch;
+    text_len = strlen(text);
+  } else {
+    text = scr_dyn_inspect_lite(value, sketch, sizeof sketch);
+    text_len = strlen(text);
+  }
+  char *message = malloc(text_len + 19);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  memcpy(message, "Unknown encoding: ", 18);
+  memcpy(message + 18, text, text_len);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, text_len + 18, "ERR_UNKNOWN_ENCODING");
+  free(message);
+  if (rendered) scr_str_release(rendered);
+}
+
+/* Buffer.from(text, encoding), for a signature argument: an encoding that
+ * is not a string, is empty, or is 'buffer' reads as UTF-8, and an unknown
+ * name throws ERR_UNKNOWN_ENCODING. +1, or NULL after throwing. */
+static ScrBytes *sp_string_bytes(const ScrStr *text, const ScrDyn *encoding) {
+  const char *name = "utf8";
+  ScrStr *normalized = NULL;
+  if (encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0 && !sp_is_str(encoding, "buffer")) {
+    normalized = scr_bytes_normalize_encoding(encoding->v.str);
+    if (!normalized) {
+      sp_unknown_encoding(encoding);
+      return NULL;
+    }
+    name = normalized->data;
+  }
+  ScrStr *canonical = scr_str_new(name, strlen(name));
+  ScrBytes *bytes = scr_bytes_from_str(text, canonical);
+  scr_str_release(canonical);
+  if (normalized) scr_str_release(normalized);
+  return bytes;
+}
+
+/* encode(buffer, encoding): the Buffer, or buffer.toString(encoding) for
+ * a truthy encoding other than 'buffer'. Consumes bytes. */
+static ScrDyn *sp_encode(ScrBytes *bytes, const ScrDyn *encoding) {
+  if (!scr_dyn_truthy(encoding) || (encoding->kind == SCR_DYN_STR && sp_is_str(encoding, "buffer"))) {
+    ScrDyn *result = scr_dyn_new_buffer(bytes);
+    scr_bytes_release(bytes);
+    return result;
+  }
+  /* toString answers "" for no bytes before it reads the encoding. */
+  if (scr_bytes_byte_len(bytes) == 0) {
+    scr_bytes_release(bytes);
+    return sp_dyn_str(scr_str_new("", 0));
+  }
+  ScrStr *name = NULL;
+  if (encoding->kind == SCR_DYN_STR) {
+    name = scr_str_retain(encoding->v.str);
+  } else if (encoding->kind == SCR_DYN_FUNC || sp_class_to_string(encoding)) {
+    /* toString of a function or class instance has no lowering. */
+    scr_bytes_release(bytes);
+    static const char message[] =
+        "encoding that is a function or an instance of a class defining toString has no lowering; "
+        "pass the name as a string";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  } else if (!sp_custom_to_string((ScrDyn *)encoding)) {
+    scr_bytes_release(bytes);
+    sp_unknown_encoding(encoding);
+    return NULL;
+  } else {
+    name = scr_dyn_string_coerce_js(encoding);
+  }
+  if (!name) {
+    scr_bytes_release(bytes);
+    return NULL;
+  }
+  ScrStr *normalized = scr_bytes_normalize_encoding(name);
+  scr_str_release(name);
+  if (!normalized) {
+    scr_bytes_release(bytes);
+    sp_unknown_encoding(encoding);
+    return NULL;
+  }
+  ScrStr *text = scr_bytes_to_str(bytes, normalized);
+  scr_str_release(normalized);
+  scr_bytes_release(bytes);
+  if (!text) return NULL;
+  /* sp_dyn_str consumes the string's reference. */
+  return sp_dyn_str(text);
+}
+
+/* update(data[, inputEncoding]): strings encode with the encoding, which
+ * reads as UTF-8 when it is not a string or not a known name, as Node's
+ * C++ Update does. */
 static bool sp_signer_update(SpSigner *s, ScrDyn *const *args, size_t argc) {
   if (s->done) {
     sp_not_initialised();
     return false;
   }
   const ScrDyn *data = argc ? args[0] : scr_dyn_undefined();
-  if (data->kind != SCR_DYN_STR && data->kind != SCR_DYN_BYTES) {
+  ScrBytes *bytes = NULL;
+  if (data->kind == SCR_DYN_STR) {
+    const ScrDyn *encoding = argc > 1 ? args[1] : NULL;
+    const char *name =
+        encoding && encoding->kind == SCR_DYN_STR ? sp_normalize_encoding(encoding->v.str) : NULL;
+    /* validateEncoding: hex input must have an even length. */
+    if (name && strcmp(name, "hex") == 0 && (unsigned long)scr_str_utf16_len(data->v.str) % 2 != 0) {
+      char rendered[160];
+      const char *text = scr_dyn_inspect_lite(encoding, rendered, sizeof rendered);
+      char message[256];
+      snprintf(message, sizeof message, "The argument 'encoding' is invalid for data of length %lu. Received %s",
+               (unsigned long)scr_str_utf16_len(data->v.str), text);
+      sp_throw(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", message);
+      return false;
+    }
+    ScrStr *canonical = scr_str_new(name ? name : "utf8", strlen(name ? name : "utf8"));
+    bytes = scr_bytes_from_str(data->v.str, canonical);
+    scr_str_release(canonical);
+  } else if (data->kind == SCR_DYN_BYTES) {
+    bytes = scr_bytes_buffer_source(data);
+  } else {
     scr_dyn_arg_type_fail("data", "of type string or an instance of Buffer, TypedArray, or DataView", data);
     return false;
   }
-  ScrBytes *bytes = sp_source_bytes(data, argc > 1 ? args[1] : NULL);
   if (!bytes) return false;
   mbedtls_md_update(&s->md, bytes->data, (size_t)scr_bytes_byte_len(bytes));
   scr_bytes_release(bytes);
@@ -3776,13 +5624,6 @@ static const ScrDynHandleOps *sp_signer_ops_of(const SpSigner *s) {
   return s->verifier ? &sp_verify_ops : &sp_sign_ops;
 }
 
-/* An output or signature encoding argument: a string encoding, or the
- * Buffer form for undefined, null and "buffer". */
-static const ScrStr *sp_encoding_arg(const ScrDyn *v) {
-  if (v == NULL || v->kind != SCR_DYN_STR || sp_is_str(v, "buffer")) return NULL;
-  return v->v.str;
-}
-
 /* Writable stream members a Sign or Verify inherits. */
 static bool sp_stream_member(const char *name) {
   static const char *const members[] = {
@@ -3815,8 +5656,26 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
       sp_not_initialised();
       return NULL;
     }
+    /* Sign.sign: the key's truthiness, its shape as privateKey, its
+     * options, then its material. */
+    const ScrDyn *key_arg = argc ? args[0] : scr_dyn_undefined();
+    ScrDyn *plain = sp_plain(key_arg);
+    if (!plain) return NULL;
+    static const SpSigContext ctx = {true, SP_KEY_SIGN, "privateKey"};
     SpSigKey k;
-    if (!sp_sign_key(argc ? args[0] : scr_dyn_undefined(), &k)) return NULL;
+    sp_sig_init(&k);
+    bool ok = false;
+    if (!scr_dyn_truthy(plain)) {
+      sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_SIGN_KEY_REQUIRED", "No key provided to sign");
+    } else if (sp_key_shape_ok(plain, SP_KEY_SIGN, "privateKey") && sp_sig_options(plain, &k, true) &&
+               sp_sig_decode(plain, &ctx, &k)) {
+      ok = true;
+    }
+    scr_dyn_release(plain);
+    if (!ok) {
+      if (k.key) sp_key_release(k.key);
+      return NULL;
+    }
     if (sp_reject_x25519(&k)) return NULL;
     if (sp_is_ed(k.key)) {
       sp_key_release(k.key);
@@ -3828,50 +5687,65 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
     s->done = true;
     ScrDyn *sig = sp_sign_hash(&k, s->type, hash, mbedtls_md_get_size(mbedtls_md_info_from_type(s->type)));
     sp_key_release(k.key);
-    const ScrStr *encoding = sp_encoding_arg(argc > 1 ? args[1] : NULL);
-    if (!sig || !encoding) return sig;
+    if (!sig) return NULL;
+    /* encode(buffer, encoding): a truthy encoding other than 'buffer'
+     * renders the signature as a string. */
     ScrBytes *bytes = scr_bytes_buffer_source(sig);
-    ScrStr *text = scr_bytes_to_str_checked(bytes, encoding);
-    scr_bytes_release(bytes);
     scr_dyn_release(sig);
-    return text ? sp_dyn_str(text) : NULL;
+    return sp_encode(bytes, argc > 1 ? args[1] : scr_dyn_undefined());
   }
   if (verifier && strcmp(method, "verify") == 0) {
     if (s->done) {
       sp_not_initialised();
       return NULL;
     }
+    /* Verify.verify: the key's shape, its options, the signature's bytes,
+     * then the key's material. */
+    const ScrDyn *key_arg = argc ? args[0] : scr_dyn_undefined();
+    ScrDyn *plain = sp_plain(key_arg);
+    if (!plain) return NULL;
+    static const SpSigContext ctx = {false, SP_KEY_VERIFY, "key"};
     SpSigKey k;
-    if (!sp_sig_key(argc ? args[0] : scr_dyn_undefined(), false, &k)) return NULL;
+    sp_sig_init(&k);
+    bool ok = sp_key_shape_ok(plain, SP_KEY_VERIFY, "key") && sp_sig_options(plain, &k, false);
+    ScrBytes *sig = NULL;
+    if (ok) {
+      const ScrDyn *signature = argc > 1 ? args[1] : scr_dyn_undefined();
+      if (signature->kind == SCR_DYN_STR) {
+        sig = sp_string_bytes(signature->v.str, argc > 2 ? args[2] : scr_dyn_undefined());
+      } else if (signature->kind == SCR_DYN_BYTES || scr_buffer_storage_is(signature)) {
+        sig = scr_bytes_buffer_source(signature);
+      } else {
+        scr_dyn_arg_type_fail("signature", sp_data_types, signature);
+      }
+      /* A rejected signature leaves its error pending. */
+      if (!sig) ok = false;
+    }
+    if (ok && sig) ok = sp_sig_decode(plain, &ctx, &k);
+    scr_dyn_release(plain);
+    if (!ok) {
+      if (sig) scr_bytes_release(sig);
+      if (k.key) sp_key_release(k.key);
+      return NULL;
+    }
+    if (sp_reject_x25519(&k)) {
+      scr_bytes_release(sig);
+      return NULL;
+    }
     if (sp_is_ed(k.key)) {
       sp_key_release(k.key);
+      scr_bytes_release(sig);
       sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_UNSUPPORTED_OPERATION", "Unsupported crypto operation");
-      return NULL;
-    }
-    const ScrDyn *signature = argc > 1 ? args[1] : scr_dyn_undefined();
-    if (signature->kind != SCR_DYN_STR && signature->kind != SCR_DYN_BYTES) {
-      sp_key_release(k.key);
-      scr_dyn_arg_type_fail("signature", "of type string or an instance of Buffer, TypedArray, or DataView",
-                            signature);
-      return NULL;
-    }
-    if (sp_reject_x25519(&k)) return NULL;
-    const ScrStr *encoding = sp_encoding_arg(argc > 2 ? args[2] : NULL);
-    ScrDyn *encoding_value = encoding ? scr_dyn_new_str((ScrStr *)encoding) : NULL;
-    ScrBytes *sig = sp_source_bytes(signature, encoding_value);
-    if (encoding_value) scr_dyn_release(encoding_value);
-    if (!sig) {
-      sp_key_release(k.key);
       return NULL;
     }
     unsigned char hash[MBEDTLS_MD_MAX_SIZE];
     mbedtls_md_finish(&s->md, hash);
     s->done = true;
-    bool ok = sp_verify_hash(&k, s->type, hash, mbedtls_md_get_size(mbedtls_md_info_from_type(s->type)),
-                             sig->data, (size_t)scr_bytes_byte_len(sig));
+    bool valid = sp_verify_hash(&k, s->type, hash, mbedtls_md_get_size(mbedtls_md_info_from_type(s->type)),
+                                sig->data, (size_t)scr_bytes_byte_len(sig));
     scr_bytes_release(sig);
     sp_key_release(k.key);
-    return scr_exc_pending() ? NULL : scr_dyn_new_bool(ok);
+    return scr_exc_pending() ? NULL : scr_dyn_new_bool(valid);
   }
   if (sp_stream_member(method)) {
     /* The members a native stream answers run on the signer's Writable;
@@ -3943,7 +5817,9 @@ static const ScrDynHandleOps sp_verify_ops = {
     .writable = &sp_writable_ops,
 };
 
-/* createSign(algorithm) / createVerify(algorithm). */
+/* createSign(algorithm[, options]) / createVerify(algorithm[, options]):
+ * the options an untyped call passes are ignored, as Node ignores them
+ * outside SHAKE digests. */
 static ScrDyn *sp_signer_new(ScrDyn *algorithm, bool verifier) {
   if (algorithm->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("algorithm", "of type string", algorithm);
@@ -3974,9 +5850,15 @@ static ScrDyn *sp_signer_new(ScrDyn *algorithm, bool verifier) {
   return box;
 }
 
-ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm) { return sp_signer_new(algorithm, false); }
+ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm, ScrDyn *options) {
+  (void)options;
+  return sp_signer_new(algorithm, false);
+}
 
-ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm) { return sp_signer_new(algorithm, true); }
+ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm, ScrDyn *options) {
+  (void)options;
+  return sp_signer_new(algorithm, true);
+}
 
 /* ── generateKeyPair ──────────────────────────────────────────────────── */
 
@@ -4072,7 +5954,10 @@ static bool sp_dh_key(const ScrDyn *value, const char *name, bool private_key, S
     scr_dyn_prop_type_fail(name, private_key ? sp_dh_private_types : sp_dh_public_types, value);
     return false;
   }
-  return sp_sig_key(value, private_key, out);
+  /* DH's private slot needs a private key; its public slot takes either,
+   * as verify does. */
+  SpSigContext ctx = {private_key, private_key ? SP_KEY_SIGN : SP_KEY_VERIFY, "key"};
+  return sp_sig_key(value, &ctx, out);
 }
 
 /* The shared secret of two keys of one type: X25519, or ECDH's x
@@ -4367,7 +6252,9 @@ ScrBytes *scr_pki_sign(ScrPkiKey *key, const char *hash, bool pss, int salt, con
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
   unsigned char digest[MBEDTLS_MD_MAX_SIZE];
   mbedtls_md(info, data, len, digest);
-  SpSigKey k = {.key = key, .padding = pss ? 6 : 1, .salt = salt, .p1363 = true};
+  /* WebCrypto's RSA-PSS names its padding and salt length. */
+  SpSigKey k = {.key = key, .padding = pss ? 6 : 1, .padding_given = pss, .salt = salt, .salt_given = pss,
+                .p1363 = true};
   ScrDyn *sig = sp_sign_hash(&k, md, digest, mbedtls_md_get_size(info));
   if (!sig) {
     scr_exc_clear();
@@ -4389,7 +6276,8 @@ bool scr_pki_verify(ScrPkiKey *key, const char *hash, bool pss, int salt, const 
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
   unsigned char digest[MBEDTLS_MD_MAX_SIZE];
   mbedtls_md(info, data, len, digest);
-  SpSigKey k = {.key = key, .padding = pss ? 6 : 1, .salt = salt, .p1363 = true};
+  SpSigKey k = {.key = key, .padding = pss ? 6 : 1, .padding_given = pss, .salt = salt, .salt_given = pss,
+                .p1363 = true};
   return sp_verify_hash(&k, md, digest, mbedtls_md_get_size(info), signature, signature_len);
 }
 
@@ -4608,4 +6496,305 @@ bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key) {
   }
   sp_key_release(cert);
   return same;
+}
+
+/* ── SPKAC (crypto.Certificate) ──────────────────────────────────────────
+ * NETSCAPE_SPKI ::= SEQUENCE { spkac NETSCAPE_SPKAC, sig_algor
+ * AlgorithmIdentifier, signature BIT STRING }, and NETSCAPE_SPKAC ::=
+ * SEQUENCE { pubkey SubjectPublicKeyInfo, challenge IA5String }.
+ * NETSCAPE_SPKI_b64_decode runs EVP_DecodeBlock and then d2i, so the text
+ * is bare base64 with OpenSSL's trimming and the decoded bytes must hold a
+ * complete NETSCAPE_SPKI whose pubkey field parses too (bytes after it are
+ * ignored). Verification is NETSCAPE_SPKI_verify: the signature over the
+ * re-encoded NETSCAPE_SPKAC, checked with the key the SPKAC itself
+ * carries. The SPKAC tool signs with RSA and one of the RSA PKCS#1
+ * digests (MD5 by default), which is what this implements. */
+
+typedef struct {
+  const unsigned char *spkac;
+  size_t spkac_len;
+  const unsigned char *spki;
+  size_t spki_len;
+  const unsigned char *challenge;
+  size_t challenge_len;
+  const unsigned char *alg;
+  size_t alg_len;
+  const unsigned char *sig;
+  size_t sig_len;
+} SpSpkac;
+
+/* OpenSSL's data_ascii2bin: a base64 digit 0-63, a character
+ * EVP_DecodeBlock trims (space and tab at the start, space, tab, newline,
+ * carriage return and '-' at the end), or 0xFF for anything else. */
+static unsigned char sp_spkac_b64(unsigned char c) {
+  if (c >= 'A' && c <= 'Z') return (unsigned char)(c - 'A');
+  if (c >= 'a' && c <= 'z') return (unsigned char)(c - 'a' + 26);
+  if (c >= '0' && c <= '9') return (unsigned char)(c - '0' + 52);
+  switch (c) {
+  case '+': return 62;
+  case '/': return 63;
+  case '=': return 0;
+  case ' ': case '\t': return 0xE0;
+  case '\n': return 0xF0;
+  case '\r': return 0xF1;
+  case '-': return 0xF2;
+  default: return 0xFF;
+  }
+}
+
+/* EVP_DecodeBlock as NETSCAPE_SPKI_b64_decode calls it: leading spaces and
+ * tabs trim, trailing spaces, tabs, newlines, carriage returns and '-'s
+ * strip while more than three characters remain, the length must be a
+ * multiple of four, and every group of four yields three bytes ('='
+ * decodes as a zero digit, so padding becomes zero bytes). NULL when
+ * OpenSSL refuses, and for no content at all. */
+static unsigned char *sp_spkac_b64_decode(const unsigned char *text, size_t len, size_t *out_len) {
+  while (len > 0 && sp_spkac_b64(*text) == 0xE0) {
+    text++;
+    len--;
+  }
+  while (len > 3 && (sp_spkac_b64(text[len - 1]) | 0x13) == 0xF3) len--;
+  if (len == 0 || len % 4 != 0) return NULL;
+  unsigned char *out = malloc(len / 4 * 3);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t o = 0;
+  for (size_t i = 0; i < len; i += 4) {
+    unsigned a = sp_spkac_b64(text[i]), b = sp_spkac_b64(text[i + 1]);
+    unsigned c = sp_spkac_b64(text[i + 2]), d = sp_spkac_b64(text[i + 3]);
+    if ((a | b | c | d) & 0x80) {
+      free(out);
+      return NULL;
+    }
+    unsigned long l = (a << 18) | (b << 12) | (c << 6) | d;
+    out[o++] = (unsigned char)(l >> 16) & 0xff;
+    out[o++] = (unsigned char)(l >> 8) & 0xff;
+    out[o++] = (unsigned char)l & 0xff;
+  }
+  *out_len = o;
+  return out;
+}
+
+/* The SubjectPublicKeyInfo field's own shape, which d2i_X509_PUBKEY
+ * checks while it decodes the NETSCAPE_SPKAC: SEQUENCE {
+ * AlgorithmIdentifier, BIT STRING }. */
+static bool sp_spkac_spki_parses(const unsigned char *spki, size_t len) {
+  unsigned char *q = (unsigned char *)spki;
+  const unsigned char *end = spki + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&q, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *spki_end = q + n;
+  /* The AlgorithmIdentifier: a SEQUENCE of the OID and an optional
+   * parameter. */
+  size_t ai_len;
+  if (mbedtls_asn1_get_tag(&q, spki_end, &ai_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *alg_end = q + ai_len;
+  size_t oid_len;
+  if (mbedtls_asn1_get_tag(&q, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return false;
+  q += oid_len;
+  if (q < alg_end) {
+    size_t p_len;
+    unsigned char tag = *q;
+    if (mbedtls_asn1_get_tag(&q, alg_end, &p_len, tag) != 0) return false;
+    q += p_len;
+  }
+  if (q != alg_end) return false;
+  q = (unsigned char *)alg_end;
+  size_t bits;
+  if (mbedtls_asn1_get_tag(&q, spki_end, &bits, MBEDTLS_ASN1_BIT_STRING) != 0) return false;
+  if (bits < 1 || *q > 7) return false;
+  q += bits;
+  return q == end;
+}
+
+/* The decoded text as a NETSCAPE_SPKI, or false. `der` answers the decoded
+ * bytes the struct points into (the caller frees it); NULL when the text
+ * does not decode. */
+static bool sp_spkac_parse(const unsigned char *text, size_t len, unsigned char **der, SpSpkac *s) {
+  size_t der_len = 0;
+  *der = sp_spkac_b64_decode(text, len, &der_len);
+  if (!*der) return false;
+  memset(s, 0, sizeof *s);
+  unsigned char *p = *der;
+  const unsigned char *end = p + der_len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *outer_end = p + n;
+  s->spkac = p;
+  size_t spkac_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &spkac_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  const unsigned char *spkac_end = p + spkac_len;
+  s->spkac_len = (size_t)(spkac_end - s->spkac);
+  s->spki = p;
+  size_t spki_len;
+  if (mbedtls_asn1_get_tag(&p, spkac_end, &spki_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  s->spki_len = (size_t)(p + spki_len - s->spki);
+  if (!sp_spkac_spki_parses(s->spki, s->spki_len)) return false;
+  p += spki_len;
+  size_t challenge_len;
+  if (mbedtls_asn1_get_tag(&p, spkac_end, &challenge_len, MBEDTLS_ASN1_IA5_STRING) != 0) return false;
+  s->challenge = p;
+  s->challenge_len = challenge_len;
+  p += challenge_len;
+  if (p != spkac_end) return false;
+  s->alg = p;
+  size_t alg_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return false;
+  s->alg_len = (size_t)(p + alg_len - s->alg);
+  p += alg_len;
+  size_t sig_len;
+  if (mbedtls_asn1_get_tag(&p, outer_end, &sig_len, MBEDTLS_ASN1_BIT_STRING) != 0 || sig_len < 1) return false;
+  s->sig = p + 1;
+  s->sig_len = sig_len - 1;
+  p += sig_len;
+  return p == outer_end;
+}
+
+/* getArrayBufferOrView(spkac, 'spkac', encoding): a string decodes as
+ * Buffer.from does (a non-string encoding, "" and "buffer" read as UTF-8,
+ * an unknown name throws), views and ArrayBuffers are their bytes. +1,
+ * or NULL with Node's argument error pending. */
+static ScrBytes *sp_spkac_input(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrDyn *value = spkac;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    value = scr_dyn_typed_ref_materialize(spkac);
+    if (!value) return NULL;
+  }
+  ScrBytes *bytes = NULL;
+  if (value->kind == SCR_DYN_STR) {
+    const ScrStr *name = encoding->kind == SCR_DYN_STR ? encoding->v.str : NULL;
+    ScrStr *normalized = NULL;
+    if (name && (name->len == 0 || (name->len == 6 && memcmp(name->data, "buffer", 6) == 0))) name = NULL;
+    if (name) {
+      normalized = scr_bytes_normalize_encoding(name);
+      if (normalized) name = normalized;
+    }
+    if (!name || normalized) {
+      ScrStr *utf8 = name ? NULL : scr_str_new("utf8", 4);
+      bytes = scr_bytes_from_str(value->v.str, name ? name : utf8);
+      if (utf8) scr_str_release(utf8);
+    }
+    if (normalized) scr_str_release(normalized);
+  } else if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value)) {
+    bytes = scr_bytes_buffer_source(value);
+  } else {
+    scr_dyn_arg_type_fail("spkac", "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", value);
+  }
+  if (value != spkac) scr_dyn_release(value);
+  return bytes;
+}
+
+/* Node's CheckSizeInt32, after its empty-input test: a decoded spkac
+ * longer than int32 throws ERR_OUT_OF_RANGE. Answers whether to go on
+ * (false with the error pending). */
+static bool sp_spkac_size_ok(size_t len) {
+  if (len <= (size_t)INT32_MAX) return true;
+  scr_throw_error_msg_code(SCR_ERR_RANGE, "spkac is too large", 16, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return false;
+  /* The snapshot goes in its own view: when the bytes are shared,
+   * SCR_BYTES_SNAPSHOT rebinds the view to a cleanup-owned copy, while the
+   * reference sp_spkac_input returned is still the caller's to release.
+   * Snapshotting `input` itself would release that copy twice. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
+  bool verified = false;
+  unsigned char *der = NULL;
+  SpSpkac s;
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(view->data, len, &der, &s)) {
+    unsigned char *p = (unsigned char *)s.alg;
+    const unsigned char *end = s.alg + s.alg_len;
+    size_t n;
+    if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) == 0) {
+      size_t oid_len;
+      if (mbedtls_asn1_get_tag(&p, p + n, &oid_len, MBEDTLS_ASN1_OID) == 0) {
+        static const unsigned char rsa_prefix[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01};
+        if (oid_len == sizeof rsa_prefix + 1 && memcmp(p, rsa_prefix, sizeof rsa_prefix) == 0) {
+          mbedtls_md_type_t md = p[sizeof rsa_prefix] == 4 ? MBEDTLS_MD_MD5 : sp_x509_rsa_md(p[sizeof rsa_prefix]);
+          mbedtls_pk_context pk;
+          mbedtls_pk_init(&pk);
+          if (md != MBEDTLS_MD_NONE && mbedtls_pk_parse_public_key(&pk, s.spki, s.spki_len) == 0 &&
+              mbedtls_pk_get_type(&pk) == MBEDTLS_PK_RSA) {
+            const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+            if (info) {
+              unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+              mbedtls_md(info, s.spkac, s.spkac_len, hash);
+              verified = mbedtls_pk_verify(&pk, md, hash, mbedtls_md_get_size(info), s.sig, s.sig_len) == 0;
+            }
+          }
+          mbedtls_pk_free(&pk);
+        }
+      }
+    }
+  }
+  free(der);
+  scr_bytes_release(input);
+  return verified;
+}
+
+ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return NULL;
+  /* See scr_crypto_spkac_verify: the view may be a snapshot copy. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
+  unsigned char *der = NULL;
+  SpSpkac s;
+  bool parsed = false;
+  if (len > 0 && sp_spkac_size_ok(len)) parsed = sp_spkac_parse(view->data, len, &der, &s);
+  /* ASN1_STRING_to_UTF8: an IA5String's bytes become UTF-8, so a byte
+   * with the high bit set takes two bytes. */
+  size_t out_len = 0;
+  for (size_t i = 0; parsed && i < s.challenge_len; i++) out_len += s.challenge[i] < 0x80 ? 1 : 2;
+  ScrBytes *out = scr_buffer_alloc_unsafe_slow((double)out_len);
+  size_t o = 0;
+  for (size_t i = 0; parsed && i < s.challenge_len; i++) {
+    unsigned char c = s.challenge[i];
+    if (c < 0x80) {
+      out->data[o++] = c;
+    } else {
+      out->data[o++] = (unsigned char)(0xC0 | (c >> 6));
+      out->data[o++] = (unsigned char)(0x80 | (c & 0x3F));
+    }
+  }
+  free(der);
+  scr_bytes_release(input);
+  return out;
+}
+
+ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding) {
+  ScrBytes *input = sp_spkac_input(spkac, encoding);
+  if (!input) return NULL;
+  /* See scr_crypto_spkac_verify: the view may be a snapshot copy. */
+  ScrBytes *view = input;
+  SCR_BYTES_SNAPSHOT(view);
+  size_t len = (size_t)scr_bytes_byte_len(view);
+  unsigned char *der = NULL;
+  SpSpkac s;
+  ScrStr *pem = NULL;
+  if (len > 0 && sp_spkac_size_ok(len) && sp_spkac_parse(view->data, len, &der, &s)) {
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    if (mbedtls_pk_parse_public_key(&pk, s.spki, s.spki_len) == 0) {
+      unsigned char *buf = malloc(SP_DER_MAX);
+      if (!buf) scr_trap("scriptc: out of memory\n");
+      int n = mbedtls_pk_write_pubkey_der(&pk, buf, SP_DER_MAX);
+      if (n > 0) pem = sp_pem("PUBLIC KEY", buf + SP_DER_MAX - n, (size_t)n);
+      free(buf);
+    }
+    mbedtls_pk_free(&pk);
+  }
+  ScrBytes *out = scr_buffer_alloc_unsafe_slow(pem ? (double)pem->len : 0.0);
+  if (pem) {
+    memcpy(out->data, pem->data, pem->len);
+    scr_str_release(pem);
+  }
+  free(der);
+  scr_bytes_release(input);
+  return out;
 }

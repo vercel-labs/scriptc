@@ -43,6 +43,11 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *h);
 ScrCryptoHash *scr_crypto_hash_new_opts(ScrStr *alg, ScrDyn *options);
 ScrCryptoHash *scr_crypto_hash_copy_opts(ScrCryptoHash *h, ScrDyn *options);
 ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options);
+/* createMac(algorithm, key[, options]) (+1): an HMAC-only Mac handle, with
+ * Node 24.22's validation order and errors. */
+ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options);
+/* crypto.secureHeapUsed() (+1): Node's no-secure-heap answer. */
+ScrDyn *scr_crypto_secure_heap_used(void);
 ScrCryptoHash *scr_crypto_hash_update_enc(ScrCryptoHash *h, ScrStr *data, ScrStr *enc);
 ScrCryptoHash *scr_crypto_hash_update_dyn(ScrCryptoHash *h, ScrDyn *data, ScrDyn *enc);
 ScrDyn *scr_crypto_hash_digest_dyn(ScrCryptoHash *h, ScrDyn *enc);
@@ -63,6 +68,11 @@ double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offs
 void scr_crypto_random_int_refill(void);
 bool scr_crypto_random_int_check(double min, double max, bool min_given, double *range);
 bool scr_crypto_random_int_try(double min, double range, double *out);
+/* randomBytes(size[, callback]) and randomInt([min, ]max[, callback]) over
+ * any values; the callback forms deliver (null, value) in a later
+ * macrotask. */
+ScrDyn *scr_crypto_random_bytes_any(ScrDyn *size, ScrDyn *callback);
+ScrDyn *scr_crypto_random_int_any(ScrDyn *first, ScrDyn *second, ScrDyn *third);
 ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
 ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
 /* Hash and Hmac values as streams: the value's Transform (+1, created on
@@ -83,6 +93,9 @@ ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash);
 /* Secret KeyObjects (scr_lib.c). */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
+/* Node's synchronous callback gate for generateKey: a non-function throws
+ * ERR_INVALID_ARG_TYPE, a function passes. */
+void scr_crypto_check_callback(const ScrDyn *callback);
 ScrBytes *scr_crypto_key_object_input(ScrDyn *key);
 bool scr_crypto_is_key_object(const ScrDyn *value);
 /* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a private or public
@@ -90,6 +103,22 @@ bool scr_crypto_is_key_object(const ScrDyn *value);
  * installs it with them, so its messages stay out of other programs. */
 extern void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key);
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
+/* A WebCrypto CryptoKey as node:crypto reads a key argument (scr_webcrypto.c
+ * installs this when it makes, imports or generates a key): 0 for any other
+ * value, 1 for a secret key with *bytes and *len set, 2 for a public and 3
+ * for a private asymmetric key. Node deprecates passing a CryptoKey to
+ * node:crypto (DEP0203) and its ciphers and HMACs use a secret key's bytes. */
+extern int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes,
+                                         size_t *len);
+/* DEP0203, once per process: passing a CryptoKey to node:crypto functions
+ * is deprecated. scr_async_dyn.c, which owns the process-warning channel
+ * and which every program that can hold a CryptoKey links, installs it;
+ * the ciphers and Hmac constructors call it when a CryptoKey supplies the
+ * key bytes. */
+extern void (*scr_crypto_deprecate_crypto_key)(void);
+/* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a public or private
+ * key used where a secret key is expected (scr_lib.c). */
+void scr_crypto_invalid_key_object_type(bool private_key);
 /* crypto.createCipheriv (decrypt false) and crypto.createDecipheriv
  * (decrypt true) over checked-dynamic arguments (scr_cipher.c, linked
  * with the vendored mbedTLS archive). +1 handle, or NULL with Node's
@@ -121,6 +150,16 @@ ScrDyn *scr_crypto_generate_prime_sync(ScrDyn *size, ScrDyn *options);
 void scr_crypto_generate_prime_async(ScrDyn *size, ScrDyn *options, ScrDyn *callback, bool null_error);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
+/* The same entries over arguments of any type, with Node's validateString /
+ * getArrayBufferOrView / validateInteger checks in its order
+ * (createHmac names its algorithm "hmac"). */
+ScrCryptoHash *scr_crypto_hash_new_any(ScrDyn *alg, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hmac_new_any(ScrDyn *alg, ScrDyn *key, ScrDyn *options);
+ScrDyn *scr_crypto_hash_oneshot_any(ScrDyn *alg, ScrDyn *input, ScrDyn *options);
+ScrBytes *scr_crypto_pbkdf2_any(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                ScrDyn *keylen, ScrDyn *digest);
+void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                 ScrDyn *keylen, ScrDyn *digest, ScrDyn *callback);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
                                 double keylen, ScrStr *digest, const char **failure);
 ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
@@ -130,11 +169,29 @@ ScrDyn *scr_crypto_hkdf(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
 ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options);
 ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double keylen,
                                   double n, double r, double p, double maxmem);
+/* The same derivations over values of any type: Node's argument checks, in
+ * its order, for calls whose arguments do not fit the typed signatures
+ * (missing ones read as undefined). */
+ScrDyn *scr_crypto_hkdf_any(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                            ScrDyn *keylen);
+void scr_crypto_hkdf_any_async(ScrDyn *digest, ScrDyn *ikm, ScrDyn *salt, ScrDyn *info,
+                               ScrDyn *keylen, ScrDyn *callback);
+ScrBytes *scr_crypto_scrypt_any(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                ScrDyn *options);
+void scr_crypto_scrypt_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *keylen,
+                                 ScrDyn *options, ScrDyn *callback);
 typedef void (*ScrCryptoBytesFn)(ScrClosure *cb, ScrError *error /* borrowed */, ScrBytes *value /* moves */);
 void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                             ScrCryptoBytesFn fn);
 void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                           ScrCryptoBytesFn fn);
+/* A checked-dynamic callback(error, value) delivered in a later macrotask;
+ * a NULL value calls it with the error alone. Every argument is moved. The
+ * executable lane's checked-dynamic pbkdf2 reaches it from scr_lib.c;
+ * library mode leaves this unit (and the loop it defers on) out and refuses
+ * that callback form at SC4005. */
+void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
+                                   ScrDyn *value /* moves, may be NULL */);
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,
@@ -298,11 +355,36 @@ ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+/* crypto.sign and crypto.verify with a callback: the argument errors
+ * throw, the operation's error reaches the callback in a later macrotask. */
+void scr_crypto_sign_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback);
+void scr_crypto_verify_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                     ScrDyn *callback);
+/* The callback position filled by a value whose type is not known to be a
+ * function: Node runs the synchronous form when the value is undefined,
+ * the asynchronous one when it is a function, and throws for anything
+ * else. The synchronous form answers its result; the asynchronous one
+ * answers undefined and delivers through the callback. */
+ScrDyn *scr_crypto_sign_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback);
+ScrDyn *scr_crypto_verify_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                        ScrDyn *callback);
+/* RSA's public-key operations: the ciphertext, or the recovered message. */
+ScrDyn *scr_crypto_public_encrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_private_decrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_private_encrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_public_decrypt(ScrDyn *key, ScrDyn *buffer);
+/* crypto.setEngine(engine[, flags]): Node's checks, then the one engine a
+ * compiled binary registers is "dynamic"; every other id throws
+ * ERR_CRYPTO_ENGINE_UNKNOWN. Borrows both arguments. */
+void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags);
+/* The deprecated crypto.fips read: getFips() (0 here), reporting DEP0093
+ * once per process. */
+double scr_crypto_fips_get(void);
 /* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
  * with the callback, which receives it in a later macrotask. */
 ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);
-ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
-ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
+ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm, ScrDyn *options);
+ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm, ScrDyn *options);
 bool scr_crypto_is_asymmetric_key(const ScrDyn *value);
 const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 /* X509Certificate fields (scr_x509.c): raw decodes the constructor's input (+1 Buffer,
@@ -333,8 +415,20 @@ ScrStr *scr_crypto_x509_check_email(ScrBytes *der, ScrDyn *email, ScrDyn *option
 ScrStr *scr_crypto_x509_check_ip(ScrBytes *der, ScrDyn *ip, ScrDyn *options);
 bool scr_crypto_x509_check_issued(ScrBytes *der, ScrBytes *issuer_der);
 ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der);
+/* The extended key usage OIDs, or undefined when the extension is absent. */
+ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der);
 ScrDyn *scr_crypto_x509_public_key(ScrBytes *der);
 bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key);
 bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key);
+/* crypto.Certificate's SPKAC methods over the spkac argument (a string,
+ * decoded with `encoding` as Buffer.from does, or a view/ArrayBuffer) as
+ * NETSCAPE_SPKI_b64_decode reads it (scr_pki.c). verifySpkac answers false
+ * for input no decoder accepts and for a signature the SPKAC's own key
+ * does not verify; the two exports answer a fresh Buffer, empty for that
+ * input (Node answers an empty string). All three throw Node's argument
+ * errors. */
+bool scr_crypto_spkac_verify(ScrDyn *spkac, ScrDyn *encoding);
+ScrBytes *scr_crypto_spkac_challenge(ScrDyn *spkac, ScrDyn *encoding);
+ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding);
 
 #endif /* SCR_CRYPTO_H */

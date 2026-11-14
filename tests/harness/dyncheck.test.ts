@@ -196,10 +196,11 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
-  test("joining an untyped array refuses an instance whose class defines toString", async () => {
-    // Node runs the class's toString for each element. The walk over an
-    // untyped array cannot call a compiled method, and "[object Object]"
-    // would be a wrong answer, so the conversion throws by name.
+  test("joining an untyped array converts an instance through its class's toString", async () => {
+    // Node runs the class's toString for each element. The runtime calls the
+    // compiled conversion the program registered for the class, so an
+    // instance in an untyped slot converts as it does at its class's own
+    // call sites; a class without a conversion prints "[object Object]".
     const r = await compileAndRun(
       "untyped-join-class-to-string",
       `
@@ -224,15 +225,13 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
       attempt("direct", () => String(one));
     `,
     );
-    const refusal =
-      "Error String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known";
     expect(r.stdout).toBe(
       [
-        `join ${refusal}`,
-        `String ${refusal}`,
-        `template ${refusal}`,
-        `inherited ${refusal}`,
-        `nested ${refusal}`,
+        "join x+a",
+        "String x,a",
+        "template x,a",
+        "inherited a+x",
+        "nested 1+x",
         "plain [object Object]+a+++1",
         "direct x",
         "",
@@ -242,11 +241,10 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
-  test("an untyped RegExp with properties of its own keeps the inspector's refusal", async () => {
-    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`).
-    // The untyped inspector prints a RegExp's pattern and flags only, so one
-    // the program gave properties of its own is refused by name instead of
-    // printed without them; a RegExp without any prints.
+  test("an untyped RegExp with properties of its own prints them", async () => {
+    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`),
+    // including inside a Set and a class field; a RegExp without any prints as
+    // its pattern and flags.
     const r = await compileAndRun(
       "untyped-regexp-own-properties",
       `
@@ -268,8 +266,8 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stdout).toBe(
       [
         "[ /a+/g, [ /c/ ] ]",
-        "set threw util.inspect of a dynamic RegExp is not supported yet",
-        "class field threw util.inspect of a dynamic RegExp is not supported yet",
+        "Set(1) { /b+/i { extra: 1 } }",
+        "Box { v: /b+/i { extra: 1 } }",
         "Set(1) { /d/ }",
         "",
       ].join("\n"),
@@ -2109,11 +2107,12 @@ console.log("done", caught);
     expect(r.stdout).toBe("done 100\n");
   });
 
-  test("an inspection refusal throws before console.log writes", async () => {
-    // A promise reached through `unknown` has no dynamic rendering; the
-    // refusal must stop the call, not print a partial line and continue.
+  test("an untyped promise inspects in Node's Promise form", async () => {
+    // A promise reached through `unknown` renders with its settled value, at
+    // the top level and inside records and arrays, and inspect answers the
+    // same text console.log writes.
     const r = await compileAndRun(
-      "inspect-refusal-unwind",
+      "inspect-promise-render",
       `import { inspect } from "node:util";
 const p: unknown = Promise.resolve(3);
 function attempt(label: string, f: () => void): void {
@@ -2133,18 +2132,30 @@ console.log(p);
 console.log("after");
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
-    expect(r.exitCode).toBe(1);
+    expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+      [
+        "x Promise { 3 }",
+        "log returned",
+        "13",
+        "inspect returned",
+        "{ a: Promise { 3 } }",
+        "record returned",
+        "[ Promise { 3 } ]",
+        "array returned",
+        "before",
+        "Promise { 3 }",
+        "after",
+        "",
+      ].join("\n"),
     );
-    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+    expect(r.stderr).toBe("");
   });
 
-  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+  test("a promise in a record's kept source properties renders in Node's form", async () => {
     // A record converted from an object with undeclared properties renders
-    // them through its checked view; a refusal there, inside an enclosing
-    // record or array, must not leave that render's frames open.
+    // them through its checked view; a promise there, inside an enclosing
+    // record or array, renders with its settled value.
     const r = await compileAndRun(
       "inspect-refusal-kept-source",
       `import { inspect } from "node:util";
@@ -2166,12 +2177,13 @@ attempt("array", () => console.log(inspect([r, r])));
 console.log([3, 4], { d: 5 });
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      `record ${refusal}\n` +
+      `{ outer: { a: 1, p: Promise { 3 } }, n: [ 1, 2 ] }\n` +
+        "record returned\n" +
         `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
-        `array ${refusal}\n` +
+        "[ { a: 1, p: Promise { 3 } }, { a: 1, p: Promise { 3 } } ]\n" +
+        "array returned\n" +
         "[ 3, 4 ] { d: 5 }\n",
     );
   });
@@ -2242,10 +2254,10 @@ console.log(format("%O", [1]));
     );
   });
 
-  test("inspecting a compiled class with static fields through unknown refuses", async () => {
-    // Node prints `[class S] { count: 3 }`; the class object does not
-    // carry compiled static fields, so the inspector refuses rather than
-    // print `[class S]`. A class without static fields still prints.
+  test("inspecting a compiled class with static fields through unknown matches Node", async () => {
+    // Node prints the constructor form with the class's enumerable statics.
+    // The class object carries them in its static property table, so the
+    // inspector renders the same line.
     const r = await compileAndRun(
       "inspect-class-statics",
       `class Plain {}
@@ -2255,26 +2267,199 @@ class S extends Plain {
 const plain: unknown = Plain;
 const s: unknown = S;
 console.log(plain);
-try {
-  console.log(s);
-} catch (e) {
-  console.log((e as Error).message);
-}
+console.log(s);
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
-    );
+    expect(r.stdout).toBe("[class Plain]\n[class S extends Plain] { count: 3 }\n");
   });
 
-  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
-    // Node's showHidden adds a function's length/name/prototype and an
-    // error's enumerable properties; %o throws the 'not supported yet'
-    // Error for them instead of printing without them. A typed array's
-    // byte fields do render; a SharedArrayBuffer's own accessors do not.
+  test("a static field written through a subclass value is refused, never stored on the base", async () => {
+    // Node defines an own property on the subclass. The subclass's compiled
+    // reads take the inherited field from the base's storage, so the write is
+    // refused, whether the value is the subclass or a slot typed with the base
+    // that holds it.
     const r = await compileAndRun(
-      "format-o-hidden-refusals",
+      "static-write-through-subclass",
+      `class Base {
+  static count = 1;
+}
+class Sub extends Base {
+  static own = "a";
+}
+function write(C: any, key: string, value: unknown): void {
+  C[key] = value;
+}
+function writeCount(C: any, value: unknown): void {
+  C.count = value;
+}
+const held: typeof Base = Sub;
+for (const attempt of [() => write(held, "count", 40), () => writeCount(held, 41), () => writeCount(Sub, 42)]) {
+  try {
+    attempt();
+    console.log("stored");
+  } catch (error) {
+    console.log((error as Error).message.includes("inherited static 'count'"));
+  }
+}
+console.log(Base.count, Sub.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n1 1\n");
+  });
+
+  test("redefining a reflected static field is refused before the table changes", async () => {
+    // The class's compiled code reads the field's own storage, which a
+    // redefinition (a new value or a non-writable property) would leave
+    // behind. A key the class does not declare still defines.
+    const r = await compileAndRun(
+      "static-redefinition",
+      `class Counter {
+  static count = 1;
+}
+const anyCounter: any = Counter;
+try {
+  Object.defineProperty(Counter, "count", { value: 9, writable: false });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"));
+}
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  Object.defineProperty(Counter, key, { value: 9 });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"), conversions);
+}
+anyCounter.count = 5;
+Object.defineProperty(Counter, "extra", { value: 2, enumerable: true });
+console.log(Counter.count, Reflect.get(Counter, "count"), anyCounter.extra);
+try {
+  Reflect.set(Counter, "count", 6, {});
+} catch (error) {
+  console.log((error as Error).message.includes("receiver other than the class"));
+}
+console.log(Counter.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue 1\n5 5 2\ntrue\n5\n");
+  });
+
+  test("deleting a reflected static field is refused, and other keys still delete", async () => {
+    // The table entry would go while the class's compiled code kept reading
+    // the field's own storage, so the delete is refused before it runs.
+    const r = await compileAndRun(
+      "static-delete",
+      `class Base {
+  static count = 1;
+}
+function remove(C: any, key: any): boolean {
+  return Reflect.deleteProperty(C, key);
+}
+try {
+  console.log(remove(Base, "count"));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"));
+}
+// A key object converts to the field's name: the refusal compares the
+// converted key, and the conversion runs once.
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  console.log(remove(Base, key));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"), conversions);
+}
+const added: any = Base;
+added.extra = 1;
+console.log(remove(Base, "extra"), added.extra, Base.count, Reflect.get(Base, "count"));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue 1\ntrue undefined 1 1\n");
+  });
+
+  test("Object.assign and Object.defineProperties onto a reflected static field are refused", async () => {
+    // Both act on the source's own enumerable keys. A key naming a static
+    // field the table lists would change the table (its value, or its
+    // writability) while the class's compiled code kept its own storage, so
+    // the call is refused before anything is copied or defined. Other keys
+    // still copy and define.
+    const r = await compileAndRun(
+      "static-assign-define-many",
+      `class Base {
+  static count = 1;
+}
+const C: any = Base;
+for (const attempt of [
+  () => Object.assign(C, { other: 9 }, { count: 2 }),
+  () => Object.defineProperties(C, { count: { value: 9 } }),
+  () => Object.defineProperties(C, { count: { writable: false } }),
+]) {
+  try {
+    attempt();
+    console.log("changed");
+  } catch (error) {
+    console.log((error as Error).message.includes("static field 'count'"));
+  }
+}
+Object.assign(C, { other: 9 });
+Object.defineProperties(C, { more: { value: 3, enumerable: true } });
+C.count = 5;
+console.log(Base.count, Reflect.get(Base, "count"), C.other, C.more);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n5 5 9 3\n");
+  });
+
+  test("a public static named like a private one never publishes the private value", async () => {
+    // \`static ["#secret"]\` is a public key, distinct from the private
+    // \`#secret\`. The class keeps its reflection refusal instead of listing
+    // the private storage under the public name, and Reflect.get refuses
+    // rather than answering undefined.
+    const r = await compileAndRun(
+      "public-key-spelled-private",
+      `class Holder {
+  static #secret = 41;
+  static ["#secret"] = 5;
+  static count = 3;
+}
+const anyHolder: any = Holder;
+for (const read of [() => Reflect.get(Holder, "#secret"), () => anyHolder["#secret"], () => Object.getOwnPropertyDescriptor(Holder, "#secret")?.value]) {
+  try {
+    console.log(read());
+  } catch (error) {
+    console.log((error as Error).message.includes("not supported"));
+  }
+}
+console.log(Holder.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n3\n");
+  });
+
+  test("%o prints the dynamic kinds whose hidden entries render", async () => {
+    // Node's showHidden adds a function's length/name/prototype and an
+    // error's enumerable properties; the walk renders both. A typed array's
+    // byte fields render; a SharedArrayBuffer's own accessors do not, so
+    // those keep the 'not supported yet' Error.
+    const r = await compileAndRun(
+      "format-o-hidden-renders",
       `import { format } from "node:util";
 function f(): void {}
 const sab = new SharedArrayBuffer(1);
@@ -2291,8 +2476,12 @@ for (const [label, value] of values) {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       [
-        "fn util.format %o of function values is not supported yet",
-        "err util.format %o of Error values is not supported yet",
+        "fn <ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
+        "err [Error: e] { [stack]: [Getter/Setter], [message]: 'e' }",
         "u8 Uint8Array(1) [",
         "  0,",
         "  [BYTES_PER_ELEMENT]: 1,",
@@ -2309,10 +2498,11 @@ for (const [label, value] of values) {
     );
   });
 
-  test("console.dir renders showHidden through the checked-dynamic walk and refuses the kinds it has no hidden view of", async () => {
+  test("console.dir renders showHidden through the checked-dynamic walk", async () => {
     // dir is inspect with customInspect: false, so the hidden entries come
-    // from the walk's showHidden state; the kinds without a hidden view
-    // keep their refusal, naming console.dir.
+    // from the walk's showHidden state; a function's own hidden entries
+    // render, and the kinds without a hidden view keep their refusal,
+    // naming console.dir.
     const r = await compileAndRun(
       "console-dir-show-hidden",
       `const arr: any = [1, 2];
@@ -2339,7 +2529,11 @@ try {
       [
         "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
         "[ 1, 2, extra: 3 ]",
-        "console.dir with showHidden of function values is not supported yet",
+        "<ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
         "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
         "",
       ].join("\n"),

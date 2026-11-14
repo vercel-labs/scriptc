@@ -85,20 +85,24 @@ const KNOWN: Record<string, Known> = {
   // `new AsyncResource(...)`: the refusal names the class.
   "misc-shims": { run: "SC2020" },
   namespace: { island: true },
-  "node24-async-events": { run: "SC2020" },
+  // The events.once and events.on lines match Node; the program stops at the
+  // watermark case, which assigns `pause` and `resume` methods onto an
+  // EventEmitter instance.
+  "node24-async-events": { run: "SC1090" },
   "node24-commonjs-metadata": { island: true },
-  "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
   "node24-diagnostics-tracing": { run: "SC1090" },
-  "node24-env": { run: "SC1090" },
   "node24-esm-metadata": { island: true },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
-  // The exports identities and every parse line match Node; the program
-  // stops at `mime.toJSON === mime.toString`, a method read as a value.
-  "node24-mime": { run: "'MIMEType.prototype.toJSON' as a value is not supported yet" },
+  // The exports identities, every parse line and the shape line (the class's
+  // method values, aliased `toJSON`/`toString` and `[Symbol.iterator]`/
+  // `entries` included) match Node; the program stops at the descriptor read.
+  "node24-mime": {
+    run: "'Object.getOwnPropertyDescriptor' is part of the standard library types but has no scriptc lowering yet",
+  },
   "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   // The dynamic `__proto__` writes in the args loop now match Node, so the
@@ -119,12 +123,11 @@ const KNOWN: Record<string, Known> = {
   // The fixture builds a String and a Number wrapper, which used to refuse
   // with SC2020 and now compile: the case runs, but Node's
   // ERR_INVALID_ARG_TYPE names a wrapper's class (`an instance of String`)
-  // where the error formatter prints `Object`, and the program's own
-  // `String(functionValue)` prints `function () { [native code] }` for a
-  // named function where Node prints its source.
+  // where the error formatter prints `Object`. Every other line matches,
+  // function values' source text included.
   "node24-text-utilities": {
     divergence:
-      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`, and function values print without their source",
+      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`",
   },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },

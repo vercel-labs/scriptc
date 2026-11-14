@@ -125,6 +125,7 @@ for (const [name, title] of [
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
   ["console-values", "console and its output methods as values under @types/node"],
   ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
+  ["x509-issuer-certificate", "X509Certificate's issuerCertificate under @types/node"],
   ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
   ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
   [
@@ -1264,6 +1265,42 @@ test("node-types: ECDH matches Node under @types/node", async () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: crypto.constants as an object matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-crypto-constants");
+  const entry = join(nodeTypesDir, "crypto-constants-object.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "crypto-constants-object"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: crypto.Certificate (SPKAC) matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-spkac");
+  const entry = join(nodeTypesDir, "crypto-spkac-certificate.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "crypto-spkac-certificate"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: DiffieHellman matches Node under @types/node", async () => {
   const outDir = outDirFor("node-dh");
   const entry = join(nodeTypesDir, "dh.ts");
@@ -1509,6 +1546,48 @@ console.log(hash("sha256", data, "buffer").length);
 `,
   );
   const outDir = outDirFor("bare-digest");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("no-types-node: fetch takes a Request and RequestInit cache and credentials on the fallback declarations", async () => {
+  // The fallback RequestInit carries Node's whole dictionary, and fetch
+  // takes a RequestInfo. The three members a vendored loader passes without
+  // @types/node (cache, credentials, priority) compile: cache and
+  // credentials convert and read back as Node reads them, and priority is
+  // accepted and ignored, as Node ignores it.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-fetch-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const request = new Request("data:text/plain,hello", {
+  method: "GET",
+  cache: "no-store",
+  credentials: "include",
+  priority: "high",
+});
+console.log(request.cache, request.credentials, request.mode, request.redirect);
+const response = await fetch(request);
+console.log(await response.text());
+const direct = await fetch("data:text/plain,world", { cache: "force-cache", credentials: "omit" });
+console.log(await direct.text());
+`,
+  );
+  const outDir = outDirFor("bare-fetch");
   const result = await compile(join(dir, "main.ts"), {
     outPath: join(outDir, "main"),
     outDir,

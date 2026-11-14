@@ -13,6 +13,7 @@
     "threads",
     "contracts",
     "experimental",
+    "dual-run",
     "native-objects",
     "---Reference---",
     "cli",

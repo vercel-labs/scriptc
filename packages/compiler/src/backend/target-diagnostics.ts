@@ -135,6 +135,8 @@ const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<IrLibFn, string> = new Map([
   ["os.uptime", "system uptime (WASI Preview 1 has no boot-time API)"],
   ["os.getPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
   ["os.setPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["os.getPriorityChk", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["os.setPriorityChk", "process scheduling priority (WASI Preview 1 has no priority API)"],
   ["process.memoryUsageTake", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.rss", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.ppid", "the parent process id (WASI Preview 1 has no process API)"],

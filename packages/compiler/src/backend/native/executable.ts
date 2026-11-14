@@ -161,6 +161,9 @@ function linksDynPromiseUnit(opts: CcOptions): boolean {
     opts.fileHandle === true ||
     // Fetch settles its promises through the unit.
     opts.fetch === true ||
+    // The dns resolve family settles its promise results through the unit
+    // (scr_dns_resolve.c).
+    opts.dnsResolve === true ||
     // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
     opts.nodeIsland === true ||
     // t.waitFor polls a dyn condition and returns a dyn promise
@@ -362,9 +365,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
-  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
+  // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
+  // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
+  unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
+  unit((u) => u.opts.utilTraceSigInt === true, "scr_util_trace_sigint.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -381,13 +388,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
   unit((u) => u.opts.parseArgs, "scr_util.c"),
   unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
-  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  unit((u) => u.opts.inspect, "scr_util_style.c"),
   unit(
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",
   ),
   // util.promisify over an untyped function: dyn promises and calls.
   unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  // util.promisify's custom protocol, which the typed lowering reads over
+  // the boxed function; both lowerings share it.
+  unit((u) => u.opts.utilPromisify === true, "scr_util_promisify_custom.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&
@@ -464,6 +477,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.http2, "scr_http2.c"),
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsResolve, "scr_dns_resolve.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),

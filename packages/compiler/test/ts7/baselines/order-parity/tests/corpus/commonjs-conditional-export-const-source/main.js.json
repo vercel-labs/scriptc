@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-const-source/exp.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-const-source/main.js"
+ ],
+ "diags": []
+}

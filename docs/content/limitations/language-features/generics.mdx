@@ -1,5 +1,6 @@
 - **Generics:** Generic functions declared inside other functions, generic class expressions, and generic methods requiring dynamic dispatch are unsupported.
   Generic classes can extend generic bases when each specialization has a concrete layout.
+  An `any` type argument, written or taken from the type parameter's default, is concrete: a subclass that extends `Base<any>` or leaves `Base`'s `[P=any]` default in place stores its parameter slots as checked-dynamic values.
   Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
   Other generic calls compile when the target resolves statically.
   Generic generator methods, sync and async, compile like other generic methods.

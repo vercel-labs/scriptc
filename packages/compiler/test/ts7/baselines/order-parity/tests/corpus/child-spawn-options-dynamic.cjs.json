@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-spawn-options-dynamic.cjs"
+ ],
+ "diags": []
+}

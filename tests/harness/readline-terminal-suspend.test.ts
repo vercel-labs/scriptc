@@ -14,9 +14,20 @@ const fixture = join(import.meta.dirname, "../fixtures/readline-terminal-suspend
  * Ctrl+Z (or on a SIGTSTP from outside), and SIGCONT pauses the interface,
  * emits 'SIGCONT' and redraws the line — an external stop and resume emits
  * no 'SIGCONT'. The observer pins the stop signal, the marker order and the
- * refresh, and compares every byte of the terminal output with Node's. */
-for (const mode of ["listener", "default", "external"] as const) {
-  test.skipIf(process.platform === "win32")(
+ * refresh, and compares every byte of the terminal output with Node's. The
+ * "blocked" mode runs the same Ctrl+Z flow with SIGTSTP blocked in the
+ * observer, so the program inherits a blocked stop, the way a program
+ * started by a service manager or a CI runner can. */
+// On darwin the Node oracle itself does not exit after a line ends an
+// interface a stop left behind (the "listener" and "external" modes): the
+// observer's final wait times out on `node main.ts`, before the compiled
+// program is even built, so those two modes have no reference to compare
+// with. The two modes that end on their own still run there. This is the
+// same platform behavior differential.test.ts's `@skip-darwin` documents.
+for (const mode of ["listener", "default", "blocked", "external"] as const) {
+  const noDarwinOracle =
+    process.platform === "darwin" && (mode === "listener" || mode === "external");
+  test.skipIf(process.platform === "win32" || noDarwinOracle)(
     `a terminal readline interface suspends and resumes the way Node does (${mode})`,
     async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-readline-suspend-"));

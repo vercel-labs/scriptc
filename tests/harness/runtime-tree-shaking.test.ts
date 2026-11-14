@@ -165,16 +165,19 @@ nativeToolchainTest(
     // section GC without pinning an exact linker/SDK byte count. The Linux
     // build is about 65KB with lld (CI's pinned LLVM provides it) and about
     // 94KB with GNU ld, which keeps a unit's string literals whole once any of
-    // them is reachable. Mach-O keeps its load commands, stubs and ad-hoc
-    // signature beside the same runtime, and the macOS runners have linked
-    // hello at up to about 110KB depending on the image, so Darwin gets a
-    // ceiling of its own. Most of Linux hello's runtime code is the cycle
+    // them is reachable. Most of Linux hello's runtime code is the cycle
     // collector, which its exit path reaches (scr_lib_cleanup releases an
     // array). ELF segments are page aligned, so the Linux size moves in 4 KiB
     // steps whenever .text crosses a page boundary. These limits leave several
     // native pages of linker-version slack while remaining far below the
     // former roughly-400KB always-linked runtime.
-    const helloSizeLimit = process.platform === "linux" ? 96 * 1024 : 128 * 1024;
+    //
+    // Darwin hello is 110,520 bytes. It was about 70KB before the timer and
+    // event-target work, which grew scr_event_target.o from 67,080 to 101,736
+    // bytes and which a hello program links. Its ceiling therefore sits two
+    // 16 KiB Mach-O pages above today's size, instead of tightening the
+    // reachability contract to the growth.
+    const helloSizeLimit = process.platform === "darwin" ? 128 * 1024 : 96 * 1024;
     expect(statSync(hello.binaryPath).size).toBeLessThan(helloSizeLimit);
   },
 );

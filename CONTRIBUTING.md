@@ -34,6 +34,16 @@ By default, the gate uses `vercel/sandbox/universal` and installs the repository
 
 The legacy VCR command used by `pnpm test:sandbox:image` requires `VERCEL_TOKEN` or an existing Vercel CLI login for authentication. OIDC claims can still provide its team and project scope.
 
+### Sandbox preparation limits
+
+Each Sandbox builds the Linux LLVM helper and runtime pack from the uploaded worktree, because packaged native artifacts are not part of the workspace build. On a fresh `vercel/sandbox/universal` at 8 vCPUs that took 41 seconds for the helper and 6 minutes 10 seconds for the runtime pack on Nov 13, and a whole wave of shards preparing at once builds more slowly than one Sandbox alone. The two steps therefore use `SCRIPTC_SANDBOX_NATIVE_TIMEOUT` (default `20m`) instead of a test-command limit, and they fail when they print nothing for five minutes, the longest silent phase of the runtime pack (the PGO `speed` flavor) being 116 seconds. The same limit covers fetching the libnode pack described below.
+
+A lane also needs `SCRIPTC_SANDBOX_TIMEOUT` to cover preparing the image and running the shard, and its clock starts when the Sandbox is created. Preparation runs in waves of eight, and every Sandbox then waits for the last wave before testing starts, so the first-created Sandbox spends about 30 minutes before its corpus step begins and an hour or more on that step. The default is therefore `150m`; lower it only for lanes that skip the corpus. One test command keeps a tighter 90-minute wall limit, so a command that keeps printing cannot run for the whole lane.
+
+The native bootstrap that builds the compiler with the compiler gets its own Sandbox per lane, as CI gives it its own `bootstrap` jobs, and that Sandbox carries a 24 GB swapfile like those jobs. Beside the corpus workers it competes for the same memory and is killed in its seed build, because the sanitized emitter alone peaks near 13 GB and then has clang compile the result. Those Sandboxes are also larger than the corpus ones (`SCRIPTC_SANDBOX_NATIVE_VCPUS`, default 32, 64 GB): 16 GB with the swapfile was still killed in `rebuild-emit`. The two extra Sandboxes run while the shards test, so they do not lengthen a run.
+
+The Node island tests require a libnode pack rather than skipping in the lanes, which run with `CI=1`. A Sandbox from a prepared snapshot can name the pack it already carries in `SCRIPTC_LIBNODE`; otherwise the runner fetches the pinned development pack that CI falls back to into `/tmp/scriptc-libnode-pack` and exports it to every lane.
+
 ### Local fallback
 
 When Vercel Sandbox credentials are unavailable, run `SCRIPTC_TEST_WORKERS=4 pnpm test`, then `SCRIPTC_TEST_WORKERS=4 SCRIPTC_SAN=1 pnpm test`. The worker limit avoids oversubscribing the host. Full local suites queue behind an advisory lock per lane.

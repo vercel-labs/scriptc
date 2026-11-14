@@ -1947,8 +1947,10 @@ function lowerToIrWithIslands(
         !constructorsCompared &&
         !resultLowerer.untypedConstructors &&
         constructorRefusals(resultLowerer, result);
+      // A refusal checked JavaScript defers to run time asks for the
+      // comparison as a build error does.
       const requested =
-        result.diagnostics.length === 0
+        result.diagnostics.length === 0 && result.runtimeFences.length === 0
           ? []
           : [...resultLowerer.dynamicClassValueRequests].filter(
               (decl) => !classValuesCompared.has(decl),

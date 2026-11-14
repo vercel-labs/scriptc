@@ -799,14 +799,19 @@ async function compileExecutableNative(
     });
     const cacheableLinker =
       onArtifactReady !== undefined &&
-      ffi === null &&
       platformLinkerSupportsPersistentCache(process.env, runtimePackTarget);
     await linkNativeExecutable(plan, {
       // A caller-selected linker can be a mutable wrapper with hidden inputs,
-      // and a PATH-selected `clang` can be one too. FFI profiles and mutable
-      // linker search environments likewise name transitive files that the
-      // top-level dependency snapshot cannot prove. Only a direct driver in a
-      // stable link environment may publish a reusable final executable.
+      // and a PATH-selected `clang` can be one too. A mutable linker search
+      // environment likewise names transitive files that the top-level
+      // dependency snapshot cannot prove. Only a direct driver in a stable
+      // link environment may publish a reusable final executable.
+      //
+      // An FFI profile's inputs are provable: its libraries are plan inputs
+      // and dependency paths, and the objects, archives, and system libraries
+      // the driver resolves for them are in the pre-link trace the publish
+      // checks (objectLinkerDependencyPaths). A profile whose inputs the trace
+      // cannot name leaves the proof null, and the build publishes nothing.
       ...(cacheableLinker ? { onArtifactReady } : {}),
     });
     return;

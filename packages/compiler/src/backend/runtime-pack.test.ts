@@ -806,6 +806,71 @@ describe("runtime pack manifests", () => {
     );
   });
 
+  test("a probe link cannot write the executable the link produces", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const output = join(root, "program");
+    const driver = join(root, "clang.mjs");
+    const realLink = join(root, "real-link");
+    const probeOutput = join(root, "probe-output");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(
+        driver,
+        [
+          "#!/usr/bin/env node",
+          'import { existsSync, unlinkSync, writeFileSync } from "node:fs";',
+          `const realLink = ${JSON.stringify(realLink)};`,
+          `const probeOutput = ${JSON.stringify(probeOutput)};`,
+          "const args = process.argv.slice(2);",
+          'const outputIndex = args.indexOf("-o");',
+          "const output = args[outputIndex + 1];",
+          'if (args.includes("-print-prog-name=ld")) process.exit(0);',
+          'if (args.includes("-Wl,-t")) process.exit(1);',
+          // A driver whose `-###` runs the link keeps working after a sibling
+          // probe fails, so it can still reach the output the real link wrote.
+          'if (args.includes("-###")) {',
+          "  writeFileSync(probeOutput, output);",
+          '  writeFileSync(output, "probe executable");',
+          "  while (!existsSync(realLink)) await new Promise((resolve) => setTimeout(resolve, 5));",
+          "  unlinkSync(output);",
+          "  process.exit(0);",
+          "}",
+          'writeFileSync(output, "linked executable");',
+          'writeFileSync(realLink, "linked");',
+          // Keep the real link running long enough for the probe to arrive.
+          "await new Promise((resolve) => setTimeout(resolve, 300));",
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(driver, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    let published = false;
+
+    await linkNativeExecutable(plan, {
+      linker: driver,
+      onArtifactReady: async () => {
+        published = true;
+      },
+    });
+
+    expect(await readFile(output, "utf8")).toBe("linked executable");
+    expect(published).toBe(false);
+    // The probe wrote a private path with the output's own basename.
+    const probed = await readFile(probeOutput, "utf8");
+    expect(probed).not.toBe(output);
+    expect(basename(probed)).toBe(basename(output));
+  });
+
   test("a Linux link proof covers the driver, the linker it selects and the pack", async () => {
     const { root, packagePath } = await fixture(LINUX_X64_GNU_TARGET);
     const programObject = join(root, "program.o");

@@ -4248,6 +4248,65 @@ export class Lowerer {
     });
   }
 
+  /** The value type of a read of a program class instance that its
+   * instance index signature answers (`list[i]` with `[index: number]: T`,
+   * `bag.name` or `bag[key]` with `[key: string]: T`) when that type is a
+   * typed one that does not admit undefined, or null. The property lives in
+   * the instance's checked-dynamic view and is a JavaScript property read:
+   * a missing one answers undefined, as a record's index-signature read
+   * does. A key or name the class declares is a member read. */
+  classIndexSignatureRead(
+    e: ts.ElementAccessExpression | ts.PropertyAccessExpression,
+  ): IrType | null {
+    const receiverType = this.typeOf(e.expression);
+    const receiver = panicSafe(() => this.mapTypeOf(receiverType), null);
+    if (receiver?.kind !== "object") return null;
+    const info = this.classes.get(receiver.className);
+    if (!info || info.def.runtime || info.extendsArray) return null;
+    let numericKey: boolean;
+    if (ts.isPropertyAccessExpression(e)) {
+      const nameSymbol = this.checker.getSymbolAtLocation(e.name);
+      if (
+        nameSymbol &&
+        !(nameSymbol.declarations ?? []).every((decl) => ts.isIndexSignatureDeclaration(decl))
+      )
+        return null;
+      numericKey = false;
+    } else {
+      const key = e.argumentExpression;
+      if (
+        (ts.isStringLiteral(key) ||
+          ts.isNumericLiteral(key) ||
+          ts.isNoSubstitutionTemplateLiteral(key)) &&
+        this.checker.getPropertyOfType(receiverType, key.text) !== undefined
+      )
+        return null;
+      // A numeric string key (`list["0"]`, or a `"0"`-typed binding) is
+      // answered by a `number` index signature, as the checker resolves it.
+      const keyType = this.typeOf(key);
+      numericKey = (keyType.isUnionType() ? ts.constituentTypes(keyType) : [keyType]).every(
+        (part) => {
+          if (part.flags & ts.TypeFlags.NumberLike) return true;
+          if (!(part.flags & ts.TypeFlags.StringLiteral)) return false;
+          const text = (part as ts.StringLiteralType).value;
+          return String(Number(text)) === text;
+        },
+      );
+    }
+    const signatures = this.checker.getIndexInfosOfType(receiverType);
+    const signature =
+      (numericKey
+        ? signatures.find((s) => (s.keyType.flags & ts.TypeFlags.Number) !== 0)
+        : undefined) ?? signatures.find((s) => (s.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (!signature) return null;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || isUnitType(value)) return null;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return null;
+    const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
+    if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) return null;
+    return value;
+  }
+
   /** The index value of a keyed read of a record's index signature that
    * can answer undefined for a missing key while its checker type does not
    * admit undefined, or null. A literal key naming a declared field is a
@@ -6096,6 +6155,7 @@ export class Lowerer {
       checkedTable("mixinOrdinals", () => this.mixinOrdinals.size),
       checkedTable("mixinInstancesByClassNode", () => this.mixinInstancesByClassNode.size),
       checkedTable("genericClassByDecl", () => this.genericClassByDecl.size),
+      checkedTable("erasedGenericClasses", () => this.erasedGenericClasses.size),
       checkedTable("collectingClassDeclarations", () => this.collectingClassDeclarations.size),
       checkedTable("genericClassInstances", () => this.genericClassInstances.length),
       checkedTable("mainPrelude", () => this.mainPrelude.length),
@@ -10296,6 +10356,7 @@ export class Lowerer {
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
         return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
+      if (kind === "object") return this.classIndexSignatureRead(e) !== null;
       return kind === "array";
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
@@ -10314,6 +10375,7 @@ export class Lowerer {
         (nameSymbol.declarations ?? []).some((decl) => ts.isIndexSignatureDeclaration(decl));
       if (!answersIndexSignature) return false;
       const receiver = this.mapTypeOf(this.typeOf(e.expression));
+      if (receiver?.kind === "object") return this.classIndexSignatureRead(e) !== null;
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")
@@ -20863,6 +20925,11 @@ export class Lowerer {
    * instance table. Filled by collectClassShapeInner's family mode;
    * consulted by mapType's genericClassInstance hook. */
   readonly genericClassByDecl = new Map<ts.ClassLikeDeclaration, GenericClassInfo>();
+  /** The ERASED instantiations of generic classes taken as values
+   * (erasedGenericClassType), by class name, with their family's
+   * declaration: `instanceof` through such a class value answers for
+   * every instantiation of the family, as JavaScript's one class does. */
+  readonly erasedGenericClasses = new Map<string, ts.ClassLikeDeclaration>();
   /** Forward generic references may demand a family before its declaration turn. */
   readonly collectingClassDeclarations = new Set<ts.ClassDeclaration>();
   /** Instantiations in demand order — the member-lowering worklist run()'s

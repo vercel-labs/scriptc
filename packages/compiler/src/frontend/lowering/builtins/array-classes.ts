@@ -103,15 +103,30 @@ export function arrayClassView(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrE
 /** The receiver of a member that `info` declares, read on `value` (the
  * lowered `node`): an array value is viewed as the class object. An array
  * whose elements are not the class's (a species result of another element
- * type, narrowed back to the class by `instanceof`) is refused. */
+ * type, narrowed back to the class by `instanceof`) is refused. An element
+ * read of an array of instances (`live[i].refresh()`) holds the array with
+ * the element hole's unit arm: an absent element throws Node's TypeError
+ * for reading (or setting) `member`, and a present one is the instance. */
 export function arrayClassReceiver(
   lowerer: Lowerer,
   info: ClassInfo,
   value: IrExpr,
-  node: ts.Node,
+  node: ts.Expression,
+  member: string,
+  action: "read" | "set" = "read",
 ): IrExpr {
-  if (value.type.kind !== "array") return value;
   const root = arrayRootOf(info);
+  if (value.type.kind === "union" && root?.extendsArray !== undefined) {
+    const present = lowerer.runtimeOptionalPropertyReceiver(
+      node,
+      value,
+      arrayOf(root.extendsArray.elem),
+      member,
+      action,
+    );
+    if (present !== null) value = present;
+  }
+  if (value.type.kind !== "array") return value;
   if (root?.extendsArray === undefined || !typeEquals(value.type.elem, root.extendsArray.elem))
     lowerer.unsupported(
       "SC1090",

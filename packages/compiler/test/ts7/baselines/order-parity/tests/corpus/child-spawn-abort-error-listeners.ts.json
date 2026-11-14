@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-spawn-abort-error-listeners.ts"
+ ],
+ "diags": []
+}

@@ -95,6 +95,18 @@ SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value) = NULL;
  * constructor as a value) keeps this NULL and its named refusal. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
 #endif
+/* Set by scr_dyn_invoke.c when a program links it (every program that
+ * creates a native Proxy does): the Object.prototype, Array.prototype and
+ * Function.prototype members a program's computed key or a trap-less
+ * Proxy's forwarded Get reads. A program without the unit answers the
+ * undefined read. */
+ScrDyn *(*scr_dyn_inherited_member_hook)(const ScrDyn *d, const ScrStr *key) = NULL;
+
+/* The inherited member `key` of `d`, +1, or NULL when the program links no
+ * unit that answers them (or the name is none of theirs). */
+static ScrDyn *scr_dyn_inherited_lookup(const ScrDyn *d, const ScrStr *key) {
+  return scr_dyn_inherited_member_hook ? scr_dyn_inherited_member_hook(d, key) : NULL;
+}
 
 /* Live dyn-node count for the RC audit lane (-DSCR_RC_AUDIT); same contract
  * as scr_str_live_count in scr_string.c. */
@@ -210,6 +222,26 @@ bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
 }
 
+static SCR_TL ScrDyn *scr_dispose_symbol;
+
+static void scr_dispose_symbol_cleanup(void) {
+  scr_dyn_release(scr_dispose_symbol);
+  scr_dispose_symbol = NULL;
+}
+
+/* Symbol.dispose, registered by the symbol unit when the program first
+ * names it, for handle classes outside that unit (a net.BoundSocket). */
+void scr_dyn_install_dispose_symbol(ScrDyn *key) {
+  if (scr_dispose_symbol) return;
+  scr_dispose_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_dispose_symbol_cleanup);
+}
+
+bool scr_dyn_is_dispose_symbol(const ScrDyn *key) {
+  return scr_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_dispose_symbol->v.symbol.value;
+}
+
 /* Symbol.for('nodejs.util.inspect.custom'), installed by the symbol unit
  * when the program creates it: the key util.inspect reads custom inspect
  * functions under. */
@@ -300,6 +332,21 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
   scr_atexit(scr_to_string_tag_symbol_cleanup);
 }
 const ScrDyn *scr_dyn_to_string_tag_symbol(void) { return scr_to_string_tag_symbol; }
+
+/* Set by scr_symbol.c's constructor (scr_dyn.h): makes the well-known
+ * symbol `name`, which installs it like a program's own read does. */
+void (*scr_sym_well_known_make_hook)(const char *name, size_t len) = NULL;
+
+/* ToPrimitive and Object.prototype.toString read Symbol.toPrimitive and
+ * Symbol.toStringTag through a Proxy's get trap whether or not the program
+ * names them, so a Proxy conversion makes both symbols first. Every program
+ * that creates a Proxy links the symbol unit; after the first conversion
+ * this is two pointer tests. */
+static void scr_dyn_proxy_conversion_symbols(void) {
+  if (!scr_sym_well_known_make_hook) return;
+  if (!scr_to_primitive_symbol) scr_sym_well_known_make_hook("toPrimitive", 11);
+  if (!scr_to_string_tag_symbol) scr_sym_well_known_make_hook("toStringTag", 11);
+}
 
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
@@ -2017,6 +2064,8 @@ bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
 
 static const ScrDyn *scr_dyn_property_owner(const ScrDyn *object, const char *key, size_t length);
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver);
+/* Defined after the ToPrimitive helpers it runs through (scr_dyn.h). */
+ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy);
 static ScrDyn *scr_dyn_fn_properties(const ScrDyn *function);
 static ScrDyn *scr_native_map_pack(void *ptr);
 
@@ -2524,6 +2573,82 @@ double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what) {
       best = v;
   }
   scr_dyn_release(pack);
+  return nan ? NAN : best;
+}
+
+/* Math.max/Math.min/Math.hypot over an argument list the compiler could not
+ * flatten statically (a spread of a Map/Set iterator, a generator, an
+ * untyped value): the pack holds the evaluated arguments in source order,
+ * and every one converts through ToNumber exactly once, in order. mode 0
+ * folds max, 1 min, 2 hypot — the same NaN-poisoning, ±0 and Infinity rules
+ * scr_math_max_arr and scr_math_hypot_arr apply to typed arrays. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode) {
+  if (pack == NULL || pack->kind != SCR_DYN_ARR) {
+    /* Only the compiler's own argument pack reaches here; an absent one is
+     * an empty argument list. */
+    if (pack != NULL && pack->kind != SCR_DYN_UNDEF && pack->kind != SCR_DYN_NULL) {
+      ScrStr *msg = scr_str_new("", 0);
+      ScrDyn *rest = scr_dyn_destructure_rest(pack, msg);
+      scr_str_release(msg);
+      if (!rest) return NAN;
+      double result = scr_dyn_math_fold_many(rest, mode);
+      scr_dyn_release(rest);
+      return result;
+    }
+    pack = NULL;
+  }
+  const size_t n = pack != NULL ? pack->v.arr.len : 0;
+  double *values = n > 0 ? malloc(n * sizeof *values) : NULL;
+  if (n > 0 && !values) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++) {
+    values[i] = scr_dyn_number_coerce(pack->v.arr.items[i]);
+    if (scr_exc_pending()) {
+      free(values);
+      return NAN;
+    }
+  }
+  double result;
+  if (mode == 2.0) {
+    /* Math.hypot: scale before summing to avoid intermediate overflow or
+     * underflow, and let Infinity win over NaN. */
+    double scale = 0.0;
+    bool has_nan = false;
+    for (size_t i = 0; i < n; i++) {
+      double v = fabs(values[i]);
+      if (isinf(v)) {
+        free(values);
+        return INFINITY;
+      }
+      if (isnan(v)) has_nan = true;
+      else if (v > scale) scale = v;
+    }
+    if (has_nan || scale == 0.0) {
+      free(values);
+      return has_nan ? NAN : 0.0;
+    }
+    double sum = 0.0;
+    double correction = 0.0;
+    for (size_t i = 0; i < n; i++) {
+      double v = values[i] / scale;
+      double term = v * v - correction;
+      double next = sum + term;
+      correction = (next - sum) - term;
+      sum = next;
+    }
+    free(values);
+    return scale * sqrt(sum);
+  }
+  const bool max = mode == 0.0;
+  double best = max ? -INFINITY : INFINITY;
+  bool nan = false;
+  for (size_t i = 0; i < n; i++) {
+    double v = values[i];
+    if (isnan(v)) nan = true;
+    else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
+                 : (v < best || (v == 0.0 && best == 0.0 && signbit(v))))
+      best = v;
+  }
+  free(values);
   return nan ? NAN : best;
 }
 
@@ -4144,17 +4269,30 @@ static ScrDyn *scr_dyn_proxy_get_receiver(const ScrDyn *proxy, const ScrStr *key
   if (scr_exc_pending()) return NULL;
   if (!trap) {
     ScrDyn *target = proxy->v.proxy.target;
+    /* A typed record target forwards to its materialized object, which
+     * inherits Object.prototype the same way. */
+    ScrDyn *view = NULL;
     if (target->kind == SCR_DYN_TYPED_REF) {
-      ScrDyn *view = scr_dyn_typed_ref_materialize(target);
-      ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_obj_read_receiver(view, key->data, key->len, receiver);
-      scr_dyn_release(view);
-      return result;
+      view = scr_dyn_typed_ref_materialize(target);
+      if (scr_exc_pending()) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+      target = view;
     }
+    ScrDyn *result;
     if (!scr_dyn_obj_get(target, key->data, key->len) && scr_dyn_object_proto_key(target, key)) {
-      scr_dyn_proxy_unsupported("inherited Object.prototype member reads");
-      return NULL;
+      /* A Proxy without a get trap forwards Get, so an Object.prototype
+       * member (toString, valueOf, hasOwnProperty, ...) answers the builtin
+       * function the target's own read answers; String() of a trapless
+       * Proxy walks exactly this path. */
+      result = scr_dyn_inherited_lookup(target, key);
+      if (!result && !scr_exc_pending()) scr_dyn_proxy_unsupported("inherited Object.prototype member reads");
+    } else {
+      result = scr_dyn_obj_read_receiver(target, key->data, key->len, receiver);
     }
-    return scr_dyn_obj_read_receiver(target, key->data, key->len, receiver);
+    scr_dyn_release(view);
+    return result;
   }
   ScrDyn *property = scr_dyn_new_str((ScrStr *)key);
   ScrDyn *args[] = { proxy->v.proxy.target, property, (ScrDyn *)receiver };
@@ -6079,6 +6217,55 @@ int scr_dyn_index_set(ScrDyn *recv, double index, ScrDyn *value) {
 static ScrStr *scr_dyn_typed_ref_conversion_tag(const ScrDyn *d);
 static ScrStr *scr_dyn_tag_string(const ScrStr *tag);
 
+/* The compiled String(instance) of the program's classes, by the type key
+ * of their instances' typed refs: a compiled function (self) that calls
+ * the conversion method and answers its primitive result. The program
+ * registers them before it runs. */
+typedef struct {
+  char *type_key;
+  ScrDyn *fn;
+} ScrClassToString;
+
+static SCR_TL ScrClassToString *g_class_to_string;
+static SCR_TL size_t g_nclass_to_string;
+
+static void scr_class_to_string_cleanup(void) {
+  for (size_t i = 0; i < g_nclass_to_string; i++) {
+    free(g_class_to_string[i].type_key);
+    scr_dyn_release(g_class_to_string[i].fn);
+  }
+  free(g_class_to_string);
+  g_class_to_string = NULL;
+  g_nclass_to_string = 0;
+}
+
+void scr_dyn_register_class_to_string(ScrStr *type_key, ScrDyn *fn) {
+  if (g_nclass_to_string == 0) scr_atexit(scr_class_to_string_cleanup);
+  ScrClassToString *grown =
+      realloc(g_class_to_string, (g_nclass_to_string + 1) * sizeof *g_class_to_string);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  g_class_to_string = grown;
+  char *key = malloc(type_key->len + 1);
+  if (!key) scr_trap("scriptc: out of memory\n");
+  memcpy(key, type_key->data, type_key->len);
+  key[type_key->len] = '\0';
+  g_class_to_string[g_nclass_to_string].type_key = key;
+  g_class_to_string[g_nclass_to_string].fn = scr_dyn_retain(fn);
+  g_nclass_to_string++;
+}
+
+static ScrDyn *scr_class_to_string_fn(const ScrDyn *d) {
+  if (!g_nclass_to_string || d->kind != SCR_DYN_TYPED_REF) return NULL;
+  const char *key = d->v.typed_ref.type_key;
+  for (size_t i = 0; i < g_nclass_to_string; i++)
+    if (strcmp(g_class_to_string[i].type_key, key) == 0) return g_class_to_string[i].fn;
+  return NULL;
+}
+
+bool scr_dyn_class_to_string_registered(const ScrDyn *d) {
+  return scr_class_to_string_fn(d) != NULL;
+}
+
 ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   /* An instance of a class declared `extends Date` converts through its
    * toString, declared or inherited. With an exception pending the view is
@@ -6092,6 +6279,34 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     scr_str_release(empty);
     return out;
   }
+  /* A class whose conversion the program defines (Symbol.toPrimitive or
+   * toString) converts through the compiled function the program
+   * registered: its primitive answer is the conversion's. */
+  ScrDyn *compiled = scr_class_to_string_fn(d);
+  if (compiled) {
+    ScrDyn *argument = (ScrDyn *)d;
+    ScrDyn *result = scr_dyn_call(compiled, &argument, 1, "toString");
+    if (!result) {
+      /* The method threw: the exception is pending, and the caller's
+       * ToString keeps failing (the empty string is never used). */
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+    if (scr_dyn_to_primitive_result_is_object(result)) {
+      /* ToPrimitive got a non-primitive answer from the method: nothing
+       * OrdinaryToPrimitive can convert. */
+      static const char message[] = "Cannot convert object to primitive value";
+      scr_dyn_release(result);
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+    return result;
+  }
   /* A class instance converting through Object.prototype.toString shows
    * its Symbol.toStringTag getter's string. */
   ScrStr *class_tag = scr_dyn_typed_ref_conversion_tag(d);
@@ -6104,11 +6319,12 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
   /* The view of a class instance holds its fields, not its class's methods:
-   * a toString the class declares is compiled for the class's own calls,
-   * which the runtime cannot make. Node runs that method, so answering
-   * "[object Object]" from the view would be a wrong value: the conversion
-   * is refused by name. (A class with prototype data answers no to the
-   * class test, and its view reaches the method.) */
+   * a toString the class declares is compiled for the class's own calls.
+   * A class the program could not register a compiled conversion for
+   * (a declared answer that is not a primitive, a method the program
+   * replaces, an abstract declaration) keeps the refusal by name. (A class
+   * with prototype data answers no to the class test, and its view reaches
+   * the method.) */
   if (view->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(view, "toString", 8)) {
     ScrStr *to_string_key = scr_str_new("toString", 8);
     bool declared = scr_dyn_typed_ref_class_has(d, to_string_key);
@@ -6436,6 +6652,33 @@ bool scr_dyn_typed_array_is(const ScrDyn *d, int elem) {
 
 static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
 
+/* A JavaScript source's namespace copy (module.namespaceCopy, built by
+ * scr_module_namespace_dyn.c) is an ordinary object; V8's brand check is a
+ * private slot, but this runtime has none, so the builder registers each
+ * copy here and util.types.isModuleNamespaceObject tests membership. The
+ * registry borrows the objects: the builder caches every one for the
+ * program's lifetime, so none is freed before the process exits. */
+static SCR_TL ScrDyn **scr_module_namespace_marks;
+static SCR_TL size_t scr_module_namespace_mark_count;
+static SCR_TL size_t scr_module_namespace_mark_cap;
+
+void scr_dyn_mark_module_namespace(ScrDyn *object) {
+  if (scr_module_namespace_mark_count == scr_module_namespace_mark_cap) {
+    size_t cap = scr_module_namespace_mark_cap ? scr_module_namespace_mark_cap * 2 : 8;
+    ScrDyn **grown = realloc(scr_module_namespace_marks, cap * sizeof(*grown));
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    scr_module_namespace_marks = grown;
+    scr_module_namespace_mark_cap = cap;
+  }
+  scr_module_namespace_marks[scr_module_namespace_mark_count++] = object;
+}
+
+static bool scr_dyn_is_marked_module_namespace(const ScrDyn *value) {
+  for (size_t i = 0; i < scr_module_namespace_mark_count; i++)
+    if (scr_module_namespace_marks[i] == value) return true;
+  return false;
+}
+
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
@@ -6471,16 +6714,35 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isProxy")) return value->kind == SCR_DYN_PROXY;
   if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_ASYNC) != 0;
   if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_GENERATOR) != 0;
-  if (PROBE("isGeneratorObject")) return scr_dyn_generator(value);
-  if (PROBE("isDate")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
+  if (PROBE("isGeneratorObject")) {
+    /* Array iterators, string iterators and iterator helpers are compiled
+     * generators here but have their own brands in Node; each prints with
+     * its @@toStringTag (scr_gen_set_tag), while a generator object keeps
+     * the default "Generator"/"AsyncGenerator". */
+    if (!scr_dyn_generator(value)) return false;
+    if (!scr_gen_tag_reader) return true;
+    const char *tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(value->v.typed_ref.ptr);
+    return !strcmp(tag, "Generator") || !strcmp(tag, "AsyncGenerator");
+  }
+  /* A Date, or an instance of a class declared `extends Date` (a
+   * compiled instance keeps the Date slot in one of its own fields). */
+  if (PROBE("isDate")) return scr_dyn_date_instance_is(value);
+  /* A namespace object read through its exports handle, a boxed namespace
+   * (scr_module_namespace_dyn.c's brand over its "file:" and "esm:" boxes),
+   * or a JavaScript source's per-module copy (registered by the
+   * module.namespaceCopy builder). The call site answers for the namespaces
+   * the compiler knows (see module-namespace-elements.ts). */
+  if (PROBE("isModuleNamespaceObject"))
+    return (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_MODULE_NAMESPACE) ||
+           (value->kind == SCR_DYN_OBJ && scr_dyn_is_marked_module_namespace(value)) ||
+           (scr_module_namespace_dyn_is != NULL && scr_module_namespace_dyn_is(value));
+  /* A compiled `arguments` is the call's argument list, an array; a value
+   * that left the function is that array everywhere else. The static
+   * lowering answers the name itself (lowerUtilTypeCall). */
+  if (PROBE("isArgumentsObject")) return false;
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;
-  /* Only a boxed program module namespace has Node's [[Module]] brand; the
-   * call site answers for the namespaces the compiler knows (see
-   * module-namespace-elements.ts). */
-  if (PROBE("isModuleNamespaceObject"))
-    return scr_module_namespace_dyn_is != NULL && scr_module_namespace_dyn_is(value);
   /* Boxed primitives, BigInt64Array, BigUint64Array, CryptoKey and external
    * values cannot be created here, so no value has these brands. An
    * arguments object that left its function is the argument list, an array
@@ -8965,12 +9227,27 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
 SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge = NULL;
 
 /* The method `key` of the handle's class as a function value (+1), or NULL
- * when the class has no such method. */
+ * when the class has no such method. An entry whose same_as names another
+ * entry answers that entry's function: Node aliases a prototype method by
+ * assignment, so the two reads are one value (`mime.toJSON ===
+ * mime.toString`, `params[Symbol.iterator] === params.entries`). */
 static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const char *key, size_t len) {
   const ScrDynHandleMethod *methods = ops->methods;
   if (!methods || !ops->invoke) return NULL;
-  for (size_t i = 0; methods[i].name; i++) {
-    if (strlen(methods[i].name) != len || memcmp(methods[i].name, key, len) != 0) continue;
+  size_t i;
+  for (i = 0; methods[i].name; i++)
+    if (strlen(methods[i].name) == len && memcmp(methods[i].name, key, len) == 0) break;
+  if (!methods[i].name) return NULL;
+  if (methods[i].same_as) {
+    size_t j;
+    for (j = 0; methods[j].name; j++)
+      if (strcmp(methods[j].name, methods[i].same_as) == 0) break;
+    /* The table must name an earlier entry: an alias to a missing name has
+     * no function to share, so it answers its own (a table bug, not a
+     * program's). */
+    if (methods[j].name) i = j;
+  }
+  {
     if (!scr_dynh_method_values[tag]) {
       size_t count = i + 1;
       while (methods[count].name) count++;
@@ -8990,7 +9267,6 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
     }
     return scr_dyn_retain(*slot);
   }
-  return NULL;
 }
 
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
@@ -9857,6 +10133,19 @@ static ScrDynEntry *scr_dyn_symbol_entry(const ScrDyn *receiver, const ScrDyn *k
 
 ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
   return object->symbol_properties ? scr_dyn_symbol_entry(object, key, true) : NULL;
+}
+
+/* Whether `object` owns a callable Symbol.toPrimitive member: Node's
+ * hasBuiltInToString asks before it walks to the toString owner, and a
+ * member that is not a function leaves the walk in charge (ToPrimitive
+ * ignores it too). */
+bool scr_dyn_has_own_to_primitive(const ScrDyn *object) {
+  if (scr_to_primitive_symbol == NULL || object == NULL || object->kind != SCR_DYN_OBJ ||
+      object->symbol_properties == NULL)
+    return false;
+  const ScrDynEntry *entry = scr_dyn_own_symbol_entry(object, scr_to_primitive_symbol);
+  return entry != NULL && !entry->accessor && entry->value != NULL &&
+         scr_dyn_is_callable(entry->value);
 }
 
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
@@ -11014,8 +11303,14 @@ static ScrDyn *scr_builtin_iterator_method(const ScrDyn *value) {
   if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value))) return scr_dyn_array_values_function();
   if (value->kind == SCR_DYN_BYTES) return scr_iterator_function(2, &scr_builtin_bytes_iterator_call, "values");
   if (value->kind == SCR_DYN_STR) return scr_iterator_function(3, &scr_builtin_string_iterator_call, "[Symbol.iterator]");
-  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET || scr_dyn_handle_ops_of(value)->iter_pack || scr_dyn_handle_ops_of(value)->iter_step))
-    return scr_iterator_function(6, &scr_handle_iterator_call, "[Symbol.iterator]");
+  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MAP || value->v.handle.tag == SCR_DYNH_SET || scr_dyn_handle_ops_of(value)->iter_pack || scr_dyn_handle_ops_of(value)->iter_step)) {
+    /* Node's iterable classes make [Symbol.iterator] the entries function
+     * itself (`params[Symbol.iterator] === params.entries`), so a class
+     * that answers entries as a value answers that same function here. */
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
+    ScrDyn *entries = scr_dynh_method_value(value->v.handle.tag, ops, "entries", 7);
+    return entries ? entries : scr_iterator_function(6, &scr_handle_iterator_call, "[Symbol.iterator]");
+  }
   return scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]");
 }
 
@@ -11225,11 +11520,14 @@ static const char *scr_dyn_fn_kind_tag(const ScrDyn *value) {
   return tags[scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_CALL_MASK];
 }
 
-/* Get(O, key) on a Proxy for a symbol key: the handler's get trap answers
- * when it has one, and the target answers when it has none. A trap's result
- * must agree with an own non-configurable, non-writable symbol property of
- * the target, the same invariant the string-key path checks. */
-static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional) {
+/* Get(O, key, receiver) on a Proxy for a symbol key: the handler's get
+ * trap answers when it has one, and the target answers when it has none.
+ * A trap's result must agree with an own non-configurable, non-writable
+ * symbol property of the target, the same invariant the string-key path
+ * checks. `receiver` is the Proxy for an ordinary read, and Reflect.get's
+ * third argument for that call. */
+static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional,
+                                        const ScrDyn *receiver) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
   if (scr_exc_pending()) return NULL;
   if (!trap) {
@@ -11237,11 +11535,11 @@ static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, 
     ScrDyn *view = target->kind == SCR_DYN_TYPED_REF
       ? scr_dyn_typed_ref_materialize(target) : scr_dyn_retain(target);
     ScrDyn *result = scr_exc_pending() ? NULL
-      : scr_dyn_symbol_key_get_receiver(view, key, optional, proxy);
+      : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
     scr_dyn_release(view);
     return result;
   }
-  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)proxy };
+  ScrDyn *args[] = { proxy->v.proxy.target, (ScrDyn *)key, (ScrDyn *)receiver };
   ScrDyn *result = scr_dyn_proxy_call(proxy, trap, args, 3);
   ScrDynEntry *entry = scr_dyn_symbol_entry(proxy->v.proxy.target, key, true);
   if (result && entry && !entry->configurable &&
@@ -11267,7 +11565,7 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
                                                bool optional, const ScrDyn *receiver) {
   if (scr_dyn_generator(value)) return scr_dyn_generator_symbol(value, key)
     ? scr_iterator_function(4, &scr_iterator_self_call, "[Symbol.iterator]") : scr_dyn_retain(scr_dyn_undefined());
-  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional);
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, key, optional, receiver);
   if (value->kind == SCR_DYN_TYPED_REF) {
     /* A live record's snapshot has no symbol properties and no prototype. */
     if (scr_typed_ref_plain_record(value)) return scr_dyn_retain(scr_dyn_undefined());
@@ -12205,8 +12503,19 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
    * that links the island units, which install the table, can hold one. */
   if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->object_tag(d);
   if (d->kind == SCR_DYN_PROXY) {
-    scr_dyn_proxy_unsupported("Symbol.toStringTag lookup");
-    return NULL;
+    /* Object.prototype.toString over a Proxy: @@toStringTag is read with
+     * the get trap first, and without a string tag the builtin tag follows
+     * the Proxy (IsArray and IsCallable see through it): a Proxy over an
+     * array answers "[object Array]", over a function "[object Function]",
+     * and over any other object "[object Object]". */
+    scr_dyn_proxy_conversion_symbols();
+    ScrStr *tag = scr_dyn_string_tag(d);
+    if (tag || scr_exc_pending()) return tag;
+    const ScrDyn *target = d;
+    while (target->kind == SCR_DYN_PROXY) target = target->v.proxy.target;
+    if (target->kind == SCR_DYN_ARR) return scr_str_new("[object Array]", 14);
+    if (scr_dyn_is_callable(d)) return scr_str_new("[object Function]", 17);
+    return scr_str_new("[object Object]", 15);
   }
   /* Object.prototype.toString answers a string @@toStringTag over the
    * builtin tag of a plain object or a class instance. */
@@ -12925,8 +13234,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
     if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   } else {
-    /* errno rides fs errors (with syscall) and zlib errors (without). */
-    if (e->system_call || e->system_errno != 0)
+    /* errno rides fs errors (with syscall) and zlib errors (without); a
+     * DNSException presents it first, reading undefined. */
+    if (e->errno_undefined)
+      scr_dyn_obj_set(d, "errno", 5, scr_dyn_undefined());
+    else if (e->system_call || e->system_errno != 0)
       scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
     if (e->code) {
       scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
@@ -13414,10 +13726,10 @@ static ScrDyn *scr_dyn_handle_primitive(const ScrDyn *d, int hint, bool *hooked)
  * both; +1 result. */
 ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
   if (d->kind == SCR_DYN_PROXY) {
-    scr_dyn_proxy_unsupported("string conversion");
-    /* Match this helper's existing exception-plus-dummy contract; its
-     * recursive array walker and native callers still consume a string. */
-    return scr_str_new("", 0);
+    ScrStr *text = scr_dyn_proxy_to_string(d);
+    /* This helper's existing exception-plus-dummy contract: its recursive
+     * array walker and native callers still consume a string. */
+    return text ? text : scr_str_new("", 0);
   }
   switch (d->kind) {
   case SCR_DYN_SYMBOL:
@@ -13461,8 +13773,11 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return text;
     }
   }
+    /* URLSearchParams.prototype.toString serializes the list, so
+     * ToString(params) answers `a=1&b=2` as it does in Node. */
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||
-        d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS) {
+        d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS ||
+        d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       /* ToPrimitive takes the member's answer as the primitive and ToString
@@ -13549,9 +13864,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       }
       /* ToString with the object protocol: an element's own or inherited
        * toString/valueOf runs, as in Array.prototype.join. */
-      ScrStr *piece = NULL;
-      if (e->kind == SCR_DYN_PROXY) scr_dyn_proxy_unsupported("string conversion");
-      else piece = scr_dyn_string_coerce_js(e);
+      ScrStr *piece = scr_dyn_string_coerce_js(e);
       scr_dyn_release(e);
       if (!piece || scr_exc_pending()) {
         scr_str_release(piece);
@@ -13731,10 +14044,7 @@ ScrStr *scr_dyn_string_coerce(const ScrDyn *d) {
 
 ScrStr *scr_dyn_string_constructor(const ScrDyn *value) {
   if (value->kind == SCR_DYN_SYMBOL) return value->v.symbol.render(value->v.symbol.value);
-  if (value->kind == SCR_DYN_PROXY) {
-    scr_dyn_proxy_unsupported("string conversion");
-    return NULL;
-  }
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_to_string(value);
   return scr_dyn_string_coerce_js(value);
 }
 
@@ -13775,16 +14085,18 @@ static bool scr_dyn_to_primitive_result_is_object(const ScrDyn *d) {
  * kind matches scr_dyn_string_coerce (units RENDER — ToString(null) is
  * "null"). Borrows; +1, or NULL with the exception pending. */
 ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_PROXY) {
-    scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
-    return NULL;
-  }
+  if (d->kind == SCR_DYN_PROXY) return scr_dyn_proxy_to_string(d);
   if (d->kind == SCR_DYN_TYPED_REF) {
-    ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
-    if (tag) {
-      ScrStr *out = scr_dyn_tag_string(tag);
-      scr_str_release(tag);
-      return out;
+    /* A class whose conversion the program registered runs it (a declared
+     * Symbol.toPrimitive decides the conversion before Object.prototype's
+     * tag). */
+    if (!scr_dyn_class_to_string_registered(d)) {
+      ScrStr *tag = scr_dyn_typed_ref_conversion_tag(d);
+      if (tag) {
+        ScrStr *out = scr_dyn_tag_string(tag);
+        scr_str_release(tag);
+        return out;
+      }
     }
     if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
@@ -13908,6 +14220,68 @@ static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint
     return NULL;
   }
   return primitive;
+}
+
+/* ToPrimitive of a native Proxy with `hint` ("string", "number" or
+ * "default"): the Proxy's own traps run, as Node's do. The @@toPrimitive
+ * member is looked up first (the get trap runs with the symbol); without
+ * one, OrdinaryToPrimitive reads the hint's method order through the get
+ * trap and calls each with the Proxy as `this`. An object
+ * answer passes to the next method; exhaustion throws Node's "Cannot
+ * convert object to primitive value" TypeError. Returns the primitive, +1. */
+static ScrDyn *scr_dyn_proxy_to_primitive(const ScrDyn *proxy, const char *hint) {
+  scr_dyn_proxy_conversion_symbols();
+  bool handled = false;
+  ScrDyn *primitive = scr_dyn_exotic_to_primitive(proxy, hint, &handled);
+  if (scr_exc_pending()) {
+    scr_dyn_release(primitive);
+    return NULL;
+  }
+  if (handled) return primitive;
+  static const char *const string_order[2] = { "toString", "valueOf" };
+  static const char *const number_order[2] = { "valueOf", "toString" };
+  const bool string_hint = strcmp(hint, "string") == 0;
+  const char *const *names = string_hint ? string_order : number_order;
+  for (int i = 0; i < 2; i++) {
+    const char *name = names[i];
+    ScrStr *key = scr_str_new(name, strlen(name));
+    if (!key) return NULL;
+    ScrDyn *method = scr_dyn_proxy_get(proxy, key);
+    scr_str_release(key);
+    if (!method) return NULL; /* the get trap threw */
+    if (!scr_dyn_is_callable(method)) {
+      scr_dyn_release(method);
+      continue;
+    }
+    /* OrdinaryToPrimitive performs a method call: the trap's function and
+     * the inherited builtins both observe the Proxy as `this`. */
+    scr_dyn_this_push_dyn(proxy);
+    ScrDyn *result = scr_dyn_call(method, NULL, 0, name);
+    scr_dyn_this_pop();
+    scr_dyn_release(method);
+    if (!result) return NULL;
+    if (scr_dyn_to_primitive_result_is_object(result)) {
+      scr_dyn_release(result); /* non-primitive answer: try the next method */
+      continue;
+    }
+    return result;
+  }
+  static const char message[] = "Cannot convert object to primitive value";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+/* ToString of a native Proxy (scr_dyn.h): ToPrimitive with the string hint
+ * through the Proxy's traps, then ToString of the primitive. A Proxy over a
+ * plain object with a get trap that forwards to the target answers the
+ * target's Object.prototype.toString, and one with no get trap answers it
+ * from the inherited member ("[object Object]"), as Node's does. */
+ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy) {
+  ScrDyn *primitive = scr_dyn_proxy_to_primitive(proxy, "string");
+  if (!primitive) return NULL;
+  ScrStr *out = scr_dyn_string_coerce(primitive);
+  scr_dyn_release(primitive);
+  return out;
 }
 
 /* ToString, preserving the object protocol. */
@@ -14209,10 +14583,10 @@ static ScrDyn *scr_dyn_obj_ordinary_primitive(const ScrDyn *d) {
  * itself: addition must choose string concatenation before either side is
  * converted to a number. */
 static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_PROXY) {
-    scr_dyn_proxy_unsupported("Symbol.toPrimitive lookup");
-    return NULL;
-  }
+  /* `+` converts a native Proxy with the default hint: its @@toPrimitive
+   * member and then valueOf/toString run through the traps, exactly as
+   * String()'s string-hint conversion does. */
+  if (d->kind == SCR_DYN_PROXY) return scr_dyn_proxy_to_primitive(d, "default");
   if (d->kind == SCR_DYN_TYPED_REF) {
     /* A Date's default hint is string: an instance of a class declared
      * `extends Date` adds through its toString. */
@@ -15356,8 +15730,10 @@ static const char *scr_dyn_kind_name(const ScrDyn *d) {
   case SCR_DYN_HANDLE: return scr_dyn_handle_cls(d); /* "got IncomingMessage" */
   case SCR_DYN_PROMISE: return "Promise"; /* "got Promise" */
 
-  case SCR_DYN_TYPED_REF:
-  case SCR_DYN_PROXY: return "object";
+  case SCR_DYN_TYPED_REF: return "object";
+  /* A native Proxy is object-like, but a conversion that cannot take one
+   * has to say which value it could not take (the check failure names it). */
+  case SCR_DYN_PROXY: return "a native Proxy";
   }
   return "unknown";
 }
@@ -15409,6 +15785,7 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
     scr_dyn_inferred_fact_fail(site, path, want, got);
     return;
   }
+  const bool proxy = got && got->kind == SCR_DYN_PROXY;
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "expected ");
@@ -15422,10 +15799,23 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   if (scr_ni_dyn_handle(got))
     scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
                     "type or 'unknown' for it, or copy it with structuredClone)");
+  /* A native Proxy is a live object whose traps are the value: only an
+   * untyped slot or a string-keyed dictionary can hold one (the frontend
+   * marks the dictionary type), so a fixed-shape record conversion is a
+   * recognized limitation with a name, not a bare type mismatch. */
+  if (proxy)
+    scr_jb_puts(&b, " (a native Proxy keeps its traps only in an untyped value or a "
+                    "dictionary: declare the value 'any', or a Record<string, T>)");
+  ScrStr *message = scr_jb_finish(&b);
+  if (proxy) {
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "SC2020");
+    scr_str_release(message);
+    return;
+  }
   /* A real TypeError instance: catch bindings narrow it with instanceof
    * and read the path off e.message; the uncaught line ("Uncaught
    * TypeError: expected ...") is byte-identical to the old string form. */
-  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  scr_throw_error(SCR_ERR_TYPE, message);
 }
 
 /* ── recursive shapes: cycle-aware dynMatch and the dynCheck memo ──────
@@ -19357,6 +19747,16 @@ ScrDyn *scr_dyn_function_apply(void) {
 }
 
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
+  /* A native handle is a JavaScript object: its members are the class's
+   * getters and methods, which the handle's ops answer. This is the read a
+   * record shape performs on an object it checks (a MIMEType's `type`, a
+   * URL's `href`), and Node answers those through the prototype. */
+  if (d->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(d)) {
+    ScrStr *name = scr_str_new(key, key_len);
+    ScrDyn *value = scr_dyn_handle_key_get(d, name);
+    scr_str_release(name);
+    return value;
+  }
   if (d->kind == SCR_DYN_PROXY) {
     ScrStr *name = scr_str_new(key, key_len);
     ScrDyn *value = scr_dyn_visit_proxy_get(d, name);
@@ -19373,6 +19773,34 @@ ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
 ScrDyn *scr_dyn_obj_read_with_receiver(const ScrDyn *d, const char *key, size_t key_len,
                                        const ScrDyn *receiver) {
   return scr_dyn_obj_read_receiver(d, key, key_len, receiver);
+}
+
+/* A program's computed-key read of an ordinary object (`o[k]`, a Proxy get
+ * trap forwarding `t[k]`) whose ordinary read missed: an Object.prototype
+ * name the object's own chain does not define answers the builtin member,
+ * as the same name read with a constant key does. Only the backend's keyed
+ * read of a program's non-constant key calls this; the runtime's own reads
+ * keep the ordinary read's undefined. The table is the dyn-invoke unit's, so a
+ * program that does not link it keeps the undefined read. Takes `read`
+ * (+1, NULL when the read threw); +1. */
+ScrDyn *scr_dyn_computed_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read) {
+  if (!read || read->kind != SCR_DYN_UNDEF || d->kind != SCR_DYN_OBJ) return read;
+  /* Object.prototype's names are 7 to 20 bytes long and start with one of
+   * these letters: any other miss returns without a lookup. */
+  if (key->len < 7 || key->len > 20) return read;
+  switch (key->data[0]) {
+  case 'c': case '_': case 'h': case 'i': case 'p': case 't': case 'v': break;
+  default: return read;
+  }
+  ScrDyn *member = scr_dyn_inherited_lookup(d, key);
+  if (scr_exc_pending()) {
+    scr_dyn_release(member);
+    scr_dyn_release(read);
+    return NULL;
+  }
+  if (!member) return read;
+  scr_dyn_release(read);
+  return member;
 }
 
 /* Read-site caches (ScrDynReadIc). A hit is exactly the first step of
@@ -19489,6 +19917,32 @@ void scr_dyn_bag_set(ScrDyn *bag, ScrStr *key, ScrDyn *value, ScrDyn *receiver) 
 /* Reflect uses OrdinaryGet/OrdinarySet with an independently supplied
  * receiver. Failed descriptor writes return false; user callbacks still
  * propagate their exceptions. Keys are converted once before dispatch. */
+/* Get of a symbol-keyed property: the ordinary symbol table read, through a
+ * Proxy's get trap (with the target invariant check; the well-known symbol
+ * reads ToPrimitive performs arrive here), and through a typed reference's
+ * materialized view. */
+static ScrDyn *scr_dyn_symbol_read(ScrDyn *value, ScrDyn *symbol, ScrDyn *receiver) {
+  if (value->kind == SCR_DYN_PROXY) return scr_dyn_proxy_symbol_get(value, symbol, false, receiver);
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    ScrDyn *read = scr_exc_pending() ? NULL : scr_dyn_symbol_read(view, symbol, receiver);
+    scr_dyn_release(view);
+    return read;
+  }
+  ScrDyn *symbols = scr_dyn_symbol_receiver(value);
+  ScrDynEntry *entry = symbols ? scr_dyn_symbol_entry(symbols, symbol, false) : NULL;
+  ScrDyn *result = NULL;
+  if (entry && entry->accessor && entry->getter) {
+    ScrDyn *getter = scr_dyn_retain(entry->getter);
+    scr_dyn_this_push_dyn(receiver);
+    result = scr_dyn_call(getter, NULL, 0, "getter");
+    scr_dyn_this_pop();
+    scr_dyn_release(getter);
+  } else result = scr_dyn_symbol_key_get(value, symbol, false);
+  scr_dyn_release(symbols);
+  return result;
+}
+
 ScrDyn *scr_dyn_reflect_get(ScrDyn *target, ScrDyn *raw_key, ScrDyn *receiver) {
   if (!scr_dyn_to_primitive_result_is_object(target)) {
     static const char message[] = "Reflect.get called on non-object";
@@ -19503,16 +19957,7 @@ ScrDyn *scr_dyn_reflect_get(ScrDyn *target, ScrDyn *raw_key, ScrDyn *receiver) {
     if (!scr_exc_pending()) result = scr_dyn_reflect_get(view, key, receiver);
     scr_dyn_release(view);
   } else if (key->kind == SCR_DYN_SYMBOL) {
-    ScrDyn *symbols = scr_dyn_symbol_receiver(target);
-    ScrDynEntry *entry = symbols ? scr_dyn_symbol_entry(symbols, key, false) : NULL;
-    if (entry && entry->accessor && entry->getter) {
-      ScrDyn *getter = scr_dyn_retain(entry->getter);
-      scr_dyn_this_push_dyn(receiver);
-      result = scr_dyn_call(getter, NULL, 0, "getter");
-      scr_dyn_this_pop();
-      scr_dyn_release(getter);
-    } else result = scr_dyn_symbol_key_get(target, key, false);
-    scr_dyn_release(symbols);
+    result = scr_dyn_symbol_read(target, key, receiver);
   } else if (target->kind == SCR_DYN_PROXY) result = scr_dyn_proxy_get_receiver(target, key->v.str, receiver);
   else result = scr_dyn_obj_read_receiver(target, key->v.str->data, key->v.str->len, receiver);
   scr_dyn_release(key);
@@ -21828,6 +22273,9 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_array_buffer_methods,
 #endif
+    /* No own enumerable properties: JSON.stringify(ab) is "{}" (the TLSA
+     * record's data is an ArrayBuffer). */
+    .json_empty_object = true,
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
@@ -21835,6 +22283,7 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_shared_array_buffer_methods,
 #endif
+    .json_empty_object = true,
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);
@@ -24129,6 +24578,34 @@ ScrMap *scr_dyn_native_collection_check(const ScrDyn *value, int map, const char
  * chain defines. */
 static ScrStr *scr_dyn_to_string_method_args(const ScrDyn *d, const ScrStr *enc, const ScrStr *what,
     ScrDyn *const *args, size_t argc) {
+  /* `proxy.toString(...)` is a method call: the get trap answers the
+   * member, which runs with the Proxy as `this` and receives the arguments.
+   * @@toPrimitive belongs to String(proxy) (scr_dyn_to_string), not to an
+   * explicit call. */
+  if (d->kind == SCR_DYN_PROXY) {
+    ScrStr *key = scr_str_new("toString", 8);
+    ScrDyn *member = scr_dyn_proxy_get(d, key);
+    scr_str_release(key);
+    if (!member) return NULL;
+    if (!scr_dyn_is_callable(member)) {
+      scr_dyn_release(member);
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_write(&b, what->data, what->len);
+      scr_jb_puts(&b, " is not a function");
+      scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+      return NULL;
+    }
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *value = scr_dyn_call(member, args, argc, what->data);
+    scr_dyn_this_pop();
+    scr_dyn_release(member);
+    if (!value) return NULL;
+    ScrStr *result = value->kind == SCR_DYN_STR ? scr_str_retain(value->v.str) : NULL;
+    if (!result) scr_dyn_check_fail(NULL, "string", value);
+    scr_dyn_release(value);
+    return result;
+  }
   /* Object.create receivers must run their inherited formatter before the
    * default object tag; Effect shard keys use it to produce distinct hashes. */
   const bool object_method = d->kind == SCR_DYN_OBJ && scr_dyn_property_owner(d, "toString", 8);

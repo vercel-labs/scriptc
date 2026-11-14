@@ -38,6 +38,7 @@ import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import type { Lowerer } from "./lowerer.js";
 import { isPerfEntryType } from "./builtins/performance.js";
+import { X509_PUBLIC_KEY_FIELD } from "../type-mapper.js";
 
 /** Closed declared-field layouts with an ordinary data surface: the targets
  * the checked record builder notes sources for. */
@@ -51,6 +52,13 @@ export function recordMayKeepSource(lowerer: Lowerer, t: IrType & { kind: "recor
     !shapeHasAccessorSlots(shape) &&
     recordTextCodecClass(shape) === null &&
     !isPerfEntryType(lowerer, t) &&
+    // An X509Certificate's record is a computed view of a certificate Node
+    // keeps every member of on its prototype; it is never built from an
+    // object literal or a checked conversion, so it holds no undeclared
+    // source properties. Answering otherwise sends `"k" in cert` through the
+    // dynamic hasOwn helper, whose boxing the certificate-in-a-dyn-slot
+    // refusal fences.
+    !shape.fields.some((f) => f.name === X509_PUBLIC_KEY_FIELD) &&
     lowerer.dynConvertible(t)
   );
 }

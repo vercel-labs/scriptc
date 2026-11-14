@@ -132,6 +132,15 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
     "dgram.disconnect": "scr_dgram_disconnect",
     "dns.lookupPromise": "scr_dns_lookup_promise",
     "dns.lookupServicePromise": "scr_dns_lookup_service_promise",
+    "dns.resolveChk": "scr_dns_resolve_chk",
+    "dns.resolvePromise": "scr_dns_resolve_promise",
+    "dns.resolveRrChk": "scr_dns_resolve_rr_chk",
+    "dns.resolveRrPromise": "scr_dns_resolve_rr_promise",
+    "dns.resolverNew": "scr_dns_resolver_new",
+    "dns.resolverIs": "scr_dns_resolver_is",
+    "dns.setServers": "scr_dns_set_servers",
+    "dns.promisesSetServers": "scr_dns_promises_set_servers",
+    "dns.promisesGetServers": "scr_dns_get_servers_default",
   };
   const symbol = direct[e.fn];
   if (symbol !== undefined) return finishRuntimeCall(host, e, symbol, a);

@@ -1980,10 +1980,125 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows) {
 ScrStr *scr_url_to_path_w32(ScrUrl *u) { return scr_url_to_path_impl(u, true); }
 ScrUrl *scr_url_from_path_w32(ScrStr *path) { return scr_url_from_path_impl(path, true); }
 
-/* URL.revokeObjectURL(id) past the coercion: a compiled program cannot
- * create a blob URL, so nothing is ever registered and Node's lookup
- * misses. The argument is borrowed; the caller releases it. */
-void scr_url_revoke_object_url(ScrStr *id) { (void)id; }
+/* ── object URLs ─────────────────────────────────────────────────────
+ * URL.createObjectURL(blob) registers the Blob or File under a fresh
+ * "blob:nodedata:<uuid v4>" and answers that id; fetch() of the id
+ * resolves the registered blob's bytes. The registry is per thread like
+ * Node's per-environment one, and it holds one reference to each id and
+ * blob until revokeObjectURL (or the thread's cleanup) drops it. */
+typedef struct ScrUrlObjectUrl {
+  struct ScrUrlObjectUrl *next;
+  ScrStr *id;   /* +1, the full "blob:nodedata:<uuid>" key */
+  ScrDyn *blob; /* +1, a Blob or File handle */
+} ScrUrlObjectUrl;
+
+static SCR_TL ScrUrlObjectUrl *scr_url_object_urls;
+static SCR_TL bool scr_url_object_urls_armed;
+
+static void scr_url_object_urls_teardown(void) {
+  ScrUrlObjectUrl *entry = scr_url_object_urls;
+  scr_url_object_urls = NULL;
+  while (entry) {
+    ScrUrlObjectUrl *next = entry->next;
+    scr_str_release(entry->id);
+    scr_dyn_release(entry->blob);
+    free(entry);
+    entry = next;
+  }
+}
+
+static void scr_url_object_urls_arm(void) {
+  if (scr_url_object_urls_armed) return;
+  scr_url_object_urls_armed = true;
+  scr_atexit(scr_url_object_urls_teardown);
+}
+
+/* URL.createObjectURL(blob): a Blob or File answers a fresh id; any other
+ * value throws Node's ERR_INVALID_ARG_TYPE naming `obj`. */
+ScrStr *scr_url_create_object_url(ScrDyn *blob) {
+  if (blob == NULL) blob = scr_dyn_undefined();
+  if (blob->kind != SCR_DYN_HANDLE ||
+      (blob->v.handle.tag != SCR_DYNH_BLOB &&
+       blob->v.handle.tag != SCR_DYNH_FILE)) {
+    scr_dyn_arg_type_fail("obj", "an instance of Blob", blob);
+    return NULL;
+  }
+  ScrUrlObjectUrl *entry = calloc(1, sizeof *entry);
+  if (!entry) scr_trap("scriptc: out of memory\n");
+  ScrStr *uuid = scr_crypto_random_uuid();
+  ScrJsonBuf id_buf;
+  scr_jb_init(&id_buf);
+  scr_jb_puts(&id_buf, "blob:nodedata:");
+  scr_jb_write(&id_buf, uuid->data, uuid->len);
+  scr_str_release(uuid);
+  entry->id = scr_jb_finish(&id_buf);
+  entry->blob = scr_dyn_retain(blob);
+  scr_url_object_urls_arm();
+  entry->next = scr_url_object_urls;
+  scr_url_object_urls = entry;
+  return scr_str_retain(entry->id);
+}
+
+/* fetch()'s lookup: the registered Blob (+1) for exactly this serialized
+ * URL, or NULL when nothing is registered under it. */
+ScrDyn *scr_url_lookup_object_url(const ScrStr *id) {
+  for (const ScrUrlObjectUrl *entry = scr_url_object_urls; entry;
+       entry = entry->next) {
+    if (entry->id->len == id->len &&
+        memcmp(entry->id->data, id->data, id->len) == 0)
+      return scr_dyn_retain(entry->blob);
+  }
+  return NULL;
+}
+
+/* URL.revokeObjectURL(id) past the coercion. Node parses the string as a
+ * URL and does nothing when that fails, then reads the registration's id
+ * out of the pathname: everything after its FIRST colon and before a
+ * second one. A query or fragment therefore revokes the registration the
+ * bare id names, a different scheme before the colon revokes it too (the
+ * pathname is all that is read), and any second colon in the pathname
+ * makes the call a no-op. The registration is dropped with one reference
+ * to the id and the blob released. The argument is borrowed; the caller
+ * releases it. */
+void scr_url_revoke_object_url(ScrStr *id) {
+  ScrUrl *u = url_try_parse(id, NULL);
+  if (!u) return;
+  const ScrStr *path = u->path;
+  size_t first = SIZE_MAX;
+  for (size_t i = 0; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      first = i;
+      break;
+    }
+  }
+  if (first == SIZE_MAX) {
+    scr_url_release(u);
+    return;
+  }
+  for (size_t i = first + 1; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      scr_url_release(u);
+      return;
+    }
+  }
+  const char *key = path->data + first + 1;
+  size_t key_len = path->len - first - 1;
+  size_t prefix = sizeof "blob:nodedata:" - 1;
+  ScrUrlObjectUrl **link = &scr_url_object_urls;
+  while (*link) {
+    ScrUrlObjectUrl *entry = *link;
+    if (entry->id->len - prefix == key_len &&
+        memcmp(entry->id->data + prefix, key, key_len) == 0) {
+      *link = entry->next;
+      scr_str_release(entry->id);
+      scr_dyn_release(entry->blob);
+      free(entry);
+      break;
+    }
+    link = &entry->next;
+  }
+  scr_url_release(u);
+}
 
 /* WHATWG search getter: "" for no query AND for the bare-'?' query;
  * "?..." verbatim otherwise. */
@@ -2214,7 +2329,12 @@ static ScrDyn *scr_native_sp_invoke(void *ptr, ScrDyn *self, const char *method,
   }
   if (!strcmp(method, "sort")) { scr_sp_sort(ptr); return scr_dyn_retain(scr_dyn_undefined()); }
   if (!strcmp(method, "forEach")) {
-    if (!argc) { scr_dyn_arg_type_fail("callback", "of type function", scr_dyn_undefined()); return NULL; }
+    /* Node's validateFunction gate renders both the missing callback and a
+     * present non-function as ERR_INVALID_ARG_TYPE, before the walk. */
+    if (!argc || !scr_dyn_is_callable(args[0])) {
+      scr_dyn_arg_type_fail("callback", "of type function", argc ? args[0] : scr_dyn_undefined());
+      return NULL;
+    }
     for (double i = 0; i < scr_sp_size(ptr); i++) {
       ScrStr *key = scr_sp_key_at(ptr, i), *value = scr_sp_val_at(ptr, i);
       ScrDyn *argv[] = {scr_dyn_new_str(value), scr_dyn_new_str(key), self};
@@ -2287,60 +2407,211 @@ ScrSearchParams *scr_dyn_native_search_params_check(const ScrDyn *value, const S
   return scr_sp_retain(value->v.handle.ptr);
 }
 
-/* new URLSearchParams(init): only undefined is the empty init; null takes
- * the string branch like any other primitive ("null" parses as one key). */
+/* A compiled program that boxes generators registers the checked functions
+ * that read a generator capsule's members (scr_dyn_set_generator_members);
+ * its `next` has no ordinary lowering, so the protocol's member read goes
+ * through them, as the other dynamic iterator consumers do. */
+extern SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t);
+
+/** A compiled generator's capsule (the type key says synchronous). */
+static bool sp_is_sync_generator(const ScrDyn *value) {
+  return value && value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len >= 10 &&
+         !memcmp(value->v.typed_ref.type_key, "generator<", 10);
+}
+
+/* The iterator's own `next` member: a synchronous generator capsule answers
+ * through the program's registered members, every other iterator or key
+ * through the checked read. +1, or NULL with the exception pending. */
+static ScrDyn *sp_iterator_member(const ScrDyn *iterator, const char *key, size_t len) {
+  if (scr_generator_member_hook && sp_is_sync_generator(iterator)) {
+    ScrDyn *member = scr_generator_member_hook(iterator, key, len);
+    if (member || scr_exc_pending()) return member;
+  }
+  return scr_dyn_iterator_result_get(iterator, key, len);
+}
+
+/* IteratorStepValue over (iterator, next): a native array, string, Map or
+ * Set iterator steps in the runtime, every other iterator through its next
+ * method with the iterator as `this`. +1 value with *done false or the value
+ * undefined with *done true; NULL with the exception pending. */
+static ScrDyn *sp_iterator_step(ScrDyn *iterator, ScrDyn *next, bool *done) {
+  *done = false;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *value = scr_dyn_iterator_step(iterator);
+    if (!value) return NULL;
+    *done = scr_dyn_iterator_step_done(iterator);
+    return value;
+  }
+  scr_dyn_this_push_dyn(iterator);
+  ScrDyn *raw = scr_dyn_call(next, NULL, 0, "iterator.next");
+  scr_dyn_this_pop();
+  if (!raw) return NULL;
+  ScrDyn *result = scr_dyn_iterator_result(raw);
+  scr_dyn_release(raw);
+  if (!result) return NULL;
+  ScrDyn *finished = scr_dyn_iterator_result_get(result, "done", 4);
+  if (!finished) { scr_dyn_release(result); return NULL; }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  ScrDyn *value = *done ? scr_dyn_retain(scr_dyn_undefined())
+                        : scr_dyn_iterator_result_get(result, "value", 5);
+  scr_dyn_release(result);
+  return value;
+}
+
+/* Node's "typeof init === 'object' || typeof init === 'function'": a JSON
+ * primitive takes the string branch, every other value the sequence or
+ * record branch. */
+static bool sp_primitive(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_UNDEF: case SCR_DYN_NULL: case SCR_DYN_BOOL: case SCR_DYN_NUM:
+  case SCR_DYN_STR: case SCR_DYN_BIGINT: case SCR_DYN_SYMBOL:
+    return true;
+  default: return false;
+  }
+}
+
+static void sp_throw_invalid_tuple(void) {
+  static const char message[] = "Each query pair must be an iterable [name, value] tuple";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_TUPLE");
+}
+
+/* A sequence row's two USVStrings (lib/internal/url.js's two branches): an
+ * array row answers its own two positions, and any other object or function
+ * row must be iterable and answer exactly two elements. A null row, an array
+ * of another arity, a string row and a non-iterable object are all
+ * ERR_INVALID_TUPLE. +1 name and value on success. */
+static bool sp_pair_units(const ScrDyn *row, ScrStr **name, ScrStr **value) {
+  if (sp_primitive(row)) { sp_throw_invalid_tuple(); return false; }
+  if (row->kind == SCR_DYN_ARR || (row->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(row))) {
+    if (scr_dyn_arr_len(row) != 2) { sp_throw_invalid_tuple(); return false; }
+    ScrDyn *first = scr_dyn_arr_at(row, 0);
+    ScrDyn *second = scr_dyn_arr_at(row, 1);
+    *name = first ? scr_util_to_usv_string(first) : NULL;
+    *value = first && !scr_exc_pending() && second ? scr_util_to_usv_string(second) : NULL;
+    scr_dyn_release(first);
+    scr_dyn_release(second);
+    return *name && *value;
+  }
+  ScrDyn *iterator = scr_dyn_iterator_optional(row);
+  if (!iterator) {
+    if (!scr_exc_pending()) sp_throw_invalid_tuple();
+    return false;
+  }
+  ScrDyn *next = sp_iterator_member(iterator, "next", 4);
+  ScrStr *parts[2] = { NULL, NULL };
+  size_t count = 0;
+  bool done = false;
+  bool ok = next != NULL;
+  while (ok && !done) {
+    ScrDyn *element = sp_iterator_step(iterator, next, &done);
+    if (!element) { ok = false; break; }
+    if (!done) {
+      if (count < 2) {
+        parts[count] = scr_util_to_usv_string(element);
+        if (!parts[count]) ok = false;
+      }
+      count++;
+    }
+    scr_dyn_release(element);
+  }
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  if (ok && count != 2) { ok = false; sp_throw_invalid_tuple(); }
+  if (!ok) {
+    scr_str_release(parts[0]);
+    scr_str_release(parts[1]);
+    return false;
+  }
+  *name = parts[0];
+  *value = parts[1];
+  return true;
+}
+
+/* The sequence branch: every step is a pair row, appended in order. */
+static ScrSearchParams *sp_from_sequence(ScrDyn *iterator) {
+  ScrSearchParams *result = scr_sp_new();
+  ScrDyn *next = sp_iterator_member(iterator, "next", 4);
+  if (!next) { scr_sp_release(result); return NULL; }
+  bool done = false;
+  while (!done) {
+    ScrDyn *row = sp_iterator_step(iterator, next, &done);
+    if (!row) { scr_dyn_release(next); scr_sp_release(result); return NULL; }
+    if (done) { scr_dyn_release(row); break; }
+    ScrStr *name = NULL;
+    ScrStr *value = NULL;
+    bool ok = sp_pair_units(row, &name, &value);
+    scr_dyn_release(row);
+    if (!ok) { scr_dyn_release(next); scr_sp_release(result); return NULL; }
+    scr_sp_append(result, name, value);
+    scr_str_release(name);
+    scr_str_release(value);
+  }
+  scr_dyn_release(next);
+  return result;
+}
+
+/* The record branch: each own enumerable string key appends its converted
+ * value, in JS own-key order. */
+static ScrSearchParams *sp_from_record(const ScrDyn *record) {
+  ScrSearchParams *result = scr_sp_new();
+  ScrDyn *keys = scr_dyn_obj_keys(record);
+  if (!keys) { scr_sp_release(result); return NULL; }
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    ScrStr *key = keys->v.arr.items[i]->v.str;
+    ScrDyn *entry = scr_dyn_obj_read(record, key->data, key->len);
+    ScrStr *text = scr_exc_pending() ? NULL : scr_util_to_usv_string(entry);
+    scr_dyn_release(entry);
+    if (!scr_exc_pending()) scr_sp_append(result, key, text);
+    scr_str_release(text);
+    if (scr_exc_pending()) { scr_dyn_release(keys); scr_sp_release(result); return NULL; }
+  }
+  scr_dyn_release(keys);
+  /* The WHATWG record branch reflects every own key through toUSVString,
+   * and a symbol key rejects that conversion — after the string keys, as
+   * Reflect.ownKeys visits symbols last. A non-enumerable symbol key is
+   * skipped by the descriptor check. */
+  ScrDyn *symbols = scr_dyn_get_own_property_symbols(record);
+  if (!symbols) { scr_sp_release(result); return NULL; }
+  bool symbol_key = false;
+  for (size_t i = 0; i < symbols->v.arr.len && !symbol_key; i++)
+    symbol_key = scr_dyn_property_is_enumerable_computed(record, symbols->v.arr.items[i]);
+  scr_dyn_release(symbols);
+  if (symbol_key) {
+    static const char message[] = "Cannot convert a Symbol value to a string";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    scr_sp_release(result);
+    return NULL;
+  }
+  return result;
+}
+
+/* new URLSearchParams(init), the WHATWG constructor's algorithm: undefined
+ * is the empty list, an object or function is a sequence (its iterator) or
+ * else a record (its own enumerable keys), and every other value is
+ * ToString'd and parsed. `null` is a primitive, so it parses as "null". */
 ScrSearchParams *scr_sp_new_checked(const ScrDyn *value) {
   if (!value || value->kind == SCR_DYN_UNDEF) return scr_sp_new();
   if (scr_dyn_native_search_params_is(value)) return scr_sp_copy(value->v.handle.ptr);
-  if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_TYPED_REF) {
+  if (!sp_primitive(value)) {
     ScrDyn *iterator = scr_dyn_iterator_optional(value);
     if (scr_exc_pending()) return NULL;
-    ScrSearchParams *result = scr_sp_new();
     if (iterator) {
-      for (;;) {
-        ScrStr *next_key = scr_str_new("next", 4);
-        ScrDyn *next = iterator->kind == SCR_DYN_HANDLE ? scr_dyn_handle_key_get(iterator, next_key) : scr_dyn_obj_read(iterator, "next", 4);
-        scr_str_release(next_key);
-        scr_dyn_this_push_dyn(iterator);
-        ScrDyn *step = scr_exc_pending() ? NULL : scr_dyn_call(next, NULL, 0, "iterator.next");
-        scr_dyn_this_pop();
-        scr_dyn_release(next);
-        if (scr_exc_pending()) break;
-        ScrDyn *done = scr_dyn_obj_read(step, "done", 4);
-        bool end = scr_dyn_truthy(done);
-        scr_dyn_release(done);
-        if (end) { scr_dyn_release(step); scr_dyn_release(iterator); return result; }
-        ScrDyn *row = scr_dyn_obj_read(step, "value", 5);
-        ScrDyn *pair = scr_dyn_iter_pack(row, NULL);
-        scr_dyn_release(row); scr_dyn_release(step);
-        if (scr_exc_pending()) { scr_dyn_release(pair); break; }
-        if (!pair || pair->kind != SCR_DYN_ARR || pair->v.arr.len != 2) {
-          static const char message[] = "Each query pair must be an iterable [name, value] tuple";
-          scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_TUPLE");
-          scr_dyn_release(pair); break;
-        }
-        ScrStr *key = scr_dyn_string_coerce_js(pair->v.arr.items[0]);
-        ScrStr *text = scr_exc_pending() ? NULL : scr_dyn_string_coerce_js(pair->v.arr.items[1]);
-        if (!scr_exc_pending()) scr_sp_append(result, key, text);
-        scr_str_release(key); scr_str_release(text); scr_dyn_release(pair);
-        if (scr_exc_pending()) break;
-      }
-      scr_dyn_release(iterator); scr_sp_release(result); return NULL;
+      ScrSearchParams *result = sp_from_sequence(iterator);
+      scr_dyn_release(iterator);
+      return result;
     }
-    ScrDyn *keys = scr_dyn_obj_keys(value);
-    if (scr_exc_pending()) { scr_sp_release(result); return NULL; }
-    for (size_t i = 0; i < keys->v.arr.len; i++) {
-      ScrStr *key = keys->v.arr.items[i]->v.str;
-      ScrDyn *entry = scr_dyn_obj_read(value, key->data, key->len);
-      ScrStr *text = scr_exc_pending() ? NULL : scr_dyn_string_coerce_js(entry);
-      scr_dyn_release(entry);
-      if (!scr_exc_pending()) scr_sp_append(result, key, text);
-      scr_str_release(text);
-      if (scr_exc_pending()) { scr_dyn_release(keys); scr_sp_release(result); return NULL; }
-    }
-    scr_dyn_release(keys); return result;
+    /* Without an iterator the value is a record: its own enumerable string
+     * keys append their values. A typed capsule answers through its
+     * materialized view, and a native handle (a URL, a Date, a RegExp) has
+     * no own enumerable properties, so it appends nothing. */
+    ScrDyn *view = value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(value) : NULL;
+    if (scr_exc_pending()) return NULL;
+    ScrSearchParams *result = sp_from_record(view ? view : value);
+    scr_dyn_release(view);
+    return result;
   }
-  ScrStr *text = scr_dyn_string_coerce_js(value);
+  ScrStr *text = scr_util_to_usv_string(value);
   if (scr_exc_pending()) return NULL;
   ScrSearchParams *result = scr_sp_parse(text);
   scr_str_release(text);

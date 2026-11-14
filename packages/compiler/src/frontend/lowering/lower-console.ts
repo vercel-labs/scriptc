@@ -11,10 +11,18 @@ import {
   VOID,
   canBoxFuncIntoDyn,
 } from "../../ir/ir.js";
-import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { type ConsoleMethodMember } from "./builtins/console.js";
 import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
+import { ensureBool } from "./lower-exprs.js";
 import {
   formatRestValue,
   formatStringConverts,
@@ -23,9 +31,11 @@ import {
   lowerFormatCall,
   lowerInspectValue,
   lowerRuntimeFormat,
+  lowerRuntimeInspectDir,
   runtimeFormatString,
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
+import { programTouchesInspectTables } from "./inspect-tables.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
  * representation the stdlib Console type maps to) over two output
@@ -104,7 +114,13 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     entries.push({ role: "ignoreErrors", node: args[2] });
   }
   const stmts: IrStmt[] = [];
-  const target = (node: ts.Expression, role: string): Target => {
+  /** Node's constructor takes a target when `typeof stream.write ===
+   * 'function'`. A value whose static type cannot carry one is rejected at
+   * run time with ERR_CONSOLE_WRITABLE_STREAM (its expression still
+   * evaluates); a value that might carry one — an untyped value, or an
+   * object with a write member this runtime has no stream binding for —
+   * keeps the compile-time boundary. */
+  const target = (node: ts.Expression, role: string): Target | null => {
     if (ts.isPropertyAccessExpression(node)) {
       const member = lowerer.stdlibGlobalMember(node, "process");
       if (member === "stdout") return { fd: 1 };
@@ -114,19 +130,30 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     const info =
       value.type.kind === "object" ? lowerer.classes.get(value.type.className) : undefined;
     const sides = streamSidesOf(lowerer, info);
-    if (sides !== "w" && sides !== "rw") {
+    if (sides === "w" || sides === "rw") {
+      const local = lowerer.declareHiddenLocal(`%console${role}`, value.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return { local: local.id, type: value.type };
+    }
+    const t = lowerer.typeOf(node);
+    const maybeWritable =
+      (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0 ||
+      lowerer.checker.getPropertyOfType(t, "write") !== undefined;
+    if (maybeWritable) {
       lowerer.noLowering(
         `a Console ${role} of type '${lowerer.fmt(value.type)}'`,
         node,
         "process.stdout, process.stderr, and node:stream writables (Writable, Duplex, Transform, PassThrough, and their subclasses) are the supported Console streams",
       );
     }
-    const local = lowerer.declareHiddenLocal(`%console${role}`, value.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-    return { local: local.id, type: value.type };
+    // The expression still evaluates in source order; Node's constructor
+    // throws only after every option initializer has run.
+    if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    return null;
   };
   let out: Target | null = null;
   let err: Target | null = null;
+  let errBad = false;
   let ignore: IrExpr | null = null;
   let group: IrExpr | null = null;
   for (const entry of entries) {
@@ -137,8 +164,10 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(node), loc });
       }
       if (entry.role === "stdout") out = null;
-      else if (entry.role === "stderr") err = null;
-      else if (entry.role === "ignoreErrors") ignore = null;
+      else if (entry.role === "stderr") {
+        err = null;
+        errBad = false;
+      } else if (entry.role === "ignoreErrors") ignore = null;
       else group = null;
       continue;
     }
@@ -146,15 +175,11 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
       out = target(node!, "stdout");
     } else if (entry.role === "stderr") {
       err = target(node!, "stderr");
+      errBad = err === null;
     } else if (entry.role === "ignoreErrors") {
-      const value = lowerer.lowerExpr(node!);
-      if (value.type.kind !== "bool") {
-        lowerer.noLowering(
-          `ignoreErrors of type '${lowerer.fmt(value.type)}'`,
-          node!,
-          "pass a boolean",
-        );
-      }
+      // Node stores Boolean(ignoreErrors): any value is accepted, and only
+      // a false one turns the error handling off.
+      const value = ensureBool(lowerer, lowerer.lowerExpr(node!), node!);
       const local = lowerer.declareHiddenLocal("%consoleIgnoreErrors", BOOL);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       ignore = varRef(local.id, BOOL, loc);
@@ -172,12 +197,21 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
       group = varRef(local.id, value.type, loc);
     }
   }
-  if (out === null) {
-    return lowerer.noLowering(
-      "new Console without a stdout stream",
-      expr,
-      "pass the stdout stream",
+  const writableError = (role: string): IrExpr =>
+    nodeThrowExpr(
+      1,
+      "ERR_CONSOLE_WRITABLE_STREAM",
+      `Console expects a writable stream instance for ${role}`,
+      DYN,
+      loc,
     );
+  if (out === null) {
+    // No stdout, or a value Node's writable check rejects: Node validates
+    // stdout first, then stderr.
+    return { kind: "seqExpr", stmts, result: writableError("stdout"), type: DYN, loc };
+  }
+  if (errBad) {
+    return { kind: "seqExpr", stmts, result: writableError("stderr"), type: DYN, loc };
   }
   const stdoutTarget: Target = out;
   const stderrTarget: Target = err ?? stdoutTarget;
@@ -330,7 +364,9 @@ export function lowerConsoleInstanceCall(
       const rendered =
         valueNode === undefined
           ? strLit("undefined", loc)
-          : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
+          : programTouchesInspectTables(lowerer)
+            ? lowerRuntimeInspectDir(lowerer, valueNode, optionsNode, args.length, loc)
+            : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
       if (rest.length === 0) return done(write(rendered, false));
       const text = hoist(lowerer, stmts, "%consoleDir", rendered, loc);
       evaluateIgnored(lowerer, rest, stmts, loc);
@@ -361,6 +397,11 @@ function lowerConsoleText(
   loc: SrcLoc,
 ): IrExpr {
   const nodes = expr.arguments.nodes;
+  // A program that reads util.inspect's value can change the tables every
+  // console line's inspection reads (defaultOptions, colors, styles), so
+  // the whole line renders through the runtime formatter, which reads them
+  // per call.
+  if (programTouchesInspectTables(lowerer)) return lowerRuntimeFormat(lowerer, nodes, loc);
   const first = nodes[0];
   const pair = (node: ts.Expression, value: IrExpr) => ({ node, value });
   const join = (parts: { node: ts.Expression; value: IrExpr }[]): IrExpr => {
@@ -699,6 +740,12 @@ export function lowerConsoleOutput(
     type: VOID,
     loc,
   });
+  // A program that reads util.inspect's value can change the tables every
+  // console line's inspection reads (defaultOptions, colors, styles), so
+  // the whole line renders through the runtime formatter, which reads them
+  // per call.
+  if (programTouchesInspectTables(lowerer))
+    return emitLine([lowerRuntimeFormat(lowerer, expr.arguments.nodes, loc)]);
   // A LITERAL format string with %-specifiers and further arguments
   // (`console.log('Mismatched %s function calls. Expected %s, actual
   // %d.', name, seg, n)` — test/common's exit report): Node's console
@@ -1201,7 +1248,9 @@ export function lowerConsoleMethodCall(
       const rendered =
         valueNode === undefined
           ? strLit("undefined", loc)
-          : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
+          : programTouchesInspectTables(lowerer)
+            ? lowerRuntimeInspectDir(lowerer, valueNode, optionsNode, args.length, loc)
+            : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
       if (rest.length === 0) return consoleWrite(true, [rendered], loc);
       const text = hoist(lowerer, stmts, "%consoleDir", rendered, loc);
       evaluateIgnored(lowerer, rest, stmts, loc);

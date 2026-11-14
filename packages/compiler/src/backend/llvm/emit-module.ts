@@ -652,6 +652,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesNet = runtimeFeatures.net;
   const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
+  // The stub resolver (dns.Resolver, resolve*, reverse, setServers): its
+  // install registers the loop's share and the Resolver handle class, and
+  // native/executable.ts links scr_dns_resolve.c by the same predicate.
+  const usesDnsResolve = runtimeFeatures.dnsResolve;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
   // Fetch-referencing programs register native fetch before main.
@@ -666,6 +670,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Buffer.prototype as a value registers Symbol(nodejs.util.inspect.custom)
   // through the symbol unit's Symbol.for, which only these programs install.
   const usesBufferPrototypeObject = runtimeFeatures.bufferPrototypeObject;
+  // util.inspect as a value carries Symbol.for('nodejs.util.inspect.custom')
+  // as `custom`, and util.promisify reads and marks with
+  // Symbol.for('nodejs.util.promisify.custom'), so those programs install the
+  // symbol unit's Symbol.for too.
+  const usesSymbolFor =
+    usesBufferPrototypeObject ||
+    runtimeFeatures.inspectFunctionValue ||
+    runtimeFeatures.utilPromisify;
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
@@ -733,12 +745,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_net_dyn_install()`);
   }
   if (usesDgram) emitter.declare(`declare void @scr_dgram_install()`);
+  if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
-  if (usesBufferPrototypeObject) emitter.declare(`declare void @scr_sym_for_install()`);
+  if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
   if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
 
   if (usesNodeTest) {
@@ -1534,12 +1547,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
-    ...(usesBufferPrototypeObject ? [`  call void @scr_sym_for_install()`] : []),
+    ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
+    ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),
     ...(usesStream ? [`  call void @scr_stream_install()`] : []),
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,

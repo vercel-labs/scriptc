@@ -1591,6 +1591,12 @@
  },
  {
   "file": "scr_pki.c",
+  "function": "sp_encode",
+  "message": "encoding that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
   "function": "sp_stream_fence",
   "message": "This Sign or Verify stream member has no lowering when called through an untyped value",
   "code": "SC2020"
@@ -1806,12 +1812,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_stream.c",
-  "function": "scr_stream_util_is_value",
-  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
@@ -1998,12 +1998,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_util_promisify.c",
-  "function": "scr_util_promisify",
-  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_util_style.c",
   "function": "scr_util_style_text",
   "message": "util.styleText over native custom streams is not supported yet",
@@ -2179,12 +2173,6 @@
  },
  {
   "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_open",
-  "message": "Runtime numeric filesystem flags have no portable native lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_schedule",
   "message": "Filesystem callbacks require an executable event loop",
   "code": "SC4005"
@@ -2337,6 +2325,12 @@
   "file": "scr_json.c",
   "function": "scr_dyn_key_set",
   "message": "Checked array growth exceeds the native allocation limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_check_fail",
+  "message": " (a native Proxy keeps its traps only in an untyped value or a dictionary: declare the value 'any', or a Record<string, T>)",
   "code": "SC2020"
  },
  {

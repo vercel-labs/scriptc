@@ -166,8 +166,10 @@ import {
   trackedAccessibleEntries,
   trackedFileExists,
   trackedReadFile,
+  trackedReadSource,
   trackedRealpath,
 } from "./input-tracker.js";
+import { scriptcConditionManifestAt } from "./scriptc-condition.js";
 import { NODE_GLOBAL_NAMES } from "./node-global-names.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { isBundledLibraryFile } from "./default-library.js";
@@ -190,6 +192,7 @@ import {
   resetDeclBoundaryOrigins,
   type DeclProjection,
 } from "./decl-projection.js";
+import { importTypeIndexedAccessSources } from "./import-type-indexed-access.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
 import {
   isVoidInitializerFile,
@@ -1575,6 +1578,21 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
     }
+    // A type-position `import('spec')['name']` (import-type-indexed-access.ts)
+    // names the type of the member's value, the type `typeof import('spec')['name']`
+    // names. The checker refuses the form as written (TS1340) and types it
+    // `any`, so every world below, the tsc gate included, reads the file with
+    // `typeof ` before the import type: a diagnostic the refused type would
+    // have caused (`const g: F = (x) => x + 1`, F typed `any`) is the one tsc
+    // reports for the spelled-out form, and a program without a site is
+    // served its files untouched.
+    const importTypeSources = importTypeIndexedAccessSources(program);
+    if (importTypeSources.size > 0) {
+      const previous = program;
+      for (const [file, text] of importTypeSources) host.addVirtualFile(file, text);
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+    }
     // JSX: the program above checks the files as written; the program the
     // lowering compiles holds them with their JSX lowered.
     const jsx = lowerProgramJsx7(program, options);
@@ -2124,11 +2142,20 @@ export function loadProgram(
     if (source === null) return shadowed;
     return voidInitializerShadow(path, source, castVoid) ?? shadowed;
   };
+  // A manifest whose condition objects name scriptc's own condition serves
+  // with that branch first (scriptc-condition.ts) in both worlds, so the
+  // checker types the file scriptc compiles for the import.
+  const scriptcManifest = (path: string): string | undefined => {
+    if (!path.endsWith("package.json")) return undefined;
+    const source = trackedReadSource(path);
+    return source === null ? undefined : (scriptcConditionManifestAt(path, source) ?? undefined);
+  };
   const fsShadow = {
     readFile: (path: string) =>
       voidCasts(
         path,
         npmShadow?.readFile(path) ??
+          scriptcManifest(path) ??
           programBuiltinAliasSource(services, path) ??
           definedSource(services, path) ??
           undefined,
@@ -2137,7 +2164,7 @@ export function loadProgram(
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };
   const authoredShadow = {
-    readFile: (path: string) => voidCasts(path, undefined),
+    readFile: (path: string) => voidCasts(path, scriptcManifest(path)),
     hideFile: () => false,
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });

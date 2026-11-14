@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/import-type-indexed-access-jsdoc/n.mjs",
+  "<repo>/tests/corpus/import-type-indexed-access-jsdoc/main.mjs"
+ ],
+ "diags": []
+}

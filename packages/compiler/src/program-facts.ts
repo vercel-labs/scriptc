@@ -216,7 +216,8 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     symbol: "unixListenReachable",
     source: "types",
     scope: "program",
-    setBy: "a `.listen(path)` call with a string argument on a server or an untyped value",
+    setBy:
+      "a `.listen(path)` call with a string argument, or a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
     gates: "every `server.address()` checks for a socket path",
     narrower: "the server",
     tracked: null,
@@ -300,6 +301,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
       "an assignment, delete or reflective definition of a member with a method's name, on any receiver",
     gates: "the static answer for that method of every class that declares the name",
     narrower: "the receiver's class",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
+    name: "void-method-written",
+    file: `${SRC}/frontend/tsc-codes.ts`,
+    symbol: "methodNameWritten",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "in any implementation file, a write or `delete` of a member with a class method's name (by property access or string key, on any receiver), a call argument that is that name, or an object literal argument with a member of that name",
+    gates:
+      "in an unchecked JavaScript source, a truthiness test of a call of that method, when the checker types it `void` because the method's body returns no value, keeps its SC1090 refusal instead of testing `undefined`",
+    narrower:
+      "the receiver's class, for a write through a typed receiver; a write through an untyped receiver can reach any class",
     tracked: null,
     lowererFields: [],
   },
@@ -556,6 +572,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["globalObjectWrites"],
   },
   {
+    name: "inspect-tables-read",
+    file: `${SRC}/frontend/lowering/inspect-tables.ts`,
+    symbol: "programTouchesInspectTables",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a read of util.inspect's function value anywhere in the program, other than as a direct call's callee, as a `.custom` member's base, or as an import binding",
+    gates:
+      "util.inspect, util.format, console.log and console.dir of a typed value render through the runtime, which reads inspect.defaultOptions, inspect.styles and inspect.colors per call; a program without such a read keeps the folded renderings",
+    narrower:
+      "the table members themselves (defaultOptions, colors, styles) and the value flow into their writes, which would need a points-to census over the program",
+    tracked: null,
+    lowererFields: ["inspectTablesTouched"],
+  },
+  {
     name: "computed-environment-write",
     file: `${SRC}/frontend/lowering/constant-conditions.ts`,
     symbol: "changesEnvironmentByComputedName",
@@ -627,6 +658,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
   ),
   scan(
+    "frontend/import-type-indexed-access.ts#importTypeIndexedAccessSources",
+    2,
+    "discovery",
+    "the files that carry a type-position `import('spec')['name']`, each rewritten on its own for the lowering world (the file's text changes, no other file does), behind the prefilter that the file's text spells `import(`",
+  ),
+  scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
     1,
     "closed-world",
@@ -683,6 +720,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
+    1,
+    "prefilter",
+    "a conditional alias needs a `require()` write in the file; the walk behind it decides each write from the symbol and the required tables",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
@@ -847,6 +890,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/inspect-tables.ts#census", 1, "inspect-tables-read"),
   decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(
@@ -942,6 +986,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
+  decides("frontend/tsc-codes.ts#methodNameWritten", 2, "void-method-written"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

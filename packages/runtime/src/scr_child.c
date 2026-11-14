@@ -49,6 +49,7 @@ static ScrIpc *scr_ipc_retain(ScrIpc *ipc);
 static void scr_ipc_release(ScrIpc *ipc);
 static void scr_ipc_service(void);
 static bool scr_ipc_pending(void);
+static bool scr_child_stream_ipc_unreffed(const void *reader);
 static bool scr_ipc_close_ready(const ScrIpc *ipc);
 static bool scr_ipc_close_dropped(const ScrIpc *ipc);
 static void scr_ipc_deliver(void);
@@ -159,13 +160,18 @@ static void scr_child_error_outputs(ScrError *e, ScrStr *out, ScrStr *err) {
   scr_error_set_prop(e, "stderr", 6, scr_dyn_new_str(err));
 }
 
+static ScrStr *scr_child_capture_text(const ScrStr *raw, const ScrStr *encoding);
+
 /* A captured sync output as Node's result holds it: a Buffer, the utf8
  * string with an encoding option, or null for a stream that was not
  * piped. +1. */
-static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, bool buffers) {
+static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, bool buffers,
+                                     const ScrStr *encoding) {
   if (!piped) return scr_dyn_new_null();
   if (!buffers) {
-    ScrStr *s = scr_str_new(data, len);
+    ScrStr *raw = scr_str_new(data, len);
+    ScrStr *s = scr_child_capture_text(raw, encoding);
+    scr_str_release(raw);
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);
     return d;
@@ -176,6 +182,92 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   ScrDyn *d = scr_dyn_new_buffer(b);
   scr_bytes_release(b);
   return d;
+}
+
+/* A spawnSync capture as the STRING read (spawnRes.stdout/stderr) answers
+ * it: the captured bytes decoded with the call's encoding option. `encoding`
+ * is a Buffer encoding name (any ASCII case; the compiler folds literals,
+ * a typed options record carries its own value) and "" is the unencoded
+ * form, whose reads answer the bytes as they stand — the unencoded
+ * spawnSync result types stdout/stderr Buffer, and only the typed Buffer
+ * reads are lowered, so that arm is a fallback. Unknown names read as utf8
+ * (Node refuses them at the call, which the compiler's encoding check
+ * enforces before one reaches here). +1. */
+static ScrStr *scr_child_capture_text(const ScrStr *raw, const ScrStr *encoding) {
+  if (raw == NULL) return scr_str_new("", 0);
+  if (encoding == NULL || encoding->len == 0) return scr_str_retain((ScrStr *)raw);
+  ScrBytes view = {
+      .rc = 1, .len = raw->len, .elem = SCR_BYTES_U8,
+      .data = (uint8_t *)raw->data, .backing = NULL,
+  };
+  ScrStr *name = scr_bytes_normalize_encoding_or_utf8(encoding);
+  ScrStr *text = scr_bytes_to_str(&view, name);
+  scr_str_release(name);
+  return text;
+}
+
+/* The stdin bytes of an `input` string: Node encodes the string with the
+ * options encoding (Buffer.from(input, encoding)), and a name its tables do
+ * not hold throws ERR_UNKNOWN_ENCODING at the call; without an encoding
+ * option the string's utf8 bytes are written. `encoding` is ""/NULL for the
+ * unencoded form. `*owned` / `*bytes` receive what the caller releases, and
+ * `*len` is the byte count to write. `strict` is the throwable forms' read
+ * (a name Node rejects answers NULL with the exception pending, before the
+ * child is spawned); the never-throwing spawnSync shape writes utf8 for such
+ * a name instead of leaving the pending throw behind. */
+static const char *scr_exec_input_bytes(const ScrStr *input, const ScrStr *encoding,
+                                        bool strict, char **owned, ScrBytes **bytes,
+                                        size_t *len) {
+  *owned = NULL;
+  *bytes = NULL;
+  *len = 0;
+  if (encoding != NULL && encoding->len > 0) {
+    ScrStr *name = strict ? scr_bytes_normalize_encoding(encoding)
+                          : scr_bytes_normalize_encoding_or_utf8(encoding);
+    if (name == NULL) return NULL; /* strict: ERR_UNKNOWN_ENCODING is pending */
+    ScrBytes *b = scr_bytes_from_str(input, name);
+    scr_str_release(name);
+    *bytes = b;
+    *len = b->len;
+    return (const char *)b->data;
+  }
+  const char *data = scr_str_utf8(input, owned);
+  *len = input->len;
+  return data;
+}
+
+/* The inheritStderr echo (no stdio option given). Node writes the
+ * result's `stderr`, the DECODED capture when an encoding option is set,
+ * so the console encodes that text as utf8; without one the child's own
+ * bytes are forwarded. */
+static void scr_exec_echo_stderr(const char *data, size_t len, const ScrStr *encoding) {
+  if (len == 0) return;
+  scr_stdout_settle();
+  fflush(stdout);
+  if (encoding == NULL || encoding->len == 0) {
+    fwrite(data, 1, len, stderr);
+    return;
+  }
+  ScrStr *raw = scr_str_new(data, len);
+  ScrStr *text = scr_child_capture_text(raw, encoding);
+  scr_str_release(raw);
+  char *owned = NULL;
+  const char *bytes = scr_str_utf8(text, &owned);
+  fwrite(bytes, 1, text->len, stderr);
+  scr_str_utf8_end(owned);
+  scr_str_release(text);
+}
+
+/* The unencoded execSync result: the captured stdout bytes as the branded
+ * Buffer Node answers when no encoding option is given (+1). Moves
+ * `out_s`; NULL (an exception is pending) stays NULL. */
+static ScrBytes *scr_exec_bytes_from_str(ScrStr *out_s) {
+  if (out_s == NULL) return NULL;
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)out_s->len);
+  bytes->is_buffer = true;
+  if (out_s->len) memcpy(bytes->data, out_s->data, out_s->len);
+  scr_str_release(out_s);
+  return bytes;
 }
 
 /* The spawnSync capture accessors (scr_spawn_res_stdout_bytes /
@@ -334,7 +426,22 @@ static ScrError *scr_child_max_error(const char *stream, const char *display) {
 
 /* exec/execFile's own limit on a child it just started (below, after
  * both arms): reads the pending maxBuffer and watches both captures. */
-static void scr_exec_limit_install(ScrChild *c);
+static void scr_exec_limit_install(ScrChild *c, double max_buffer, int kill_signo);
+/* exec/execFile's timeout and killSignal option checks (below, after both
+ * arms): Node's validateTimeout and setTimeout's overflow clamp, and
+ * sanitizeKillSignal's name resolution. The entries release the callback
+ * they took before reporting the throw, so the helpers themselves stay
+ * pure/reporting. */
+static bool scr_exec_timeout_ok(double timeout_ms);
+static void scr_exec_timeout_throw(double timeout_ms);
+static double scr_exec_timeout_delay(double timeout_ms);
+static int scr_exec_kill_signal(ScrStr *kill_signal, bool *ok);
+/* spawn's `signal` (cp.spawnArmed, after both arms): the abort
+ * subscription's teardown, and the kill + 'error' an aborted signal
+ * performs. A child without one keeps both fields NULL and neither call
+ * does anything. */
+static void scr_child_abort_dispose(ScrChild *c);
+static void scr_child_abort_fire(ScrChild *c);
 
 #ifdef _WIN32
 /* ── Windows arm: real children via CreateProcessW ────────────────────
@@ -1053,8 +1160,8 @@ typedef struct {
  * capture stops at maxBuffer: both outputs together, or each stream with
  * exec's cut when per_stream (the promisified forms). */
 static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
-                             int in_mode, int out_mode, int err_mode,
-                             const ScrStr *cwd, ScrArr *env_pairs,
+                             const ScrStr *encoding, int in_mode, int out_mode,
+                             int err_mode, const ScrStr *cwd, ScrArr *env_pairs,
                              double timeout_ms, bool per_stream, ScrWinSyncRes *res) {
   double max_buffer = scr_child_max_take();
   res->enobufs = false;
@@ -1075,6 +1182,13 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     fflush(stderr);
   }
 
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *input_bytes =
+      input != NULL ? scr_exec_input_bytes(input, encoding, false, &input_owned,
+                                           &input_bytes_buf, &in_len)
+                    : NULL;
   HANDLE in_child = NULL, in_parent = NULL;
   HANDLE out_child = NULL, out_parent = NULL;
   HANDLE err_child = NULL, err_parent = NULL;
@@ -1124,6 +1238,8 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     if (in_parent != NULL) CloseHandle(in_parent);
     if (out_parent != NULL) CloseHandle(out_parent);
     if (err_parent != NULL) CloseHandle(err_parent);
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     res->spawn_errname = sp.errname;
     return;
   }
@@ -1137,8 +1253,6 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   bool out_open = out_parent != NULL, err_open = err_parent != NULL;
   bool in_open = in_parent != NULL;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *input_bytes = in_open ? scr_str_utf8(input, &input_owned) : NULL;
   bool exited = false;
   double out_text = 0, err_text = 0;
   double deadline = timeout_ms > 0 ? scr_now_ms() + timeout_ms : 0;
@@ -1167,7 +1281,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     if (in_open) {
       /* Small chunks: PIPE_NOWAIT's partial-write behavior is only
        * dependable for writes no larger than the pipe buffer. */
-      DWORD want = input->len - in_at > 2048 ? 2048 : (DWORD)(input->len - in_at);
+      DWORD want = in_len - in_at > 2048 ? 2048 : (DWORD)(in_len - in_at);
       DWORD wrote = 0;
       if (want == 0) {
         CloseHandle(in_parent);
@@ -1177,7 +1291,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
           in_at += wrote;
           progress = true;
         }
-        if (in_at >= input->len) {
+        if (in_at >= in_len) {
           CloseHandle(in_parent);
           in_open = false;
         }
@@ -1211,6 +1325,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   }
   if (in_open) CloseHandle(in_parent);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
   (void)GetExitCodeProcess(sp.proc, &res->exit_code);
   CloseHandle(sp.proc);
 }
@@ -1223,6 +1338,10 @@ struct ScrSpawnRes {
   double status;
   ScrStr *out;
   ScrStr *err;
+  /* The call's encoding option as a canonical Buffer encoding name (+1;
+   * NULL = the unencoded Buffer form). The STRING reads of stdout/stderr
+   * decode the captured bytes through it; the Buffer reads ignore it. */
+  ScrStr *encoding;
   const char *spawn_errname;
   ScrStr *cmd;
 #ifdef SCR_CHILD_ERR_FIELDS
@@ -1238,6 +1357,14 @@ struct ScrSpawnRes {
   const char *signal_name;
 };
 
+/* Stamp a finished spawnSync result with the call's encoding option
+ * (NULL or "" = the unencoded Buffer form). Borrows; the result takes its
+ * own reference. */
+static ScrSpawnRes *scr_child_res_encoded(ScrSpawnRes *r, ScrStr *encoding) {
+  if (r != NULL && encoding != NULL && encoding->len > 0) r->encoding = scr_str_retain(encoding);
+  return r;
+}
+
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
@@ -1248,6 +1375,7 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
   if (--r->rc == 0) {
     scr_str_release(r->out);
     scr_str_release(r->err);
+    scr_str_release(r->encoding);
     scr_str_release(r->cmd); /* NULL-safe */
 #ifdef SCR_CHILD_ERR_FIELDS
     if (r->args) scr_arr_release(r->args);
@@ -1261,8 +1389,14 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->out, r->encoding);
+}
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->err, r->encoding);
+}
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r) { return scr_str_retain(r->out); }
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r) { return scr_str_retain(r->err); }
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -1303,6 +1437,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->args = NULL;
 #endif
   r->cmd = NULL;
+  r->encoding = NULL;
   r->signal_name = NULL;
   return r;
 }
@@ -1352,7 +1487,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
                                         int killsig, int in_mode, int out_mode,
                                         int err_mode, ScrArr *env_pairs) {
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, NULL, in_mode, out_mode, err_mode, NULL, env_pairs,
+  scr_win_run_sync(cmd, args, NULL, NULL, in_mode, out_mode, err_mode, NULL, env_pairs,
                    timeout_ms, false, &w);
   if (w.spawn_errname != NULL) {
     free(w.out.data);
@@ -1391,31 +1526,35 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   return r;
 }
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL);
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding) {
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL), encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode,
-                                 double out_mode, double err_mode) {
+                                 double out_mode, double err_mode, ScrStr *encoding) {
   return scr_spawn_sync_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
-                            NULL);
+                            NULL, encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs) {
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
-    int resolved = scr_signal_from_name(killsignal);
+    int resolved = scr_signal_from_name_ci(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
-                             (int)out_mode, (int)err_mode, env_pairs);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
+                          (int)out_mode, (int)err_mode, env_pairs),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                      ScrStr *killsignal, ScrStr *stdio) {
+                                      ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding) {
   double in_mode = 0, out_mode = 0, err_mode = 0; /* "pipe": the defaults */
   if (stdio->len == 7 && memcmp(stdio->data, "inherit", 7) == 0) {
     in_mode = 2;
@@ -1425,7 +1564,8 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
     out_mode = 1;
     err_mode = 1;
   }
-  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode);
+  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
+                             encoding);
 }
 
 /* ── execFileSync / execSync (the POSIX arm's message contracts) ─────── */
@@ -1462,20 +1602,40 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
 }
 
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
-                                       bool with_stderr, bool always_nl) {
+                                       bool with_stderr, bool always_nl,
+                                       const ScrStr *encoding) {
+  /* The message appends `stderr` as Node does: the DECODED capture with
+   * an encoding option, the Buffer's utf8 stringification without one. */
+  ScrStr *err_text = NULL;
+  ScrStr *utf8_name = NULL;
+  if (with_stderr && err_cap->len > 0) {
+    ScrStr *raw = scr_str_new(err_cap->data, err_cap->len);
+    /* No encoding option: Node appends the Buffer's utf8 stringification,
+     * so bytes above ASCII decode with replacement characters rather than
+     * reaching the message verbatim. */
+    const ScrStr *name = encoding;
+    if (name == NULL || name->len == 0) {
+      utf8_name = scr_str_new("utf8", 4);
+      name = utf8_name;
+    }
+    err_text = scr_child_capture_text(raw, name);
+    scr_str_release(raw);
+  }
   size_t dlen = strlen(display);
-  size_t elen = with_stderr ? err_cap->len : 0;
+  size_t elen = err_text != NULL ? err_text->len : 0;
   size_t cap = 16 + dlen + 1 + elen + 1;
   char *msg = malloc(cap);
   if (!msg) scr_child_oom();
   size_t at = (size_t)snprintf(msg, cap, "Command failed: %s", display);
   if (elen > 0 || always_nl) {
     msg[at++] = '\n';
-    memcpy(msg + at, err_cap->data, elen);
+    if (elen > 0) memcpy(msg + at, err_text->data, elen);
     at += elen;
   }
   ScrStr *message = scr_str_new(msg, at);
   free(msg);
+  if (utf8_name != NULL) scr_str_release(utf8_name);
+  if (err_text != NULL) scr_str_release(err_text);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(message);
   return e;
@@ -1511,14 +1671,14 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
                             const ScrStr *input, const ScrStr *cwd,
                             ScrArr *env_pairs, double timeout_ms,
                             int stdout_mode, int stderr_mode, bool async_shape,
-                            bool buffers, ScrStr **stderr_out) {
+                            bool buffers, const ScrStr *encoding, ScrStr **stderr_out) {
   /* stdio "inherit"'s stdin rides bit 4 of stdout_mode (scr_runtime.h). */
   bool stdin_inherit = (stdout_mode & 4) != 0;
   stdout_mode &= 3;
   bool cap_out = stdout_mode == 1;
   bool cap_err = stderr_mode == 0 || stderr_mode == 1;
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, input, stdin_inherit ? 2 : 0,
+  scr_win_run_sync(cmd, args, input, encoding, stdin_inherit ? 2 : 0,
                    cap_out ? 0 : (stdout_mode == 2 ? 2 : 1),
                    cap_err ? 0 : (stderr_mode == 3 ? 2 : 1), cwd,
                    env_pairs, timeout_ms, async_shape, &w);
@@ -1543,11 +1703,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   /* Node's inheritStderr: no stdio option given → the captured stderr
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
-  if (stderr_mode == 0 && w.err.len > 0) {
-    scr_stdout_settle();
-    fflush(stdout);
-    fwrite(w.err.data, 1, w.err.len, stderr);
-  }
+  if (stderr_mode == 0) scr_exec_echo_stderr(w.err.data, w.err.len, encoding);
   if (w.timed_out && !async_shape) {
     /* The SYNC forms throw Node's spawnSync ETIMEDOUT; the async shape
      * reports the kill's death as an ordinary command failure below,
@@ -1555,8 +1711,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     ScrError *e = scr_exec_spawn_error(cmd, args, "ETIMEDOUT", false);
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, false, 0, "SIGTERM", (double)w.pid, true,
-                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     free(w.out.data);
     free(w.err.data);
     scr_exec_throw(e);
@@ -1570,8 +1726,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, exited, exited ? (double)w.exit_code : 0,
                                 exited ? NULL : "SIGTERM", (double)w.pid, true,
-                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     free(w.out.data);
     free(w.err.data);
     scr_exec_throw(e);
@@ -1595,7 +1751,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   bool failed = w.exit_code != 0 || w.timed_out;
   if (failed) {
     char *display = scr_exec_display(cmd, args, shell);
-    ScrError *e = scr_exec_failed_error(display, &w.err, cap_err, async_shape);
+    ScrError *e = scr_exec_failed_error(display, &w.err, cap_err, async_shape, encoding);
     /* libuv's kill emulation: a timed-out child died to the kill signal. */
     bool exited = !w.timed_out;
     if (async_shape) {
@@ -1610,8 +1766,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     } else {
       scr_child_error_sync_fields(e, exited, (double)w.exit_code, exited ? NULL : "SIGTERM",
                                   (double)w.pid, true,
-                                  scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                  scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                  scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                  scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     }
     free(display);
     free(w.out.data);
@@ -1625,16 +1781,34 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
   free(w.out.data);
   free(w.err.data);
+  if (!async_shape && encoding != NULL && encoding->len > 0) {
+    ScrStr *text = scr_child_capture_text(out_s, encoding);
+    scr_str_release(out_s);
+    out_s = text;
+  }
   return out_s;
 }
 
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                       bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                       double timeout_ms, double stdout_mode, double stderr_mode,
-                      bool buffers) {
+                      ScrStr *encoding) {
   return scr_exec_run(cmd, args, shell, has_input ? input : NULL,
                       cwd->len > 0 ? cwd : NULL, has_env ? env_pairs : NULL,
-                      timeout_ms, (int)stdout_mode, (int)stderr_mode, false, buffers, NULL);
+                      timeout_ms, (int)stdout_mode, (int)stderr_mode, false, false,
+                      encoding, NULL);
+}
+
+/* The unencoded form (cp.execSyncBytes): Node's Buffer result. The error
+ * outputs are Buffers too. */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode) {
+  ScrStr *out_s = scr_exec_run(cmd, args, shell, has_input ? input : NULL,
+                               cwd->len > 0 ? cwd : NULL, has_env ? env_pairs : NULL,
+                               timeout_ms, (int)stdout_mode, (int)stderr_mode, false, true,
+                               NULL, NULL);
+  return scr_exec_bytes_from_str(out_s);
 }
 
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
@@ -1642,7 +1816,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
   ScrStr *err_s = NULL;
   ScrStr *out_s = scr_exec_run(cmd, args, shell, NULL, cwd->len > 0 ? cwd : NULL,
                                has_env ? env_pairs : NULL, timeout_ms, 1, 1,
-                               true, false, &err_s);
+                               true, false, NULL, &err_s);
   if (out_s == NULL) return NULL; /* exception pending; dummy result */
   return scr_spawn_res_new(true, 0, out_s, err_s);
 }
@@ -1692,6 +1866,13 @@ struct ScrChildStream {
   bool eof;
   bool close_wait;
   bool capture;
+  /* process.channel.ref()/unref(): the IPC reader's explicit ref state.
+   * Node's Control refs/unrefs the handle directly, so an explicit call
+   * overrides the listener-driven state (unref lets the process exit with
+   * the channel open while its reads keep running; ref keeps it alive
+   * with no listener at all). */
+  bool chan_ref;
+  bool chan_unref;
   ScrStr *encoding;
   double dec_pending;
   uint8_t *capture_data;
@@ -1762,7 +1943,25 @@ struct ScrChild {
   size_t n_spawn, cap_spawn;
   bool has_code;
   bool killed;
+  /* exec/execFile's timeout (scr_exec_file_opts): the deadline on the
+   * loop's clock (0 = none), the resolved signal to send there, and
+   * whether it fired. */
+  double deadline_ms;
+  int deadline_signo;
+  bool deadline_fired;
   bool reffed;
+  /* spawn's `signal` (cp.spawnArmed): the AbortSignal (+1) while the
+   * subscription lives, its disposer (+1) when one is registered, and
+   * whether the signal was already aborted when the child started. */
+  ScrDyn *abort_signal;
+  ScrDyn *abort_dispose;
+  bool abort_pre;   /* aborted before spawn(): the abort runs after 'spawn' */
+  bool abort_fired; /* the abort listener's kill and 'error' ran */
+  int kill_signo;   /* the resolved killSignal (SIGTERM default) */
+  /* Node's Control object keeps the IPC channel handle in or out of the
+   * loop's keep-alive set (subprocess.channel.ref()/.unref()); the process
+   * handle above stays independent of it. */
+  bool channel_reffed;
   int spawn_uv_errno;       /* spawn failure: Node's exitCode (negative) */
   const char *spawn_errname; /* spawn failure: the `code` stamp */
   double code;
@@ -1797,6 +1996,20 @@ struct ScrChild {
 static SCR_TL ScrChild *scr_children = NULL;
 static SCR_TL ScrChild *scr_children_closing = NULL;
 static SCR_TL size_t scr_children_reffed_n = 0;
+/* A child keeps the loop alive through either of Node's two handles: the
+ * process (child.ref()/unref()) and the IPC channel (its Control object's
+ * ref()/unref()). Capture this before changing a flag, then hand it to
+ * scr_child_liveness_apply. */
+static bool scr_child_liveness(const ScrChild *c) {
+  return !c->settled && (c->reffed || c->channel_reffed);
+}
+
+static void scr_child_liveness_apply(ScrChild *c, bool before) {
+  bool after = scr_child_liveness(c);
+  if (after && !before) scr_children_reffed_n++;
+  else if (!after && before) scr_children_reffed_n--;
+}
+
 /* Pending children the handle wait can NOT represent — spawn failures
  * awaiting their first-pass settle. While any exist, scr_children_wait
  * declines and the loop keeps the ~1ms polling cap (the POSIX arm's
@@ -1847,6 +2060,8 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->abort_dispose);
+    scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
     scr_child_stream_release(c->err_stream);
     scr_child_writer_release(c->in_stream);
@@ -1895,7 +2110,11 @@ void scr_child_stream_release(ScrChildStream *s) {
 void *scr_child_stream_retain_v(void *p) { return scr_child_stream_retain((ScrChildStream *)p); }
 void scr_child_stream_release_v(void *p) { scr_child_stream_release((ScrChildStream *)p); }
 
-/* True while the stream has a consumer and can still deliver. */
+/* True while the stream has a consumer and can still deliver. This is a
+ * READING test only: process.channel.unref() removes the handle from the
+ * loop's keep-alive set without stopping its reads (Node's uv_unref), so
+ * unref'd channels still deliver messages whenever other work holds the
+ * loop. The keep-alive half is scr_child_streams_keep_alive below. */
 static bool scr_child_stream_watching(const ScrChildStream *s) {
 #ifdef SCR_CHILD_STREAM_FLOW
   /* Paused or resumed: the stream reads until it holds the high-water mark,
@@ -1903,7 +2122,33 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->h != NULL && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->h != NULL && (s->n_data > 0 || s->capture || s->close_wait);
+  return !s->eof && s->h != NULL &&
+         (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* The keep-alive half of the watching count: at least one watching stream
+ * that was not unref'd, either through process.channel.unref() (the stream's
+ * own flag) or through the child that owns its IPC channel. */
+static bool scr_child_streams_keep_alive(void) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (s->chan_unref || !scr_child_stream_watching(s)) continue;
+    if (scr_child_stream_ipc_unreffed(s)) continue;
+    return true;
+  }
+  return false;
+}
+
+/* process.channel.ref()/unref(): the explicit ref state (see the struct).
+ * The watching counter follows the transition; this arm's sleep polls the
+ * registry, so nothing else to arm. */
+static void scr_child_stream_chan_state(ScrChildStream *s, bool ref) {
+  if (s == NULL) return;
+  bool was_watching = scr_child_stream_watching(s);
+  s->chan_ref = ref;
+  s->chan_unref = !ref;
+  bool now_watching = scr_child_stream_watching(s);
+  if (!was_watching && now_watching) scr_child_streams_watching++;
+  else if (was_watching && !now_watching) scr_child_streams_watching--;
 }
 
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -2876,8 +3121,11 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
     c->pid = sp.pid;
   }
   /* The registry's reference: dropped when the child settles. */
-  c->reffed = true;
-  scr_children_reffed_n++;
+  {
+    bool before = scr_child_liveness(c);
+    c->reffed = true;
+    scr_child_liveness_apply(c, before);
+  }
   c->next = scr_children;
   scr_children = scr_child_retain(c);
   scr_child_loop_install();
@@ -2910,6 +3158,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   if (child->state == SCR_CHILD_RUNNING) {
     child->ipc = scr_ipc_new(scr_child_stream_new(parent_read),
                              scr_child_writer_new(parent_write));
+    /* Node's fork starts with both the process handle and the channel
+     * referenced; the child is already counted, so just record the flag. */
+    child->channel_reffed = true;
   } else {
     CloseHandle(parent_read);
     CloseHandle(parent_write);
@@ -2963,6 +3214,7 @@ static void scr_exec_file_fire(ScrChild *c) {
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
                         ScrExecFileFn fn, bool shell) {
+  double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
@@ -2977,7 +3229,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -3028,7 +3280,7 @@ static bool scr_child_kill_signo(ScrChild *c, int signo) {
 }
 
 bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
-  int signo = scr_signal_from_name(signal);
+  int signo = scr_signal_from_name_ci(signal);
   if (signo < 0) {
     size_t cap = 16 + signal->len + 1;
     char *msg = malloc(cap);
@@ -3045,15 +3297,21 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
   return scr_child_kill_signo(c, (int)signum);
 }
 
+/* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
+ * is false (a child that already received a signal is left alone). */
+void scr_child_dispose(ScrChild *c) {
+  if (scr_child_killed(c)) return;
+  (void)scr_child_kill_num(c, (double)SIGTERM);
+}
+
 void scr_child_unref(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--; /* settle/teardown clear reffed first */
-  }
+  bool before = scr_child_liveness(c);
+  c->reffed = false; /* settle/teardown clear the flags first */
+  scr_child_liveness_apply(c, before);
 }
 
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 || scr_child_streams_keep_alive() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 
@@ -3087,11 +3345,11 @@ void scr_children_teardown(void) {
     ScrChild *c = scr_children;
     scr_children = c->next;
     c->next = NULL;
+    bool before = scr_child_liveness(c);
     c->settled = true; /* late listener registrations release immediately */
-    if (c->reffed) {
-      c->reffed = false;
-      scr_children_reffed_n--;
-    }
+    c->reffed = false;
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
     if (c->state == SCR_CHILD_SPAWN_FAILED) scr_children_unwatched--;
     scr_child_drop_listeners(c);
     scr_child_release(c);
@@ -3319,10 +3577,16 @@ static void scr_child_settle(ScrChild *c) {
 }
 
 static void scr_child_settle_in(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--;
-  }
+  /* Node disposes the abort subscription with the child's 'exit' (the
+   * once('exit') listener spawn() registers before the program's own), so
+   * a signal that aborts later never signals a reaped pid. */
+  scr_child_abort_dispose(c);
+  /* The exit stops keeping the loop alive for both the process handle and
+   * the IPC channel (Node's Control follows its handle to null). */
+  bool was_live = scr_child_liveness(c);
+  c->reffed = false;
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, was_live);
   if (c->state == SCR_CHILD_EXITED) {
     if (!c->spawn_done) scr_child_fire_spawn(c);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
@@ -3394,12 +3658,48 @@ static void scr_child_settle_in(ScrChild *c) {
   }
 }
 
+/* exec/execFile's timeout deadline: Node's timer fires kill() at the
+ * deadline — it destroys the child's stdout/stderr and then sends the
+ * killSignal. Both captures are cut here (a child that keeps writing gets
+ * EPIPE, as under Node) and the signal follows; the child stays in the
+ * registry, so its callback fires with the exit's own status — Node's
+ * exithandler, where a child that outlives the signal reports whatever
+ * killed it and one that exits 0 later reports success. */
+static void scr_children_fire_deadlines(void) {
+  if (scr_children == NULL) return;
+  double now = scr_now_ms();
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->deadline_ms <= 0 || c->deadline_fired || c->state != SCR_CHILD_RUNNING) continue;
+    if (now < c->deadline_ms) continue;
+    c->deadline_fired = true;
+    /* exec/execFile's timer destroys the child's captures (its callback
+     * owns them); spawn's timeout timer only kills, and a program that
+     * listens to child.stdout keeps reading the pipe. */
+    if (c->exec_display != NULL) {
+      ScrChildStream *streams[2] = {c->out_stream, c->err_stream};
+      for (int i = 0; i < 2; i++) {
+        if (streams[i] == NULL) continue;
+#ifdef SCR_CHILD_STREAM_FLOW
+        /* A stream with a flow state reads for its capture or below its
+         * high-water mark; its capture stays on, so the cut is read and
+         * the stream ends (scr_exec_limit_data's discipline). */
+        if (streams[i]->flow.state == SCR_CHILD_FLOW_NONE)
+#endif
+        streams[i]->capture = streams[i]->n_data == 0; /* a listener keeps it watched */
+        scr_exec_stream_cut(streams[i]);
+      }
+    }
+    (void)scr_child_kill_signo(c, c->deadline_signo);
+  }
+}
+
 /* One reap pass: streams service first (the pinned 'end'-before-'exit'
  * ordering), then every running child answers WaitForSingleObject(h, 0)
  * — the WNOHANG analogue; spawn failures settle on their first pass. */
 void scr_children_poll(void) {
   for (ScrChild *c = scr_children; c; c = c->next) {
     if (c->state == SCR_CHILD_RUNNING && !c->spawn_done) scr_child_fire_spawn(c);
+    if (!scr_exc_pending() && c->abort_pre) scr_child_abort_fire(c);
     if (scr_exc_pending()) return;
   }
   scr_ipc_service();
@@ -3417,6 +3717,7 @@ void scr_children_poll(void) {
   if (scr_exc_pending()) return;
   scr_ipc_service();
   if (scr_exc_pending()) return;
+  scr_children_fire_deadlines();
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
@@ -3480,7 +3781,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
                                             ScrStr *cwd, ScrStr *input, bool has_input,
-                                            bool shell) {
+                                            bool shell, ScrStr *encoding) {
   ScrWinSyncRes w;
   /* `shell`: the command runs through cmd.exe /d /s /c, Node's Windows
    * shape. The compiler emits the form with an EMPTY args list only (a
@@ -3500,8 +3801,9 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     scr_arr_push_ref(shell_args, scr_str_retain(cmd));
     run_args = shell_args;
   }
-  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, in_mode, out_mode, err_mode,
-                   cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms, false, &w);
+  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, encoding, in_mode, out_mode,
+                   err_mode, cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms,
+                   false, &w);
   if (shell_args != NULL) {
     scr_str_release(run_cmd);
     scr_arr_release(shell_args);
@@ -3541,28 +3843,31 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
-    int resolved = scr_signal_from_name(killsignal);
+    int resolved = scr_signal_from_name_ci(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
-                                 (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input, shell);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
+                              (int)out_mode, (int)err_mode, env_pairs, cwd, input,
+                              has_input, shell, encoding),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell) {
+                                 bool has_input, bool shell, ScrStr *encoding) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, shell, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL, encoding);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
+  double max_buffer = scr_child_max_take();
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -3574,7 +3879,57 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
+  return c;
+}
+
+/* exec/execFile with `env`, `timeout` and `killSignal` — the rest of the
+ * callback form's option surface: scr_exec_file_cwd's registration over the
+ * spawn core's environment replacement, plus the deadline
+ * scr_children_fire_deadlines enforces. Node validates the timeout and the
+ * signal before the child starts (validateTimeout, sanitizeKillSignal); the
+ * callback has been moved in, so a throw path releases it first. */
+ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                             ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+  /* Consume the armed maxBuffer before the first throw path: a rejected
+   * option must not leave its limit for the next unrelated capture. */
+  double max_buffer = scr_child_max_take();
+  if (!scr_exec_timeout_ok(timeout_ms)) {
+    scr_closure_release(cb);
+    scr_exec_timeout_throw(timeout_ms);
+    return NULL;
+  }
+  bool signal_ok = true;
+  int signo = scr_exec_kill_signal(kill_signal, &signal_ok);
+  if (!signal_ok) {
+    size_t cap = 16 + kill_signal->len + 1;
+    char *msg = malloc(cap);
+    if (!msg) scr_child_oom();
+    int len = snprintf(msg, cap, "Unknown signal: %s", kill_signal->data);
+    scr_closure_release(cb);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
+    return NULL;
+  }
+  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
+                               env_pairs, cwd);
+  c->exec_cb = cb;
+  c->exec_fn = fn;
+  c->exec_file = scr_str_retain(cmd);
+  c->exec_args = scr_arr_retain(args);
+  c->exec_props = &scr_exec_file_error_props;
+  char *display = scr_exec_display(cmd, args, shell);
+  c->exec_display = scr_str_new(display, strlen(display));
+  free(display);
+  scr_child_stream_capture_begin(c->out_stream);
+  scr_child_stream_capture_begin(c->err_stream);
+  scr_exec_limit_install(c, max_buffer, signo);
+  double delay = scr_exec_timeout_delay(timeout_ms);
+  if (delay > 0) {
+    c->deadline_ms = scr_now_ms() + delay;
+    c->deadline_signo = signo;
+  }
   return c;
 }
 #endif /* SCR_CHILD_CP_OPTIONS */
@@ -3641,8 +3996,12 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;  /* false: signal death or spawn failure (status null) */
   double status;
-  ScrStr *out; /* captured stdout, utf8 */
-  ScrStr *err; /* captured stderr, utf8 */
+  ScrStr *out; /* captured stdout bytes */
+  ScrStr *err; /* captured stderr bytes */
+  /* The call's encoding option as a canonical Buffer encoding name (+1;
+   * NULL = the unencoded Buffer form). The STRING reads of stdout/stderr
+   * decode the captured bytes through it; the Buffer reads ignore it. */
+  ScrStr *encoding;
   /* Spawn failure (Node's `error` property): the errno name for the
    * message ("spawnSync <file> ENOENT") and `code` stamp — a timeout kill
    * rides the same slot as ETIMEDOUT. NULL = no error — the property
@@ -3662,6 +4021,14 @@ struct ScrSpawnRes {
   const char *signal_name;
 };
 
+/* Stamp a finished spawnSync result with the call's encoding option
+ * (NULL or "" = the unencoded Buffer form). Borrows; the result takes its
+ * own reference. */
+static ScrSpawnRes *scr_child_res_encoded(ScrSpawnRes *r, ScrStr *encoding) {
+  if (r != NULL && encoding != NULL && encoding->len > 0) r->encoding = scr_str_retain(encoding);
+  return r;
+}
+
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
@@ -3672,6 +4039,7 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
   if (--r->rc == 0) {
     scr_str_release(r->out);
     scr_str_release(r->err);
+    scr_str_release(r->encoding);
     scr_str_release(r->cmd); /* NULL-safe */
 #ifdef SCR_CHILD_ERR_FIELDS
     if (r->args) scr_arr_release(r->args);
@@ -3685,8 +4053,14 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->out, r->encoding);
+}
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->err, r->encoding);
+}
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r) { return scr_str_retain(r->out); }
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r) { return scr_str_retain(r->err); }
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -3804,6 +4178,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->args = NULL;
 #endif
   r->cmd = NULL;
+  r->encoding = NULL;
   r->signal_name = NULL;
   return r;
 }
@@ -4103,8 +4478,9 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   return r;
 }
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL);
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding) {
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL), encoding);
 }
 
 /* The options entry (cp.spawnSyncOpts): killSignal as a NAME ("" = the
@@ -4113,21 +4489,23 @@ ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
  * to SIGTERM defensively), modes as doubles (the IR's scalar). */
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                   ScrStr *killsignal, double in_mode,
-                                  double out_mode, double err_mode) {
+                                  double out_mode, double err_mode, ScrStr *encoding) {
   return scr_spawn_sync_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
-                            NULL);
+                            NULL, encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs) {
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
-    int resolved = scr_signal_from_name(killsignal);
+    int resolved = scr_signal_from_name_ci(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
-                             (int)out_mode, (int)err_mode, env_pairs);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
+                          (int)out_mode, (int)err_mode, env_pairs),
+      encoding);
 }
 
 /* The runtime-string stdio entry (cp.spawnSyncStdioStr): the compiler
@@ -4135,14 +4513,16 @@ ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
  * literals (the defaultRunner idiom `stdio: options?.stdio ?? "pipe"`),
  * so mapping to the three modes happens here at the call. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                       ScrStr *killsignal, ScrStr *stdio) {
+                                       ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding) {
   double in_mode = 0, out_mode = 0, err_mode = 0; /* "pipe": the defaults */
   if (stdio->len == 7 && memcmp(stdio->data, "inherit", 7) == 0) {
     in_mode = 2; out_mode = 2; err_mode = 2;
   } else if (stdio->len == 6 && memcmp(stdio->data, "ignore", 6) == 0) {
     out_mode = 1; err_mode = 1;
   }
-  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode);
+  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
+                             encoding);
 }
 
 /* ── execFileSync / execSync ──────────────────────────────────────────
@@ -4185,6 +4565,10 @@ typedef struct {
   bool async_shape;
   /* The sync forms' error outputs are Buffers (no encoding option). */
   bool buffers;
+  /* The sync forms' encoding option (a Buffer encoding name; NULL = the
+   * unencoded form): success and error outputs decode the capture through
+   * it. Ignored when `buffers` is set. */
+  const ScrStr *encoding;
   /* async_shape success: the captured stderr string (+1) lands here. */
   ScrStr **stderr_out;
 } ScrExecOpts;
@@ -4256,20 +4640,40 @@ static void scr_exec_envp_free(char **envp) {
  * "\n<stderr>" unconditionally (a trailing newline on empty stderr),
  * where the sync form appends only when stderr is non-empty. */
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
-                                       bool with_stderr, bool always_nl) {
+                                       bool with_stderr, bool always_nl,
+                                       const ScrStr *encoding) {
+  /* The message appends `stderr` as Node does: the DECODED capture with
+   * an encoding option, the Buffer's utf8 stringification without one. */
+  ScrStr *err_text = NULL;
+  ScrStr *utf8_name = NULL;
+  if (with_stderr && err_cap->len > 0) {
+    ScrStr *raw = scr_str_new(err_cap->data, err_cap->len);
+    /* No encoding option: Node appends the Buffer's utf8 stringification,
+     * so bytes above ASCII decode with replacement characters rather than
+     * reaching the message verbatim. */
+    const ScrStr *name = encoding;
+    if (name == NULL || name->len == 0) {
+      utf8_name = scr_str_new("utf8", 4);
+      name = utf8_name;
+    }
+    err_text = scr_child_capture_text(raw, name);
+    scr_str_release(raw);
+  }
   size_t dlen = strlen(display);
-  size_t elen = with_stderr ? err_cap->len : 0;
+  size_t elen = err_text != NULL ? err_text->len : 0;
   size_t cap = 16 + dlen + 1 + elen + 1;
   char *msg = malloc(cap);
   if (!msg) scr_child_oom();
   size_t at = (size_t)snprintf(msg, cap, "Command failed: %s", display);
   if (elen > 0 || always_nl) {
     msg[at++] = '\n';
-    memcpy(msg + at, err_cap->data, elen);
+    if (elen > 0) memcpy(msg + at, err_text->data, elen);
     at += elen;
   }
   ScrStr *message = scr_str_new(msg, at);
   free(msg);
+  if (utf8_name != NULL) scr_str_release(utf8_name);
+  if (err_text != NULL) scr_str_release(err_text);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(message);
   return e;
@@ -4322,6 +4726,17 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     fflush(stderr);
   }
   bool has_input = o->input != NULL;
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *input = NULL;
+  if (has_input) {
+    /* The encoding read happens before the spawn: Node's Buffer.from throws
+     * ERR_UNKNOWN_ENCODING and no child starts. */
+    input = scr_exec_input_bytes(o->input, o->encoding, true, &input_owned,
+                                 &input_bytes_buf, &in_len);
+    if (input == NULL) return NULL;
+  }
   if ((cap_out && pipe(outfd) != 0) || (cap_err && pipe(errfd) != 0) ||
       (has_input && pipe(infd) != 0)) {
     fputs("scriptc: pipe() failed\n", stderr);
@@ -4387,6 +4802,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
       scr_child_error_self(e);
       scr_child_error_sync_fields(e, false, 0, NULL, 0, false, NULL, NULL);
     }
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     scr_exec_throw(e);
     return NULL;
   }
@@ -4399,8 +4816,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   scr_cap_init(&err);
   bool out_open = cap_out, err_open = cap_err, in_open = has_input;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *input = has_input ? scr_str_utf8(o->input, &input_owned) : NULL;
+
   bool timed_out = false;
   bool enobufs = false;    /* the sync forms: both outputs together passed maxBuffer */
   const char *over = NULL; /* the async shape: the stream that passed it */
@@ -4455,13 +4871,13 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
           close(infd[1]);
           in_open = false; /* child closed stdin early: fine, like Node */
         } else if (fds[i].revents & POLLOUT) {
-          ssize_t wrote = write(infd[1], input + in_at, o->input->len - in_at);
+          ssize_t wrote = write(infd[1], input + in_at, in_len - in_at);
           if (wrote > 0) in_at += (size_t)wrote;
           else if (wrote < 0 && errno != EINTR && errno != EAGAIN) {
             close(infd[1]);
             in_open = false;
           }
-          if (in_at >= o->input->len) {
+          if (in_at >= in_len) {
             close(infd[1]);
             in_open = false;
           }
@@ -4483,6 +4899,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   scr_cap_close(&errfd[0]);
   if (in_open) close(infd[1]);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
 
   /* Reap. A live deadline still applies here: a child that closed its
    * stdio but keeps running (the pipes-drained daemon shape) must still be
@@ -4511,11 +4928,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   /* Node's inheritStderr: no stdio option given → the captured stderr
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
-  if (o->stderr_mode == 0 && err.len > 0) {
-    scr_stdout_settle();
-    fflush(stdout);
-    fwrite(err.data, 1, err.len, stderr);
-  }
+  if (o->stderr_mode == 0) scr_exec_echo_stderr(err.data, err.len, o->encoding);
   bool exited = WIFEXITED(st) && !(timed_out && !o->async_shape);
   const char *signal = WIFSIGNALED(st) ? scr_signal_name(WTERMSIG(st)) : NULL;
   if (timed_out && !o->async_shape) {
@@ -4526,8 +4939,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     ScrError *e = scr_exec_spawn_error(cmd, args, ETIMEDOUT, false);
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, false, 0, signal != NULL ? signal : "SIGTERM", (double)pid,
-                                true, scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                true, scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     free(out.data);
     free(err.data);
     scr_exec_throw(e);
@@ -4541,8 +4954,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                 (double)pid, true,
-                                scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     free(out.data);
     free(err.data);
     scr_exec_throw(e);
@@ -4566,7 +4979,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   bool failed = !exited || WEXITSTATUS(st) != 0;
   if (failed) {
     char *display = scr_exec_display(cmd, args, o->shell);
-    ScrError *e = scr_exec_failed_error(display, &err, cap_err, o->async_shape);
+    ScrError *e = scr_exec_failed_error(display, &err, cap_err, o->async_shape, o->encoding);
     if (o->async_shape) {
       scr_child_error_exit_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                   timed_out);
@@ -4579,8 +4992,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     } else {
       scr_child_error_sync_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                   (double)pid, true,
-                                  scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                  scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                  scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                  scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     }
     free(display);
     free(out.data);
@@ -4594,6 +5007,11 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   ScrStr *out_s = scr_str_new(out.data, out.len);
   free(out.data);
   free(err.data);
+  if (!o->async_shape && o->encoding != NULL && o->encoding->len > 0) {
+    ScrStr *text = scr_child_capture_text(out_s, o->encoding);
+    scr_str_release(out_s);
+    out_s = text;
+  }
   return out_s;
 }
 
@@ -4606,7 +5024,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
-                       bool buffers) {
+                       ScrStr *encoding) {
   ScrExecOpts o = {
       .shell = shell,
       .input = has_input ? input : NULL,
@@ -4618,9 +5036,29 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
       .stdout_mode = (int)stdout_mode & 3,
       .stderr_mode = (int)stderr_mode,
       .stdin_inherit = ((int)stdout_mode & 4) != 0,
-      .buffers = buffers,
+      .buffers = false,
+      .encoding = encoding,
   };
   return scr_exec_sync_core(cmd, args, &o);
+}
+
+/* The unencoded form (cp.execSyncBytes): Node's Buffer result. The error
+ * outputs are Buffers too. */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode) {
+  ScrExecOpts o = {
+      .shell = shell,
+      .input = has_input ? input : NULL,
+      .cwd = cwd->len > 0 ? cwd : NULL,
+      .env_pairs = has_env ? env_pairs : NULL,
+      .timeout_ms = timeout_ms,
+      .stdout_mode = (int)stdout_mode & 3,
+      .stderr_mode = (int)stderr_mode,
+      .stdin_inherit = ((int)stdout_mode & 4) != 0,
+      .buffers = true,
+  };
+  return scr_exec_bytes_from_str(scr_exec_sync_core(cmd, args, &o));
 }
 
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
@@ -4744,6 +5182,9 @@ struct ScrChildStream {
   bool eof; /* 'end' delivered (or the stream never opened) */
   bool close_wait;
   bool capture;
+  /* process.channel.ref()/unref(): see the Windows arm's fields. */
+  bool chan_ref;
+  bool chan_unref;
   ScrStr *encoding;
   double dec_pending;
   uint8_t *capture_data;
@@ -4850,7 +5291,24 @@ struct ScrChild {
   bool unwatched; /* no kqueue NOTE_EXIT armed: the loop must poll for it */
   bool has_code;
   bool killed;    /* a kill() successfully sent a signal (Node's flag) */
+  /* exec/execFile's timeout (scr_exec_file_opts): the deadline on the
+   * loop's clock (0 = none), the resolved signal to send there, and
+   * whether it fired. */
+  double deadline_ms;
+  int deadline_signo;
+  bool deadline_fired;
   bool reffed;    /* keeps the loop alive; unref() clears it (Node) */
+  /* spawn's `signal` (cp.spawnArmed): the AbortSignal (+1) while the
+   * subscription lives, its disposer (+1) when one is registered, and
+   * whether the signal was already aborted when the child started. */
+  ScrDyn *abort_signal;
+  ScrDyn *abort_dispose;
+  bool abort_pre;   /* aborted before spawn(): the abort runs after 'spawn' */
+  bool abort_fired; /* the abort listener's kill and 'error' ran */
+  int kill_signo;   /* the resolved killSignal (SIGTERM default) */
+  /* The IPC channel's own keep-alive state (Node's Control): channel
+   * .ref()/.unref() move this, never `reffed`. */
+  bool channel_reffed;
   int spawn_errno; /* spawn failure only: Node's exitCode is -errno there */
   double code;
   /* Signal death only: the terminating signal's name (static storage) —
@@ -4921,8 +5379,22 @@ ScrChildWriter *scr_child_writer_island_new(void *island) {
 
 static SCR_TL ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
 static SCR_TL ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
-static SCR_TL size_t scr_children_reffed_n = 0; /* unsettled AND reffed (liveness) */
+static SCR_TL size_t scr_children_reffed_n = 0; /* unsettled AND (reffed or channel-reffed) */
 static SCR_TL unsigned long scr_children_pass = 0; /* reap passes run */
+
+/* A child keeps the loop alive through either of Node's two handles: the
+ * process (child.ref()/unref()) and the IPC channel (its Control object's
+ * ref()/unref()). Capture this before changing a flag, then hand it to
+ * scr_child_liveness_apply. */
+static bool scr_child_liveness(const ScrChild *c) {
+  return !c->settled && (c->reffed || c->channel_reffed);
+}
+
+static void scr_child_liveness_apply(ScrChild *c, bool before) {
+  bool after = scr_child_liveness(c);
+  if (after && !before) scr_children_reffed_n++;
+  else if (!after && before) scr_children_reffed_n--;
+}
 
 /* Children the kqueue can NOT wake the loop for (spawn failures awaiting
  * their first-pass settle, exit-filter registration failures, every child
@@ -5120,6 +5592,8 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->abort_dispose);
+    scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
     scr_child_stream_release(c->err_stream);
     scr_child_writer_release(c->in_stream);
@@ -5200,7 +5674,45 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->fd >= 0 && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->fd >= 0 && (s->n_data > 0 || s->capture || s->close_wait);
+  return !s->eof && s->fd >= 0 &&
+         (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* The keep-alive half of the watching count: at least one watching stream
+ * that was not unref'd, either through process.channel.unref() (the stream's
+ * own flag) or through the child that owns its IPC channel. */
+static bool scr_child_streams_keep_alive(void) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (s->chan_unref || !scr_child_stream_watching(s)) continue;
+    if (scr_child_stream_ipc_unreffed(s)) continue;
+    return true;
+  }
+  return false;
+}
+
+/* process.channel.ref()/unref(): the explicit ref state (see the struct).
+ * Becoming watched registers the reader with the child poll; losing the
+ * last watcher dearms it, the listener-removal path's bookkeeping. Only
+ * the KEEP-ALIVE side follows unref(): the reader stays watched, so an
+ * unref'd channel still delivers while a timer holds the loop open. */
+static void scr_child_stream_chan_state(ScrChildStream *s, bool ref) {
+  if (s == NULL) return;
+  SCR_IF_ISLAND(s, return);
+  bool was_watching = scr_child_stream_watching(s);
+  s->chan_ref = ref;
+  s->chan_unref = !ref;
+  bool now_watching = scr_child_stream_watching(s);
+  if (!was_watching && now_watching) {
+    scr_child_streams_watching++;
+    scr_child_stream_arm(s);
+  } else if (was_watching && !now_watching) {
+    scr_child_streams_watching--;
+    scr_child_stream_dearm(s);
+    if (s->uncounted) {
+      s->uncounted = false;
+      scr_children_unwatched--;
+    }
+  }
 }
 
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -6590,8 +7102,11 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
    * is in spawn order: a pass fires 'spawn', and the 'exit' of children it
    * reaps together, oldest child first, as Node does (libuv's exit pass
    * walks its process queue in spawn order, uv__wait_children). */
-  c->reffed = true;
-  scr_children_reffed_n++;
+  {
+    bool before = scr_child_liveness(c);
+    c->reffed = true;
+    scr_child_liveness_apply(c, before);
+  }
   ScrChild **tail = &scr_children;
   while (*tail) tail = &(*tail)->next;
   *tail = scr_child_retain(c);
@@ -6638,6 +7153,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
     reader->short_read_yields = true;
 #endif
     child->ipc = scr_ipc_new(reader, scr_child_writer_new(parent_to_child[1]));
+    /* Node's fork starts with both the process handle and the channel
+     * referenced; the child is already counted, so just record the flag. */
+    child->channel_reffed = true;
   } else {
     close(child_to_parent[0]);
     close(parent_to_child[1]);
@@ -6691,6 +7209,7 @@ static void scr_exec_file_fire(ScrChild *c) {
 
 ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
                         ScrExecFileFn fn, bool shell) {
+  double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
                                NULL, empty);
@@ -6705,7 +7224,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
   return c;
 }
 
@@ -6773,7 +7292,7 @@ static bool scr_child_kill_signo(ScrChild *c, int signo) {
  * TypeError BEFORE the handle check, like Node). */
 bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, signal, 0));
-  int signo = scr_signal_from_name(signal);
+  int signo = scr_signal_from_name_ci(signal);
   if (signo < 0) {
     size_t cap = 16 + signal->len + 1;
     char *msg = malloc(cap);
@@ -6792,6 +7311,15 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
   return scr_child_kill_signo(c, (int)signum);
 }
 
+/* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
+ * is false (a child that already received a signal is left alone). */
+void scr_child_dispose(ScrChild *c) {
+  SCR_IF_ISLAND(c, if (scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_KILLED)) return;
+                (void)scr_child_island_ops->kill(c->island, NULL, (double)SIGTERM); return);
+  if (scr_child_killed(c)) return;
+  (void)scr_child_kill_num(c, (double)SIGTERM);
+}
+
 /* child.unref() — drops the child from the loop's keep-alive set (Node's
  * semantics: the process may exit while the child runs). The child is
  * still REAPED whenever the loop runs for other reasons; one the loop
@@ -6799,19 +7327,20 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * zombie outlives the parent). */
 void scr_child_unref(ScrChild *c) {
   SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "unref"); return);
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--; /* settle/teardown clear reffed first */
-  }
+  bool before = scr_child_liveness(c);
+  c->reffed = false; /* settle/teardown clear the flags first */
+  scr_child_liveness_apply(c, before);
 }
 
 /* The loop's liveness half: true while some UNSETTLED, REFFED child
  * exists (unref'd children never keep the process alive), or a piped
  * stream still flows for a consumer (Node's flowing-pipe keep-alive —
  * it may outlive the child's own settle when a grandchild holds the
- * write end). */
+ * write end). An IPC channel the program unref'd is still watched (its
+ * messages arrive whenever other work holds the loop) but does not count
+ * here, exactly Node's uv_unref. */
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 || scr_child_streams_keep_alive() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 
@@ -6859,11 +7388,11 @@ void scr_children_teardown(void) {
     ScrChild *c = scr_children;
     scr_children = c->next;
     c->next = NULL;
+    bool before = scr_child_liveness(c);
     c->settled = true; /* late listener registrations release immediately */
-    if (c->reffed) {
-      c->reffed = false;
-      scr_children_reffed_n--;
-    }
+    c->reffed = false;
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
     if (c->unwatched) {
       c->unwatched = false;
       scr_children_unwatched--;
@@ -7110,10 +7639,16 @@ static void scr_child_settle(ScrChild *c) {
 }
 
 static void scr_child_settle_in(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--;
-  }
+  /* Node disposes the abort subscription with the child's 'exit' (the
+   * once('exit') listener spawn() registers before the program's own), so
+   * a signal that aborts later never signals a reaped pid. */
+  scr_child_abort_dispose(c);
+  /* Both the process handle and the IPC channel's Control stop keeping the
+   * loop alive when the child exits. */
+  bool was_live = scr_child_liveness(c);
+  c->reffed = false;
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, was_live);
   if (c->unwatched) {
     c->unwatched = false;
     scr_children_unwatched--;
@@ -7229,9 +7764,48 @@ static void scr_children_next_tick_events(void) {
       scr_child_settle(c);
     } else {
       if (c->state == SCR_CHILD_RUNNING && !c->spawn_done) scr_child_fire_spawn(c);
+      /* A signal already aborted at spawn() fires its kill and 'error'
+       * right after 'spawn': Node queues onSpawnNT in child.spawn() and
+       * the abort's own nextTick after it, so 'spawn' precedes 'error'. */
+      if (c->abort_pre && !scr_exc_pending()) scr_child_abort_fire(c);
       link = &c->next;
     }
     if (scr_exc_pending()) return;
+  }
+}
+
+/* exec/execFile's timeout deadline: Node's timer fires kill() at the
+ * deadline — it destroys the child's stdout/stderr and then sends the
+ * killSignal. Both captures are cut here (a child that keeps writing gets
+ * EPIPE, as under Node) and the signal follows; the child stays in the
+ * registry, so its callback fires with the exit's own status — Node's
+ * exithandler, where a child that outlives the signal reports whatever
+ * killed it and one that exits 0 later reports success. */
+static void scr_children_fire_deadlines(void) {
+  if (scr_children == NULL) return;
+  double now = scr_now_ms();
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->deadline_ms <= 0 || c->deadline_fired || c->state != SCR_CHILD_RUNNING) continue;
+    if (now < c->deadline_ms) continue;
+    c->deadline_fired = true;
+    /* exec/execFile's timer destroys the child's captures (its callback
+     * owns them); spawn's timeout timer only kills, and a program that
+     * listens to child.stdout keeps reading the pipe. */
+    if (c->exec_display != NULL) {
+      ScrChildStream *streams[2] = {c->out_stream, c->err_stream};
+      for (int i = 0; i < 2; i++) {
+        if (streams[i] == NULL) continue;
+#ifdef SCR_CHILD_STREAM_FLOW
+        /* A stream with a flow state reads for its capture or below its
+         * high-water mark; its capture stays on, so the cut is read and
+         * the stream ends (scr_exec_limit_data's discipline). */
+        if (streams[i]->flow.state == SCR_CHILD_FLOW_NONE)
+#endif
+        streams[i]->capture = streams[i]->n_data == 0; /* a listener keeps it watched */
+        scr_exec_stream_cut(streams[i]);
+      }
+    }
+    (void)scr_child_kill_signo(c, c->deadline_signo);
   }
 }
 
@@ -7263,6 +7837,7 @@ void scr_children_poll(void) {
   if (scr_exc_pending()) return;
   scr_ipc_service();
   if (scr_exc_pending()) return;
+  scr_children_fire_deadlines();
   /* A child that a listener spawns during the sweep joins the registry's
    * tail and is swept with the rest: a spawn failure among the new ones
    * fires its 'error' in this pass, after the listener that spawned it. */
@@ -7329,9 +7904,16 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
                                             ScrStr *cwd, ScrStr *input, bool has_input,
-                                            bool shell) {
+                                            bool shell, ScrStr *encoding) {
   double max_buffer = scr_child_max_take();
   bool use_cwd = cwd != NULL && cwd->len > 0;
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *in_data =
+      has_input ? scr_exec_input_bytes(input, encoding, false, &input_owned, &input_bytes_buf,
+                                       &in_len)
+                : NULL;
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
@@ -7409,6 +7991,8 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     if (cap_out) close(outfd[0]);
     if (cap_err) close(errfd[0]);
     if (has_input) close(infd[1]);
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
@@ -7427,9 +8011,6 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   scr_cap_init(&err);
   bool out_open = cap_out, err_open = cap_err, in_open = has_input;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *in_data = has_input ? scr_str_utf8(input, &input_owned) : NULL;
-  size_t in_len = has_input ? input->len : 0;
   bool timed_out = false;
   bool enobufs = false; /* the outputs together passed maxBuffer */
   double deadline = timeout_ms > 0 ? scr_now_ms() + timeout_ms : 0;
@@ -7497,6 +8078,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   scr_cap_close(&errfd[0]);
   if (in_open) close(infd[1]);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
 
   /* Reap. With nothing captured the deadline lives here: WNOHANG-poll
    * until the child exits or the timeout kill fires. */
@@ -7558,29 +8140,32 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
-    int resolved = scr_signal_from_name(killsignal);
+    int resolved = scr_signal_from_name_ci(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
-                                 (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input, shell);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
+                              (int)out_mode, (int)err_mode, env_pairs, cwd, input,
+                              has_input, shell, encoding),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell) {
+                                 bool has_input, bool shell, ScrStr *encoding) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, shell, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL, encoding);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option: scr_exec_file's
  * registration over the spawn core's cwd argument. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
+  double max_buffer = scr_child_max_take();
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -7592,12 +8177,287 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
   free(display);
   scr_child_stream_capture_begin(c->out_stream);
   scr_child_stream_capture_begin(c->err_stream);
-  scr_exec_limit_install(c);
+  scr_exec_limit_install(c, max_buffer, SIGTERM);
+  return c;
+}
+
+/* exec/execFile with `env`, `timeout` and `killSignal` — the rest of the
+ * callback form's option surface: scr_exec_file_cwd's registration over the
+ * spawn core's environment replacement, plus the deadline
+ * scr_children_fire_deadlines enforces. Node validates the timeout and the
+ * signal before the child starts (validateTimeout, sanitizeKillSignal); the
+ * callback has been moved in, so a throw path releases it first. */
+ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                             ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+  /* Consume the armed maxBuffer before the first throw path: a rejected
+   * option must not leave its limit for the next unrelated capture. */
+  double max_buffer = scr_child_max_take();
+  if (!scr_exec_timeout_ok(timeout_ms)) {
+    scr_closure_release(cb);
+    scr_exec_timeout_throw(timeout_ms);
+    return NULL;
+  }
+  bool signal_ok = true;
+  int signo = scr_exec_kill_signal(kill_signal, &signal_ok);
+  if (!signal_ok) {
+    size_t cap = 16 + kill_signal->len + 1;
+    char *msg = malloc(cap);
+    if (!msg) scr_child_oom();
+    int len = snprintf(msg, cap, "Unknown signal: %s", kill_signal->data);
+    scr_closure_release(cb);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
+    return NULL;
+  }
+  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
+                               env_pairs, cwd);
+  c->exec_cb = cb;
+  c->exec_fn = fn;
+  c->exec_file = scr_str_retain(cmd);
+  c->exec_args = scr_arr_retain(args);
+  c->exec_props = &scr_exec_file_error_props;
+  char *display = scr_exec_display(cmd, args, shell);
+  c->exec_display = scr_str_new(display, strlen(display));
+  free(display);
+  scr_child_stream_capture_begin(c->out_stream);
+  scr_child_stream_capture_begin(c->err_stream);
+  scr_exec_limit_install(c, max_buffer, signo);
+  double delay = scr_exec_timeout_delay(timeout_ms);
+  if (delay > 0) {
+    c->deadline_ms = scr_now_ms() + delay;
+    c->deadline_signo = signo;
+  }
   return c;
 }
 #endif /* SCR_CHILD_CP_OPTIONS */
 
 #endif /* !_WIN32 */
+
+/* ── exec/execFile's timeout and killSignal options ─────────────────────
+ * Node's execFile validates its options before it spawns: validateTimeout
+ * (an unsigned integer; nullish is absent), validateMaxBuffer (the
+ * cp.maxBuffer call the compiler emits before the launch), sanitizeKillSignal
+ * (a name from Node's table), then spawn's own checks. A delay past 2^31-1
+ * is not a validation error: setTimeout warns TimeoutOverflowWarning and
+ * sets the delay to 1ms, so the same warning (scr_timer_user_delay) is
+ * emitted here and the deadline becomes 1ms. */
+
+static bool scr_exec_timeout_ok(double timeout_ms) {
+  return isfinite(timeout_ms) && timeout_ms >= 0 && floor(timeout_ms) == timeout_ms;
+}
+
+static void scr_exec_timeout_throw(double timeout_ms) {
+  char recv[48];
+  scr_num_received(timeout_ms, recv);
+  char msg[160];
+  int len = snprintf(
+      msg, sizeof msg,
+      "The value of \"timeout\" is out of range. It must be an unsigned integer. Received %s",
+      recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+/* The delay the deadline uses (0 = no timer): Node's setTimeout delay for
+ * the value the validation passed. */
+static double scr_exec_timeout_delay(double timeout_ms) {
+  if (timeout_ms <= 0) return 0;
+  if (timeout_ms > 2147483647.0) {
+    /* Past TIMEOUT_MAX Node's Timeout emits TimeoutOverflowWarning and
+     * sets the delay to 1. Kind 2 is the internal timers module's
+     * setTimeout: mock.timers replaces only the global function, and
+     * exec's call is not the global one. */
+    (void)scr_timer_user_delay(timeout_ms, 2);
+    return 1;
+  }
+  return timeout_ms;
+}
+
+/* sanitizeKillSignal for the name form ("" = the SIGTERM default): the
+ * resolved number, or -1 with *ok false for a name outside Node's table. */
+static int scr_exec_kill_signal(ScrStr *kill_signal, bool *ok) {
+  *ok = true;
+  if (kill_signal == NULL || kill_signal->len == 0) return SIGTERM;
+  int signo = scr_signal_from_name_ci(kill_signal);
+  if (signo < 0) *ok = false;
+  return signo;
+}
+
+/* ── spawn's timeout, killSignal and signal (cp.spawnArmed, and the
+ * computed options of scr_spawn_dynamic) ────────────────────────────────
+ * Node's spawn() checks what normalizeSpawnArguments left, in this order:
+ * validateTimeout (an unsigned integer; a nullish value is absent),
+ * validateAbortSignal(options.signal), sanitizeKillSignal (a name from
+ * Node's table, matched without case, or a number the platform knows —
+ * anything else is ERR_UNKNOWN_SIGNAL, and a non-string/number is
+ * ERR_INVALID_ARG_TYPE). The child starts only after all three pass. */
+
+/* sanitizeKillSignal over a checked-dynamic value (spawn's literal and
+ * computed options alike): *signo receives the resolved number (SIGTERM
+ * for an absent value). False with Node's error pending for anything
+ * else. Borrows. */
+static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
+  *signo = SIGTERM;
+  if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) return true;
+  if (value->kind == SCR_DYN_STR) {
+    int resolved = scr_signal_from_name_ci(value->v.str);
+    if (resolved >= 0) {
+      *signo = resolved;
+      return true;
+    }
+    size_t cap = 16 + value->v.str->len + 1;
+    char *msg = malloc(cap);
+    if (!msg) scr_child_oom();
+    int len = snprintf(msg, cap, "Unknown signal: %s", value->v.str->data);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
+    return false;
+  }
+  if (value->kind == SCR_DYN_NUM) {
+    double num = value->v.num;
+    /* Node's boundSignalMap: the numbers the platform names. An integer
+     * outside the table is Node's ERR_UNKNOWN_SIGNAL too (0 and 999999
+     * included), so the reverse lookup is the whole check. */
+    if (isfinite(num) && floor(num) == num && num >= 1 && num <= 2147483647.0) {
+      int resolved = (int)num;
+      if (scr_signal_name(resolved) != NULL) {
+        *signo = resolved;
+        return true;
+      }
+    }
+    char text[40];
+    (void)scr_f64_to_str(num, text);
+    char msg[64];
+    int len = snprintf(msg, sizeof msg, "Unknown signal: %s", text);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    return false;
+  }
+  scr_dyn_prop_type_fail("options.killSignal", "one of type string or number", value);
+  return false;
+}
+
+/* emit('error', err) on a running child (spawn's abort path). Node's
+ * emit throws when nothing listens, and the runtime's event dispatch
+ * reports that on a next tick, as Node's EventTarget does. */
+static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
+  if (scr_exc_pending()) return;
+  if (c->n_err == 0) {
+    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                  scr_error_trace_arg());
+    return;
+  }
+  ScrError *outer = scr_event_error_payload;
+  scr_event_error_payload = err;
+  for (size_t i = 0; i < c->n_err; i++) {
+    c->err_cbs[i].fn(c->err_cbs[i].cb, err->message);
+    if (scr_exc_pending()) break;
+  }
+  scr_event_error_payload = outer;
+}
+
+/* abortChildProcess: child.kill(killSignal), then 'error' with Node's
+ * AbortError whose cause is signal.reason — only when the kill reached a
+ * live child (kill() answers false once the process is gone). */
+static void scr_child_abort_fire(ScrChild *c) {
+  if (c->abort_fired || c->settled) return;
+  c->abort_fired = true;
+  c->abort_pre = false;
+  if (!scr_child_kill_signo(c, c->kill_signo)) return;
+  ScrDyn *reason = NULL;
+  if (c->abort_signal != NULL) {
+    ScrStr *key = scr_str_new("reason", 6);
+    reason = scr_dyn_handle_key_get(c->abort_signal, key);
+    scr_str_release(key);
+  }
+  ScrError *error = scr_error_abort(reason);
+  scr_dyn_release(reason);
+  scr_child_emit_error_obj(c, error);
+  scr_error_release(error);
+}
+
+/* Node's once('exit', disposable): the subscription leaves with the child
+ * (spawn registers it before the program's own exit listeners), and with
+ * the child's reference to the signal. */
+static void scr_child_abort_dispose(ScrChild *c) {
+  if (c->abort_dispose != NULL) {
+    ScrDyn *dispose = c->abort_dispose;
+    c->abort_dispose = NULL;
+    ScrDyn *result = scr_dyn_call(dispose, NULL, 0, "dispose");
+    if (result != NULL) scr_dyn_release(result);
+    scr_dyn_release(dispose);
+  }
+  scr_dyn_release(c->abort_signal);
+  c->abort_signal = NULL;
+  c->abort_pre = false;
+}
+
+#ifdef SCR_CHILD_CP_OPTIONS
+/* The abort subscription's listener: an ordinary (no-argument) function
+ * whose closure holds the child alive until the subscription is disposed. */
+static ScrDyn *scr_child_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrChild *c = scr_box_get_ref(clo->caps[0]);
+  if (c != NULL) scr_child_abort_fire(c);
+  scr_child_release(c);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* cp.spawn with `timeout`, `killSignal` and `signal` (the
+ * SCR_CHILD_CP_OPTIONS build): scr_spawn_opts plus Node's launch checks,
+ * its timeout timer (kill at the deadline; the captures stay, unlike
+ * exec's), and the abort subscription. timeout_ms 0 = no timer;
+ * kill_signal and signal may be NULL or a checked-dynamic undefined;
+ * `add` is NULL when the program has no AbortSignal to pass. Borrows. */
+ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_mode,
+                          double err_mode, double out_fd, double err_fd, bool detached,
+                          bool shell, bool has_env, ScrArr *env_pairs, ScrStr *cwd,
+                          double timeout_ms, const ScrDyn *kill_signal, ScrDyn *signal,
+                          ScrAbortAddFn add) {
+  if (!scr_exec_timeout_ok(timeout_ms)) {
+    scr_exec_timeout_throw(timeout_ms);
+    return NULL;
+  }
+  bool has_signal = signal != NULL && signal->kind != SCR_DYN_UNDEF;
+  if (has_signal && (signal->kind != SCR_DYN_HANDLE ||
+                     signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)) {
+    scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
+  int signo = SIGTERM;
+  if (!scr_spawn_kill_signal(kill_signal, &signo)) return NULL;
+  ScrChild *c = scr_spawn_opts(cmd, args, in_mode, out_mode, err_mode, out_fd, err_fd,
+                               detached, shell, has_env, env_pairs, cwd);
+  c->kill_signo = signo;
+  double delay = scr_exec_timeout_delay(timeout_ms);
+  if (delay > 0) {
+    c->deadline_ms = scr_now_ms() + delay;
+    c->deadline_signo = signo;
+  }
+  if (has_signal) {
+    c->abort_signal = scr_dyn_retain(signal);
+    ScrStr *key = scr_str_new("aborted", 7);
+    ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+    scr_str_release(key);
+    bool pre = aborted != NULL && scr_dyn_truthy(aborted);
+    scr_dyn_release(aborted);
+    if (pre) {
+      /* Node: process.nextTick(onAbortListener), after 'spawn': the poll
+       * fires it right after scr_child_fire_spawn. */
+      c->abort_pre = true;
+    } else if (add != NULL) {
+      ScrClosure *clo = scr_closure_new((void *)&scr_child_abort_thunk, 1);
+      clo->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+      scr_box_set_ref(clo->caps[0], scr_child_retain(c));
+      ScrDyn *listener =
+          scr_dyn_new_func(clo, &scr_child_abort_thunk, 0, "()", "onAbortListener");
+      c->abort_dispose = add(signal, listener);
+      scr_dyn_release(listener);
+    }
+  }
+  return c;
+}
+#endif /* SCR_CHILD_CP_OPTIONS */
 
 /* ── exec/execFile's maxBuffer (the callback forms) ─────────────────────
  * Node's exec listens to 'data' on the child's stdout and stderr, counts
@@ -7612,6 +8472,7 @@ typedef struct {
   size_t rc;
   ScrChild *child;     /* borrowed while the child holds the callback wrapper; NULL after */
   double max_buffer;
+  int kill_signo;      /* the exec call's killSignal: what a pass of the limit sends */
   double text_len[2];  /* Node's count per stream: stdout, stderr */
   size_t seen[2];      /* the capture bytes already counted */
   ScrError *over;      /* the maxBuffer error once a stream passed the limit (+1) */
@@ -7665,7 +8526,7 @@ static void scr_exec_limit_data(ScrClosure *cb) {
         streams[i]->capture = streams[i]->n_data == 0; /* a listener keeps it watched */
         scr_exec_stream_cut(streams[i]);
       }
-      (void)scr_child_kill_num(c, (double)SIGTERM);
+      (void)scr_child_kill_signo(c, l->kill_signo);
     }
   }
   scr_exec_limit_release_v(l);
@@ -7684,12 +8545,13 @@ static void scr_exec_limit_fire(ScrClosure *wrap, ScrError *error, ScrStr *out, 
   scr_exec_limit_release_v(l);
 }
 
-static void scr_exec_limit_install(ScrChild *c) {
+static void scr_exec_limit_install(ScrChild *c, double max_buffer, int kill_signo) {
   ScrExecLimit *l = calloc(1, sizeof *l);
   if (!l) scr_child_oom();
   l->rc = 1;
   l->child = c;
-  l->max_buffer = scr_child_max_take();
+  l->max_buffer = max_buffer;
+  l->kill_signo = kill_signo;
   l->cb = c->exec_cb;
   l->fn = c->exec_fn;
   ScrClosure *wrap = scr_closure_new((void *)&scr_exec_limit_fire, 1);
@@ -7795,10 +8657,10 @@ static void scr_child_drop_spawn_listeners(ScrChild *c) {
 
 void scr_child_ref(ScrChild *c) {
   SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "ref"); return);
-  if (!c->settled && !c->reffed) {
-    c->reffed = true;
-    scr_children_reffed_n++;
-  }
+  if (c->settled) return;
+  bool before = scr_child_liveness(c);
+  c->reffed = true;
+  scr_child_liveness_apply(c, before);
 }
 
 void scr_child_on_spawn(ScrChild *c, ScrClosure *cb) {
@@ -8061,9 +8923,7 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
 
   /* Retain explicit boundaries for native process features that the
    * inline lowering does not implement either. Undefined is an omission. */
-  static const char *const unsupported[] = {
-    "uid", "gid", "argv0", "signal", "timeout", "killSignal",
-  };
+  static const char *const unsupported[] = {"uid", "gid", "argv0"};
   for (size_t i = 0; i < sizeof unsupported / sizeof unsupported[0]; i++) {
     value = scr_spawn_option(view, unsupported[i]);
     if (!value || scr_exc_pending()) goto done;
@@ -8159,8 +9019,56 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
       scr_dyn_release(value); value = NULL;
     }
   }
+  /* Node checks what normalizeSpawnArguments left, after the object's
+   * own members: validateTimeout, then sanitizeKillSignal. `timeout > 0`
+   * gates the timer, so 0 and a nullish value both arm none. */
+  double timeout_ms = 0;
+  int kill_signo = SIGTERM;
+  value = scr_spawn_option(view, "timeout");
+  if (!value || scr_exc_pending()) goto done;
+  if (value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NULL) {
+    if (value->kind != SCR_DYN_NUM || !scr_exec_timeout_ok(value->v.num)) {
+      char rendered[64];
+      const char *got = scr_dyn_inspect_lite(value, rendered, sizeof rendered);
+      char msg[192];
+      int len = snprintf(msg, sizeof msg,
+        "The value of \"timeout\" is out of range. It must be an unsigned integer. Received %s",
+        got);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      goto done;
+    }
+    timeout_ms = value->v.num;
+  }
+  scr_dyn_release(value); value = NULL;
+  /* validateAbortSignal: Node checks it after validateTimeout and before
+   * sanitizeKillSignal. A computed options value can only be checked; the
+   * subscription itself needs the literal lowering, which passes the
+   * checked-dynamic handle directly. */
+  value = scr_spawn_option(view, "signal");
+  if (!value || scr_exc_pending()) goto done;
+  if (value->kind != SCR_DYN_UNDEF) {
+    if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", value);
+      goto done;
+    }
+    scr_spawn_refuse("a computed signal option (write the options object literally to pass an AbortSignal)");
+    goto done;
+  }
+  scr_dyn_release(value); value = NULL;
+  value = scr_spawn_option(view, "killSignal");
+  if (!value || scr_exc_pending()) goto done;
+  if (!scr_spawn_kill_signal(value, &kill_signo)) { scr_dyn_release(value); value = NULL; goto done; }
+  scr_dyn_release(value); value = NULL;
   child = scr_spawn_opts(cmd, args, modes[0], modes[1], modes[2],
     fds[1], fds[2], detached, shell, has_env, pairs, cwd);
+  if (child != NULL) {
+    child->kill_signo = kill_signo;
+    double delay = scr_exec_timeout_delay(timeout_ms);
+    if (delay > 0) {
+      child->deadline_ms = scr_now_ms() + delay;
+      child->deadline_signo = kill_signo;
+    }
+  }
 done:
   scr_dyn_release(view);
   scr_dyn_release(stdio);
@@ -8337,9 +9245,24 @@ static void scr_ipc_stream_data(ScrClosure *closure, ScrBytes *chunk) {
   scr_ipc_release(ipc);
 }
 
+/* A disconnected channel stops keeping the loop alive: Node's Control
+ * drops its handle from the keep-alive set when the pipe closes, on either
+ * side. The channel holds no back-pointer, so find its child in the pending
+ * registry; a settled child has already cleared both flags. */
+static void scr_ipc_channel_released(ScrIpc *ipc) {
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc != ipc) continue;
+    bool before = scr_child_liveness(c);
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
+    return;
+  }
+}
+
 static void scr_ipc_mark_disconnected(ScrIpc *ipc, bool write_failed,
                                       ScrStr *message) {
   ipc->connected = false;
+  scr_ipc_channel_released(ipc);
   ipc->local_closing = false;
   if (write_failed && ipc->send_error == NULL) {
     ipc->send_error = message
@@ -8449,6 +9372,7 @@ static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
 static void scr_ipc_disconnect(ScrIpc *ipc) {
   if (!ipc || !ipc->connected) return;
   ipc->connected = false;
+  scr_ipc_channel_released(ipc);
   ipc->local_closing = true;
   scr_child_writer_end(ipc->writer);
 }
@@ -8548,8 +9472,13 @@ static void scr_ipc_fire_send_callbacks(ScrIpc *ipc) {
     scr_als_ctx_release(snapshot[i].ctx);
   }
   free(snapshot);
-  scr_str_release(ipc->send_error);
-  ipc->send_error = NULL;
+  /* A callback can queue another send on the closed channel, which sets a
+   * fresh send_error for a later pass; it belongs to those queued callbacks,
+   * not to the snapshot just delivered. */
+  if (ipc->n_send == 0) {
+    scr_str_release(ipc->send_error);
+    ipc->send_error = NULL;
+  }
 }
 
 static void scr_ipc_fire_disconnect_in(ScrIpc *ipc);
@@ -8627,6 +9556,18 @@ static void scr_ipc_service(void) {
   }
 }
 
+/* An IPC reader whose child the program unref'd (child.unref() or
+ * child.channel.unref()): it still delivers whenever other work holds the
+ * loop, but Node's Control keeps the handle out of the keep-alive set. The
+ * channel holds no back-pointer, so find its child in the registry. */
+static bool scr_child_stream_ipc_unreffed(const void *reader) {
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc == NULL || (const void *)c->ipc->reader != reader) continue;
+    return !scr_child_liveness(c);
+  }
+  return false;
+}
+
 static bool scr_ipc_pending(void) {
   for (ScrIpc *ipc = scr_ipcs; ipc != NULL; ipc = ipc->next) {
     if (ipc->n_send > 0 || ipc->disconnect_pending || ipc->local_closing ||
@@ -8650,7 +9591,15 @@ static void scr_ipc_deliver(void) {
  * readable now, so read it and deliver its messages, and the
  * 'disconnect' an EOF read schedules, before 'exit'. */
 static void scr_ipc_settle(ScrIpc *ipc) {
-  if (ipc == NULL || !ipc->armed) return;
+  if (ipc == NULL) return;
+  if (!ipc->armed) {
+    /* No 'message' or 'disconnect' listener ever armed the reader, so
+     * nothing observes the pipe's EOF; the child's exit closed its end
+     * all the same, and Node's channel reads null from 'exit' on. */
+    ipc->connected = false;
+    ipc->eof = true;
+    return;
+  }
   scr_child_stream_drain_now(ipc->reader);
   if (!scr_exc_pending()) scr_ipc_service_one(ipc);
 }
@@ -8664,6 +9613,18 @@ static bool scr_ipc_close_ready(const ScrIpc *ipc) {
 
 static bool scr_ipc_close_dropped(const ScrIpc *ipc) {
   return ipc != NULL && (ipc->closed_locally || ipc->local_closing);
+}
+
+/* The loop's next exec/execFile deadline (-1 = none pending): the loop wakes
+ * for it and, like Node's un-unref'd timeout timer, it keeps the loop alive
+ * even when the child itself is unref'd. */
+double scr_children_next_deadline(void) {
+  double next = -1;
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->deadline_ms <= 0 || c->deadline_fired || c->state != SCR_CHILD_RUNNING) continue;
+    if (next < 0 || c->deadline_ms < next) next = c->deadline_ms;
+  }
+  return next;
 }
 
 bool scr_children_ready(void) {
@@ -8759,6 +9720,58 @@ void scr_process_ipc_on_message(ScrClosure *cb, ScrIpcMessageFn fn,
 }
 void scr_process_ipc_on_disconnect(ScrClosure *cb, bool once) {
   scr_ipc_add_disconnect(scr_process_ipc, cb, once);
+}
+
+/* process.channel — Node's Control in a forked child: the cached object
+ * with ref()/unref() while the channel is open, undefined in a process
+ * that never had one, and null once it is gone (local or remote
+ * disconnect), exactly Node's three states. The methods reach the
+ * channel's reader stream, whose explicit ref state overrides the
+ * listener-driven keep-alive. One object per process (the same on every
+ * read, like Node's); the unit's atexit cleanup releases it. */
+static SCR_TL ScrDyn *scr_channel_object;
+
+static void scr_channel_object_cleanup(void) {
+  scr_dyn_release(scr_channel_object);
+  scr_channel_object = NULL;
+}
+
+static ScrDyn *scr_channel_ref_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  /* A disconnected channel is closed: ref/unref on a captured object are
+   * no-ops (uv_ref on a closed handle), and process.channel itself reads
+   * null. */
+  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+    scr_child_stream_chan_state(scr_process_ipc->reader, true);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_channel_unref_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+    scr_child_stream_chan_state(scr_process_ipc->reader, false);
+  return scr_dyn_undefined();
+}
+
+ScrDyn *scr_process_channel_value(void) {
+  if (scr_process_ipc == NULL) return scr_dyn_undefined();
+  if (!scr_process_ipc->connected) return scr_dyn_new_null();
+  if (scr_channel_object == NULL) {
+    ScrDyn *object = scr_dyn_new_obj();
+    scr_dyn_obj_set(object, "ref", 3,
+                    scr_dyn_new_func(scr_closure_new(NULL, 0), scr_channel_ref_thunk, 0,
+                                     "()", "ref"));
+    scr_dyn_obj_set(object, "unref", 5,
+                    scr_dyn_new_func(scr_closure_new(NULL, 0), scr_channel_unref_thunk, 0,
+                                     "()", "unref"));
+    scr_channel_object = object;
+    scr_atexit(scr_channel_object_cleanup);
+  }
+  return scr_dyn_retain(scr_channel_object);
 }
 
 static SCR_TL const ScrChildStreamOps *scr_child_stream_ops;
@@ -9111,7 +10124,90 @@ static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
         ? scr_dyn_new_num(scr_child_exit_code(child))
         : scr_dyn_new_null();
   }
+  if (key_len == 7 && memcmp(key, "channel", 7) == 0) return scr_child_channel(child);
   return NULL;
+}
+
+/* ── subprocess.channel (Node's Control) ─────────────────────────────────
+ * A child made with an IPC channel answers its Control object here:
+ * undefined when it never had a channel, null once the channel was closed
+ * or disconnected, and otherwise a checked-dynamic handle over the child.
+ * The handle keeps the child pointer, so two reads compare equal (dyn
+ * equality is (tag, pointer)) exactly as Node's one Control object does.
+ * Its ref()/unref() move the CHANNEL's keep-alive state; the process
+ * handle's child.ref()/child.unref() stay independent, as in Node, which
+ * keeps the two handles apart. Node's Control is an EventEmitter, but the
+ * channel surface programs use is these two methods. */
+static ScrDyn *scr_child_channel_invoke(
+    void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+    const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  ScrChild *child = h;
+  if (!strcmp(method, "ref")) {
+    scr_child_channel_ref(child);
+  } else if (!strcmp(method, "unref")) {
+    scr_child_channel_unref(child);
+  } else {
+    char msg[160];
+    int n = snprintf(msg, sizeof msg, "%s is not a function", what);
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    return NULL;
+  }
+  /* Node's Control answers undefined from both methods. */
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static const ScrDynHandleMethod scr_child_channel_methods[] = {
+  {"ref", 0, false, NULL},
+  {"unref", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+
+static const ScrDynHandleOps scr_child_channel_ops = {
+  .cls = "Control",
+  .retain = &scr_child_retain_v,
+  .release = &scr_child_release_v,
+  .invoke = &scr_child_channel_invoke,
+  .methods = scr_child_channel_methods,
+};
+
+ScrDyn *scr_child_channel(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->channel(c->island));
+  if (c->ipc == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  if (!c->ipc->connected) return scr_dyn_new_null();
+  scr_dyn_handle_install(SCR_DYNH_CHILD_CHANNEL, &scr_child_channel_ops);
+  return scr_dyn_new_handle(c, SCR_DYNH_CHILD_CHANNEL);
+}
+
+void scr_child_channel_ref(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrDyn *channel = scr_child_island_ops->channel(c->island);
+                if (channel->kind == SCR_DYN_HANDLE) {
+                  scr_dyn_release(scr_dyn_invoke(channel, "ref", NULL, 0, "channel.ref"));
+                }
+                scr_dyn_release(channel);
+                return);
+  bool before = scr_child_liveness(c);
+  /* Node's Control holds the pipe handle only while the channel is
+   * connected: on disconnect the handle is dropped, and ref() on a saved
+   * control object does nothing, so a disconnected channel never rejoins
+   * the loop's keep-alive set. */
+  if (c->ipc != NULL && c->ipc->connected && !c->settled)
+    c->channel_reffed = true;
+  scr_child_liveness_apply(c, before);
+}
+
+void scr_child_channel_unref(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrDyn *channel = scr_child_island_ops->channel(c->island);
+                if (channel->kind == SCR_DYN_HANDLE) {
+                  scr_dyn_release(scr_dyn_invoke(channel, "unref", NULL, 0, "channel.unref"));
+                }
+                scr_dyn_release(channel);
+                return);
+  bool before = scr_child_liveness(c);
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, before);
 }
 
 static bool scr_child_dyn_set(
@@ -9142,6 +10238,7 @@ static const ScrLoopChildren scr_child_loop_hooks = {
   &scr_children_ready,
   &scr_children_reffed_pending,
   &scr_children_failed_pending,
+  &scr_children_next_deadline,
   &scr_children_poll,
   &scr_children_wait,
   &scr_children_wake_fd,

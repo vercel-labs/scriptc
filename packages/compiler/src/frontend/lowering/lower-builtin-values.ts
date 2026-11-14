@@ -27,6 +27,7 @@ import { keyedHelperName } from "./stable-names.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   BUILTIN_MODULE_CONSTS,
+  builtinModuleFnOf,
   builtinModuleFns,
   OBJECT_CALLABLE_VALUES,
   builtinConstLit,
@@ -159,6 +160,17 @@ export function isNativeBuiltinValueInitializer(
     ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(
       builtin.member,
     )
+  )
+    return true;
+  // fs's error-first functions read as values answer the checked-dynamic
+  // callable the runtime validates each argument of (fs.callbackValue).
+  // npm code binds them at file scope (`var origRealpath = fs.realpath`)
+  // and calls the binding from separately declared functions; the shared
+  // slot keeps that call on the dispatcher instead of cascading to a
+  // per-reference fence.
+  if (
+    builtin?.module === "fs" &&
+    builtinModuleFnOf(lowerer, builtin.module, builtin.member)?.fn === "fs.callbackCall"
   )
     return true;
   // JS global snapshots may use an opaque builtin identity rather than

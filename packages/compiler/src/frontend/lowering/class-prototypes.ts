@@ -13,7 +13,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { locOf } from "../program.js";
 import {
   classMemberNameOf,
   classValueRef,
@@ -538,8 +538,8 @@ export function isErrorPrototypeValue(
 /** Whether a bare `C.prototype` read becomes the prototype of another object
  * or is only compared or inspected: the argument of `Object.create` or
  * `Object.getPrototypeOf` / `Reflect.getPrototypeOf`, the prototype argument
- * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, or an operand of
- * `===` / `!==`. In these positions the complete view of the
+ * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, an operand of
+ * `===` / `!==`, or the object `in` asks about. In these positions the complete view of the
  * prototype (reflectClassPrototype) answers. Objects that inherit from it
  * run the class's methods with themselves as the receiver, which the
  * methods' receiver-independent lowering (reflectedClassMethodValue)
@@ -570,7 +570,8 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   return (
     ts.isBinaryExpression(parent) &&
     (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+      (parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === node))
   );
 }
 
@@ -595,14 +596,14 @@ function erasedCastPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression)
   );
 }
 
-/** A module-level JavaScript class named directly (not a class value that
- * may hold a subclass at run time): its prototype has a complete view whose
- * methods accept any receiver. */
+/** A module-level class named directly (not a class value that may hold a
+ * subclass at run time): its prototype has a complete view. A JavaScript
+ * class's methods there accept any receiver; a TypeScript class's check that
+ * the receiver is an instance of the class, as their direct calls do. */
 function viewableClass(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
   return (
     info.decl !== null &&
     info.localClass === undefined &&
-    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
     exactClassOfReceiver(lowerer, receiver) === info
   );
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/float-array-stride-bodies/main.ts"
+ ],
+ "diags": []
+}

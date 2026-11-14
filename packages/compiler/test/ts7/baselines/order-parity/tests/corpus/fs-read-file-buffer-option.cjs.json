@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-read-file-buffer-option.cjs"
+ ],
+ "diags": []
+}

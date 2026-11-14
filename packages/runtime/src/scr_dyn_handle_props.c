@@ -1,8 +1,8 @@
 /* Own properties that JavaScript adds to runtime handles: a Date, RegExp,
  * Map, Set, WeakMap, WeakSet, ArrayBuffer, SharedArrayBuffer,
- * FinalizationRegistry, ChildProcess or a fetch Request, Response or Headers
- * (`d.tag = 1`, Object.defineProperty(map, "label", ...), execa's child
- * mixin, `req.context = {}`).
+ * FinalizationRegistry, WeakRef, ChildProcess or a fetch Request, Response or
+ * Headers (`d.tag = 1`, Object.defineProperty(map, "label", ...), execa's
+ * child mixin, `req.context = {}`).
  *
  * A handle crosses into the checked-dynamic tree as a fresh box each time
  * and its identity is the native object, so its properties live in a side
@@ -215,7 +215,7 @@ static ScrDyn *hp_method_value(void *h, const char *key, size_t key_len) {
 
 #define HP_TAGS(X) \
   X(DATE) X(REGEXP) X(MAP) X(SET) X(WEAK_MAP) X(WEAK_SET) \
-  X(ARRAY_BUFFER) X(SHARED_ARRAY_BUFFER) X(FINALIZATION_REGISTRY) \
+  X(ARRAY_BUFFER) X(SHARED_ARRAY_BUFFER) X(FINALIZATION_REGISTRY) X(WEAK_REF) \
   X(FETCH_REQUEST) X(FETCH_RESPONSE) X(FETCH_HEADERS)
 
 static bool hp_accepts(ScrDynHandleTag tag) {
@@ -546,6 +546,7 @@ static bool hp_class_tag(const char *name, size_t len, ScrDynHandleTag *out) {
     { "ArrayBuffer", SCR_DYNH_ARRAY_BUFFER },
     { "SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER },
     { "FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY },
+    { "WeakRef", SCR_DYNH_WEAK_REF },
   };
   for (size_t i = 0; i < sizeof classes / sizeof *classes; i++)
     if (strlen(classes[i].name) == len && memcmp(classes[i].name, name, len) == 0) {

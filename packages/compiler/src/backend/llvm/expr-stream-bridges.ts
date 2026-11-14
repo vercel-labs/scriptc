@@ -13,6 +13,8 @@ import {
   classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
+  isPerfEntryShape,
+  isPerfNodeTimingShape,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
@@ -1267,9 +1269,17 @@ export function streamTypedRefMaterializeAdapter(
       };
       // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
-      // the non-enumerable %dtype).
+      // the non-enumerable %dtype), and so does a perf_hooks entry row: an
+      // unowned name on a live record capsule (toJSON, a class member) is
+      // otherwise answered from Object.prototype without the view that
+      // carries the entry class's prototype.
       const dirent = isDirentShape(shape);
-      if (!dirent && orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))) {
+      const perfEntry = isPerfEntryShape(shape) || isPerfNodeTimingShape(shape);
+      if (
+        !dirent &&
+        !perfEntry &&
+        orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))
+      ) {
         if (orders.length === 1) {
           adapter.recordOps = `@${snapshot}_rops`;
           liveRecordOps(host, t, snapshot, fieldsOf(orders[0]!));
@@ -1326,6 +1336,13 @@ export function streamTypedRefMaterializeAdapter(
       if (dirent) {
         host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
         B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
+      }
+      // A perf_hooks entry row's live view takes the entry class prototype
+      // its entryType names, as its copied view does, so instanceof and
+      // util.inspect answer like Node's from either path.
+      if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
+        host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+        B.line(`call void @scr_dyn_perf_entry_finish(ptr ${out})`);
       }
       B.terminate(`ret ptr ${out}`);
     }

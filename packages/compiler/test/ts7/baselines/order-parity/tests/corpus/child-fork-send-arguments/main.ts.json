@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-fork-send-arguments/main.ts"
+ ],
+ "diags": []
+}

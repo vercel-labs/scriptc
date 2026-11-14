@@ -118,12 +118,35 @@ ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack);
  * argument count (+1, or NULL with the exception pending). */
 ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *colors,
                          double argc);
+/* console.dir(value[, options]) over a checked-dynamic value: inspect with
+ * custom inspection off over the program's util.inspect.defaultOptions,
+ * then the call's own options; argc is the call's argument count (+1, or
+ * NULL with the exception pending). */
+ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc);
 /* Whether a format string has a '%' before its last character, the only
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);
 bool scr_insp_format_specifies_dyn(ScrDyn *first);
-/* format's %s over a dyn value: scr_insp_dyn_s, except that values whose
- * class defines its own toString print String(value). */
+/* Reads a styleType's SGR pair from inspect.colors and inspect.styles as
+ * the program left them (scr_inspect.c's insp_style_pair). The inspect
+ * value's creation stores it, so only a program that read util.inspect as
+ * a value — the one that can have replaced either table — loads the live
+ * tables; every other rendering uses the built-in codes. The slot has
+ * external linkage so a static rendering's call stays indirect and its
+ * object keeps no reference to the reader. NULL until then. */
+extern SCR_TL bool (*scr_insp_style_pair_hook)(const char *type, size_t len, ScrStr **open,
+                                               ScrStr **close);
+/* Copies the values a program put on util.inspect.defaultOptions over the
+ * built-in defaults (scr_inspect.c's insp_apply_default_options). The
+ * defaults object's creation stores it, so only a program that read
+ * defaultOptions — which is the only way its values can be there — loads
+ * the object reader; every other rendering keeps the constants. As above,
+ * the slot's external linkage keeps the call indirect. NULL until then. */
+extern SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
+/* format's %s over a dyn value: strings verbatim, numbers and bigints by
+ * their formatNumber/formatBigInt spellings, an object whose toString the
+ * program owns as String(value), and everything else inspected at depth 0
+ * with compact 3 and no colors — the caller's depth is not used. */
 ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 /* A showHidden render for `surface`; custom < 0 keeps the caller's custom
@@ -240,10 +263,21 @@ bool scr_dataview_write_u64_raw(ScrBytes *b, double offset, bool le, uint64_t va
  * Buffer forms of scr_lib.c's utf8 pair, byte-exact and NUL-safe.
  * Failures THROW catchably (scr_fs_throw, Node-shaped messages). */
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
-/* readFileSync's runtime-encoding form (scr_bytes_io.c's note): +1 dyn
- * value — a Buffer box for nullish/empty encodings, a decoded string otherwise — or NULL
- * with the exception pending. */
-ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
+/* readFileSync(path, options)'s full ladder (scr_bytes_io.c's note) in its
+ * three answer types: a decoded string, the raw Buffer bytes, or the
+ * unchecked dyn value that picks between them at run time. The options
+ * argument is the raw second argument (a string, a bag, or the defaults);
+ * failures THROW catchably. */
+ScrStr *scr_fs_read_file_str_opts(ScrStr *path, const ScrDyn *options);   /* +1 string */
+ScrBytes *scr_fs_read_file_bytes_opts(ScrStr *path, const ScrDyn *options); /* +1 Buffer */
+ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *options);   /* +1 dyn */
+/* statSync / lstatSync / fstatSync with the options held at run time: the
+ * bigint member picks Stats or BigIntStats, throwIfNoEntry (stat and lstat)
+ * the missing-entry answer. A +1 dynamic Stats object, or NULL with the
+ * exception pending. */
+ScrDyn *scr_fs_stat_sync_dyn(ScrStr *path, const ScrDyn *options);        /* +1 dyn */
+ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options);       /* +1 dyn */
+ScrDyn *scr_fs_fstat_sync_dyn(const ScrDyn *fd, const ScrDyn *options); /* +1 dyn */
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
 /* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
  * check Node runs before it converts a URL path. */

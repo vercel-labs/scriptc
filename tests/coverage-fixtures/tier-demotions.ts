@@ -7,9 +7,11 @@ class Point {
 }
 
 // Reflection on a class: the dynamic tier would give Point a prototype object.
-(Point.prototype as any).norm = function () {
-  return 0;
-};
+Object.setPrototypeOf(Point.prototype, {
+  norm() {
+    return 0;
+  },
+});
 
 // Already dynamic: a property read on an `any` value.
 function readName(text: string): string {

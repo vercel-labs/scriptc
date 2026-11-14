@@ -700,6 +700,26 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* util.transferableAbortSignal(signal): node checks the argument and
+ * answers the same signal. The transfer marking it leaves on the signal is
+ * read only by structuredClone/postMessage, which copy any AbortSignal the
+ * same way, so the same box (+1) is the whole observable behavior. */
+ScrDyn *scr_util_transferable_abort_signal(ScrDyn *signal) {
+  if (signal == NULL) signal = scr_dyn_undefined();
+  if (signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
+  return scr_dyn_retain(signal);
+}
+
+/* util.transferableAbortController(): an ordinary AbortController (+1),
+ * whose signal carries the same (unobserved) transfer marking. */
+ScrDyn *scr_util_transferable_abort_controller(void) {
+  return scr_fetch_abort_controller_new();
+}
+
 static ScrDyn *sf_abort_controller_invoke(
     void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
     size_t argc, const char *what) {
@@ -6873,6 +6893,8 @@ typedef struct SfRequest {
   ScrStr *url;
   ScrStr *method;
   ScrStr *redirect;
+  ScrStr *cache;
+  ScrStr *credentials;
   SfSignal *signal;
 } SfRequest;
 
@@ -6886,6 +6908,7 @@ static void sf_request_release_v(void *ptr) {
   scr_weak_dispose_inline(r);
   sf_response_release(r->payload);
   scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
+  scr_str_release(r->cache); scr_str_release(r->credentials);
   sf_signal_release(r->signal); free(r);
 }
 static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
@@ -6893,13 +6916,15 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (sf_name(key, len, "url")) return scr_dyn_new_str(r->url);
   if (sf_name(key, len, "method")) return scr_dyn_new_str(r->method);
   if (sf_name(key, len, "redirect")) return scr_dyn_new_str(r->redirect);
+  if (sf_name(key, len, "cache")) return scr_dyn_new_str(r->cache);
+  if (sf_name(key, len, "credentials")) return scr_dyn_new_str(r->credentials);
   if (sf_name(key, len, "signal")) return scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL);
   if (sf_name(key, len, "duplex")) { ScrStr *s = scr_str_new("half", 4); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   const char *default_value = NULL;
   if (sf_name(key, len, "destination") || sf_name(key, len, "integrity") || sf_name(key, len, "referrerPolicy")) default_value = "";
+  /* mode stays a fenced RequestInit member: a Request always answers the
+   * value its constructor would have stored from the default. */
   if (sf_name(key, len, "mode")) default_value = "cors";
-  if (sf_name(key, len, "credentials")) default_value = "same-origin";
-  if (sf_name(key, len, "cache")) default_value = "default";
   if (sf_name(key, len, "referrer")) default_value = "about:client";
   if (default_value) { ScrStr *s = scr_str_new(default_value, strlen(default_value)); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   if (sf_name(key, len, "keepalive") || sf_name(key, len, "isReloadNavigation") || sf_name(key, len, "isHistoryNavigation")) return scr_dyn_new_bool(false);
@@ -6928,6 +6953,8 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
   c->url = scr_str_retain(r->url);
   c->method = scr_str_retain(r->method);
   c->redirect = scr_str_retain(r->redirect);
+  c->cache = scr_str_retain(r->cache);
+  c->credentials = scr_str_retain(r->credentials);
   c->signal = sf_signal_retain((SfSignal *)follower->v.handle.ptr);
   scr_dyn_release(follower);
   ScrDyn *out = scr_dyn_new_handle(c, SCR_DYNH_FETCH_REQUEST);
@@ -6955,45 +6982,135 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init) {
   return result;
 }
 
+/* The RequestInit dictionary members whose value Node's Request keeps as a
+ * string (cache, credentials): WebIDL converts the value with String()
+ * (so `false` reads "false" and `null` reads "null"), then undici's
+ * converter rejects a value the enum does not list with its own message.
+ * A member left undefined inherits the input Request's value, else the
+ * spec default. Returns +1, or NULL with an exception pending. */
+static const char *const sf_cache_values[] = {
+    "default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached",
+};
+static const char *const sf_credentials_values[] = {"omit", "same-origin", "include"};
+
+static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, size_t key_len,
+                                           const char *const *accepted, size_t count,
+                                           const char *expected, const ScrStr *inherited,
+                                           const char *fallback) {
+  ScrDyn *value = sf_response_init_get(init, key, key_len);
+  if (value && value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    value = NULL;
+  }
+  if (!value) {
+    const ScrStr *base = inherited != NULL ? inherited : NULL;
+    return base != NULL ? scr_str_retain((ScrStr *)base) : scr_str_new(fallback, strlen(fallback));
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  scr_dyn_release(value);
+  if (!text) return NULL;
+  for (size_t i = 0; i < count; i++) {
+    if (strlen(accepted[i]) == text->len && memcmp(accepted[i], text->data, text->len) == 0)
+      return text;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "undefined: ");
+  scr_jb_write(&b, text->data, text->len);
+  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
+  scr_jb_puts(&b, expected);
+  scr_jb_puts(&b, ".");
+  scr_str_release(text);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+/* `cache: "only-if-cached"` is valid only together with mode "same-origin"
+ * (undici's rule); the mode is read from the init a constructor call was
+ * given. Throws the TypeError and answers true when the pair is invalid. */
+static bool sf_only_if_cached_needs_same_origin(const ScrDyn *init, const ScrStr *cache) {
+  if (!sf_name(cache->data, cache->len, "only-if-cached")) return false;
+  ScrStr *mode = NULL;
+  ScrDyn *mode_value = sf_response_init_get(init, "mode", 4);
+  if (mode_value && mode_value->kind != SCR_DYN_UNDEF) mode = scr_dyn_string_coerce_js(mode_value);
+  scr_dyn_release(mode_value);
+  /* A mode whose conversion threw reports that exception, as Node's
+   * dictionary conversion would. */
+  if (scr_exc_pending()) return true;
+  bool same_origin = mode != NULL && sf_name(mode->data, mode->len, "same-origin");
+  scr_str_release(mode);
+  if (same_origin) return false;
+  sf_type_error("'only-if-cached' can be set only with 'same-origin' mode");
+  return true;
+}
+
 ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   SfRequest *source = input && input->kind == SCR_DYN_HANDLE && input->v.handle.tag == SCR_DYNH_FETCH_REQUEST ? input->v.handle.ptr : NULL;
   if (init && init->kind != SCR_DYN_UNDEF && init->kind != SCR_DYN_NULL && !sf_response_init_object_like(init)) {
     sf_type_error("Request constructor init must be an object"); return NULL;
   }
+  /* WebIDL converts the arguments left to right — the input to a string
+   * first — and the RequestInit dictionary before the constructor body
+   * parses the input URL: cache, then credentials (the dictionary's
+   * alphabetical member order). */
   ScrStr *url_text = source ? scr_str_retain(source->url) : scr_dyn_string_coerce_js(input);
   if (!url_text) return NULL;
+  ScrStr *cache_text =
+      sf_request_init_string_enum(init, "cache", 5, sf_cache_values, 6,
+                                  "default, no-store, reload, no-cache, force-cache, only-if-cached",
+                                  source ? source->cache : NULL, "default");
+  if (!cache_text) {
+    scr_str_release(url_text);
+    return NULL;
+  }
+  ScrStr *credentials_text =
+      sf_request_init_string_enum(init, "credentials", 11, sf_credentials_values, 3,
+                                  "omit, same-origin, include",
+                                  source ? source->credentials : NULL, "same-origin");
+  if (!credentials_text) {
+    scr_str_release(cache_text);
+    scr_str_release(url_text);
+    return NULL;
+  }
+  if (sf_only_if_cached_needs_same_origin(init, cache_text)) {
+    scr_str_release(cache_text);
+    scr_str_release(credentials_text);
+    scr_str_release(url_text);
+    return NULL;
+  }
   ScrUrl *url = scr_url_new(url_text);
   if (!url) sf_throw_url_parse_failure(url_text);
   scr_str_release(url_text);
-  if (!url) return NULL;
-  if (url->userinfo->len) { scr_url_release(url); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
+  if (!url) { scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
+  if (url->userinfo->len) { scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
   ScrDyn *dictionary = scr_dyn_new_obj();
   ScrDyn *method = sf_response_init_get(init, "method", 6);
   if ((!method || method->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(method); method = scr_dyn_new_str(source->method); }
   if (method) scr_dyn_obj_set(dictionary, "method", 6, method);
   ScrStr *method_text = sf_method_value(dictionary);
   scr_dyn_release(dictionary);
-  if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *body = sf_response_init_get(init, "body", 4);
   bool supplied = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (!supplied && source && !source->payload->null_body) {
     if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
         sf_view_unusable(source->payload->body)) {
       scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url);
+      scr_str_release(cache_text); scr_str_release(credentials_text);
       sf_type_error("Cannot construct a Request with a Request object that has already been used."); return NULL;
     }
     scr_dyn_release(body); body = scr_dyn_new_handle(source->payload->body, SCR_DYNH_WEB_STREAM);
   }
   bool has_body = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
-    scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
+    scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
   }
   if (supplied && sf_is_stream_body(body)) {
     ScrDyn *duplex = sf_response_init_get(init, "duplex", 6);
     ScrStr *text = duplex && duplex->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(duplex) : NULL;
     scr_dyn_release(duplex);
     bool half = text && sf_name(text->data, text->len, "half"); scr_str_release(text);
-    if (!half) { scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("RequestInit: duplex option is required when sending a body."); return NULL; }
+    if (!half) { scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("RequestInit: duplex option is required when sending a body."); return NULL; }
   }
   ScrDyn *headers = sf_response_init_get(init, "headers", 7);
   if ((!headers || headers->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(headers); headers = scr_dyn_new_handle(source->payload->headers, SCR_DYNH_FETCH_HEADERS); }
@@ -7001,7 +7118,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (headers) scr_dyn_obj_set(payload_init, "headers", 7, headers);
   ScrDyn *payload = scr_fetch_response_new(body, payload_init);
   scr_dyn_release(payload_init); scr_dyn_release(body);
-  if (!payload) { scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!payload) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *signal = sf_response_init_get(init, "signal", 6);
   if ((!signal || signal->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(signal); signal = scr_dyn_new_handle(source->signal, SCR_DYNH_ABORT_SIGNAL); }
   SfSignal *following = NULL;
@@ -7011,16 +7128,17 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
     if (dependent) { following = sf_signal_retain(dependent->v.handle.ptr); scr_dyn_release(dependent); }
   } else following = sf_signal_new();
   scr_dyn_release(signal);
-  if (!following) { scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!following) { scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *redirect = sf_response_init_get(init, "redirect", 8);
   ScrStr *redirect_text = redirect && redirect->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(redirect) : source ? scr_str_retain(source->redirect) : scr_str_new("follow", 6);
   scr_dyn_release(redirect);
   if (!redirect_text || !(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
-    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); sf_type_error("Invalid Request redirect value"); return NULL;
+    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Invalid Request redirect value"); return NULL;
   }
   SfRequest *r = calloc(1, sizeof *r); if (!r) sf_oom();
   r->rc = 1; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
   r->url = scr_url_href(url); scr_url_release(url); r->method = method_text; r->redirect = redirect_text; r->signal = following;
+  r->cache = cache_text; r->credentials = credentials_text;
   ScrDyn *result = scr_dyn_new_handle(r, SCR_DYNH_FETCH_REQUEST); sf_request_release_v(r); return result;
 }
 
@@ -7041,6 +7159,7 @@ ScrPromise *scr_fetch_input(ScrDyn *input, ScrDyn *init) {
     scr_dyn_obj_set(dictionary, "headers", 7, scr_dyn_new_handle(r->payload->headers, SCR_DYNH_FETCH_HEADERS));
     scr_dyn_obj_set(dictionary, "signal", 6, scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL));
     scr_dyn_obj_set(dictionary, "redirect", 8, scr_dyn_new_str(r->redirect));
+    scr_dyn_obj_set(dictionary, "cache", 5, scr_dyn_new_str(r->cache));
     if (!r->payload->null_body) {
       scr_dyn_obj_set(dictionary, "body", 4, scr_dyn_new_handle(r->payload->body, SCR_DYNH_WEB_STREAM));
       ScrStr *half = scr_str_new("half", 4); scr_dyn_obj_set(dictionary, "duplex", 6, scr_dyn_new_str(half)); scr_str_release(half);
@@ -7131,6 +7250,44 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   return result;
 }
 
+#ifdef SCR_WEB_BODIES
+/* fetch() of an object URL (URL.createObjectURL's "blob:nodedata:<uuid>"):
+ * the registered Blob or File answers 200 OK with its bytes, its size as
+ * Content-Length and its type as Content-Type (an empty value when the
+ * Blob carries none), like undici's blob: response. The request URL is
+ * already serialized without its fragment; only GET reaches here. */
+static ScrDyn *sf_object_url_response(ScrStr *url) {
+  ScrDyn *blob = scr_url_lookup_object_url(url);
+  if (!blob) { sf_type_error("fetch failed"); return NULL; }
+  ScrBytes *bytes = NULL;
+  ScrStr *type = NULL;
+  bool ok = sf_blob_body(blob, &bytes, &type);
+  scr_dyn_release(blob);
+  if (!ok) { sf_type_error("fetch failed"); return NULL; }
+  size_t size = bytes->len;
+  ScrDyn *body = scr_dyn_new_bytes(bytes); scr_bytes_release(bytes);
+  ScrDyn *headers = scr_dyn_new_obj();
+  char length_text[32];
+  int length_len = snprintf(length_text, sizeof length_text, "%zu", size);
+  ScrStr *length_value = scr_str_new(length_text, (size_t)length_len);
+  scr_dyn_obj_set(headers, "content-length", 14, scr_dyn_new_str(length_value));
+  scr_str_release(length_value);
+  ScrStr *mime = type ? type : scr_str_new("", 0);
+  scr_dyn_obj_set(headers, "content-type", 12, scr_dyn_new_str(mime));
+  scr_str_release(mime);
+  ScrDyn *init = scr_dyn_new_obj(); scr_dyn_obj_set(init, "headers", 7, headers);
+  ScrStr *ok_text = scr_str_new("OK", 2);
+  scr_dyn_obj_set(init, "statusText", 10, scr_dyn_new_str(ok_text)); scr_str_release(ok_text);
+  ScrDyn *result = scr_fetch_response_new(body, init); scr_dyn_release(body); scr_dyn_release(init);
+  if (result) {
+    SfResponse *response = result->v.handle.ptr;
+    scr_str_release(response->url); response->url = scr_str_new(url->data, url->len);
+    response->headers->immutable = true;
+  }
+  return result;
+}
+#endif
+
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (init && init->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(init);
@@ -7149,6 +7306,35 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
       init->kind != SCR_DYN_UNDEF && init->kind != SCR_DYN_NULL) {
     return sf_reject_now(promise, "fetch failed");
   }
+  /* fetch constructs a Request from its input and init, so cache and
+   * credentials convert (and only-if-cached pairs with mode) before the
+   * transport starts; a rejected value rejects the returned promise. The
+   * cache mode also shapes the request headers below. */
+  bool cache_force_revalidate = false;
+  bool cache_no_cache = false;
+  bool cache_default = false;
+  {
+    ScrStr *cache_text =
+        sf_request_init_string_enum(init, "cache", 5, sf_cache_values, 6,
+                                    "default, no-store, reload, no-cache, force-cache, only-if-cached",
+                                    NULL, "default");
+    if (!cache_text) return sf_reject_now(promise, "fetch failed");
+    ScrStr *credentials_text =
+        sf_request_init_string_enum(init, "credentials", 11, sf_credentials_values, 3,
+                                    "omit, same-origin, include", NULL, "same-origin");
+    if (!credentials_text) {
+      scr_str_release(cache_text);
+      return sf_reject_now(promise, "fetch failed");
+    }
+    cache_force_revalidate = sf_name(cache_text->data, cache_text->len, "no-store") ||
+                             sf_name(cache_text->data, cache_text->len, "reload");
+    cache_no_cache = sf_name(cache_text->data, cache_text->len, "no-cache");
+    cache_default = sf_name(cache_text->data, cache_text->len, "default");
+    bool invalid = sf_only_if_cached_needs_same_origin(init, cache_text);
+    scr_str_release(cache_text);
+    scr_str_release(credentials_text);
+    if (invalid) return sf_reject_now(promise, "fetch failed");
+  }
   if (init && init->kind == SCR_DYN_OBJ) {
     for (size_t i = 0; i < scr_dyn_obj_count(init); i++) {
       ScrDynProp entry = scr_dyn_obj_prop_at(init, i);
@@ -7157,15 +7343,15 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
                        sf_name(entry.key, entry.key_len, "body") ||
                        sf_name(entry.key, entry.key_len, "duplex") ||
                        sf_name(entry.key, entry.key_len, "redirect") ||
-                       sf_name(entry.key, entry.key_len, "signal");
+                       sf_name(entry.key, entry.key_len, "signal") ||
+                       sf_name(entry.key, entry.key_len, "cache") ||
+                       sf_name(entry.key, entry.key_len, "credentials") ||
+                       sf_name(entry.key, entry.key_len, "priority");
       bool recognized_unsupported =
-          sf_name(entry.key, entry.key_len, "cache") ||
-          sf_name(entry.key, entry.key_len, "credentials") ||
           sf_name(entry.key, entry.key_len, "dispatcher") ||
           sf_name(entry.key, entry.key_len, "integrity") ||
           sf_name(entry.key, entry.key_len, "keepalive") ||
           sf_name(entry.key, entry.key_len, "mode") ||
-          sf_name(entry.key, entry.key_len, "priority") ||
           sf_name(entry.key, entry.key_len, "referrer") ||
           sf_name(entry.key, entry.key_len, "referrerPolicy") ||
           sf_name(entry.key, entry.key_len, "window");
@@ -7284,6 +7470,21 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
 #endif
     return sf_reject_now(promise, "fetch failed");
   }
+  /* The Fetch standard's HTTP-network-or-cache fetch headers: no-store and
+   * reload ask for Pragma: no-cache and Cache-Control: no-cache, no-cache
+   * asks for Cache-Control: max-age=0, and a default-mode request carrying
+   * a conditional header revalidates like no-store. A header the program
+   * set itself is kept. */
+  if (cache_default &&
+      (sf_pairs_have(headers, "if-modified-since") || sf_pairs_have(headers, "if-none-match") ||
+       sf_pairs_have(headers, "if-unmodified-since") || sf_pairs_have(headers, "if-match")))
+    cache_force_revalidate = true;
+  if (cache_force_revalidate && !sf_pairs_have(headers, "pragma"))
+    sf_push_header_text(headers, "pragma", "no-cache", 8);
+  if (!sf_pairs_have(headers, "cache-control")) {
+    if (cache_force_revalidate) sf_push_header_text(headers, "cache-control", "no-cache", 8);
+    else if (cache_no_cache) sf_push_header_text(headers, "cache-control", "max-age=0", 9);
+  }
 #ifdef SCR_WEB_BODIES
   if (web_type) {
     if (web_type->len > 0 && !sf_pairs_have(headers, "content-type"))
@@ -7353,7 +7554,8 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
   bool https = sf_eq_ci(u->scheme, "https");
   bool data_url = sf_eq_ci(u->scheme, "data");
-  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url) {
+  bool object_url = sf_eq_ci(u->scheme, "blob");
+  if (!https && !sf_eq_ci(u->scheme, "http") && !data_url && !object_url) {
     scr_dyn_release(coerced_body);
     scr_arr_release(headers);
     scr_str_release(method);
@@ -7443,6 +7645,28 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
     if (response) { scr_promise_resolve_dyn(promise, response); }
     else scr_promise_reject_pending(promise);
+    return promise;
+  }
+
+  /* An object URL resolves in-process to the registered blob's bytes;
+   * like undici's blob: scheme only GET is implemented — any other method
+   * is a "fetch failed" rejection. Without a Blob in the program the
+   * registry is necessarily empty (createObjectURL accepts only a Blob),
+   * so every lookup misses. */
+  if (object_url) {
+#ifdef SCR_WEB_BODIES
+    ScrDyn *response = NULL;
+    if (method->len == 3 && memcmp(method->data, "GET", 3) == 0) {
+      ScrStr *request_url = sf_url_serialize(u);
+      response = sf_object_url_response(request_url);
+      scr_str_release(request_url);
+    }
+#else
+    ScrDyn *response = NULL;
+#endif
+    scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
+    if (response) { scr_promise_resolve_dyn(promise, response); }
+    else return sf_reject_now(promise, "fetch failed");
     return promise;
   }
 
@@ -7539,6 +7763,54 @@ static ScrDyn *sf_rejected(void) {
   return out;
 }
 
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * over the fetch unit's web streams, which Node exposes as ordinary
+ * ReadableStream, WritableStream and TransformStream instances: a body
+ * answers a ReadableStream's kIs* getters (its state is "readable" until
+ * the close drains the queue or an error arrives), the transform's
+ * writable side answers a WritableStream's (kIsErrored at ERRORED, never
+ * ERRORING; kIsWritable only while WRITABLE), and the pair itself, its
+ * readers and writers answer as an object with no booleans. Every web
+ * stream is a non-Node stream, so isDestroyed answers null, and the side a
+ * class does not have answers null. */
+static ScrDyn *sf_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
+  int w = (int)which;
+  if (tag == SCR_DYNH_WEB_STREAM) {
+    SfStream *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->error != NULL);
+      case 2:
+#ifdef SCR_HANDLE_CLASSES
+        /* A read, cancel or pipe started on the body's web view disturbs
+         * it before its pull reaches this stream, as it does for
+         * bodyUsed. */
+        if (s->web_view && scr_web_stream_bridge && scr_web_stream_bridge->disturbed(s->web_view))
+          return scr_dyn_new_bool(true);
+#endif
+        return scr_dyn_new_bool(s->disturbed);
+      case 3: return scr_dyn_new_bool(!s->closed && s->error == NULL);
+      default: return scr_dyn_new_null();
+    }
+  }
+  if (tag == SCR_DYNH_WEB_WRITABLE) {
+    SfTransform *t = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(t->state == SFW_ERRORED);
+      case 2: return scr_dyn_new_bool(false);
+      case 3: return scr_dyn_new_null();
+      default: return scr_dyn_new_bool(t->state == SFW_WRITABLE);
+    }
+  }
+  switch (w) {
+    case 0:
+    case 3:
+    case 4: return scr_dyn_new_null();
+    default: return scr_dyn_new_bool(false);
+  }
+}
+
 static const ScrDynHandleOps sf_signal_ops = {
     "AbortSignal", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
@@ -7555,18 +7827,20 @@ static const ScrDynHandleOps sf_stream_ops = {
 #endif
     .methods = sf_stream_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_reader_ops = {
     "ReadableStreamDefaultReader", &sf_reader_handle_retain_v,
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
     &sf_no_set, NULL, .methods = sf_reader_methods,
     .invalid_this =
         "Value of \"this\" must be of type ReadableStreamDefaultReader",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
-    &sf_no_set, NULL};
+    &sf_no_set, NULL, .stream_predicate = sf_stream_predicate};
 /* undici's constructors are `_Request` and `_Response`, which V8's property
  * TypeErrors print as `#<_Request>`. */
 static const ScrDynHandleOps sf_request_ops = {
@@ -7586,20 +7860,23 @@ static const ScrDynHandleOps sf_headers_ops = {
 
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,
-    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL};
+    &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writable_ops = {
     "WritableStream", &sf_transform_retain_v, &sf_transform_release_v,
     &sf_writable_invoke, &sf_writable_get, &sf_no_set, NULL,
     .methods = sf_writable_methods,
     .invalid_this = "Value of \"this\" must be of type WritableStream",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writer_ops = {
     "WritableStreamDefaultWriter", &sf_writer_handle_retain_v,
     &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
     &sf_no_set, NULL, .methods = sf_writer_methods,
     .invalid_this =
         "Value of \"this\" must be of type WritableStreamDefaultWriter",
-    .rejected = &sf_rejected};
+    .rejected = &sf_rejected,
+    .stream_predicate = sf_stream_predicate};
 
 static void sf_teardown(void) {
   while (sf_live) {

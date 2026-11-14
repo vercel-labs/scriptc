@@ -289,24 +289,101 @@ static const uint8_t *scr_x509_ext(const ScrX509Parts *parts, const uint8_t *oid
   return NULL;
 }
 
-/* An OID's dotted text (OBJ_obj2txt with no_name). */
-static void scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
-  char tmp[24];
-  uint64_t v = 0;
+/* One OID subidentifier as decimal digits, least significant first, with
+ * no truncation: an arc longer than 64 bits must keep its own value, or a
+ * distinct arc could render as a recognized one. Three digits per input
+ * byte leaves room above base-128's rate of about 2.11; the count of
+ * digits used is returned. */
+static size_t scr_x509_dec_arc(char *digits, size_t cap, const uint8_t *p, size_t n) {
+  size_t len = 1;
+  digits[0] = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned carry = p[i] & 0x7f;
+    for (size_t d = 0; d < len; d++) {
+      unsigned t = (unsigned char)digits[d] * 128u + carry;
+      digits[d] = (char)(t % 10u);
+      carry = t / 10u;
+    }
+    while (carry) {
+      if (len == cap) scr_trap("scriptc: out of memory\n");
+      digits[len++] = (char)(carry % 10u);
+      carry /= 10u;
+    }
+  }
+  while (len > 1 && digits[len - 1] == 0) len--;
+  return len;
+}
+
+/* Append `len` decimal digits held least significant first. */
+static void scr_x509_put_dec(ScrX509Buf *b, const char *digits, size_t len) {
+  char tmp[32];
+  char *out = len < sizeof tmp ? tmp : malloc(len);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < len; i++) out[i] = (char)('0' + digits[len - 1 - i]);
+  scr_x509_put(b, out, len);
+  if (out != tmp) free(out);
+}
+
+/* Subtract `sub` (below 100) from a decimal accumulator. */
+static void scr_x509_dec_sub(char *digits, size_t *len, unsigned sub) {
+  unsigned borrow = 0;
+  for (size_t i = 0; i < *len && (sub || borrow); i++) {
+    unsigned take = sub % 10 + borrow;
+    sub /= 10;
+    unsigned t = (unsigned char)digits[i];
+    if (t < take) {
+      digits[i] = (char)(t + 10 - take);
+      borrow = 1;
+    } else {
+      digits[i] = (char)(t - take);
+      borrow = 0;
+    }
+  }
+  while (*len > 1 && digits[*len - 1] == 0) (*len)--;
+}
+
+/* A subidentifier's decimal rendering costs time quadratic in its length,
+ * and no real arc is wider than a 128-bit GUID (19 bytes). Longer arcs are
+ * not rendered: a field that carries one omits it. */
+#define SCR_X509_OID_ARC_MAX 32
+
+/* Whether every subidentifier of `oid` fits the rendering budget. */
+static bool scr_x509_oid_arcs_fit(const uint8_t *oid, size_t n) {
+  size_t arc = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (++arc > SCR_X509_OID_ARC_MAX) return false;
+    if (!(oid[i] & 0x80)) arc = 0;
+  }
+  return true;
+}
+
+/* An OID's dotted text (OBJ_obj2txt with no_name), rendered exactly for
+ * every arc within SCR_X509_OID_ARC_MAX. Answers false, having appended
+ * nothing, for an OID with a wider arc. */
+static bool scr_x509_oid_dotted(ScrX509Buf *b, const uint8_t *oid, size_t n) {
+  if (!scr_x509_oid_arcs_fit(oid, n)) return false;
+  size_t cap = n * 3 + 1;
+  char *digits = malloc(cap);
+  if (!digits) scr_trap("scriptc: out of memory\n");
+  size_t start = 0;
   bool first = true;
   for (size_t i = 0; i < n; i++) {
-    v = (v << 7) | (oid[i] & 0x7f);
     if (oid[i] & 0x80) continue;
+    size_t len = scr_x509_dec_arc(digits, cap, oid + start, i + 1 - start);
+    start = i + 1;
     if (first) {
-      unsigned top = v < 40 ? 0 : v < 80 ? 1 : 2;
-      snprintf(tmp, sizeof tmp, "%u.%llu", top, (unsigned long long)(v - top * 40));
+      unsigned low = (unsigned char)digits[0];
+      unsigned value = len == 1 ? low : len == 2 ? low + 10u * (unsigned char)digits[1] : 80u;
+      unsigned top = value < 40 ? 0 : value < 80 ? 1 : 2;
+      if (top) scr_x509_dec_sub(digits, &len, top * 40);
+      scr_x509_putc(b, (char)('0' + top));
       first = false;
-    } else {
-      snprintf(tmp, sizeof tmp, ".%llu", (unsigned long long)v);
     }
-    scr_x509_puts(b, tmp);
-    v = 0;
+    scr_x509_putc(b, '.');
+    scr_x509_put_dec(b, digits, len);
   }
+  free(digits);
+  return true;
 }
 
 typedef struct {
@@ -384,7 +461,7 @@ static const ScrX509OidName scr_x509_access_names[] = {
 static bool scr_x509_oid_name(ScrX509Buf *b, const uint8_t *oid, size_t n,
                               const ScrX509OidName *table, size_t count) {
   ScrX509Buf dotted = {0};
-  scr_x509_oid_dotted(&dotted, oid, n);
+  if (!scr_x509_oid_dotted(&dotted, oid, n)) return false;
   for (size_t i = 0; i < count; i++) {
     if (strlen(table[i].oid) == dotted.len && memcmp(table[i].oid, dotted.data, dotted.len) == 0) {
       scr_x509_puts(b, table[i].name);
@@ -604,6 +681,7 @@ static void scr_x509_general_name(ScrX509Buf *b, uint8_t tag, const uint8_t *v, 
       return;
     }
     case 0x88: /* registeredID */
+      if (!scr_x509_oid_arcs_fit(v, n)) return;
       scr_x509_puts(b, "Registered ID:");
       scr_x509_oid_dotted(b, v, n);
       return;
@@ -1746,6 +1824,33 @@ static void scr_x509_key_fields(const ScrX509Parts *parts, ScrDyn *slots[6]) {
 
 static const uint8_t SCR_X509_OID_EKU[] = {0x55, 0x1D, 0x25};
 
+/* x509.keyUsage: Node's enumUsages — undefined when the extended key usage
+ * extension is absent, the dotted OID of each purpose otherwise (an empty
+ * sequence answers an empty array). */
+ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der) {
+  ScrX509Parts parts;
+  if (!scr_x509_parts(SCR_X509_DER(der), &parts)) return scr_dyn_undefined();
+  size_t n;
+  const uint8_t *eku = scr_x509_ext(&parts, SCR_X509_OID_EKU, sizeof SCR_X509_OID_EKU, &n);
+  uint8_t tag;
+  size_t len;
+  const uint8_t *purposes = eku ? scr_der_tl(eku, eku + n, &tag, &len) : NULL;
+  if (!purposes || tag != 0x30) return scr_dyn_undefined();
+  ScrDyn *arr = scr_dyn_new_arr();
+  const uint8_t *end = purposes + len;
+  for (const uint8_t *p = purposes; p < end;) {
+    const uint8_t *oid = scr_der_tl(p, end, &tag, &len);
+    if (!oid) break;
+    p = oid + len;
+    if (tag != 0x06) continue;
+    ScrX509Buf dotted = {0};
+    if (!scr_x509_oid_dotted(&dotted, oid, len)) continue;
+    scr_dyn_arr_push(arr, scr_x509_dyn_text(dotted.data, dotted.len));
+    free(dotted.data);
+  }
+  return arr;
+}
+
 /* x509.toLegacyObject(): Node's X509ToObject, member order included. */
 ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
   ScrX509Parts parts;
@@ -1784,28 +1889,7 @@ ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
     scr_dyn_obj_set(obj, texts[i].key, strlen(texts[i].key), scr_dyn_new_str(s));
     scr_str_release(s);
   }
-  size_t n;
-  const uint8_t *eku = ok ? scr_x509_ext(&parts, SCR_X509_OID_EKU, sizeof SCR_X509_OID_EKU, &n) : NULL;
-  uint8_t tag;
-  size_t len;
-  const uint8_t *purposes = eku ? scr_der_tl(eku, eku + n, &tag, &len) : NULL;
-  if (purposes && tag == 0x30) {
-    ScrDyn *arr = scr_dyn_new_arr();
-    const uint8_t *end = purposes + len;
-    for (const uint8_t *p = purposes; p < end;) {
-      const uint8_t *oid = scr_der_tl(p, end, &tag, &len);
-      if (!oid) break;
-      p = oid + len;
-      if (tag != 0x06) continue;
-      ScrX509Buf dotted = {0};
-      scr_x509_oid_dotted(&dotted, oid, len);
-      scr_dyn_arr_push(arr, scr_x509_dyn_text(dotted.data, dotted.len));
-      free(dotted.data);
-    }
-    scr_dyn_obj_set(obj, "ext_key_usage", 13, arr);
-  } else {
-    scr_dyn_obj_set(obj, "ext_key_usage", 13, scr_dyn_undefined());
-  }
+  scr_dyn_obj_set(obj, "ext_key_usage", 13, scr_crypto_x509_key_usage(der));
   ScrStr *serial = scr_crypto_x509_serial_number(der);
   scr_dyn_obj_set(obj, "serialNumber", 12, scr_dyn_new_str(serial));
   scr_str_release(serial);

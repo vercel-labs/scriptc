@@ -543,6 +543,19 @@ SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
 SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
 #endif
 
+/* The 'beforeExit' hook (scr_events.c sets it in scr_events_install — the
+ * loop-hook pattern, so listener-free binaries keep their size class):
+ * called with process.exitCode when the loop runs out of ref'd work;
+ * false = no listener is registered. */
+SCR_TL bool (*scr_process_before_exit_hook)(double code) = NULL;
+
+/* The 'multipleResolves' hook (scr_async_dyn.c installs it while a listener
+ * is registered — the same listener-free-binaries pattern): called by the
+ * settle paths when a resolution or rejection arrives at a promise that
+ * already resolved. `type` is 0 (resolve) or 1 (reject) for the settle that
+ * lost, and `value` is the value it passed, +1 (the hook owns it). */
+SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value) = NULL;
+
 /* Every handler attach funnels here: mark the rejection observed, and
  * fire Node's 'rejectionHandled' when the attach arrived AFTER the
  * report delivered this promise to 'unhandledRejection' listeners (the
@@ -4182,9 +4195,15 @@ static void scr_dir_deliver_op(ScrDirOp *op) {
   scr_dyn_release(arguments);
 }
 
-/* dir.close(callback): a closed Dir reports ERR_DIR_CLOSED on a next tick;
- * otherwise the handle closes now and the callback follows on the loop. */
+/* dir.close(callback): the callback is validated before anything else
+ * (Node's validateFunction runs ahead of its closed check), a closed Dir
+ * reports ERR_DIR_CLOSED on a next tick, and otherwise the handle closes
+ * now and the callback follows on the loop. */
 void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
   ScrDirOp *op = scr_dir_op_new(d, true);
   op->callback = scr_dyn_retain(callback);
   if (d->closed) {
@@ -5561,6 +5580,17 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
   scr_stream_dispatch_fn = dispatch;
 }
 
+/* The event-loop metrics hook (scr_perf_loop.c, when linked): `turn` counts
+ * one loop turn, `exit` records the loop's end. scr_perf_loop_mark installs
+ * them only in programs that read the metrics. */
+static SCR_TL void (*scr_loop_metrics_turn_fn)(void) = NULL;
+static SCR_TL void (*scr_loop_metrics_exit_fn)(void) = NULL;
+
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void)) {
+  scr_loop_metrics_turn_fn = turn;
+  scr_loop_metrics_exit_fn = exit;
+}
+
 #ifdef SCR_WORKERS
 static SCR_TL bool (*scr_workers_pending_fn)(void);
 static SCR_TL void (*scr_workers_dispatch_fn)(void);
@@ -6245,6 +6275,10 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool kids = scr_loop_children != NULL && scr_loop_children->pending();
   bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
   bool kids_failed = scr_loop_children != NULL && scr_loop_children->failed_pending();
+  /* exec/execFile's timeout: Node's setTimeout timer keeps the loop alive
+   * and wakes it, even for an unref'd child. */
+  double kids_deadline =
+      scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
   bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
   bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
   bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
@@ -6269,11 +6303,11 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   /* jobs this thread completed during the turn: delivered next turn */
   bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
 #ifdef SCR_NODE_ISLANDS
-  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
-              renames || crypto || deferred || workers || islands;
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers || islands;
 #else
-  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
-              renames || crypto || deferred || workers;
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers;
 #endif
   /* Queued deferred callbacks keep the poll from sleeping (their work is
    * done; only the delivery waits for the next turn). */
@@ -6348,6 +6382,11 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
 #endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
+  /* exec/execFile's timeout deadline caps the sleep, as Node's timer does. */
+  if (kids_deadline >= 0) {
+    double wait = kids_deadline - scr_now_ms();
+    scr_hosted_io_cap(st, wait > 0 ? wait : 0);
+  }
 }
 
 /* The end of one runtime macrotask inside a dispatch station: the throw
@@ -6526,6 +6565,10 @@ static bool scr_loop_run_checkpoint(void) {
   return true;
 }
 
+/* Defined beside the death rule at the end of the pass (the 'beforeExit'
+ * branch re-tests it after listeners ran). */
+static bool scr_loop_has_reffed_work(void);
+
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -6694,6 +6737,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       bool held =
           scr_reffed_timers > 0 || scr_reffed_immediates > 0 ||
           scr_loop_children->reffed_pending() ||
+          /* a pending exec/execFile timeout keeps the loop turning */
+          scr_loop_children->next_deadline() >= 0 ||
           /* spawn failures settle regardless: their 'error' is a
            * next-tick event, delivered even on an unref'd child */
           scr_loop_children->failed_pending() ||
@@ -6721,6 +6766,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* never wait once Node's loop does */
     bool kids = scr_loop_children != NULL && scr_loop_children->pending();
     bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+    /* exec/execFile's timeout: the deadline keeps the loop alive and wakes
+     * it, like Node's setTimeout timer. */
+    double kids_deadline =
+        scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
@@ -6744,10 +6793,32 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
 #ifdef SCR_NODE_ISLANDS
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) {
 #else
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) {
 #endif
+      /* Out of ref'd work: Node emits 'beforeExit' here — the per-thread
+       * loop's exhaustion, so a worker's own loop emits it too — with
+       * process.exitCode as the argument, and re-enters the loop when the
+       * listeners scheduled more of it. The emit's own tick/microtask
+       * checkpoint runs first, so a listener's nextTick or microtask does
+       * run — but alone never causes another emission, exactly Node's
+       * liveness test. A throwing listener leaves its exception pending:
+       * the caller settles it as any macrotask throw (an
+       * uncaughtException listener can therefore keep re-emitting). */
+      if (scr_process_before_exit_hook == NULL) break;
+      if (!scr_process_before_exit_hook((double)scr_exit_code_hint_get())) break;
+      if (!scr_loop_run_checkpoint()) return false;
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
+      if (!scr_loop_has_reffed_work()) break;
+      continue;
+    }
+    /* One loop turn begins here: the turn's remaining phases (timers, poll,
+     * check) and their callbacks read the counter as libuv's loop_count
+     * reports it, and a pass restarted before this point (ticks, a woken
+     * fiber) stays part of the turn that queued them. scr_perf_loop_mark
+     * installs the counter in the programs that read the metrics. */
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -6768,6 +6839,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * - timers only: plain nanosleep to the deadline. */
     double now = scr_now_ms();
     double due = scr_ntimers > 0 ? scr_timers[0].deadline_ms : now + SCR_IO_POLL_MS;
+    /* The earliest exec/execFile timeout wakes the loop exactly there. */
+    if (kids_deadline >= 0 && kids_deadline < due) due = kids_deadline;
     /* The worker pool's wake ends the sleep when a job completes: its pipe
      * joins the poll(2) set on POSIX, and the Windows sleeps wait on its
      * event. Without one (a failed pipe or event, or a child wait that
@@ -7137,6 +7210,32 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   return rejection_failed;
 }
 
+/* Whether any ref'd work would keep the loop alive: the death rule's test
+ * below, recomputed after a 'beforeExit' emission (whose listeners may
+ * have scheduled a timer, an immediate or I/O) — ticks and microtasks are
+ * drained by the emission's own checkpoint instead and never keep Node's
+ * loop alive by themselves. */
+static bool scr_loop_has_reffed_work(void) {
+  bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+  bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
+  bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
+  bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+  bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
+  bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
+  bool renames = scr_fs_renames_pending();
+  bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
+  bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+  bool islands = scr_ni_remote_pending();
+#endif
+  return !(scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net &&
+           !dgram && !watch && !ffi && !renames && !crypto && !workers
+#ifdef SCR_NODE_ISLANDS
+           && !islands
+#endif
+  );
+}
+
 /* A CommonJS main module runs synchronously (Module._load), so the first
  * checkpoint after it drains process.nextTick callbacks before promise
  * jobs like every later one; only an ES-module main's awaited evaluation
@@ -7204,6 +7303,9 @@ bool scr_loop_run(ScrPromise *top_level) {
 #ifdef SCR_NODE_ISLANDS
   scr_loop_root = NULL; /* the caller owns it; checkpoints after the loop do not read it */
 #endif
+  /* The loop has stopped: performance.nodeTiming's loopExit is now fixed, so
+   * exit listeners (inline here, or atexit) still see the final value. */
+  if (scr_loop_metrics_exit_fn != NULL) scr_loop_metrics_exit_fn();
   /* Exit can now leave UNREF'd timers armed in the heap (ordinary
    * exhaustion, a fatal module root, or an unhandled rejection). They
    * never fire, so release their closures here or the RC audit counts
@@ -7386,28 +7488,87 @@ void scr_discard_unhandled_rejections(void) {
 
 /* ── new Promise(executor) ────────────────────────────────────────────── */
 
+/* Hands the value a losing second settle passed to the 'multipleResolves'
+ * machinery (scr_async_dyn.c) as a dyn value (+1), or drops it when nobody
+ * listens — the settle paths below only build the dyn value while a
+ * listener is registered, so listener-free programs pay one NULL test.
+ * `retain` is the REF payload's retain function, which is how a
+ * checked-dynamic payload is told from a typed one; a value the dyn world
+ * cannot represent (a typed record, class instance or array) crosses as an
+ * empty object, the dyn-vs-typed boundary's usual stand-in. */
+static void scr_multiple_resolves_note(ScrPromise *p, int type, ScrExcKind kind,
+                                       double f64, bool b, void *payload,
+                                       void *(*retain)(void *)) {
+  if (scr_multiple_resolves_fn == NULL) return;
+  ScrDyn *value;
+  switch (kind) {
+  case SCR_EXC_F64: value = scr_dyn_new_num(f64); break;
+  case SCR_EXC_BOOL: value = scr_dyn_new_bool(b); break;
+  case SCR_EXC_STR:
+    value = payload != NULL ? scr_dyn_new_str((ScrStr *)payload) : scr_dyn_undefined();
+    break;
+  case SCR_EXC_OBJ:
+    value = payload != NULL && scr_error_is(payload)
+                ? scr_dyn_from_error((const ScrError *)payload)
+                : scr_dyn_new_obj();
+    break;
+  case SCR_EXC_REF:
+  case SCR_EXC_PRIMITIVE_REF:
+    value = payload == NULL            ? scr_dyn_undefined()
+            : retain == scr_dyn_retain_v ? scr_dyn_retain((ScrDyn *)payload)
+                                         : scr_dyn_new_obj();
+    break;
+  default: value = scr_dyn_undefined(); break;
+  }
+  scr_multiple_resolves_fn(p, type, value);
+}
+
+/* The same for a value carried by an exception cell (an executor that threw
+ * after settling its promise — V8's reject-after-resolve); scr_async_dyn.c's
+ * checked-dynamic executor path shares it. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell) {
+  scr_multiple_resolves_note(p, type, cell->kind, cell->f64, cell->b, cell->payload, cell->retain_fn);
+}
+
 /* resolve closures: caps[0] is a box whose slot holds the promise (+1). */
 static ScrPromise *scr_resolve_target(ScrClosure *self) {
   return (ScrPromise *)scr_box_get_ref(self->caps[0]);
 }
 static void scr_resolve_thunk_f64(ScrClosure *self, double v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_f64(p, v);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_F64, v, false, NULL, NULL);
+  } else {
+    scr_promise_fulfill_f64(p, v);
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_bool(ScrClosure *self, bool v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_bool(p, v);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_BOOL, 0, v, NULL, NULL);
+  } else {
+    scr_promise_fulfill_bool(p, v);
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_str(ScrClosure *self, ScrStr *v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_str(p, v); /* callee owns its params: moves in */
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_STR, 0, false, v, NULL);
+    scr_str_release(v);
+  } else {
+    scr_promise_fulfill_str(p, v); /* callee owns its params: moves in */
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_void(ScrClosure *self) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_void(p);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_NONE, 0, false, NULL, NULL);
+  } else {
+    scr_promise_fulfill_void(p);
+  }
   scr_promise_release(p);
 }
 /* Ref payloads: emitted code passes the concrete retain/release via a
@@ -7434,7 +7595,9 @@ void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), vo
   /* An executor's resolve(v) with an island object: it may be a thenable,
    * which the resolution adopts (scr_async_dyn.c reads its `then` in V8). */
   if (p->island_resolved) {
-    /* Resolved with a thenable already: the first resolution stands. */
+    /* Resolved with a thenable already: the first resolution stands, and the
+     * losing value reaches 'multipleResolves' listeners. */
+    scr_multiple_resolves_note(p, 0, v != NULL ? SCR_EXC_REF : SCR_EXC_NONE, 0, false, v, retain);
     if (v != NULL) release(v);
     scr_promise_release(p);
     return;
@@ -7449,7 +7612,12 @@ void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), vo
     return;
   }
 #endif
-  scr_promise_fulfill_ref(p, v, retain, release, trace);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, v != NULL ? SCR_EXC_REF : SCR_EXC_NONE, 0, false, v, retain);
+    if (v != NULL && release != NULL) release(v);
+  } else {
+    scr_promise_fulfill_ref(p, v, retain, release, trace);
+  }
   scr_promise_release(p);
 }
 
@@ -7482,6 +7650,7 @@ ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn) {
 static void scr_reject_thunk(ScrClosure *self, ScrError *reason) {
   ScrPromise *p = scr_resolve_target(self);
   if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 1, SCR_EXC_OBJ, 0, false, reason, NULL);
     scr_error_release(reason);
   } else {
     SCR_PROMISE_LAZY_DROP(p);
@@ -7520,6 +7689,8 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
 static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
   ScrPromise *p = scr_resolve_target(self);
   if (!SCR_PROMISE_UNRESOLVED(p)) {
+    if (scr_multiple_resolves_fn != NULL)
+      scr_multiple_resolves_fn(p, 1, scr_dyn_retain(reason));
     scr_dyn_release(reason);
   } else {
     SCR_PROMISE_LAZY_DROP(p);
@@ -7553,6 +7724,8 @@ static void scr_executor_check_throw(ScrPromise *p) {
     scr_promise_reject_from_cell(p, scr_exc_current_cell());
     scr_promise_settle_wake(p);
   } else {
+    /* A throw after the executor settled: V8's reject-after-resolve. */
+    scr_promise_multiple_resolves_note(p, 1, scr_exc_current_cell());
     scr_exc_clear();
   }
 }

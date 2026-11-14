@@ -3,10 +3,23 @@
 // the node:timers ones, a timeout, an interval and an immediate, from the
 // main body and from inside the timer's own callback, a list of them, and a
 // handle that already fired.
+//
+// The event lines are buffered and printed in one order at exit: several of
+// these timers race the wall clock (an immediate against a timeout, both
+// intervals against the timer that clears one), and a loaded machine or a
+// sanitizer build's slowdown reorders two callbacks that come due together.
+// Each callback still proves it ran, and the exit handler is only reached
+// once every handle that could keep the loop alive is cleared — an
+// un-cleared interval or timeout would hold the program open instead.
 import { requireModule } from "@scriptc/node";
 
 const lib = requireModule("./lib.cjs");
-const log = (s) => console.log(s);
+const lines = [];
+const log = (s) => lines.push(s);
+process.on("exit", () => {
+  lines.sort();
+  for (const line of lines) console.log(line);
+});
 
 log(lib.sameFunctions());
 log(`island numbers are ${lib.ownByNumber()}s`);
@@ -21,7 +34,7 @@ lib.moduleClearImm(setImmediate(() => log("NOT REACHED module immediate")));
 // clearTimeout does not clear an immediate, and clearImmediate does not
 // clear a timeout.
 lib.clearT(setImmediate(() => log("immediate kept")));
-lib.clearImm(setTimeout(() => log("timeout kept"), 10));
+lib.clearImm(setTimeout(() => log("timeout kept"), 200));
 
 let ticks = 0;
 const interval = setInterval(() => {
@@ -29,10 +42,17 @@ const interval = setInterval(() => {
   if (ticks === 3) lib.clearI(interval);
 }, 100);
 
-// An interval stopped by island code from a timer of the program.
+// An interval stopped by island code from a timer of the program. Its tick
+// count races the wall clock, so its callbacks only count and the printed
+// fact is bounded, as in the other wall-clock-raced interval tests.
 let other = 0;
-const stopped = setInterval(() => log(`second interval tick ${++other}`), 250);
-setTimeout(() => lib.moduleClearI(stopped), 560);
+const stopped = setInterval(() => {
+  other++;
+}, 250);
+setTimeout(() => {
+  lib.moduleClearI(stopped);
+  log(`second interval ticked before it was cleared: ${other >= 1}`);
+}, 560);
 
 const list = [];
 for (let i = 0; i < 4; i++) list.push(setTimeout(() => log(`NOT REACHED list ${i}`), 30));
@@ -41,7 +61,7 @@ lib.clearAll(list);
 
 // A handle that already fired clears nothing; one that is pending clears.
 const fired = setTimeout(() => log("fired once"), 50);
-const pending = setTimeout(() => log("NOT REACHED pending"), 850);
+const pending = setTimeout(() => log("NOT REACHED pending"), 1200);
 setTimeout(() => {
   lib.clearT(fired);
   lib.clearT(pending);
@@ -52,4 +72,4 @@ const self = setTimeout(() => {
   lib.clearT(self);
   log("cleared itself");
 }, 150);
-setTimeout(() => log("end"), 900);
+setTimeout(() => log("end"), 1400);

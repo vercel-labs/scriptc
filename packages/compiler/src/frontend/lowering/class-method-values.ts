@@ -28,6 +28,7 @@ import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./cal
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { methodJsName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 
@@ -373,6 +374,9 @@ export function classMethodValue(
     };
     lowerer.liftedFns.push(fn);
     lowerer.classMethodValueHelpers.add(name);
+    // The value IS the method, so it prints the method's own text when the
+    // module boxes it into a checked value (function-source-text.ts).
+    if (member !== undefined) noteFunctionSourceNode(lowerer, fn, member);
   }
   return {
     kind: "closure",
@@ -413,6 +417,20 @@ export function reflectedClassStaticMethodValue(
   method: string,
 ): IrExpr | null {
   return reflectedMethodValue(lowerer, info, method, true);
+}
+
+/** A static member lowered for a class value's property table: its
+ * declaration's body runs over the dynamic receiver the reflective read
+ * supplies (`C.m()` through `any` passes the class value as `this`, and an
+ * inherited accessor passes the class the read named), as JavaScript does.
+ * TypeScript declarations lower the same way here because the table is the
+ * only caller: the member's reads of `this` are checked-dynamic reads. */
+export function reflectedClassStaticMethodValueForTable(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+): IrExpr | null {
+  return reflectedMethodValue(lowerer, info, method, true, true);
 }
 
 /** The declaration with a body behind `method` of `info`'s own class
@@ -468,24 +486,23 @@ function readsReceiver(member: ts.MethodDeclaration | ts.AccessorDeclaration): b
   return ts.forEachChild(member, (child) => (reads(child) ? true : undefined)) === true;
 }
 
-function reflectedMethodValue(
+/** Whether `member`'s body needs the class's native receiver rather than the
+ * dynamic one a method value or a class value's property table supplies.
+ * `super` outside a call that a viewable prototype chain answers and private
+ * names a dynamic receiver cannot read keep it: only a source class whose
+ * body never touches either runs over the value it is given. */
+function memberNeedsNativeReceiver(
   lowerer: Lowerer,
   info: ClassInfo,
-  method: string,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
   staticMethod: boolean,
-): IrExpr | null {
-  const existing = (staticMethod ? info.staticMethodValues : info.prototypeMethodValues)?.get(
-    method,
-  );
-  if (existing) return existing;
-  const declaration = info.decl;
-  if (!declaration) return null;
-  const member = classMethodMember(lowerer, info, method, staticMethod);
-  if (!member) return null;
+  tableValue: boolean,
+): boolean {
+  const declaration = info.decl!;
   let needsNativeReceiver =
-    !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
+    (!tableValue && !isJsSourceFile(ts.getSourceFileOfNode(declaration))) ||
     info.localClass !== undefined ||
-    lowerer.errorHierarchyClassOf(info.def.name);
+    !!lowerer.errorHierarchyClassOf(info.def.name);
   // `super.m(...)` in a prototype method reads the base class's prototype,
   // which lowerSuperMethodCall answers over the call-site receiver when the
   // base has a prototype object. Other uses of `super` keep the native
@@ -515,7 +532,41 @@ function reflectedMethodValue(
     )
       needsNativeReceiver = true;
   });
-  if (needsNativeReceiver) return null;
+  return needsNativeReceiver;
+}
+
+/** Whether a static method or accessor of `info`'s class cannot be lowered to
+ * run over the dynamic receiver a class value's property table supplies. Such
+ * a class keeps the runtime's fence: a table would have to answer the member
+ * with `undefined`, which is a wrong value rather than a refusal. */
+export function staticTableMemberRefused(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): boolean {
+  return memberNeedsNativeReceiver(lowerer, info, member, true, true);
+}
+
+function reflectedMethodValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+  staticMethod: boolean,
+  tableValue = false,
+): IrExpr | null {
+  const existing = (
+    tableValue
+      ? info.staticTableMethodValues
+      : staticMethod
+        ? info.staticMethodValues
+        : info.prototypeMethodValues
+  )?.get(method);
+  if (existing) return existing;
+  const declaration = info.decl;
+  if (!declaration) return null;
+  const member = classMethodMember(lowerer, info, method, staticMethod);
+  if (!member) return null;
+  if (memberNeedsNativeReceiver(lowerer, info, member, staticMethod, tableValue)) return null;
   // The method reads itself as a value inside its own body: it is the
   // closure its lowering in progress produces.
   if (lowerer.methodLambdasInProgress.has(member)) {
@@ -546,7 +597,13 @@ function reflectedMethodValue(
   lowerer.fnStack.push(context);
   lowerer.methodLambdasInProgress.set(member, null);
   try {
-    const value = lowerer.lowerLambda(member);
+    // A STATIC member the property table answers runs over the class value
+    // the reflective call supplies as its receiver, so its `this` is that
+    // checked-dynamic value even in a TypeScript source: a read through it
+    // asks the class value's table, which is where a subclass's
+    // redeclaration answers. An accessor's getter/setter receives the same
+    // receiver from the table.
+    const value = lowerer.lowerLambda(member, tableValue && staticMethod);
     const pending = lowerer.methodLambdasInProgress.get(member);
     if (
       pending &&
@@ -566,9 +623,11 @@ function reflectedMethodValue(
       const body = lowerer.liftedFnNamed(value.fnName);
       if (body?.captures?.length === 0) delete body.captures;
     }
-    const cache = staticMethod
-      ? (info.staticMethodValues ??= new Map())
-      : (info.prototypeMethodValues ??= new Map());
+    const cache = tableValue
+      ? (info.staticTableMethodValues ??= new Map())
+      : staticMethod
+        ? (info.staticMethodValues ??= new Map())
+        : (info.prototypeMethodValues ??= new Map());
     cache.set(method, value);
     return value;
   } finally {

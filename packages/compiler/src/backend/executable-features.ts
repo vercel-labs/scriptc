@@ -106,6 +106,8 @@ export function executableLinkFeatures(
       ? { abortSignal: true }
       : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
+    ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
+    ...(features.utilTraceSigInt ? { utilTraceSigInt: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -121,7 +123,12 @@ export function executableLinkFeatures(
     // registries (scope-B NI-3).
     events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
-    symbol: features.symbol,
+    // util.inspect's function value carries
+    // Symbol.for('nodejs.util.inspect.custom') (inspectFunctionValue) and
+    // util.promisify consults Symbol.for('nodejs.util.promisify.custom')
+    // (utilPromisify): both build their symbol in scr_symbol.c.
+    symbol:
+      features.symbol || features.inspectFunctionValue === true || features.utilPromisify === true,
     bigint: features.bigint,
     ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,
@@ -136,6 +143,7 @@ export function executableLinkFeatures(
     http2: features.http2,
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
+    dnsResolve: features.dnsResolve,
     dgramDyn: features.dgramDyn,
     textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,

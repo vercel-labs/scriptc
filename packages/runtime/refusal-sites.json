@@ -2173,12 +2173,6 @@
  },
  {
   "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_open",
-  "message": "Runtime numeric filesystem flags have no portable native lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_schedule",
   "message": "Filesystem callbacks require an executable event loop",
   "code": "SC4005"

@@ -8,8 +8,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 359,
-    "end": 380
+    "start": 448,
+    "end": 469
    }
   }
  ]

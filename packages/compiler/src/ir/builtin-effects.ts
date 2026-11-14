@@ -9,7 +9,7 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * analyses must treat a function containing one of these as throwing, exactly
  * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
  * nodes, which throw on validation failure / promise rejection). */
-export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
@@ -419,6 +419,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
+  "fs.statSyncDyn",
+  "fs.lstatSyncDyn",
+  "fs.fstatSyncDyn",
+  "fs.readFileSyncStrOpts",
+  "fs.readFileSyncBytesOpts",
   "fs.readFileEncoded",
   "fs.readFdEncoded",
   // tls/https runtime options records: the walks throw the catchable
@@ -1207,6 +1212,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.newChecked",
   "fs.statSync",
   "fs.statProbeSync",
+  // The checked-dynamic Stats extraction: a value outside the Stats type
+  // throws the checked conversion's TypeError.
+  "fs.statsFromDyn",
+  "fs.statsFromDynOpt",
   "crypto.randomBytesToString",
   "crypto.randomBytes",
   "crypto.hashDigestStr",
@@ -1534,6 +1543,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The wider sync fs slice: same catchable errno throws as the rest.
   "fs.unlinkSync",
   "fs.chmodSync",
+  "fs.chmodSyncStr",
+  "fs.chmodSyncDyn",
+  "fs.fchmodSyncStr",
+  "fs.fchmodSyncDyn",
   "fs.chownSync",
   "fs.lchownSync",
   "fs.fchownSync",
@@ -1552,6 +1565,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.readSync",
   "dir.readCb",
   "dir.closeSync",
+  // close(callback) validates the callback before the closed check, so a
+  // non-function argument throws synchronously.
+  "dir.closeCb",
   // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
   // while an operation is queued.
   "dir.dispose",
@@ -1586,14 +1602,45 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.appendFileBytesOptionsSync",
   "fs.writeFileDataOptionsSync",
   "fs.appendFileDataOptionsSync",
+  "fs.writeFileOptionsDynModeSync",
+  "fs.appendFileOptionsDynModeSync",
+  "fs.writeFileBytesOptionsDynModeSync",
+  "fs.appendFileBytesOptionsDynModeSync",
+  "fs.writeFileDataOptionsDynModeSync",
+  "fs.appendFileDataOptionsDynModeSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
+  "fs.mkdirModeStrSync",
+  "fs.mkdirObjSync",
+  "fs.mkdirObjStrSync",
+  "fs.mkdirDynSync",
+  "fs.mkdirDynVoidSync",
+  "fs.mkdirModeValueSync",
+  "fs.mkdirModeStrValueSync",
+  "fs.mkdirObjVoidSync",
+  "fs.mkdirObjStrVoidSync",
   "fs.openSync",
   "fs.openNumericSync",
+  "fs.openNumericStrSync",
+  "fs.openNumericDynSync",
+  "fs.openStrModeSync",
+  "fs.openNativeSync",
+  "fs.openDynSync",
+  "fs.openModeDynSync",
+  "fs.openNativeStrSync",
+  "fs.openNativeDynSync",
   "fs.readSync",
-  "fs.readSyncDyn",
+  "fs.readSyncArgs",
   "fs.writeSync",
   "fs.writeStrSync",
+  "fs.writeSyncArgs",
+  "fs.readvSyncDyn",
+  "fs.writevSyncDyn",
+  "fs.ftruncateSyncDyn",
+  "fs.closeSyncDyn",
+  "fs.fsyncSyncDyn",
+  "fs.fdatasyncSyncDyn",
+  "fs.fchownSyncDyn",
   "fs.closeSync",
   "fs.watch",
   "fs.watchCb",

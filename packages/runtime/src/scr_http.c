@@ -6460,9 +6460,13 @@ static size_t scr_http_client_drop_named(ScrHttpClientReq *c, const ScrStr *name
   return first == SIZE_MAX ? w : first;
 }
 
-/* Inserts one line at `pos` (name and value borrowed). */
+/* Inserts one line at `pos` (name and value borrowed). `pos` past the end
+ * would underflow the moves below into enormous memmoves, so it is clamped:
+ * every caller computes it only after its conversions ran, and this keeps a
+ * stale position harmless if one ever slips in. */
 static void scr_http_client_insert_header(ScrHttpClientReq *c, size_t pos, ScrStr *name,
                                           ScrStr *value, uint8_t kind) {
+  if (pos > c->nheaders) pos = c->nheaders;
   scr_http_client_reserve(c, c->nheaders + 1);
   memmove(c->hnames + pos + 1, c->hnames + pos, (c->nheaders - pos) * sizeof *c->hnames);
   memmove(c->hvalues + pos + 1, c->hvalues + pos, (c->nheaders - pos) * sizeof *c->hvalues);
@@ -6499,6 +6503,35 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value
   scr_http_client_touch_header(c, name, true);
 }
 
+/* The owned text of every line a header value stores: one line for a single
+ * value, one per element for an array. Converting runs the value's toString,
+ * which is program code and may touch the request (the reentrancy the
+ * insertion offsets below must never be computed across): every line is
+ * converted up front, before any store position is read. Answers the line
+ * count; on failure releases what it converted and answers SIZE_MAX with the
+ * exception pending. `*out` is NULL for an empty array. */
+static size_t scr_http_header_texts(const ScrStr *name, const ScrDyn *value, ScrStr ***out) {
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  ScrStr **lines = n == 0 ? NULL : malloc(n * sizeof *lines);
+  if (lines == NULL && n != 0) scr_http_oom();
+  for (size_t i = 0; i < n; i++) {
+    const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
+    lines[i] = scr_http_header_value_text(name, element);
+    if (lines[i] == NULL) {
+      for (size_t j = 0; j < i; j++) scr_str_release(lines[j]);
+      free(lines);
+      return SIZE_MAX;
+    }
+  }
+  *out = lines;
+  return n;
+}
+
+static void scr_http_header_texts_free(ScrStr **lines, size_t n) {
+  for (size_t i = 0; i < n; i++) scr_str_release(lines[i]);
+  free(lines);
+}
+
 /* setHeader(name, value) for a number, a string or an array value: the
  * stored value keeps its type for getHeader/getHeaders, and an array
  * writes one line per element. */
@@ -6521,32 +6554,21 @@ void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed
     scr_http_validate_header_value(name, element);
     valid = !scr_exc_pending();
   }
-  if (valid) {
+  ScrStr **texts = NULL;
+  size_t lines = valid ? scr_http_header_texts(name, value, &texts) : SIZE_MAX;
+  if (valid && lines != SIZE_MAX) {
+    /* Both conversions are done: the store can no longer move under us, so
+     * the replacement position is read once and written straight through. */
     size_t pos = scr_http_client_drop_named(c, name);
-    if (value->kind == SCR_DYN_ARR) {
-      for (size_t i = 0; i < n; i++) {
-        ScrStr *text = scr_http_header_value_text(name, value->v.arr.items[i]);
-        if (!text) {
-          valid = false;
-          break;
-        }
-        uint8_t kind = SCR_HTTP_HV_LIST |
-                       (value->v.arr.items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR);
-        scr_http_client_insert_header(c, pos + i, name, text, kind);
-        scr_str_release(text);
-      }
-    } else {
-      ScrStr *text = scr_http_header_value_text(name, value);
-      if (text) {
-        uint8_t kind = value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
-        scr_http_client_insert_header(c, pos, name, text, kind);
-        scr_str_release(text);
-      } else {
-        valid = false;
-      }
+    for (size_t i = 0; i < lines; i++) {
+      const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
+      uint8_t kind = element->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+      if (value->kind == SCR_DYN_ARR) kind |= SCR_HTTP_HV_LIST;
+      scr_http_client_insert_header(c, pos + i, name, texts[i], kind);
     }
-    if (valid) scr_http_client_touch_header(c, name, true);
+    scr_http_client_touch_header(c, name, true);
   }
+  if (texts != NULL) scr_http_header_texts_free(texts, lines);
   scr_dyn_release(value);
 }
 
@@ -6571,34 +6593,28 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borro
     scr_http_validate_header_value(name, element);
     valid = !scr_exc_pending();
   }
-  if (!valid) {
-    scr_dyn_release(value);
-    return;
-  }
-  size_t last = SIZE_MAX;
-  for (size_t i = 0; i < c->nheaders; i++) {
-    if (!scr_http_name_eq(c->hnames[i], name)) continue;
-    c->hkinds[i] = (uint8_t)(c->hkinds[i] | SCR_HTTP_HV_LIST);
-    last = i;
-  }
-  size_t pos = last == SIZE_MAX ? c->nheaders : last + 1;
-  ScrStr *stored_name = last == SIZE_MAX ? name : c->hnames[last];
-  if (value->kind == SCR_DYN_ARR) {
-    for (size_t i = 0; i < n; i++) {
-      ScrStr *text = scr_http_header_value_text(name, value->v.arr.items[i]);
-      uint8_t kind = SCR_HTTP_HV_LIST |
-                     (value->v.arr.items[i]->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR);
-      scr_http_client_insert_header(c, pos + i, stored_name, text, kind);
-      scr_str_release(text);
+  ScrStr **texts = NULL;
+  size_t lines = valid ? scr_http_header_texts(name, value, &texts) : SIZE_MAX;
+  if (valid && lines != SIZE_MAX) {
+    /* The conversions are done; group the name's existing lines and append
+     * after the last one, all without running program code again. */
+    size_t last = SIZE_MAX;
+    for (size_t i = 0; i < c->nheaders; i++) {
+      if (!scr_http_name_eq(c->hnames[i], name)) continue;
+      c->hkinds[i] = (uint8_t)(c->hkinds[i] | SCR_HTTP_HV_LIST);
+      last = i;
     }
-  } else {
-    ScrStr *text = scr_http_header_value_text(name, value);
-    uint8_t kind = value->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
-    if (last != SIZE_MAX) kind |= SCR_HTTP_HV_LIST;
-    scr_http_client_insert_header(c, pos, stored_name, text, kind);
-    scr_str_release(text);
+    size_t pos = last == SIZE_MAX ? c->nheaders : last + 1;
+    ScrStr *stored_name = last == SIZE_MAX ? name : c->hnames[last];
+    for (size_t i = 0; i < lines; i++) {
+      const ScrDyn *element = value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value;
+      uint8_t kind = element->kind == SCR_DYN_NUM ? SCR_HTTP_HV_NUM : SCR_HTTP_HV_STR;
+      if (value->kind == SCR_DYN_ARR || last != SIZE_MAX) kind |= SCR_HTTP_HV_LIST;
+      scr_http_client_insert_header(c, pos + i, stored_name, texts[i], kind);
+    }
+    scr_http_client_touch_header(c, name, true);
   }
-  scr_http_client_touch_header(c, name, true);
+  if (texts != NULL) scr_http_header_texts_free(texts, lines);
   scr_dyn_release(value);
 }
 
@@ -10849,34 +10865,42 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure,
                          ScrStr **auth_out /*+1, nullable*/) {
   ScrUrl *u = scr_url_new(url);
   if (!u) return false; /* Invalid URL pending */
+  *auth_out = NULL;
   /* A URL's username and password become Node's `auth` option: the
    * decoded "user:pass" the request constructor turns into the
    * Authorization header (urlToHttpOptions' rule — no auth when neither
-   * is present). */
-  *auth_out = NULL;
+   * is present). Decoded before the scheme check, as Node's does: a
+   * malformed escape answers its URIError even when the scheme is the
+   * other module's. decode_uri_component leaves that URIError pending and
+   * answers NULL, so the URL is refused here: nothing is allocated for the
+   * caller, and no request may be built. */
   if (u->userinfo->len > 0) {
     ScrStr *user = scr_url_username(u);
     ScrStr *pass = user != NULL ? scr_url_password(u) : NULL;
-    if (pass != NULL) {
-      ScrStr *dec_user = scr_str_decode_uri_component(user);
-      ScrStr *dec_pass = dec_user != NULL ? scr_str_decode_uri_component(pass) : NULL;
-      if (dec_pass != NULL) {
-        ScrHttpBuf b = {NULL, 0, 0};
-        scr_http_buf_append(&b, dec_user->data, dec_user->len);
-        scr_http_buf_str(&b, ":");
-        scr_http_buf_append(&b, dec_pass->data, dec_pass->len);
-        *auth_out = scr_str_new(b.data, b.len);
-        free(b.data);
-      }
-      scr_str_release(dec_user);
-      scr_str_release(dec_pass);
+    ScrStr *dec_user = scr_str_decode_uri_component(user);
+    ScrStr *dec_pass = dec_user != NULL ? scr_str_decode_uri_component(pass) : NULL;
+    if (dec_user != NULL && dec_pass != NULL) {
+      ScrHttpBuf b = {NULL, 0, 0};
+      scr_http_buf_append(&b, dec_user->data, dec_user->len);
+      scr_http_buf_str(&b, ":");
+      scr_http_buf_append(&b, dec_pass->data, dec_pass->len);
+      *auth_out = scr_str_new(b.data, b.len);
+      free(b.data);
     }
+    scr_str_release(dec_user);
+    scr_str_release(dec_pass);
     scr_str_release(user);
     scr_str_release(pass);
+    if (*auth_out == NULL) {
+      scr_url_release(u);
+      return false; /* URIError pending */
+    }
   }
   /* The scheme is checked against the MODULE the call came from, not read
    * off the URL: http.get('https://…') is Node's ERR_INVALID_PROTOCOL, not
-   * an implicit upgrade to https. Hence `secure` as a parameter. */
+   * an implicit upgrade to https. Hence `secure` as a parameter. A rejected
+   * scheme frees the decoded credentials too: the caller gets no auth, and
+   * no request is built. */
   const char *want = secure ? "https" : "http";
   const size_t wantlen = secure ? 5 : 4;
   if (!(u->scheme->len == wantlen && memcmp(u->scheme->data, want, wantlen) == 0)) {
@@ -10884,6 +10908,8 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure,
     int n = snprintf(msg, sizeof msg, "Protocol \"%.*s:\" not supported. Expected \"%s:\"",
                      (int)(u->scheme->len < 32 ? u->scheme->len : 32), u->scheme->data, want);
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_PROTOCOL");
+    scr_str_release(*auth_out);
+    *auth_out = NULL;
     scr_url_release(u);
     return false;
   }

@@ -1398,6 +1398,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Node's own message shape).
       realpathSync: { fn: "fs.realpathSync", params: [STRING], result: STRING },
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
+      // fs.realpath.native is Node's same realpath binding as fs.realpath
+      // (the native spelling just skips JS normalization); the callback
+      // lowering maps both onto the one dispatcher op.
+      "realpath.native": { fn: "fs.callbackCall", params: [], result: DYN },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
       // closeSync). Both forms take an optional creation mode as the third
@@ -2507,8 +2511,21 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
-    // Inline numeric O_* flags use a target-neutral runtime entry point.
-    openSync: ["fs.openNumericSync"],
+    // Every flag and mode spelling the lowering selects: inline numeric O_*
+    // flags (the target-neutral mask), raw open(2) bits, the octal-string
+    // creation mode, and the forms whose flags or mode only the runtime
+    // knows.
+    openSync: [
+      "fs.openNumericSync",
+      "fs.openStrModeSync",
+      "fs.openNativeSync",
+      "fs.openDynSync",
+      "fs.openModeDynSync",
+      "fs.openNativeStrSync",
+      "fs.openNativeDynSync",
+      "fs.openNumericStrSync",
+      "fs.openNumericDynSync",
+    ],
     // The Buffer path: the typed entry point for a statically typed one
     // (fs.existsSyncBytes), and the value form when only the runtime knows
     // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
@@ -2519,6 +2536,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFileSyncBuf",
       "fs.readFileSyncBytes",
       "fs.readFileSyncDyn",
+      "fs.readFileSyncStrOpts",
+      "fs.readFileSyncBytesOpts",
       "fs.readFileEncoded",
       "fs.readFdEncoded",
       "fs.readFdSync",
@@ -2549,6 +2568,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.writeFileDataOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.writeFileDataOptionsDynModeSync",
     ],
     // The data forms (bytes, and the checked argument whose type the call
     // site did not pin down) and the { encoding, mode, flag } option-record
@@ -2559,6 +2581,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -2580,22 +2605,50 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamClose",
       "fs.fsStreamCloseCb",
     ],
-    // The utf8 string overload; the table row is the Buffer-window form.
-    writeSync: ["fs.writeStrSync"],
+    // The utf8 string overload and the run-time-checked argument forms;
+    // the table row is the Buffer-window form.
+    writeSync: ["fs.writeStrSync", "fs.writeSyncArgs"],
     // The form whose arguments Node checks at run time.
-    readSync: ["fs.readSyncDyn"],
-    // The { recursive, mode } option lowerings.
-    mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
+    readSync: ["fs.readSyncArgs"],
+    // The same run-time ladder over a descriptor the call site did not pin
+    // down.
+    readvSync: ["fs.readvSyncDyn"],
+    writevSync: ["fs.writevSyncDyn"],
+    ftruncateSync: ["fs.ftruncateSyncDyn"],
+    closeSync: ["fs.closeSyncDyn"],
+    fsyncSync: ["fs.fsyncSyncDyn"],
+    fdatasyncSync: ["fs.fdatasyncSyncDyn"],
+    fchownSync: ["fs.fchownSyncDyn"],
+    // The bare mode, the { recursive, mode } option lowerings, the forms
+    // keeping Node's first-created-directory answer, and the runtime-ladder
+    // form for an options value the compiler cannot read.
+    mkdirSync: [
+      "fs.mkdirModeSync",
+      "fs.mkdirModeStrSync",
+      "fs.mkdirRecursiveSync",
+      "fs.mkdirRecursiveModeSync",
+      "fs.mkdirObjSync",
+      "fs.mkdirObjStrSync",
+      "fs.mkdirObjVoidSync",
+      "fs.mkdirObjStrVoidSync",
+      "fs.mkdirModeValueSync",
+      "fs.mkdirModeStrValueSync",
+      "fs.mkdirDynSync",
+      "fs.mkdirDynVoidSync",
+    ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
     readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
-    // The { throwIfNoEntry } probe form.
-    statSync: ["fs.statProbeSync"],
+    // The { throwIfNoEntry } probe form and the run-time option ladder
+    // (bigint and throwIfNoEntry read off a value only the runtime knows).
+    statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
     // realpathSync and realpathSync.native read as function values.
     realpathSync: ["fs.realpathValue"],
     "realpathSync.native": ["fs.realpathValue"],
-    lstatSync: ["fs.lstatProbeSync"],
+    lstatSync: ["fs.lstatProbeSync", "fs.lstatSyncDyn"],
+    // The run-time option ladder over options the compiler cannot read.
+    fstatSync: ["fs.fstatSyncDyn"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
@@ -2604,7 +2657,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // callers fence per site); the ladder runs the REAL lchmod on APPLE,
     // so the chmod fence witnesses it — fencing one spelling fences the
     // operation.
-    chmodSync: ["fs.lchmodSyncChk"],
+    // The octal-string and run-time-checked mode forms (lowerFsModeSyncCall).
+    chmodSync: ["fs.lchmodSyncChk", "fs.chmodSyncStr", "fs.chmodSyncDyn"],
+    fchmodSync: ["fs.fchmodSyncStr", "fs.fchmodSyncDyn"],
     // The two-argument listener form.
     watch: ["fs.watchCb"],
   },
@@ -3677,6 +3732,7 @@ export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefin
   writev: 4,
   readlink: 3,
   realpath: 3,
+  "realpath.native": 3,
   rename: 3,
   stat: 1,
   lstat: 1,

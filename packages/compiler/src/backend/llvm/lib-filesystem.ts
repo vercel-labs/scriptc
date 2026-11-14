@@ -6,7 +6,7 @@ import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
-import { emitAlwaysThrowLibCall } from "./lib-shared.js";
+import { emitAlwaysThrowLibCall, LIB_FN_SYMS } from "./lib-shared.js";
 import { emitTruncF64 } from "./trunc.js";
 import { markWrappingOperands } from "./wrapping-sums.js";
 
@@ -706,6 +706,35 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_fs_glob_free(ptr ${snap})`);
     return arrayOut;
   }
+  if (
+    e.fn === "fs.mkdirObjSync" ||
+    e.fn === "fs.mkdirObjStrSync" ||
+    e.fn === "fs.mkdirDynSync" ||
+    e.fn === "fs.mkdirModeValueSync" ||
+    e.fn === "fs.mkdirModeStrValueSync"
+  ) {
+    // `string | undefined` — the first directory a recursive walk created,
+    // or NULL when it created none (the non-recursive forms always answer
+    // NULL). The runtime answers +1, which the call site owns.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (strTag < 0 || undefTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    const decls = args.map((a) => {
+      const ty = host.llType(a.type);
+      return ty === "i1" ? "i1 zeroext" : ty;
+    });
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(${decls.join(", ")})`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(${args.map((a, i) => `${decls[i]} ${a.name}`).join(", ")})`);
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, STRING, strTag, e.type, undefTag);
+  }
   if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
     // `Stats | undefined` — the runtime answers a +1 Stats, or NULL for a
     // missing entry when throwIfNoEntry is false (other failures throw).
@@ -727,6 +756,28 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
     );
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
+  }
+  if (e.fn === "fs.statsFromDynOpt") {
+    // `Stats | undefined` — the runtime answers a +1 Stats extracted from
+    // the checked-dynamic object, or NULL for the dynamic undefined a
+    // suppressed missing entry answers (a value outside the type throws).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const value = host.emitExpr(e.args[0]!);
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(ptr ${value.name})`);
     host.emitPendingCheck();
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }

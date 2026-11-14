@@ -3040,6 +3040,10 @@ SCR_COLD void scr_dyn_arg_value_fail(const char *name, const char *reason, const
 /* The ERR_INVALID_ARG_VALUE/%j "Received" renderer (inspect-lite:
  * strings quote, scalars print plain, deep shapes sketch). */
 const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap);
+/* Node's inspect of an empty ArrayBufferView (`<Buffer >`, `Uint16Array(0)
+ * []`, or the DataView body), cut to 128 characters plus "..." — the
+ * "Received" half of the empty-view ERR_INVALID_ARG_VALUE messages (+1). */
+ScrStr *scr_dyn_empty_view_inspect(const ScrDyn *value);
 ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate);
 /* A ladder's post-validation refuse: throws the compiler-rendered SC2020
  * statement-fence text verbatim (Node's validation errors run first). */

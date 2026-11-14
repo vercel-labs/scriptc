@@ -2580,6 +2580,34 @@ export function sharedDynConversion(
   return { kind: "dynCheck", value, shared: true, type: target, loc };
 }
 
+/** The checked conversion of a Stats/BigIntStats value held as a
+ * checked-dynamic object. The stat calls' run-time options ladder answers
+ * Node's Stats or BigIntStats object — the member table its call-time
+ * `bigint` option chose — and a typed slot reads it through a snapshot
+ * extraction (scr_stats_from_dyn), which copies the object's fields and
+ * throws the checked conversion's TypeError for a value outside the type.
+ * A `Stats | undefined` slot keeps the dynamic undefined as its absent arm
+ * (the runtime answers +1-or-NULL, the call site builds the arms). Null for
+ * every other target, so the checked-cast domain keeps deciding them. */
+export function statsDynConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  expected: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expected.kind === "stats" || expected.kind === "bigintStats")
+    return { kind: "libCall", fn: "fs.statsFromDyn", args: [value], type: expected, loc };
+  if (expected.kind !== "union") return null;
+  const def = lowerer.unions.get(expected.unionId);
+  if (
+    def?.arms.length !== 2 ||
+    !def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  )
+    return null;
+  return { kind: "libCall", fn: "fs.statsFromDynOpt", args: [value], type: expected, loc };
+}
+
 /** A dynamic value no other holder can reference when it converts: parsed
  * text, a literal built in place, or a typed value boxed for the
  * conversion (a capsule of a native value has nothing to adopt). */

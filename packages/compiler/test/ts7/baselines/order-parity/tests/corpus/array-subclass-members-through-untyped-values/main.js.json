@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-members-through-untyped-values/collection.ts",
+  "<repo>/tests/corpus/array-subclass-members-through-untyped-values/typed.ts",
+  "<repo>/tests/corpus/array-subclass-members-through-untyped-values/main.js"
+ ],
+ "diags": []
+}

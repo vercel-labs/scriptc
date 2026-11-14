@@ -13,6 +13,7 @@ import {
   programDeclaresDateClass,
 } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
+import { arrayClassView } from "./builtins/array-classes.js";
 import {
   BOOL,
   DATE_T,
@@ -21,6 +22,7 @@ import {
   DYN_CLASS_PROPERTIES as PROPERTY_BAG,
   STRING,
   VOID,
+  arrayOf,
   canConvertToDyn,
   canDynCheckTo,
   isClassOwnEnumerableFieldName,
@@ -433,6 +435,10 @@ interface PropertyReceiver {
   info: ClassInfo;
   capsule: ClassInfo;
   key: string;
+  /** A class declared `extends Array`: its instances are native arrays,
+   * which reach dynamic code as arrays rather than class capsules
+   * (DynamicClassDispatch.arrayReceivers). */
+  array?: true;
 }
 
 interface PropertyDispatch {
@@ -1760,6 +1766,11 @@ export class ClassDynamicDispatch {
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The element types (typeKey) of the arrays the program makes dynamic
+   * values. An instance of a class declared `extends Array` is such an
+   * array, so the classes over these elements answer dynamic member access
+   * (arrayReceivers). */
+  private readonly boxedArrayElems = new Set<string>();
   /** The classes whose instances the program makes dynamic values, as this
    * pass found them (dynamic-class-report.ts reads them). */
   boxedClasses(): ReadonlySet<string> {
@@ -2791,8 +2802,10 @@ export class ClassDynamicDispatch {
         this.boxedStatic.add(type.className);
         if (isDynTypedRefType(type)) this.boxed.add(type.className);
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
-      else if (type.kind === "array") discover(type.elem);
-      else if (type.kind === "record") {
+      else if (type.kind === "array") {
+        this.boxedArrayElems.add(typeKey(type.elem));
+        discover(type.elem);
+      } else if (type.kind === "record") {
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));
         if (shape?.indexValue) discover(shape.indexValue);
@@ -3361,7 +3374,7 @@ export class ClassDynamicDispatch {
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
       if (found) return found;
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       const test = ({ info }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
@@ -4982,7 +4995,7 @@ export class ClassDynamicDispatch {
       }
       // Compute the candidates where the first plan would have, so the
       // memoized set is the same whichever plans are already answered.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       const matching = plans.length ? candidateSet(dispatch.source.method) : null;
       for (const plan of plans) {
         const { info } = plan;
@@ -4990,7 +5003,9 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
-        if (isClassCallback(lowerer, info, dispatch.source.method)) {
+        // An Array subclass's instance keeps no property bag or prototype
+        // data: its members answer from the class alone.
+        if (!plan.array && isClassCallback(lowerer, info, dispatch.source.method)) {
           const prototypeMethod = observedPrototypeMethod(
             lowerer,
             info,
@@ -5320,7 +5335,7 @@ export class ClassDynamicDispatch {
       // ones, can pass the test, except for names it decides on every
       // receiver. Fields added while bodies lower (the property bag and the
       // attribute words) have compiler names, which take every receiver.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       // The own properties an Error keeps in native slots: `stack`, and
       // `cause` for a read.
       const errorSlot = dispatch.name === "stack" || (dispatch.name === "cause" && !dispatch.write);
@@ -7687,9 +7702,10 @@ export class ClassDynamicDispatch {
     lowerer: Lowerer,
     streams = false,
     normalize = true,
+    arrays = false,
   ): readonly PropertyReceiver[] {
-    const mode = `${streams}:${normalize}`;
-    const revision = `${this.boxed.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
+    const mode = `${streams}:${normalize}:${arrays}`;
+    const revision = `${this.boxed.size}:${this.boxedArrayElems.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
     const cached = this.receiverPlans.get(mode);
     if (cached?.revision === revision) {
       let i = 0;
@@ -7727,7 +7743,26 @@ export class ClassDynamicDispatch {
       };
       visit(capsule);
     }
+    if (arrays) plans.push(...this.arrayReceivers(lowerer));
     this.receiverPlans.set(mode, { revision, capsules, plans });
+    return plans;
+  }
+
+  /** The classes declared `extends Array` whose instances can be dynamic
+   * values: a constructed class over the elements of an array the program
+   * makes a dynamic value. Such an instance reaches dynamic code as the
+   * array itself (a live reference to it), so a member access there tests
+   * the array's class and views it as the class object. Only one level of
+   * Array subclass compiles, so each has no subclasses to test first. */
+  private arrayReceivers(lowerer: Lowerer): PropertyReceiver[] {
+    if (this.boxedArrayElems.size === 0) return [];
+    const plans: PropertyReceiver[] = [];
+    for (const info of lowerer.classes.values()) {
+      const elem = info.extendsArray?.elem;
+      if (elem === undefined || !this.boxedArrayElems.has(typeKey(elem))) continue;
+      if (!lowerer.classCanBeConstructed(info)) continue;
+      plans.push({ info, capsule: info, key: `array:${info.def.name}`, array: true });
+    }
     return plans;
   }
 
@@ -7736,6 +7771,36 @@ export class ClassDynamicDispatch {
     loc: SrcLoc,
   ): { receiver: IrExpr; condition: IrExpr } {
     const value = varRef("p.0", DYN, loc);
+    if (plan.array) {
+      // The runtime names the class of a live array and of a snapshot that
+      // records it; only the live array is an instance, with the class's
+      // fields after its header, so the branch tests the array it converts
+      // to as well.
+      const array: IrExpr = {
+        kind: "dynCheck",
+        value,
+        type: arrayOf(plan.info.extendsArray!.elem),
+        loc,
+      };
+      const className = plan.info.def.name;
+      return {
+        receiver: arrayClassView(plan.info, array, loc),
+        condition: {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "array.dynIsClass",
+            args: [value, { kind: "strLit", value: className, type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          then: { kind: "instanceOf", value: array, className, type: BOOL, loc },
+          else_: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        },
+      };
+    }
     const type: IrType = { kind: "object", className: plan.capsule.def.name };
     const checked: IrExpr = { kind: "dynCheck", value, type, loc };
     const matches: IrExpr = {

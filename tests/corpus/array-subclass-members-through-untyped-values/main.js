@@ -49,6 +49,15 @@ console.log("refresh" in held, "size" in held, "label" in held, "nope" in held);
 console.log(typeof held.refresh, typeof held.missing);
 console.log(Object.keys(held).join(","), JSON.stringify(held), inspect(held));
 
+// A member read through a variable key, after an `in` guard.
+function byName(value, name, ...args) {
+  if (!(name in value)) return name + " absent";
+  const member = value[name];
+  return typeof member === "function" ? member.apply(value, args) : member;
+}
+console.log(byName(held, "describe", "k"), byName(held, "size"), byName(held, "label"), byName(held, "nope"));
+console.log(byName(held, "refresh", "r1", "r2") === held, held.join(","));
+
 function callThrough(value, ...args) {
   return value.refresh(...args).length;
 }

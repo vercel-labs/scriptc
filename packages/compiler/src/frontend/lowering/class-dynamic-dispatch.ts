@@ -5402,12 +5402,59 @@ export class ClassDynamicDispatch {
     }
     for (const dispatch of this.computed.values()) {
       if (!dispatch.instances) continue;
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      for (const plan of this.propertyReceivers(lowerer, true, true, true)) {
         if (dispatch.classes.has(plan.key)) continue;
         const { info } = plan;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const selected = this.propertyReceiver(plan, loc);
+        if (plan.array) {
+          // A class declared `extends Array` keeps no property bag: a read
+          // whose key names one of its fields, getters or methods answers
+          // that member, and every other key (an element, a builtin array
+          // member) falls through to the read on the array itself.
+          if (dispatch.write || dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
+          const names = new Set<string>();
+          for (const field of info.fields.keys())
+            if (!field.startsWith("%") && !field.startsWith("#")) names.add(field);
+          for (const method of info.methods.keys()) {
+            const name = method.startsWith("get:") ? method.slice(4) : method;
+            if (!method.startsWith("set:") && !name.startsWith("sym:") && !name.startsWith("%"))
+              names.add(name);
+          }
+          if (names.size === 0) continue;
+          const local = `receiver.${dispatch.fn.locals.length}`;
+          dispatch.fn.locals.push({
+            id: local,
+            name: "receiver",
+            type: selected.receiver.type,
+            mutable: false,
+          });
+          const receiver = varRef(local, selected.receiver.type, loc);
+          const members: IrStmt[] = [...names].map((name) => ({
+            kind: "if",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: varRef(dispatch.keyLocal, STRING, loc),
+              right: { kind: "strLit", value: name, type: STRING, loc },
+              type: BOOL,
+              loc,
+            },
+            then: this.propertyBody(lowerer, { ...dispatch, name }, info, receiver),
+            else_: null,
+            loc,
+          }));
+          dispatch.fn.body.splice(dispatch.branchIndex, 0, {
+            kind: "if",
+            cond: selected.condition,
+            then: [{ kind: "varDecl", localId: local, init: selected.receiver, loc }, ...members],
+            else_: null,
+            loc,
+          });
+          changed = true;
+          continue;
+        }
         const receiverType: IrType = { kind: "object", className: info.def.name };
         const receiver = varRef("p.receiver", receiverType, loc);
         const helperKey = JSON.stringify([dispatch.operation, info.def.name]);

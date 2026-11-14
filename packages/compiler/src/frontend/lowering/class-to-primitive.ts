@@ -91,8 +91,14 @@ export function classToNumberConversion(
   node: ts.Node,
   operator: "Number" | "unary plus" = "Number",
 ): IrExpr | null {
-  return classConversion(lowerer, value, "number", node, F64, (primitive) =>
-    numberOfPrimitive(lowerer, primitive, node, operator),
+  return classConversion(
+    lowerer,
+    value,
+    "number",
+    node,
+    F64,
+    (primitive) => numberOfPrimitive(lowerer, primitive, node, operator),
+    operator,
   );
 }
 
@@ -155,6 +161,7 @@ function classConversion(
   node: ts.Node,
   resultType: IrType,
   finish: (primitive: IrExpr) => IrExpr,
+  operator: "Number" | "unary plus" = "Number",
 ): IrExpr | null {
   if (value.type.kind !== "object") return null;
   const info = lowerer.classes.get(value.type.className);
@@ -165,8 +172,11 @@ function classConversion(
     // property an unbounded write may store, a prototype write) converts
     // through the declared methods while the instance's methods are still
     // the declared ones, and through the runtime's conversion otherwise.
-    const replaceable = classes.some((cls) => replacedConversion(lowerer, cls, node));
-    if (replaceable) return guardedConversion(lowerer, value, hint, node, resultType, finish, info);
+    // Every class is judged: one with a field of a conversion method's name
+    // is refused whatever its relatives' methods are.
+    const replaceable = classes.map((cls) => replacedConversion(lowerer, cls, node)).includes(true);
+    if (replaceable)
+      return guardedConversion(lowerer, value, hint, node, resultType, finish, info, operator);
   }
   return plannedConversion(lowerer, value, hint, node, resultType, finish, info, classes);
 }
@@ -185,6 +195,7 @@ function guardedConversion(
   resultType: IrType,
   finish: (primitive: IrExpr) => IrExpr,
   info: ClassInfo,
+  operator: "Number" | "unary plus",
 ): IrExpr {
   const loc = value.loc;
   const local = lowerer.declareHiddenLocal("%converted", value.type);
@@ -209,7 +220,15 @@ function guardedConversion(
   const boxed = lowerer.coerceToExpected(receiver, DYN);
   const primitive: IrExpr =
     hint === "number"
-      ? { kind: "libCall", fn: "dyn.numberConstructor", args: [boxed], type: F64, loc }
+      ? // Number() converts a BigInt the conversion answers; unary plus
+        // throws Node's TypeError for it (ToNumber).
+        {
+          kind: "libCall",
+          fn: operator === "unary plus" ? "dyn.toNumberCoerce" : "dyn.numberConstructor",
+          args: [boxed],
+          type: F64,
+          loc,
+        }
       : hint === "default"
         ? // `+` takes ToPrimitive's default hint: the runtime's addition of
           // the empty string and the value computes exactly that.

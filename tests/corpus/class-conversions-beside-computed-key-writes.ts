@@ -67,6 +67,17 @@ put(p, "toString", () => "plain-own");
 put(q, "valueOf", () => 42);
 console.log("own", "" + t, String(t), `${u}`, "" + p, String(p), "" + q, Number(q), String(q));
 
+// A replacement that answers a BigInt: Number() converts it, and unary
+// plus throws.
+const big = new Plain();
+put(big, "valueOf", () => 10n);
+console.log("bigint", Number(big), String(big));
+try {
+  console.log(+big);
+} catch (error) {
+  console.log("unary plus:", error instanceof TypeError, (error as Error).message);
+}
+
 // A subclass's override, an inherited method, then a prototype change.
 const shapes: Shape[] = [new Shape("s"), new Circle("c"), new Square("q")];
 console.log(shapes.map((shape) => "" + shape).join(" | "));

@@ -976,7 +976,7 @@ function publicDetail(tier) {
     if (source === "compiler-feature:console.console.clear")
       return "Clears a terminal stdout the way Node does and writes nothing to a pipe or a dumb terminal.";
     if (source === "compiler-feature:console.Console") {
-      return "Instances over process.stdout, process.stderr, or stream writables support log, info, debug, error, and warn with Node's ignoreErrors handling; other options and methods remain refused.";
+      return "Instances over process.stdout, process.stderr, or stream writables lower the whole prototype (log, info, debug, error, warn, assert, dir, dirxml, table, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, clear, and trace), with per-instance counters, timers, and group indentation, Node's ignoreErrors handling, and groupIndentation validation; profile, profileEnd, timeStamp, colorMode, and inspectOptions remain refused.";
     }
     if (/^compiler-feature:process\.process\.(?:exit)$/.test(source))
       return "Ends the program with the exit status setter's conversions: integer strings parse, null and undefined clear the status, and an out-of-range or wrong-typed value throws Node's error catchably while the program keeps running.";

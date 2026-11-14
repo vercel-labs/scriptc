@@ -135,7 +135,12 @@ ScrDyn *scr_console_native(void) {
 
 /* ── node:console Console instances ──────────────────────────────────
  * The handle owns its targets; scr_console_bind (scr_stream.c) attaches
- * writable streams and installs the stream writer. */
+ * writable streams and installs the stream writer. Node keeps a Console's
+ * counters, timers and group indentation on the instance, so each instance
+ * owns its two stores and its indentation; the global console's handle
+ * answers the thread-local ones (see the state functions below). */
+
+static void scr_console_inst_stores_free(ScrConsoleInst *inst);
 
 static void *scr_console_inst_retain(void *ptr) {
   ((ScrConsoleInst *)ptr)->rc++;
@@ -146,24 +151,62 @@ static void scr_console_inst_release(void *ptr) {
   ScrConsoleInst *inst = ptr;
   if (--inst->rc) return;
   if (inst->stream_drop) inst->stream_drop(inst);
+  scr_console_inst_stores_free(inst);
   free(inst);
 }
 
-/* text + "\n" to one target (Node's kWriteToConsole with no group
- * indentation): a bound stream receives ONE write; process stdio rides
- * the console output path. Borrows text. */
+/* The instance behind a Console value, or NULL for the global console's
+ * handle (whose state is thread-local) and for any other value. */
+static ScrConsoleInst *scr_console_inst_ptr(const ScrDyn *console) {
+  if (console != NULL && console->kind == SCR_DYN_HANDLE &&
+      console->v.handle.tag == SCR_DYNH_CONSOLE_INSTANCE)
+    return console->v.handle.ptr;
+  return NULL;
+}
+
+/* text + "\n" to one target (Node's kWriteToConsole: the instance's group
+ * indentation before the line and after every internal newline): a bound
+ * stream receives ONE write; process stdio rides the console output path.
+ * Borrows text. */
 static void scr_console_inst_print(ScrConsoleInst *inst, int which, ScrStr *text) {
+  const int fd = inst->fd[which] == 2 ? 2 : 1;
+  if (inst->group_indent == 0) {
+    if (inst->stream[which]) {
+      ScrStr *nl = scr_str_new("\n", 1);
+      ScrStr *line = scr_str_concat(text, nl);
+      scr_str_release(nl);
+      inst->stream_write(inst, which, line);
+      scr_str_release(line);
+      return;
+    }
+    ScrLogArg arg = {.tag = SCR_ARG_STR};
+    arg.v.s = text;
+    scr_console_write_fd(fd, 1, &arg, inst->ignore_errors);
+    return;
+  }
+  /* Node indents the formatted message and then appends the newline, so
+   * every newline INSIDE the message gets the indent and the write's own
+   * does not: indent the message with that newline appended, whose indent
+   * the copy skips. */
+  ScrStr *nl = scr_str_new("\n", 1);
+  ScrStr *body = scr_str_concat(text, nl);
+  scr_str_release(nl);
+  size_t used = 0;
+  char *indented = scr_console_indent_copy(body->data, body->len, inst->group_indent, &used);
+  scr_str_release(body);
   if (inst->stream[which]) {
-    ScrStr *nl = scr_str_new("\n", 1);
-    ScrStr *line = scr_str_concat(text, nl);
-    scr_str_release(nl);
+    ScrStr *line = scr_str_new(indented, used);
     inst->stream_write(inst, which, line);
     scr_str_release(line);
+    free(indented);
     return;
   }
   ScrLogArg arg = {.tag = SCR_ARG_STR};
-  arg.v.s = text;
-  scr_console_write_fd(inst->fd[which] == 2 ? 2 : 1, 1, &arg, inst->ignore_errors);
+  ScrStr *line = scr_str_new(indented, used - 1); /* the writer appends the newline */
+  arg.v.s = line;
+  scr_console_write_fd(fd, 1, &arg, inst->ignore_errors);
+  scr_str_release(line);
+  free(indented);
 }
 
 /* 0 for the stdout members, 1 for the stderr members, -1 otherwise. */
@@ -196,48 +239,36 @@ static bool scr_console_inst_set(void *ptr, const char *key, size_t len, const S
 }
 
 /* Dynamic calls render like the stored global methods: every argument
- * through the dyn inspector (strings verbatim), space-joined. */
-static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key, ScrDyn *const *args,
-                                       size_t argc, const char *what) {
-  (void)self; (void)what;
-  int which = scr_console_member_target(key, strlen(key));
-  if (which < 0) return scr_console_inst_get(ptr, key, strlen(key));
-  if (argc > 1 && args[0]->kind == SCR_DYN_STR) {
-    ScrStr *format = args[0]->v.str;
-    for (size_t i = 0; i + 1 < format->len; i++) if (format->data[i] == '%' &&
-        strchr("sdifjoOc%", format->data[i + 1])) {
-      static const char message[] = "Format strings through dynamic Console calls have no lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-      return NULL;
-    }
-  }
-  ScrStr **parts = calloc(argc ? 2 * argc : 1, sizeof *parts);
-  if (!parts) scr_trap("scriptc: out of memory\n");
-  ScrStr *space = scr_str_new(" ", 1);
-  size_t n = 0;
-  for (size_t i = 0; i < argc; i++) {
-    ScrStr *rendered = scr_insp_dyn_s(args[i], 2);
-    if (scr_exc_pending()) {
-      scr_str_release(rendered);
-      break;
-    }
-    if (i) parts[n++] = space;
-    parts[n++] = rendered;
-  }
-  if (!scr_exc_pending()) {
-    ScrStr *text = scr_str_concat_parts(parts, n);
-    scr_console_inst_print(ptr, which, text);
-    scr_str_release(text);
-  }
-  for (size_t i = 0; i < n; i++) if (parts[i] != space) scr_str_release(parts[i]);
-  scr_str_release(space);
-  free(parts);
-  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-}
+ * through the dyn inspector (strings verbatim), space-joined. Defined after
+ * the stores, which the member dispatch reads. */
+static ScrDyn *scr_console_inst_invoke_all(void *ptr, ScrDyn *self, const char *key,
+                                           ScrDyn *const *args, size_t argc, const char *what);
 
-ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors) {
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors, double group_width) {
+  /* Node's validateInteger(groupIndentation, 0, kMaxGroupIndentation) runs
+   * before the constructor body; the compiler passes the default 2 when the
+   * option is absent. */
+  if (!(isfinite(group_width) && floor(group_width) == group_width && group_width >= 0 &&
+        group_width <= 1000)) {
+    char recv[48];
+    scr_num_received(group_width, recv);
+    char message[160];
+    int len;
+    if (!(isfinite(group_width) && floor(group_width) == group_width))
+      len = snprintf(message, sizeof message,
+                     "The value of \"groupIndentation\" is out of range. It must be an integer. "
+                     "Received %s",
+                     recv);
+    else
+      len = snprintf(message, sizeof message,
+                     "The value of \"groupIndentation\" is out of range. It must be >= 0 && <= "
+                     "1000. Received %s",
+                     recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
   static const ScrDynHandleOps ops = {"console", scr_console_inst_retain, scr_console_inst_release,
-                                      scr_console_inst_invoke, scr_console_inst_get,
+                                      scr_console_inst_invoke_all, scr_console_inst_get,
                                       scr_console_inst_set, NULL, NULL};
   scr_dyn_handle_install(SCR_DYNH_CONSOLE_INSTANCE, &ops);
   ScrConsoleInst *inst = calloc(1, sizeof *inst);
@@ -246,6 +277,7 @@ ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors) {
   inst->fd[0] = out_fd;
   inst->fd[1] = err_fd;
   inst->ignore_errors = ignore_errors;
+  inst->group_width = group_width;
   ScrDyn *d = scr_dyn_new_handle(inst, SCR_DYNH_CONSOLE_INSTANCE); /* retains */
   scr_console_inst_release(inst);
   return d;
@@ -285,12 +317,12 @@ typedef struct {
   uint64_t started; /* timers: scr_hrtime_ns at console.time */
 } ScrConsoleSlot;
 
-typedef struct {
+struct ScrConsoleStore {
   ScrConsoleSlot *slots;
   size_t len, cap;
-} ScrConsoleStore;
+};
 
-static SCR_TL ScrConsoleStore scr_console_counts, scr_console_timers;
+static SCR_TL ScrConsoleStore *scr_console_counts, *scr_console_timers;
 static SCR_TL bool scr_console_stores_registered;
 
 static void scr_console_store_clear(ScrConsoleStore *store) {
@@ -300,12 +332,27 @@ static void scr_console_store_clear(ScrConsoleStore *store) {
   store->len = store->cap = 0;
 }
 
+/* Releases one store (the thread-local ones at exit, an instance's slots on
+ * its release). */
+static void scr_console_store_free(ScrConsoleStore **slot) {
+  if (!*slot) return;
+  scr_console_store_clear(*slot);
+  free(*slot);
+  *slot = NULL;
+}
+
 static void scr_console_stores_cleanup(void) {
-  scr_console_store_clear(&scr_console_counts);
-  scr_console_store_clear(&scr_console_timers);
+  scr_console_store_free(&scr_console_counts);
+  scr_console_store_free(&scr_console_timers);
+}
+
+static void scr_console_inst_stores_free(ScrConsoleInst *inst) {
+  scr_console_store_free(&inst->counts);
+  scr_console_store_free(&inst->timers);
 }
 
 static ScrConsoleSlot *scr_console_find(ScrConsoleStore *store, const ScrStr *label) {
+  if (!store) return NULL;
   for (size_t i = 0; i < store->len; i++) {
     ScrStr *key = store->slots[i].label;
     if (key->len == label->len && memcmp(key->data, label->data, label->len) == 0)
@@ -314,10 +361,17 @@ static ScrConsoleSlot *scr_console_find(ScrConsoleStore *store, const ScrStr *la
   return NULL;
 }
 
-static ScrConsoleSlot *scr_console_add(ScrConsoleStore *store, ScrStr *label) {
+/* The label's slot, adding it to *storep (allocated by the first use). */
+static ScrConsoleSlot *scr_console_add(ScrConsoleStore **storep, ScrStr *label) {
   if (!scr_console_stores_registered) {
     scr_console_stores_registered = true;
     scr_atexit(scr_console_stores_cleanup);
+  }
+  ScrConsoleStore *store = *storep;
+  if (!store) {
+    store = calloc(1, sizeof *store);
+    if (!store) scr_trap("scriptc: out of memory\n");
+    *storep = store;
   }
   if (store->len == store->cap) {
     size_t cap = store->cap ? store->cap * 2 : 4;
@@ -340,13 +394,64 @@ static void scr_console_remove(ScrConsoleStore *store, ScrConsoleSlot *slot) {
   store->len--;
 }
 
-/* One line through the global console's stdout writer (group indentation
- * included). Borrows text. */
-static void scr_console_print(ScrStr *text) {
+/* Node's kGroupIndentationString for the global console: two spaces per
+ * open group. */
+static SCR_TL size_t scr_console_group_indent = 0;
+
+/* The state a member call addresses: the counters, timers and indentation of
+ * a Console instance, or the global console's thread-local ones for its
+ * handle and for NULL (a plain `console.x` call). A value of any other kind
+ * is the SC2020 fence: false with the exception pending. */
+typedef struct {
+  ScrConsoleInst *inst;     /* NULL: the global console */
+  ScrConsoleStore **counts;
+  ScrConsoleStore **timers;
+  size_t *indent;
+  double width;             /* one group step, in spaces */
+} ScrConsoleState;
+
+static bool scr_console_state(ScrDyn *console, ScrConsoleState *st) {
+  ScrConsoleInst *inst = scr_console_inst_ptr(console);
+  if (inst != NULL) {
+    st->inst = inst;
+    st->counts = &inst->counts;
+    st->timers = &inst->timers;
+    st->indent = &inst->group_indent;
+    st->width = inst->group_width;
+    return true;
+  }
+  if (console != NULL &&
+      (console->kind != SCR_DYN_HANDLE || console->v.handle.tag != SCR_DYNH_CONSOLE)) {
+    static const char message[] = "This Console value has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  st->inst = NULL;
+  st->counts = &scr_console_counts;
+  st->timers = &scr_console_timers;
+  st->indent = &scr_console_group_indent;
+  st->width = 2;
+  return true;
+}
+
+/* One line through a Console value's selected target: the instance's own
+ * writer (its indentation included), or the global console's when the value
+ * is its handle or NULL. Borrows text. */
+static void scr_console_emit(ScrDyn *console, int which, ScrStr *text) {
+  ScrConsoleInst *inst = scr_console_inst_ptr(console);
+  if (inst != NULL) {
+    scr_console_inst_print(inst, which, text);
+    return;
+  }
   ScrLogArg arg = {.tag = SCR_ARG_STR};
   arg.v.s = text;
-  scr_console_log(1, &arg);
+  if (which) scr_console_error(1, &arg);
+  else scr_console_log(1, &arg);
 }
+
+/* One line through the global console's stdout writer (group indentation
+ * included). Borrows text. */
+static void scr_console_print(ScrStr *text) { scr_console_emit(NULL, 0, text); }
 
 /* `${label}` after the `label = 'default'` default. */
 ScrStr *scr_console_label(ScrDyn *label) {
@@ -355,10 +460,12 @@ ScrStr *scr_console_label(ScrDyn *label) {
   return text ? text : scr_str_new("", 0);
 }
 
-/* console.count: "label: n". */
-void scr_console_count(ScrStr *label) {
-  ScrConsoleSlot *slot = scr_console_find(&scr_console_counts, label);
-  if (!slot) slot = scr_console_add(&scr_console_counts, label);
+/* console.count: "label: n", on the console's stdout. */
+void scr_console_inst_count(ScrDyn *console, ScrStr *label) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return;
+  ScrConsoleSlot *slot = scr_console_find(*st.counts, label);
+  if (!slot) slot = scr_console_add(st.counts, label);
   slot->count++;
   char digits[40];
   size_t n = scr_f64_to_str(slot->count, digits);
@@ -370,9 +477,11 @@ void scr_console_count(ScrStr *label) {
   memcpy(line + label->len + 2, digits, n);
   ScrStr *text = scr_str_new(line, total);
   free(line);
-  scr_console_print(text);
+  scr_console_emit(console, 0, text);
   scr_str_release(text);
 }
+
+void scr_console_count(ScrStr *label) { scr_console_inst_count(NULL, label); }
 
 /* "<prefix><label><suffix>" — the warning texts. */
 static ScrStr *scr_console_message(const char *prefix, const ScrStr *label, const char *suffix) {
@@ -391,13 +500,18 @@ static ScrStr *scr_console_message(const char *prefix, const ScrStr *label, cons
 /* console.countReset: Node looks the raw label up (`counts.has(label)`),
  * so only string labels (and the default) can match; the warning names
  * the label's string form. */
-ScrStr *scr_console_count_reset(ScrDyn *label) {
+ScrStr *scr_console_inst_count_reset(ScrDyn *console, ScrDyn *label) {
   ScrStr *text = scr_console_label(label);
   if (scr_exc_pending()) return text;
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) {
+    scr_str_release(text);
+    return scr_str_new("", 0);
+  }
   bool keyed = label->kind == SCR_DYN_UNDEF || label->kind == SCR_DYN_STR;
-  ScrConsoleSlot *slot = keyed ? scr_console_find(&scr_console_counts, text) : NULL;
+  ScrConsoleSlot *slot = keyed ? scr_console_find(*st.counts, text) : NULL;
   if (slot) {
-    scr_console_remove(&scr_console_counts, slot);
+    scr_console_remove(*st.counts, slot);
     scr_str_release(text);
     return scr_str_new("", 0);
   }
@@ -406,12 +520,20 @@ ScrStr *scr_console_count_reset(ScrDyn *label) {
   return message;
 }
 
-ScrStr *scr_console_time(ScrStr *label) {
-  if (scr_console_find(&scr_console_timers, label))
+ScrStr *scr_console_count_reset(ScrDyn *label) {
+  return scr_console_inst_count_reset(NULL, label);
+}
+
+ScrStr *scr_console_inst_time(ScrDyn *console, ScrStr *label) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return scr_str_new("", 0);
+  if (scr_console_find(*st.timers, label))
     return scr_console_message("Label '", label, "' already exists for console.time()");
-  scr_console_add(&scr_console_timers, label)->started = scr_hrtime_ns();
+  scr_console_add(st.timers, label)->started = scr_hrtime_ns();
   return scr_str_new("", 0);
 }
+
+ScrStr *scr_console_time(ScrStr *label) { return scr_console_inst_time(NULL, label); }
 
 static size_t scr_console_pad2(double value, char *out) {
   char digits[40];
@@ -479,62 +601,75 @@ static ScrStr *scr_console_format_time(double ms) {
   return scr_str_new(buf, o + 2);
 }
 
-static ScrStr *scr_console_elapsed(ScrStr *label, bool end) {
-  ScrConsoleSlot *slot = scr_console_find(&scr_console_timers, label);
+static ScrStr *scr_console_elapsed(ScrConsoleStore **timers, ScrStr *label, bool end) {
+  ScrConsoleSlot *slot = scr_console_find(*timers, label);
   if (!slot) return scr_str_new("", 0);
   /* process.hrtime(start): [seconds, nanoseconds], then
    * seconds * 1000 + nanoseconds / 1e6. */
   uint64_t elapsed = scr_hrtime_ns() - slot->started;
   double ms = (double)(elapsed / 1000000000u) * 1000 + (double)(elapsed % 1000000000u) / 1e6;
-  if (end) scr_console_remove(&scr_console_timers, slot);
+  if (end) scr_console_remove(*timers, slot);
   return scr_console_format_time(ms);
 }
 
-ScrStr *scr_console_time_end(ScrStr *label) { return scr_console_elapsed(label, true); }
+ScrStr *scr_console_inst_time_end(ScrDyn *console, ScrStr *label) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return scr_str_new("", 0);
+  return scr_console_elapsed(st.timers, label, true);
+}
 
-ScrStr *scr_console_time_log(ScrStr *label) { return scr_console_elapsed(label, false); }
+ScrStr *scr_console_inst_time_log(ScrDyn *console, ScrStr *label) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return scr_str_new("", 0);
+  return scr_console_elapsed(st.timers, label, false);
+}
 
-/* Node's kGroupIndentationString: two spaces per open group. */
-static SCR_TL size_t scr_console_group_indent = 0;
+ScrStr *scr_console_time_end(ScrStr *label) { return scr_console_inst_time_end(NULL, label); }
 
-/* kWriteToConsole's indentation: the indent before the line and after
- * every newline inside it (the trailing newline excluded). */
+ScrStr *scr_console_time_log(ScrStr *label) { return scr_console_inst_time_log(NULL, label); }
+
 static char *scr_console_indent_line(const char *line, size_t *used) {
-  size_t indent = scr_console_group_indent;
-  size_t n = *used, breaks = 0;
-  for (size_t i = 0; i + 1 < n; i++) breaks += line[i] == '\n';
-  if (breaks >= (SIZE_MAX - n) / (indent + 1)) scr_trap("scriptc: console output too large\n");
-  size_t total = n + indent * (breaks + 1);
-  char *out = malloc(total);
-  if (!out) scr_trap("scriptc: out of memory\n");
-  size_t o = indent;
-  memset(out, ' ', indent);
-  for (size_t i = 0; i < n; i++) {
-    out[o++] = line[i];
-    if (line[i] == '\n' && i + 1 < n) {
-      memset(out + o, ' ', indent);
-      o += indent;
-    }
-  }
-  *used = total;
-  return out;
+  return scr_console_indent_copy(line, *used, scr_console_group_indent, used);
 }
 
-void scr_console_group(double delta) {
-  if (delta > 0) scr_console_group_indent += 2;
-  else if (scr_console_group_indent >= 2) scr_console_group_indent -= 2;
-  scr_console_indenter = scr_console_group_indent ? scr_console_indent_line : NULL;
+void scr_console_inst_group(ScrDyn *console, double delta) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return;
+  size_t step = st.width > 0 ? (size_t)st.width : 0;
+  if (delta > 0) *st.indent += step;
+  else if (*st.indent >= step) *st.indent -= step;
+  else *st.indent = 0;
+  /* The global console's writer reads the indenting rewrite; instances
+   * indent in their own print. */
+  if (st.inst == NULL)
+    scr_console_indenter = *st.indent ? scr_console_indent_line : NULL;
 }
 
-/* Only a terminal stdout clears (TERM=dumb excepted): readline's
- * cursorTo(stdout, 0, 0), then clearScreenDown(stdout). */
-void scr_console_clear(void) {
-  if (!scr_process_is_tty(1)) return;
+void scr_console_group(double delta) { scr_console_inst_group(NULL, delta); }
+
+/* Only a terminal target clears (TERM=dumb excepted): readline's
+ * cursorTo(stdout, 0, 0), then clearScreenDown(stdout). A bound stream's
+ * isTTY is not modeled, so it never clears. */
+static void scr_console_clear_fd(int fd) {
+  if (!scr_process_is_tty(fd)) return;
   const char *term = getenv("TERM");
   if (term && strcmp(term, "dumb") == 0) return;
-  scr_stdio_write_text(1, "\x1b[1;1H", 6);
-  scr_stdio_write_text(1, "\x1b[0J", 4);
+  scr_stdio_write_text(fd, "\x1b[1;1H", 6);
+  scr_stdio_write_text(fd, "\x1b[0J", 4);
 }
+
+void scr_console_inst_clear(ScrDyn *console) {
+  ScrConsoleState st;
+  if (!scr_console_state(console, &st)) return;
+  if (st.inst == NULL) {
+    scr_console_clear_fd(1);
+    return;
+  }
+  if (st.inst->stream[0] != NULL) return;
+  scr_console_clear_fd(st.inst->fd[0] == 2 ? 2 : 1);
+}
+
+void scr_console_clear(void) { scr_console_inst_clear(NULL); }
 
 /* console.dir over a dyn value: inspect with custom inspection off. The
  * only custom inspection the dyn walk applies is a Buffer's <Buffer ..>
@@ -807,9 +942,10 @@ static void scr_table_divider(ScrTableBuf *b, const size_t *widths, size_t n, co
   scr_tb_cstr(b, right);
 }
 
-/* cli_table(head, columns) over n columns of `rows` cells, printed through
- * the global console's log. */
-static void scr_table_print(ScrStr *const *head, ScrStr *const *const *columns, size_t n, size_t rows) {
+/* cli_table(head, columns) over n columns of `rows` cells, printed on the
+ * console's stdout. */
+static void scr_table_print(ScrDyn *console, ScrStr *const *head,
+                            ScrStr *const *const *columns, size_t n, size_t rows) {
   size_t *widths = calloc(n ? n : 1, sizeof *widths);
   ScrStr **row = calloc(n ? n : 1, sizeof *row);
   if (!widths || !row) scr_trap("scriptc: out of memory\n");
@@ -837,11 +973,11 @@ static void scr_table_print(ScrStr *const *head, ScrStr *const *const *columns, 
   free(b.data);
   free(widths);
   free(row);
-  scr_console_print(text);
+  scr_console_emit(console, 0, text);
   scr_str_release(text);
 }
 
-void scr_console_table(ScrDyn *data_in, ScrDyn *properties) {
+void scr_console_inst_table(ScrDyn *console, ScrDyn *data_in, ScrDyn *properties) {
   ScrDyn *data = scr_table_view(data_in);
   /* `tabularData === null || typeof tabularData !== 'object'`: log it. */
   if (data->kind != SCR_DYN_OBJ && data->kind != SCR_DYN_ARR && data->kind != SCR_DYN_BYTES) {
@@ -849,7 +985,7 @@ void scr_console_table(ScrDyn *data_in, ScrDyn *properties) {
       scr_table_fence("console.table of this value has no lowering");
     } else {
       ScrStr *text = scr_insp_dyn_s(data, 2);
-      if (!scr_exc_pending()) scr_console_print(text);
+      if (!scr_exc_pending()) scr_console_emit(console, 0, text);
       scr_str_release(text);
     }
     scr_dyn_release(data);
@@ -949,7 +1085,7 @@ void scr_console_table(ScrDyn *data_in, ScrDyn *properties) {
       head[c] = values_head;
       columns[c++] = values;
     }
-    scr_table_print(head, (ScrStr *const *const *)columns, c, rows);
+    scr_table_print(console, head, (ScrStr *const *const *)columns, c, rows);
     scr_str_release(index_head);
     scr_str_release(values_head);
     free(names);
@@ -968,4 +1104,67 @@ void scr_console_table(ScrDyn *data_in, ScrDyn *properties) {
   free(values);
   if (props) scr_dyn_release(props);
   scr_dyn_release(data);
+}
+
+void scr_console_table(ScrDyn *data, ScrDyn *properties) {
+  scr_console_inst_table(NULL, data, properties);
+}
+
+/* ── dynamic calls on a Console instance ─────────────────────────────
+ * A checked-dynamic call (`c.log(...)` through a dyn value) renders like
+ * the stored global methods: every argument through the dyn inspector
+ * (strings verbatim), space-joined, on the instance's own targets. The
+ * remaining members stay the stored-member boundary. */
+static ScrDyn *scr_console_inst_invoke_all(void *ptr, ScrDyn *self, const char *key,
+                                           ScrDyn *const *args, size_t argc, const char *what) {
+  (void)ptr;
+  (void)what;
+  int which = scr_console_member_target(key, strlen(key));
+  if (which < 0) {
+    /* The key is whatever name the program called, so the message grows
+     * with it: size the buffer from the formatted length instead of
+     * letting a fixed one record more characters than it holds. */
+    static const char format[] =
+        "Calling Console.%s through a stored value has no lowering; call it on the instance";
+    int needed = snprintf(NULL, 0, format, key);
+    if (needed < 0) needed = 0;
+    char *message = malloc((size_t)needed + 1);
+    if (!message) scr_trap("scriptc: out of memory\n");
+    snprintf(message, (size_t)needed + 1, format, key);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)needed, "SC2020");
+    free(message);
+    return NULL;
+  }
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "console");
+  ScrStr *line = scr_insp_format(args, argc, &options);
+  if (!line) return NULL;
+  scr_console_emit(self, which, line);
+  scr_str_release(line);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* console.trace on a Console value: the Error's "Trace[: message]" line
+ * and the captured frames, as one stderr line (scriptc's own frame text:
+ * SEMANTICS.md divergence 11). Borrows message. */
+void scr_console_inst_trace(ScrDyn *console, ScrStr *message) {
+  ScrStr *frames = scr_stack_capture();
+  ScrStr *head;
+  if (message->len == 0) {
+    head = scr_str_new("Trace", 5);
+  } else {
+    ScrStr *prefix = scr_str_new("Trace: ", 7);
+    head = scr_str_concat(prefix, message);
+    scr_str_release(prefix);
+  }
+  if (frames) {
+    ScrStr *whole = scr_str_concat(head, frames);
+    scr_str_release(head);
+    scr_console_emit(console, 1, whole);
+    scr_str_release(whole);
+    scr_str_release(frames);
+  } else {
+    scr_console_emit(console, 1, head);
+    scr_str_release(head);
+  }
 }

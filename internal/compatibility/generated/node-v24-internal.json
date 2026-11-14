@@ -19116,6 +19116,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-state.ts",
           "tests/corpus/console-method-format.ts",
           "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
@@ -19249,6 +19250,7 @@
         "status": "partial",
         "evidence": "compiler-feature:console.Console",
         "tests": [
+          "tests/corpus/console-instance-state.ts",
           "tests/corpus/4900-console-instances.ts",
           "tests/corpus/4901-console-instance-errors.ts"
         ]

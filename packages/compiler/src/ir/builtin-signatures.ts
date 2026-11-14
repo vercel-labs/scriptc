@@ -5042,13 +5042,33 @@ function buildLibFnSignatures() {
     "global.undefRead": { argTypes: [STRING], result: VOID },
     "console.native": { argTypes: [], result: DYN },
     /** node:console Console instances (scr_console_native.c): new mints the
-     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next) and
-     * the ignoreErrors flag; bind attaches a borrowed writable stream to
+     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next), the
+     * ignoreErrors flag and the groupIndentation width (Node validates it as
+     * an integer in [0, 1000]); bind attaches a borrowed writable stream to
      * target 0 (stdout) or 1 (stderr); write prints `text\n` to the
      * selected target of an instance or the global console handle. */
-    "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
+    "console.new": { argTypes: [F64, F64, BOOL, F64], result: DYN },
     "console.bind": { argTypes: [DYN, F64, null], result: VOID },
     "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
+    /** The remaining members over a Console VALUE (scr_console_native.c): a
+     * node:console Console instance's own counters, timers and group
+     * indentation, or the global console's thread-local ones for its handle.
+     * The global console's direct-call builtins below are the same functions
+     * with the global state. count prints "label: n"; countReset/time
+     * answer warning texts; timeEnd/timeLog answer Node's formatted elapsed
+     * time ("" for an unknown label); group adds or removes one
+     * groupIndentation step; clear writes the terminal sequences; table
+     * renders Node's table on the console's stdout; trace writes
+     * "Trace[: message]" and the captured frames on its stderr. */
+    "console.instCount": { argTypes: [DYN, STRING], result: VOID },
+    "console.instCountReset": { argTypes: [DYN, DYN], result: STRING },
+    "console.instTime": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeEnd": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeLog": { argTypes: [DYN, STRING], result: STRING },
+    "console.instGroup": { argTypes: [DYN, F64], result: VOID },
+    "console.instClear": { argTypes: [DYN], result: VOID },
+    "console.instTable": { argTypes: [DYN, DYN, DYN], result: VOID },
+    "console.instTrace": { argTypes: [DYN, STRING], result: VOID },
     /** The global console's remaining members (scr_console_native.c; the
      * group indentation itself lives with the writers in scr_console.c).
      * Arguments are borrowed; string results are owned. noop is the

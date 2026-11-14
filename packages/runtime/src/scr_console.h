@@ -76,6 +76,28 @@ ScrStr *scr_console_time_log(ScrStr *label);
 void scr_console_group(double delta);
 void scr_console_clear(void);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
+/* The same members over a Console value: a node:console Console instance
+ * (its own counters, timers and group indentation) or the global console
+ * handle/NULL (the thread-local ones the members above use). A value of any
+ * other kind throws the SC2020 fence. count prints "label: n" to the
+ * console's stdout; countReset/time answer warning texts for
+ * process.emitWarning; timeEnd/timeLog answer the elapsed time or "". */
+void scr_console_inst_count(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_count_reset(ScrDyn *console, ScrDyn *label);
+ScrStr *scr_console_inst_time(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_end(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_log(ScrDyn *console, ScrStr *label);
+void scr_console_inst_group(ScrDyn *console, double delta);
+void scr_console_inst_clear(ScrDyn *console);
+void scr_console_inst_table(ScrDyn *console, ScrDyn *data, ScrDyn *properties);
+/* console.trace on a Console value: "Trace[: message]" and the captured
+ * frames as one line of the console's stderr (scriptc's own frame text). */
+void scr_console_inst_trace(ScrDyn *console, ScrStr *message);
+/* The line rewrite of kWriteToConsole's indentation (scr_console.c): the
+ * heap copy of `line` with `indent` spaces before it and after every
+ * newline a further character follows (a final newline is the one the
+ * write appends after indenting), its length in *used. */
+char *scr_console_indent_copy(const char *line, size_t n, size_t indent, size_t *used);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
 ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth

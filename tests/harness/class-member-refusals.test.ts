@@ -13,9 +13,12 @@ const execFileAsync = promisify(execFile);
 // error (tests/diagnostics/class-member-refusals.ts). These programs reach
 // the member where the build cannot see it: each BUILDS, and the reach
 // throws the member's refusal with its diagnostic code at run time.
-async function run(source: string): Promise<{ stdout: string; stderr: string; code: number }> {
+async function run(
+  source: string,
+  entryName = "main.ts",
+): Promise<{ stdout: string; stderr: string; code: number }> {
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-class-member-refusals-"));
-  const entry = join(outDir, "main.ts");
+  const entry = join(outDir, entryName);
   writeFileSync(entry, source);
   const result = await compile(entry, {
     backend: "llvm",
@@ -144,4 +147,37 @@ for (const each of all) console.log(each.print("a"));
   expect(stderr).toContain("overriding a method with a different signature");
   expect(stderr).toContain("SC1090");
   expect(code).not.toBe(0);
+});
+
+// A Console instance's dynamic call names the method in its refusal, so the
+// message follows the program's name: a fixed buffer cut the text while its
+// recorded length still counted the whole message, and the throw read that
+// many bytes (ASan: stack-buffer-overflow in scr_console_inst_invoke_all).
+// The dynamic tier builds these calls from JavaScript sources, where the
+// member name is a plain string and never a lowered member.
+test("a Console instance's dynamic refusal keeps a long method name whole", async () => {
+  // Longer than the 128-byte stack buffer the refusal used to be written to.
+  const name =
+    "aLongConsoleMethodNameThatNoLoweringAnswersAndTheWholeTextMustSurviveTypingJSONPayload";
+  expect(name.length).toBeGreaterThan(80);
+  const { stdout, stderr, code } = await run(
+    `const { Console } = require("node:console");
+const c = new Console(process.stdout, process.stderr);
+function attempt(label, run) {
+  try { console.log(label, run()); }
+  catch (error) { console.log(label, "threw", error.message, error.code); }
+}
+function dispatch(target) {
+  return target.${name}(1, 2);
+}
+attempt("long", () => dispatch(c));
+c.log("after");
+`,
+    "main.cjs",
+  );
+  const refused = `Calling Console.${name} through a stored value has no lowering; call it on the instance`;
+  // Exactly the whole text: nothing cut and nothing appended past it.
+  expect(stdout).toBe(`long threw ${refused} SC2020\nafter\n`);
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
 });

@@ -1,0 +1,53 @@
+console-instance-options.ts:12:49 - error SC2020: 'groupIndentation of type 'string'' is part of the standard library types but has no scriptc lowering yet
+
+  11 | // ERR_INVALID_ARG_TYPE, so the value is refused rather than guessed.
+  12 | new Console({ stdout: stream, groupIndentation: "3" as unknown as number });
+     |                                                 ^~~~~~~~~~~~~~~~~~~~~~~~
+  13 | 
+
+  hint: Node requires a number (an integer from 0 to 1000)
+
+console-instance-options.ts:16:31 - error SC2020: 'Console options other than stdout, stderr, ignoreErrors, and groupIndentation' is part of the standard library types but has no scriptc lowering yet
+
+  15 | // compile time.
+  16 | new Console({ stdout: stream, colorMode: "auto" });
+     |                               ^~~~~~~~~~~~~~~~~
+  17 | new Console({ stdout: stream, inspectOptions: { depth: 1 } });
+
+  hint: colorMode and inspectOptions have no lowering yet
+
+console-instance-options.ts:17:31 - error SC2020: 'Console options other than stdout, stderr, ignoreErrors, and groupIndentation' is part of the standard library types but has no scriptc lowering yet
+
+  16 | new Console({ stdout: stream, colorMode: "auto" });
+  17 | new Console({ stdout: stream, inspectOptions: { depth: 1 } });
+     |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 | 
+
+  hint: colorMode and inspectOptions have no lowering yet
+
+console-instance-options.ts:22:1 - error SC2020: 'Console.profile' is part of the standard library types but has no scriptc lowering yet
+
+  21 | const c = new Console({ stdout: stream });
+  22 | c.profile();
+     | ^~~~~~~~~~~
+  23 | c.profileEnd();
+
+  hint: log, info, debug, error, warn, dir, dirxml, trace, assert, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, table, and clear are the lowered Console members
+
+console-instance-options.ts:23:1 - error SC2020: 'Console.profileEnd' is part of the standard library types but has no scriptc lowering yet
+
+  22 | c.profile();
+  23 | c.profileEnd();
+     | ^~~~~~~~~~~~~~
+  24 | c.timeStamp("label");
+
+  hint: log, info, debug, error, warn, dir, dirxml, trace, assert, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, table, and clear are the lowered Console members
+
+console-instance-options.ts:24:1 - error SC2020: 'Console.timeStamp' is part of the standard library types but has no scriptc lowering yet
+
+  23 | c.profileEnd();
+  24 | c.timeStamp("label");
+     | ^~~~~~~~~~~~~~~~~~~~
+  25 | 
+
+  hint: log, info, debug, error, warn, dir, dirxml, trace, assert, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, table, and clear are the lowered Console members

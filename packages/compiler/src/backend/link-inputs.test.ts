@@ -103,6 +103,39 @@ test("SEARCH_DIR and -l names resolve to the files they select", async () => {
   );
 });
 
+test("an INCLUDEd script resolves its names through the includer's SEARCH_DIR", async () => {
+  const root = scratch();
+  const library = file(root, "lib/libfoo.so");
+  const inner = file(root, "scripts/inner.ld", "INPUT ( -lfoo )\n");
+  const outer = file(root, "scripts/main.ld", 'SEARCH_DIR( ../lib )\nINCLUDE "inner.ld"\n');
+
+  expect(await namedLinkInputDependencies([outer], { cwd: root })).toEqual([inner, library].sort());
+});
+
+test("an input another input includes is not reported as a named file", async () => {
+  const root = scratch();
+  const first = file(root, "first.ld", 'INCLUDE "second.ld"\nINPUT ( first.o )\n');
+  const second = file(root, "second.ld", 'INCLUDE "first.ld"\nINPUT ( second.o )\n');
+  const firstObject = file(root, "first.o");
+  const secondObject = file(root, "second.o");
+
+  expect(await namedLinkInputDependencies([first, second], { cwd: root })).toEqual(
+    [firstObject, secondObject].sort(),
+  );
+});
+
+test("a script included through two includers keeps every search directory", async () => {
+  const root = scratch();
+  const library = file(root, "lib/libfoo.so");
+  const shared = file(root, "shared/inner.ld", "INPUT ( -lfoo )\n");
+  const plain = file(root, "plain.ld", 'INCLUDE "shared/inner.ld"\n');
+  const searching = file(root, "search.ld", 'SEARCH_DIR( lib )\nINCLUDE "shared/inner.ld"\n');
+
+  expect(await namedLinkInputDependencies([plain, searching], { cwd: root })).toEqual(
+    [shared, library].sort(),
+  );
+});
+
 test.skipIf(!THIN_ARCHIVE)("a thin archive names its external members", async () => {
   const root = scratch();
   const member = file(root, "members/member.o", "member\n");
@@ -114,6 +147,21 @@ test.skipIf(!THIN_ARCHIVE)("a thin archive names its external members", async ()
   expect(await namedLinkInputDependencies([archive], { cwd: elsewhere })).toEqual(
     [member, second].sort(),
   );
+});
+
+test.skipIf(!THIN_ARCHIVE)("a thin archive names members whose names are not ASCII", async () => {
+  const root = scratch();
+  // A short name stays in the member header; a name longer than the 16-byte
+  // field goes to the long-name table. Both are the bytes of the path.
+  const short = file(root, "mé.o", "short\n");
+  const long = file(root, "mémbers/mémber.o", "long\n");
+  const archive = join(root, "libthin-utf8.a");
+  execFileSync("ar", ["crsT", archive, "mé.o", "mémbers/mémber.o"], {
+    cwd: root,
+    stdio: "ignore",
+  });
+
+  expect(await namedLinkInputDependencies([archive], { cwd: root })).toEqual([short, long].sort());
 });
 
 test("a regular archive and an object file name nothing", async () => {

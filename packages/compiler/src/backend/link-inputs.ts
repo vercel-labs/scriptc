@@ -9,8 +9,10 @@
  *
  * Resolution over-approximates on purpose. The linker resolves a relative name
  * against search paths the compiler does not model exactly (the script's
- * directory, the working directory, SEARCH_DIR), so every existing candidate
- * is recorded. Recording a file the linker did not open only makes a later
+ * directory, the working directory, SEARCH_DIR), and an INCLUDEd script keeps
+ * the search directories its includer had in effect, so every existing
+ * candidate is recorded and a script reached through another includer is read
+ * again with them. Recording a file the linker did not open only makes a later
  * build redo the link; missing a file it did open is a stale executable.
  */
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
@@ -36,6 +38,13 @@ const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_DEPTH = 8;
 const DEFAULT_MAX_FILES = 10_000;
 
+/** A file still to inspect, and the search directories the input that named it
+ * had in effect. An INCLUDEd script resolves its own names through them too. */
+interface PendingInput {
+  path: string;
+  searchDirectories: readonly string[];
+}
+
 /** The existing files `inputs` name besides themselves: the files a linker
  * script includes or adds, and the members of a thin archive. Absolute paths,
  * sorted, excluding the inputs themselves and anything under `excludedRoots`. */
@@ -46,27 +55,45 @@ export async function namedLinkInputDependencies(
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const excluded = (options.excludedRoots ?? []).map((root) => resolve(root));
   const named = new Set<string>();
-  const visited = new Set<string>();
-  let pending = inputs.map((input) => resolve(options.cwd, input));
-  for (let depth = 0; depth <= MAX_DEPTH && pending.length > 0; depth++) {
-    const next: string[] = [];
-    for (const path of pending) {
-      if (visited.has(path)) continue;
-      visited.add(path);
-      for (const dependency of await namedInputs(path, options.cwd)) {
-        if (visited.has(dependency) || named.has(dependency)) continue;
+  // The inputs are already the caller's to snapshot; an input another input
+  // names is still read again, but it is not reported as a named file.
+  const roots = new Set(inputs.map((input) => resolve(options.cwd, input)));
+  // The search directories each file has been read with. A script reached
+  // again through another includer that adds search directories is read again,
+  // so an INCLUDE it resolves only through those directories is recorded.
+  const read = new Map<string, Set<string>>();
+  let pending: PendingInput[] = inputs.map((input) => ({
+    path: resolve(options.cwd, input),
+    searchDirectories: [],
+  }));
+  for (let depth = 0; pending.length > 0; depth++) {
+    // Deeper nesting is not refused silently: a named input's own names stay
+    // unread, so the proof cannot cover them.
+    if (depth > MAX_DEPTH) throw new Error(`link inputs nest deeper than ${MAX_DEPTH} levels`);
+    const next: PendingInput[] = [];
+    for (const item of pending) {
+      const alreadyRead = read.get(item.path);
+      if (
+        alreadyRead !== undefined &&
+        item.searchDirectories.every((directory) => alreadyRead.has(directory))
+      )
+        continue;
+      const searchDirectories = alreadyRead ?? new Set<string>();
+      for (const directory of item.searchDirectories) searchDirectories.add(directory);
+      read.set(item.path, searchDirectories);
+      const found = await namedInputs(item.path, options.cwd, [...searchDirectories]);
+      for (const dependency of found.dependencies) {
         if (excluded.some((root) => isUnder(dependency, root))) continue;
-        named.add(dependency);
-        if (named.size > maxFiles)
-          throw new Error(`link input ${path} names more than ${maxFiles} files`);
-        next.push(dependency);
+        if (!roots.has(dependency) && !named.has(dependency)) {
+          named.add(dependency);
+          if (named.size > maxFiles)
+            throw new Error(`link input ${item.path} names more than ${maxFiles} files`);
+        }
+        next.push({ path: dependency, searchDirectories: found.searchDirectories });
       }
     }
     pending = next;
   }
-  // Deeper nesting is not refused silently: a named input's own names stay
-  // unread, so the proof cannot cover them.
-  if (pending.length > 0) throw new Error(`link inputs nest deeper than ${MAX_DEPTH} levels`);
   return [...named].sort();
 }
 
@@ -77,29 +104,51 @@ function isUnder(path: string, root: string): boolean {
 const ARCHIVE_MAGIC = "!<arch>\n";
 const THIN_ARCHIVE_MAGIC = "!<thin>\n";
 
-async function namedInputs(path: string, cwd: string): Promise<string[]> {
+interface NamedInputs {
+  /** The existing files the input names. */
+  dependencies: string[];
+  /** The search directories a script's own names resolve against, which the
+   * scripts it INCLUDEd inherit. Empty for a file that is not a script. */
+  searchDirectories: string[];
+}
+
+const NAMES_NOTHING: NamedInputs = { dependencies: [], searchDirectories: [] };
+
+async function namedInputs(
+  path: string,
+  cwd: string,
+  inheritedSearchDirectories: readonly string[],
+): Promise<NamedInputs> {
   let size: number;
   try {
     const info = statSync(path);
-    if (!info.isFile()) return [];
+    if (!info.isFile()) return NAMES_NOTHING;
     size = info.size;
   } catch {
-    return [];
+    return NAMES_NOTHING;
   }
-  if (size === 0) return [];
+  if (size === 0) return NAMES_NOTHING;
   const head = readPrefix(path, Math.min(size, 8));
   const magic = head.toString("latin1");
   if (magic === THIN_ARCHIVE_MAGIC) {
     if (size > MAX_ARCHIVE_BYTES) throw new Error(`thin archive too large to prove: ${path}`);
-    return thinArchiveMembers(await readFile(path), dirname(path), cwd);
+    return {
+      dependencies: thinArchiveMembers(await readFile(path), dirname(path), cwd),
+      searchDirectories: [],
+    };
   }
   // A regular archive contains its members, and an object or library file has
   // no named inputs, so neither adds a dependency.
-  if (magic === ARCHIVE_MAGIC) return [];
+  if (magic === ARCHIVE_MAGIC) return NAMES_NOTHING;
   const prefix = readPrefix(path, Math.min(size, 512));
-  if (looksBinary(prefix)) return [];
+  if (looksBinary(prefix)) return NAMES_NOTHING;
   if (size > MAX_SCRIPT_BYTES) throw new Error(`text input too large to prove: ${path}`);
-  return linkerScriptInputs(await readFile(path, "utf8"), dirname(path), cwd);
+  return linkerScriptInputs(
+    await readFile(path, "utf8"),
+    dirname(path),
+    cwd,
+    inheritedSearchDirectories,
+  );
 }
 
 function readPrefix(path: string, length: number): Buffer {
@@ -142,7 +191,8 @@ function thinArchiveMembers(bytes: Buffer, archiveDir: string, cwd: string): str
   let offset = THIN_ARCHIVE_MAGIC.length;
   while (offset + 60 <= bytes.length) {
     const header = bytes.subarray(offset, offset + 60);
-    const rawName = header.subarray(0, 16).toString("latin1").trim();
+    const nameField = header.subarray(0, 16);
+    const rawName = nameField.toString("latin1").trim();
     const size = Number.parseInt(header.subarray(48, 58).toString("latin1").trim(), 10);
     offset += 60;
     if (rawName === "/" || rawName === "//") {
@@ -151,17 +201,25 @@ function thinArchiveMembers(bytes: Buffer, archiveDir: string, cwd: string): str
       offset += size;
       continue;
     }
-    let name = rawName;
-    if (name.startsWith("/") && /^\d+$/.test(name.slice(1))) {
-      const start = Number.parseInt(name.slice(1), 10);
+    // A member name is the bytes the file system held when the member was
+    // added, and those bytes are UTF-8 on the systems this builds on. Read the
+    // name both ways: for ASCII the readings agree, and for another encoding
+    // the extra reading can only add an existing candidate, which costs a
+    // relink rather than a stale executable.
+    let names = [...new Set([nameField.toString("utf8").trim(), rawName])];
+    if (rawName.startsWith("/") && /^\d+$/.test(rawName.slice(1))) {
+      const start = Number.parseInt(rawName.slice(1), 10);
       const end = longNames.indexOf(0x0a, start);
-      name = longNames.subarray(start, end < 0 ? longNames.length : end).toString("latin1");
+      const long = longNames.subarray(start, end < 0 ? longNames.length : end);
+      names = [...new Set([long.toString("utf8"), long.toString("latin1")])];
     }
-    name = name.replace(/\/+$/, "");
-    // GNU ar records a relative member path relative to the archive's
-    // directory; a link can also run from elsewhere. Check both.
-    for (const directory of [archiveDir, cwd])
-      for (const candidate of existingCandidates(name, [directory])) members.push(candidate);
+    for (const raw of names) {
+      const name = raw.replace(/\/+$/, "");
+      // GNU ar records a relative member path relative to the archive's
+      // directory; a link can also run from elsewhere. Check both.
+      for (const directory of [archiveDir, cwd])
+        for (const candidate of existingCandidates(name, [directory])) members.push(candidate);
+    }
     // A thin member's content is elsewhere, so the next header follows the
     // header immediately.
   }
@@ -173,7 +231,12 @@ interface ScriptNames {
   searchDirectories: string[];
 }
 
-function linkerScriptInputs(text: string, scriptDir: string, cwd: string): string[] {
+function linkerScriptInputs(
+  text: string,
+  scriptDir: string,
+  cwd: string,
+  inheritedSearchDirectories: readonly string[],
+): NamedInputs {
   const tokens = scriptTokens(text);
   const found: ScriptNames = { names: [], searchDirectories: [] };
   let index = 0;
@@ -195,10 +258,20 @@ function linkerScriptInputs(text: string, scriptDir: string, cwd: string): strin
     }
     index++;
   }
+  // The directories in effect here, which a script this one INCLUDEd resolves
+  // its own names through too. A SEARCH_DIR entry is a relative name the
+  // linker may read from the script's directory or the working directory, so
+  // both readings are kept.
   const searchDirectories = [
-    scriptDir,
-    cwd,
-    ...found.searchDirectories.map((directory) => resolve(scriptDir, directory)),
+    ...new Set([
+      scriptDir,
+      cwd,
+      ...inheritedSearchDirectories,
+      ...found.searchDirectories.flatMap((directory) => [
+        resolve(scriptDir, directory),
+        resolve(cwd, directory),
+      ]),
+    ]),
   ];
   const paths = new Set<string>();
   for (const name of found.names) {
@@ -217,7 +290,7 @@ function linkerScriptInputs(text: string, scriptDir: string, cwd: string): strin
       for (const candidate of existingCandidates(name, searchDirectories)) paths.add(candidate);
     }
   }
-  return [...paths];
+  return { dependencies: [...paths], searchDirectories };
 }
 
 /** Split a script's commands and names. Comments and punctuation carry no

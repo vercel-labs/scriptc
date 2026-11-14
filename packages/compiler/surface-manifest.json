@@ -5067,17 +5067,15 @@
       "id": "stdlib.fetch.request-init.cache",
       "kind": "stdlib",
       "name": "RequestInit.cache",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the compiler does not preserve this RequestInit member's conversion or transport behavior"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode); differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.fetch.request-init.credentials",
       "kind": "stdlib",
       "name": "RequestInit.credentials",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the compiler does not preserve this RequestInit member's conversion or transport behavior"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: WebIDL enum after String(): omit, same-origin, include; differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.fetch.request-init.dispatcher",
@@ -5136,9 +5134,8 @@
       "id": "stdlib.fetch.request-init.priority",
       "kind": "stdlib",
       "name": "RequestInit.priority",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the compiler does not preserve this RequestInit member's conversion or transport behavior"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; conversion: ignored, as Node ignores it: undici's Request has no priority; differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.fetch.request-init.redirect",
@@ -5862,7 +5859,7 @@
       "kind": "stdlib",
       "name": "Request constructor",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, error-shape; supported scope: Absolute URLs with method, headers, body, duplex, redirect, and signal; other RequestInit members retain explicit fences; differential evidence: fixture:static-request"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, body-consumption, error-shape; supported scope: Absolute URLs with method, headers, body, duplex, redirect, signal, cache, and credentials; priority is accepted and ignored as Node ignores it; other RequestInit members retain explicit fences; differential evidence: fixture:static-request"
     },
     {
       "id": "stdlib.request.credentials",

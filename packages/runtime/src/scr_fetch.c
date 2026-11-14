@@ -6876,6 +6876,8 @@ typedef struct SfRequest {
   ScrStr *url;
   ScrStr *method;
   ScrStr *redirect;
+  ScrStr *cache;
+  ScrStr *credentials;
   SfSignal *signal;
 } SfRequest;
 
@@ -6888,6 +6890,7 @@ static void sf_request_release_v(void *ptr) {
   scr_weak_dispose_inline(r);
   sf_response_release(r->payload);
   scr_str_release(r->url); scr_str_release(r->method); scr_str_release(r->redirect);
+  scr_str_release(r->cache); scr_str_release(r->credentials);
   sf_signal_release(r->signal); free(r);
 }
 static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
@@ -6895,13 +6898,15 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (sf_name(key, len, "url")) return scr_dyn_new_str(r->url);
   if (sf_name(key, len, "method")) return scr_dyn_new_str(r->method);
   if (sf_name(key, len, "redirect")) return scr_dyn_new_str(r->redirect);
+  if (sf_name(key, len, "cache")) return scr_dyn_new_str(r->cache);
+  if (sf_name(key, len, "credentials")) return scr_dyn_new_str(r->credentials);
   if (sf_name(key, len, "signal")) return scr_dyn_new_handle(r->signal, SCR_DYNH_ABORT_SIGNAL);
   if (sf_name(key, len, "duplex")) { ScrStr *s = scr_str_new("half", 4); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   const char *default_value = NULL;
   if (sf_name(key, len, "destination") || sf_name(key, len, "integrity") || sf_name(key, len, "referrerPolicy")) default_value = "";
+  /* mode stays a fenced RequestInit member: a Request always answers the
+   * value its constructor would have stored from the default. */
   if (sf_name(key, len, "mode")) default_value = "cors";
-  if (sf_name(key, len, "credentials")) default_value = "same-origin";
-  if (sf_name(key, len, "cache")) default_value = "default";
   if (sf_name(key, len, "referrer")) default_value = "about:client";
   if (default_value) { ScrStr *s = scr_str_new(default_value, strlen(default_value)); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   if (sf_name(key, len, "keepalive") || sf_name(key, len, "isReloadNavigation") || sf_name(key, len, "isHistoryNavigation")) return scr_dyn_new_bool(false);
@@ -6930,6 +6935,8 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
   c->url = scr_str_retain(r->url);
   c->method = scr_str_retain(r->method);
   c->redirect = scr_str_retain(r->redirect);
+  c->cache = scr_str_retain(r->cache);
+  c->credentials = scr_str_retain(r->credentials);
   c->signal = sf_signal_retain((SfSignal *)follower->v.handle.ptr);
   scr_dyn_release(follower);
   ScrDyn *out = scr_dyn_new_handle(c, SCR_DYNH_FETCH_REQUEST);
@@ -6957,45 +6964,135 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init) {
   return result;
 }
 
+/* The RequestInit dictionary members whose value Node's Request keeps as a
+ * string (cache, credentials): WebIDL converts the value with String()
+ * (so `false` reads "false" and `null` reads "null"), then undici's
+ * converter rejects a value the enum does not list with its own message.
+ * A member left undefined inherits the input Request's value, else the
+ * spec default. Returns +1, or NULL with an exception pending. */
+static const char *const sf_cache_values[] = {
+    "default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached",
+};
+static const char *const sf_credentials_values[] = {"omit", "same-origin", "include"};
+
+static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, size_t key_len,
+                                           const char *const *accepted, size_t count,
+                                           const char *expected, const ScrStr *inherited,
+                                           const char *fallback) {
+  ScrDyn *value = sf_response_init_get(init, key, key_len);
+  if (value && value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    value = NULL;
+  }
+  if (!value) {
+    const ScrStr *base = inherited != NULL ? inherited : NULL;
+    return base != NULL ? scr_str_retain((ScrStr *)base) : scr_str_new(fallback, strlen(fallback));
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  scr_dyn_release(value);
+  if (!text) return NULL;
+  for (size_t i = 0; i < count; i++) {
+    if (strlen(accepted[i]) == text->len && memcmp(accepted[i], text->data, text->len) == 0)
+      return text;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "undefined: ");
+  scr_jb_write(&b, text->data, text->len);
+  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
+  scr_jb_puts(&b, expected);
+  scr_jb_puts(&b, ".");
+  scr_str_release(text);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+/* `cache: "only-if-cached"` is valid only together with mode "same-origin"
+ * (undici's rule); the mode is read from the init a constructor call was
+ * given. Throws the TypeError and answers true when the pair is invalid. */
+static bool sf_only_if_cached_needs_same_origin(const ScrDyn *init, const ScrStr *cache) {
+  if (!sf_name(cache->data, cache->len, "only-if-cached")) return false;
+  ScrStr *mode = NULL;
+  ScrDyn *mode_value = sf_response_init_get(init, "mode", 4);
+  if (mode_value && mode_value->kind != SCR_DYN_UNDEF) mode = scr_dyn_string_coerce_js(mode_value);
+  scr_dyn_release(mode_value);
+  /* A mode whose conversion threw reports that exception, as Node's
+   * dictionary conversion would. */
+  if (scr_exc_pending()) return true;
+  bool same_origin = mode != NULL && sf_name(mode->data, mode->len, "same-origin");
+  scr_str_release(mode);
+  if (same_origin) return false;
+  sf_type_error("'only-if-cached' can be set only with 'same-origin' mode");
+  return true;
+}
+
 ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   SfRequest *source = input && input->kind == SCR_DYN_HANDLE && input->v.handle.tag == SCR_DYNH_FETCH_REQUEST ? input->v.handle.ptr : NULL;
   if (init && init->kind != SCR_DYN_UNDEF && init->kind != SCR_DYN_NULL && !sf_response_init_object_like(init)) {
     sf_type_error("Request constructor init must be an object"); return NULL;
   }
+  /* WebIDL converts the arguments left to right — the input to a string
+   * first — and the RequestInit dictionary before the constructor body
+   * parses the input URL: cache, then credentials (the dictionary's
+   * alphabetical member order). */
   ScrStr *url_text = source ? scr_str_retain(source->url) : scr_dyn_string_coerce_js(input);
   if (!url_text) return NULL;
+  ScrStr *cache_text =
+      sf_request_init_string_enum(init, "cache", 5, sf_cache_values, 6,
+                                  "default, no-store, reload, no-cache, force-cache, only-if-cached",
+                                  source ? source->cache : NULL, "default");
+  if (!cache_text) {
+    scr_str_release(url_text);
+    return NULL;
+  }
+  ScrStr *credentials_text =
+      sf_request_init_string_enum(init, "credentials", 11, sf_credentials_values, 3,
+                                  "omit, same-origin, include",
+                                  source ? source->credentials : NULL, "same-origin");
+  if (!credentials_text) {
+    scr_str_release(cache_text);
+    scr_str_release(url_text);
+    return NULL;
+  }
+  if (sf_only_if_cached_needs_same_origin(init, cache_text)) {
+    scr_str_release(cache_text);
+    scr_str_release(credentials_text);
+    scr_str_release(url_text);
+    return NULL;
+  }
   ScrUrl *url = scr_url_new(url_text);
   if (!url) sf_throw_url_parse_failure(url_text);
   scr_str_release(url_text);
-  if (!url) return NULL;
-  if (url->userinfo->len) { scr_url_release(url); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
+  if (!url) { scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
+  if (url->userinfo->len) { scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Request cannot be constructed from a URL that includes credentials"); return NULL; }
   ScrDyn *dictionary = scr_dyn_new_obj();
   ScrDyn *method = sf_response_init_get(init, "method", 6);
   if ((!method || method->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(method); method = scr_dyn_new_str(source->method); }
   if (method) scr_dyn_obj_set(dictionary, "method", 6, method);
   ScrStr *method_text = sf_method_value(dictionary);
   scr_dyn_release(dictionary);
-  if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *body = sf_response_init_get(init, "body", 4);
   bool supplied = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (!supplied && source && !source->payload->null_body) {
     if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
         sf_view_unusable(source->payload->body)) {
       scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url);
+      scr_str_release(cache_text); scr_str_release(credentials_text);
       sf_type_error("Cannot construct a Request with a Request object that has already been used."); return NULL;
     }
     scr_dyn_release(body); body = scr_dyn_new_handle(source->payload->body, SCR_DYNH_WEB_STREAM);
   }
   bool has_body = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
-    scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
+    scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
   }
   if (supplied && sf_is_stream_body(body)) {
     ScrDyn *duplex = sf_response_init_get(init, "duplex", 6);
     ScrStr *text = duplex && duplex->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(duplex) : NULL;
     scr_dyn_release(duplex);
     bool half = text && sf_name(text->data, text->len, "half"); scr_str_release(text);
-    if (!half) { scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("RequestInit: duplex option is required when sending a body."); return NULL; }
+    if (!half) { scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("RequestInit: duplex option is required when sending a body."); return NULL; }
   }
   ScrDyn *headers = sf_response_init_get(init, "headers", 7);
   if ((!headers || headers->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(headers); headers = scr_dyn_new_handle(source->payload->headers, SCR_DYNH_FETCH_HEADERS); }
@@ -7003,7 +7100,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (headers) scr_dyn_obj_set(payload_init, "headers", 7, headers);
   ScrDyn *payload = scr_fetch_response_new(body, payload_init);
   scr_dyn_release(payload_init); scr_dyn_release(body);
-  if (!payload) { scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!payload) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *signal = sf_response_init_get(init, "signal", 6);
   if ((!signal || signal->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(signal); signal = scr_dyn_new_handle(source->signal, SCR_DYNH_ABORT_SIGNAL); }
   SfSignal *following = NULL;
@@ -7013,16 +7110,17 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
     if (dependent) { following = sf_signal_retain(dependent->v.handle.ptr); scr_dyn_release(dependent); }
   } else following = sf_signal_new();
   scr_dyn_release(signal);
-  if (!following) { scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); return NULL; }
+  if (!following) { scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *redirect = sf_response_init_get(init, "redirect", 8);
   ScrStr *redirect_text = redirect && redirect->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(redirect) : source ? scr_str_retain(source->redirect) : scr_str_new("follow", 6);
   scr_dyn_release(redirect);
   if (!redirect_text || !(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
-    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); sf_type_error("Invalid Request redirect value"); return NULL;
+    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Invalid Request redirect value"); return NULL;
   }
   SfRequest *r = calloc(1, sizeof *r); if (!r) sf_oom();
   r->rc = 1; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
   r->url = scr_url_href(url); scr_url_release(url); r->method = method_text; r->redirect = redirect_text; r->signal = following;
+  r->cache = cache_text; r->credentials = credentials_text;
   ScrDyn *result = scr_dyn_new_handle(r, SCR_DYNH_FETCH_REQUEST); sf_request_release_v(r); return result;
 }
 
@@ -7189,6 +7287,27 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
       init->kind != SCR_DYN_UNDEF && init->kind != SCR_DYN_NULL) {
     return sf_reject_now(promise, "fetch failed");
   }
+  /* fetch constructs a Request from its input and init, so cache and
+   * credentials convert (and only-if-cached pairs with mode) before the
+   * transport starts; a rejected value rejects the returned promise. */
+  {
+    ScrStr *cache_text =
+        sf_request_init_string_enum(init, "cache", 5, sf_cache_values, 6,
+                                    "default, no-store, reload, no-cache, force-cache, only-if-cached",
+                                    NULL, "default");
+    if (!cache_text) return sf_reject_now(promise, "fetch failed");
+    ScrStr *credentials_text =
+        sf_request_init_string_enum(init, "credentials", 11, sf_credentials_values, 3,
+                                    "omit, same-origin, include", NULL, "same-origin");
+    if (!credentials_text) {
+      scr_str_release(cache_text);
+      return sf_reject_now(promise, "fetch failed");
+    }
+    bool invalid = sf_only_if_cached_needs_same_origin(init, cache_text);
+    scr_str_release(cache_text);
+    scr_str_release(credentials_text);
+    if (invalid) return sf_reject_now(promise, "fetch failed");
+  }
   if (init && init->kind == SCR_DYN_OBJ) {
     for (size_t i = 0; i < scr_dyn_obj_count(init); i++) {
       ScrDynProp entry = scr_dyn_obj_prop_at(init, i);
@@ -7197,15 +7316,15 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
                        sf_name(entry.key, entry.key_len, "body") ||
                        sf_name(entry.key, entry.key_len, "duplex") ||
                        sf_name(entry.key, entry.key_len, "redirect") ||
-                       sf_name(entry.key, entry.key_len, "signal");
+                       sf_name(entry.key, entry.key_len, "signal") ||
+                       sf_name(entry.key, entry.key_len, "cache") ||
+                       sf_name(entry.key, entry.key_len, "credentials") ||
+                       sf_name(entry.key, entry.key_len, "priority");
       bool recognized_unsupported =
-          sf_name(entry.key, entry.key_len, "cache") ||
-          sf_name(entry.key, entry.key_len, "credentials") ||
           sf_name(entry.key, entry.key_len, "dispatcher") ||
           sf_name(entry.key, entry.key_len, "integrity") ||
           sf_name(entry.key, entry.key_len, "keepalive") ||
           sf_name(entry.key, entry.key_len, "mode") ||
-          sf_name(entry.key, entry.key_len, "priority") ||
           sf_name(entry.key, entry.key_len, "referrer") ||
           sf_name(entry.key, entry.key_len, "referrerPolicy") ||
           sf_name(entry.key, entry.key_len, "window");

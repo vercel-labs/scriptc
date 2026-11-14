@@ -387,6 +387,11 @@ function buildLibFnSignatures() {
      * may-throw seed set. */
     "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
     "dyn.mathFold": { argTypes: [DYN, BOOL, STRING], result: F64 },
+    /** Math.max/Math.min/Math.hypot over an argument list whose spread
+     * operands are only known at run time: the values a call's argument
+     * pack holds, each through ToNumber, folded in the pack's order (mode
+     * 0 max, 1 min, 2 hypot). May throw: ToNumber can run valueOf. */
+    "dyn.mathFoldMany": { argTypes: [DYN, F64], result: F64 },
     "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
     "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
     "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },

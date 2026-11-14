@@ -1,8 +1,8 @@
-instanceof-union-rejected-class-arm.ts:9:3 - error SC1090: a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property) is not supported yet
+instanceof-union-rejected-class-arm.ts:9:3 - error SC1090: a class index signature whose key is not 'string' or 'number', or whose value type does not compile is not supported yet
 
    8 |   status: number;
-   9 |   [index: number]: unknown;
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+   9 |   [key: symbol]: unknown;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~
   10 |   constructor(message: string, status: number) {
 
 instanceof-union-rejected-class-arm.ts:24:36 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet

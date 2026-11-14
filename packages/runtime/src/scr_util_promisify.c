@@ -1,9 +1,10 @@
-/* util.promisify over an untyped function. The wrapper is a native dyn
- * function: each call creates a promise, calls the original with the
- * call's receiver and arguments plus an error-first callback, and answers
- * the promise. Typed functions keep the compiler's static wrapper; this
- * unit links only into programs that promisify an `any` value. All
- * arguments are borrowed. */
+/* util.promisify over an untyped function. A truthy
+ * original[util.promisify.custom] is the answer (Node returns it and marks
+ * it with the key); otherwise the wrapper is a native dyn function: each
+ * call creates a promise, calls the original with the call's receiver and
+ * arguments plus an error-first callback, and answers the promise. Typed
+ * functions keep the compiler's static wrapper; this unit links only into
+ * programs that promisify an `any` value. All arguments are borrowed. */
 #include "scr_runtime.h"
 
 #include <stdlib.h>
@@ -27,8 +28,8 @@ static ScrDyn *up_cap(ScrClosure *closure, size_t index) {
  * resolves the promise, as the executor's resolve and reject functions
  * do: a promise it fulfills with keeps the wrapper's promise pending
  * until it settles, and later calls and throws are ignored meanwhile.
- * util.promisify.custom functions are not consulted. caps[0] holds the
- * wrapper's promise and caps[1] whether it has been resolved. */
+ * caps[0] holds the wrapper's promise and caps[1] whether it has been
+ * resolved. */
 static ScrDyn *up_callback(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   if (scr_box_get_bool(closure->caps[1])) return scr_dyn_retain(scr_dyn_undefined());
   scr_box_set_bool(closure->caps[1], true);
@@ -79,75 +80,51 @@ static ScrDyn *up_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   return result;
 }
 
-/* Node's promisify also copies the original's prototype and own property
- * descriptors onto the wrapper, consults util.promisify.custom, and marks
- * the wrapper with it. The plain case is a function whose only own
- * properties are name, length and prototype: the wrapper takes the name
- * and length descriptors. Other own properties (util.promisify.custom
- * among them) refuse with SC2020 rather than answering differently. The
- * wrapper's prototype is Function.prototype even when the original's was
- * replaced. */
-static bool up_plain_original(ScrDyn *original) {
-  ScrDyn *keys = scr_dyn_own_keys(original);
-  if (!keys) return false;
-  bool plain = true;
-  double count = scr_dyn_arr_len(keys);
-  for (double i = 0; i < count && plain; i++) {
-    ScrDyn *key = scr_dyn_index_get(keys, i);
-    if (!key) {
-      plain = false;
-      break;
-    }
-    plain = key->kind == SCR_DYN_STR &&
-            ((key->v.str->len == 4 && memcmp(key->v.str->data, "name", 4) == 0) ||
-             (key->v.str->len == 6 && memcmp(key->v.str->data, "length", 6) == 0) ||
-             (key->v.str->len == 9 && memcmp(key->v.str->data, "prototype", 9) == 0));
-    scr_dyn_release(key);
-  }
-  scr_dyn_release(keys);
-  return plain;
-}
-
-/* wrapper[key] = original[key] as a non-writable, non-enumerable,
- * configurable data property, as getOwnPropertyDescriptors copies the
- * name and length of an ordinary function. */
-static bool up_copy_descriptor(ScrDyn *wrapper, ScrDyn *original, const char *key) {
-  ScrStr *name = scr_str_new(key, strlen(key));
-  ScrDyn *property = scr_dyn_new_str(name);
-  scr_str_release(name);
-  ScrDyn *value = scr_dyn_fn_get(original, key, strlen(key));
-  ScrDyn *descriptor = scr_dyn_new_obj();
-  scr_dyn_obj_set(descriptor, "value", 5, value ? value : scr_dyn_retain(scr_dyn_undefined()));
-  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(false));
-  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
-  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-  ScrDyn *defined = scr_dyn_define_property(wrapper, property, descriptor);
-  scr_dyn_release(descriptor);
-  scr_dyn_release(property);
-  if (!defined) return false;
-  scr_dyn_release(defined);
-  return true;
-}
-
+/* util.promisify(original), Node's promisify outside the typed lowerings:
+ * a truthy `original[util.promisify.custom]` IS the answer (it must be a
+ * function, and takes the custom key itself); otherwise the wrapper calls
+ * original with the call's receiver and arguments plus an error-first
+ * callback and answers a promise, and takes the original's [[Prototype]],
+ * the custom key with itself as its value, and the original's own property
+ * descriptors (name, length, prototype and every other own member), in
+ * Node's order. A function's [[Prototype]] is readable here only once the
+ * program replaced it (scr_dyn_get_prototype answers plain functions with
+ * its SC2020 fence); the wrapper is born with Function.prototype, which is
+ * the original's there, so the fence is consumed and the step skipped. */
 ScrDyn *scr_util_promisify(ScrDyn *original) {
   if (!scr_dyn_is_callable(original)) {
     scr_dyn_arg_type_fail("original", "of type function", original);
     return NULL;
   }
-  if (!up_plain_original(original)) {
-    if (scr_exc_pending()) return NULL;
-    static const char message[] =
-        "util.promisify over an untyped function with own properties (such as util.promisify.custom) "
-        "is not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  ScrDyn *custom = scr_util_promisify_custom(original);
+  if (scr_exc_pending()) {
+    scr_dyn_release(custom);
     return NULL;
   }
+  if (scr_dyn_truthy(custom)) return custom;
+  scr_dyn_release(custom);
   ScrClosure *closure = scr_closure_new(NULL, 1);
   closure->caps[0] = up_box(scr_dyn_retain(original));
   ScrDyn *wrapper = scr_dyn_new_func(closure, up_call, 0, "native:util.promisify", "");
-  if (!up_copy_descriptor(wrapper, original, "name") || !up_copy_descriptor(wrapper, original, "length")) {
+  if (original->kind == SCR_DYN_FUNC) {
+    ScrDyn *prototype = scr_dyn_get_prototype(original); /* +1, or NULL with a fence */
+    if (!prototype) {
+      scr_exc_clear();
+    } else {
+      ScrDyn *applied = scr_dyn_set_prototype(wrapper, prototype);
+      scr_dyn_release(prototype);
+      if (!applied) {
+        scr_dyn_release(wrapper);
+        return NULL;
+      }
+      scr_dyn_release(applied);
+    }
+  }
+  ScrDyn *marked = scr_util_promisify_mark(wrapper, original);
+  if (marked == NULL) {
     scr_dyn_release(wrapper);
     return NULL;
   }
+  scr_dyn_release(marked);
   return wrapper;
 }

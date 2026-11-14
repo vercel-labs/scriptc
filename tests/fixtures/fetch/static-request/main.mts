@@ -20,6 +20,30 @@ const bytes = new Request("http://localhost/bytes", { method: "POST", body: new 
 console.log(JSON.stringify(Array.from(await bytes.bytes())));
 const buffer = new Request("http://localhost/buffer", { method: "POST", body: "AB" });
 console.log(JSON.stringify(Array.from(new Uint8Array(await buffer.arrayBuffer()))));
+const cached = new Request("http://localhost/cache", {
+  cache: "no-store",
+  credentials: "include",
+});
+console.log(cached.cache, cached.credentials, cached.mode, cached.redirect);
+const inherited = new Request(cached);
+console.log(inherited.cache, inherited.credentials);
+const overridden = new Request(cached, { cache: "reload" });
+console.log(overridden.cache, overridden.credentials);
+try {
+  new Request("http://localhost/x", { cache: "bogus" as "default" });
+} catch (error) {
+  console.log((error as Error).message);
+}
+try {
+  new Request("http://localhost/x", { credentials: "bogus" as "include" });
+} catch (error) {
+  console.log((error as Error).message);
+}
+try {
+  new Request("http://localhost/x", { cache: "only-if-cached" });
+} catch (error) {
+  console.log((error as Error).message);
+}
 for (const method of ["GET", "HEAD"]) {
   try { new Request("http://localhost/invalid", { method, body: "no" }); }
   catch (error) { console.log((error as Error).name); }

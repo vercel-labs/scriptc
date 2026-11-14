@@ -21,7 +21,11 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
+import {
+  classDeclaresHasInstanceHook,
+  erasedGenericFamily,
+  inheritedBuiltinCtorFence,
+} from "./lower-classes.js";
 import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
@@ -504,12 +508,28 @@ export class ClassConstructionDispatch {
           if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
-          const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
-            kind: "dynCheck",
-            value: callee,
-            type,
-            loc,
-          });
+          // A generic class taken as a value is its erased instantiation,
+          // and JavaScript's one class answers for every instantiation: an
+          // instance of any of them (or of their subclasses) passes.
+          const family = erasedGenericFamily(lowerer, name);
+          const result =
+            family !== null && family.length > 1
+              ? family
+                  .map((member) => classInstanceOf(lowerer, varRef("value", DYN, loc), member, loc))
+                  .reduce((left, right): IrExpr => ({
+                    kind: "logical",
+                    op: "||",
+                    left,
+                    right,
+                    type: BOOL,
+                    loc,
+                  }))
+              : classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
+                  kind: "dynCheck",
+                  value: callee,
+                  type,
+                  loc,
+                });
           fn.body.unshift({
             kind: "if",
             cond: {

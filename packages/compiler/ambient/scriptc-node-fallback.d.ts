@@ -107,7 +107,9 @@ declare namespace NodeJS {
     reportOnFatalError: boolean;
     reportOnSignal: boolean;
     reportOnUncaughtException: boolean;
+    excludeEnv: boolean;
     getReport(error?: Error): object;
+    writeReport(filename?: string, error?: Error): string;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -282,6 +284,22 @@ declare module "console" {
  * default, signal 0 as an existence probe, and Node's error shapes
  * (`kill ESRCH`/`kill EPERM` Errors, TypeErrors for unknown signals and
  * non-int32 pids). */
+/* The IPC channel of a forked child — an owned runtime handle, so a
+ * binding or parameter carrying one stays a checked-dynamic value and its
+ * ref()/unref() dispatch at run time (type-mapper's channel mapping). */
+interface ProcessChannel {
+  ref(): void;
+  unref(): void;
+}
+
+/* Node's permission model queries (--permission), which a compiled binary
+ * cannot enable: process.permission is undefined, the same as Node's
+ * without the flag. */
+interface ProcessPermission {
+  has(scope: string, reference?: string): boolean;
+  drop(scope: string, reference?: string): void;
+}
+
 declare var process: {
   getBuiltinModule(id: string): unknown;
   hrtime: {
@@ -313,6 +331,11 @@ declare var process: {
   /* Node's feature flags with the values that hold for a compiled binary
    * (see NodeJS.ProcessFeatures). */
   readonly features: NodeJS.ProcessFeatures;
+  /* The permission model's object. Node defines it only under
+   * --permission, a Node command-line mode a compiled binary cannot run
+   * with, so the member is undefined exactly as in Node without the flag;
+   * a member read on it throws Node's TypeError. */
+  readonly permission: ProcessPermission | undefined;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -341,6 +364,35 @@ declare var process: {
   geteuid?(): number;
   getegid?(): number;
   getgroups?(): number[];
+  /* The POSIX credential setters: a numeric id (validated as Node's
+   * uint32) or a user/group NAME resolved through getpwnam(3)/getgrnam(3);
+   * an unknown id throws Node's ERR_UNKNOWN_CREDENTIAL, an unusable one is
+   * the getpwnam-side error. Like the getters they are optional members
+   * (absent on Windows), so POSIX programs probe before calling. */
+  setuid?(id: number | string): void;
+  seteuid?(id: number | string): void;
+  setgid?(id: number | string): void;
+  setegid?(id: number | string): void;
+  setgroups?(groups: ReadonlyArray<string | number>): void;
+  /* initgroups(3): the user's base groups plus the extra group.
+   * @types/node does not declare this member; the runtime implements it. */
+  initgroups?(user: number | string, extraGroup: number | string): void;
+  /* The capture-callback pair: a function receives every uncaught
+   * exception (the 'uncaughtException' event then does not fire), null
+   * unsets it, and a second function while one is set throws. */
+  hasUncaughtExceptionCaptureCallback(): boolean;
+  setUncaughtExceptionCaptureCallback(cb: ((err: Error) => void) | null): void;
+  /* The inspector port, 9229 until a write; a write keeps the previous
+   * value unless it is 0 or 1024..65535 (Node's ERR_OUT_OF_RANGE). */
+  debugPort: number;
+  /* Source-map support for stack traces: false until enabled. */
+  readonly sourceMapsEnabled: boolean;
+  setSourceMapsEnabled(value: boolean): void;
+  /* The "Refable protocol": call the value's Symbol.for("nodejs.ref") /
+   * Symbol.for("nodejs.unref") method (or its ref/unref member) with the
+   * value as the receiver; null and undefined are no-ops. */
+  ref(maybeRefable: any): void;
+  unref(maybeRefable: any): void;
   readonly ppid: number;
   /* libuv's process title: argv[0] until set; a write is truncated to
    * the original argument area on POSIX and sets the console title on
@@ -350,6 +402,17 @@ declare var process: {
   readonly release: NodeJS.ProcessRelease;
   /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
   readonly report: NodeJS.ProcessReport;
+  /* Exit and beforeExit callbacks for objects the program registers. The
+   * callback receives the object and the event name. */
+  readonly finalization: {
+    register(ref: object, callback: (ref: object, event: "exit") => void): void;
+    registerBeforeExit(ref: object, callback: (ref: object, event: "beforeExit") => void): void;
+    unregister(ref: object): void;
+  };
+  /* Terminate the process with SIGABRT after its output is flushed
+   * (Node's diagnostics dump names its own addresses and is not
+   * reproduced; the signal and the flush are). */
+  abort(): never;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -360,6 +423,11 @@ declare var process: {
    * process.emitWarning); undefined until assigned. */
   noDeprecation?: boolean;
   throwDeprecation?: boolean;
+  /* Show the stack trace of a warning in place of its one-line report
+   * (Node's --trace-deprecation and --trace-warnings): undefined until
+   * assigned, since no command-line flag reaches a compiled binary. */
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The
@@ -455,19 +523,25 @@ declare var process: {
   /* Process events, the CLI slice: SIGINT/SIGTERM handlers (watching a
    * signal replaces its default disposition; removing the last listener
    * restores it; signal listeners never keep the loop alive — all Node's
-   * rules) and the 'exit' hook (runs synchronously at termination with
-   * the exit code; scheduling anything from it is too late, like Node).
-   * `once` auto-removes after the first delivery; `off` removes by
-   * listener identity — bind the listener to a const so registration and
-   * removal see the same value. */
+   * rules), the 'exit' hook (runs synchronously at termination with the
+   * exit code; scheduling anything from it is too late, like Node) and
+   * the 'beforeExit' hook (runs each time the loop runs out of ref'd work,
+   * with process.exitCode; work it schedules runs, and Node emits it again
+   * at the next exhaustion while listeners remain — scheduling only
+   * nextTicks or microtasks does not re-emit it). `once` auto-removes
+   * after the first delivery; `off` removes by listener identity — bind
+   * the listener to a const so registration and removal see the same
+   * value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  on(event: "beforeExit", listener: (code: number) => void): void;
   /* prependListener — the same registration at the FRONT of the event's
    * listener list (Node's EventEmitter order), for the registries that
    * own a prepend entry ('exit' and the signal family). prependOnceListener
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(event: "beforeExit", listener: (code: number) => void): void;
   prependListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -483,6 +557,13 @@ declare var process: {
    * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  /* 'multipleResolves' — a resolution or rejection that reached a promise
+   * which already resolved: (type, promise, value), delivered on the tick
+   * queued at that settle, with Node's one-time DEP0160 warning. */
+  on(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
    * error channel: the monitor listener observes a thrown error before the
    * default report, the handler listener replaces it, and origin names the
@@ -493,17 +574,27 @@ declare var process: {
   ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
+  once(event: "beforeExit", listener: (code: number) => void): void;
   once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   once(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
   ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
+  off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   off(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -511,12 +602,17 @@ declare var process: {
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
+  removeListener(event: "beforeExit", listener: (code: number) => void): void;
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
     listener: (reason: unknown, promise: unknown) => void,
   ): void;
   removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   removeListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -526,11 +622,24 @@ declare var process: {
   emitWarning(warning: string | Error, ...args: any[]): void;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
-  send?(message: object, callback?: (error: Error | null) => void): boolean;
+  /* The IPC channel of a forked child — Node's Control: `undefined` in a
+   * process that never had a channel, null once the channel is gone
+   * (local or remote disconnect), and otherwise the channel object.
+   * `ref()` keeps the channel's messages feeding the loop alive even
+   * without a listener, `unref()` lets the process exit with the channel
+   * open (an explicit call overrides the listener-driven ref state);
+   * both return undefined. */
+  channel?: ProcessChannel;
+  send?(
+    message: object,
+    sendHandleOrCallback?: null | ((error: Error | null) => void),
+    optionsOrCallback?: object | null | ((error: Error | null) => void),
+    callback?: (error: Error | null) => void,
+  ): boolean;
   disconnect(): void;
-  on(event: "message", listener: (message: any) => void): void;
+  on(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   on(event: "disconnect", listener: () => void): void;
-  once(event: "message", listener: (message: any) => void): void;
+  once(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   once(event: "disconnect", listener: () => void): void;
 };
 
@@ -789,6 +898,56 @@ interface RsaHashedImportParams extends Algorithm {
 }
 interface RsaPssParams extends Algorithm {
   saltLength: number;
+}
+/* Node 24's modern algorithm parameter dictionaries. These are the
+ * documented type shapes: the algorithms that consume them (Argon2, cSHAKE,
+ * KMAC, ECDH, KangarooTwelve, RSA-OAEP and TurboSHAKE) are not implemented,
+ * so the dictionaries are declared for typed sources but not admitted by a
+ * SubtleCrypto method signature. */
+interface Argon2Params extends Algorithm {
+  nonce: BufferSource;
+  memory: number;
+  passes: number;
+  parallelism: number;
+  associatedData?: BufferSource;
+  secretValue?: BufferSource;
+  version?: number;
+}
+interface CShakeParams extends Algorithm {
+  outputLength: number;
+  functionName?: BufferSource;
+  customization?: BufferSource;
+}
+interface ContextParams extends Algorithm {
+  context?: BufferSource;
+}
+interface EcdhKeyDeriveParams extends Algorithm {
+  public: CryptoKey;
+}
+interface KangarooTwelveParams extends Algorithm {
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface KmacImportParams extends Algorithm {
+  length?: number;
+}
+interface KmacKeyAlgorithm extends KeyAlgorithm {
+  length: number;
+}
+interface KmacKeyGenParams extends Algorithm {
+  length?: number;
+}
+interface KmacParams extends Algorithm {
+  algorithm: string;
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface RsaOaepParams extends Algorithm {
+  label?: BufferSource;
+}
+interface TurboShakeParams extends Algorithm {
+  outputLength: number;
+  domainSeparation?: number;
 }
 interface EcKeyAlgorithm extends KeyAlgorithm {
   namedCurve: string;
@@ -1527,11 +1686,11 @@ interface Request {
   readonly headers: Headers;
   readonly destination: string;
   readonly referrer: string;
-  readonly referrerPolicy: string;
-  readonly mode: string;
-  readonly credentials: string;
-  readonly cache: string;
-  readonly redirect: "follow" | "error" | "manual";
+  readonly referrerPolicy: ReferrerPolicy;
+  readonly mode: RequestMode;
+  readonly credentials: RequestCredentials;
+  readonly cache: RequestCache;
+  readonly redirect: RequestRedirect;
   readonly integrity: string;
   readonly keepalive: boolean;
   readonly isReloadNavigation: boolean;
@@ -1546,19 +1705,49 @@ interface Request {
   bytes(): Promise<Uint8Array>;
   clone(): Request;
 }
+type RequestCache =
+  | "default"
+  | "force-cache"
+  | "no-cache"
+  | "no-store"
+  | "only-if-cached"
+  | "reload";
+type RequestCredentials = "include" | "omit" | "same-origin";
+type RequestMode = "cors" | "navigate" | "no-cors" | "same-origin";
+type RequestPriority = "auto" | "high" | "low";
+type RequestRedirect = "error" | "follow" | "manual";
+type ReferrerPolicy =
+  | ""
+  | "no-referrer"
+  | "no-referrer-when-downgrade"
+  | "origin"
+  | "origin-when-cross-origin"
+  | "same-origin"
+  | "strict-origin"
+  | "strict-origin-when-cross-origin"
+  | "unsafe-url";
 interface RequestInit {
-  method?: string;
-  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
   body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
+  cache?: RequestCache;
+  credentials?: RequestCredentials;
   duplex?: "half";
-  redirect?: "follow" | "error" | "manual";
-  signal?: AbortSignal;
+  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
+  integrity?: string;
+  keepalive?: boolean;
+  method?: string;
+  mode?: RequestMode;
+  priority?: RequestPriority;
+  redirect?: RequestRedirect;
+  referrer?: string;
+  referrerPolicy?: ReferrerPolicy;
+  signal?: AbortSignal | null;
+  window?: null;
 }
 declare var Request: {
   new (input: RequestInfo, init?: RequestInit): Request;
   readonly prototype: Request;
 };
-declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
  * shipped). The handle is the Timeout interface, like Node's — it maps to
@@ -1581,10 +1770,23 @@ declare function clearInterval(handle?: Timeout | number | null | undefined): vo
  * fractional milliseconds. The .bind(performance) spelling lowers to the
  * same clock as a plain () => number function value (the mockable-clock idiom's
  * getTimestamp). mark, measure, the getEntries family and the clears run
- * over the thread's performance timeline with Node's validation; everything
- * else fences per member. */
+ * over the thread's performance timeline with Node's validation; new
+ * PerformanceMark records a mark without adding it to the timeline, and
+ * PerformanceObserver delivers the entries a mark or measure produced.
+ * Everything else fences per member. */
 declare module "node:perf_hooks" {
-  export type EntryType = "mark" | "measure";
+  export type EntryType =
+    | "dns"
+    | "function"
+    | "gc"
+    | "http2"
+    | "http"
+    | "mark"
+    | "measure"
+    | "net"
+    | "node"
+    | "quic"
+    | "resource";
   export class PerformanceEntry {
     protected constructor();
     readonly duration: number;
@@ -1594,13 +1796,58 @@ declare module "node:perf_hooks" {
     toJSON(): any;
   }
   export class PerformanceMark extends PerformanceEntry {
+    constructor(name: string, options?: PerformanceMarkOptions);
     readonly detail: any;
     readonly duration: 0;
     readonly entryType: "mark";
   }
+  export interface PerformanceMarkOptions {
+    detail?: any;
+    startTime?: number;
+  }
   export class PerformanceMeasure extends PerformanceEntry {
     readonly detail: any;
     readonly entryType: "measure";
+  }
+  /* performance.nodeTiming: the process's timing milestones, in
+   * performance.now() milliseconds (a milestone that has not happened reads
+   * -1; the startup ones are 0), and libuv's metrics as of the read. */
+  export interface PerformanceNodeTiming extends PerformanceEntry {
+    readonly entryType: "node";
+    readonly bootstrapComplete: number;
+    readonly environment: number;
+    readonly idleTime: number;
+    readonly loopExit: number;
+    readonly loopStart: number;
+    readonly nodeStart: number;
+    readonly uvMetricsInfo: UVMetrics;
+    readonly v8Start: number;
+  }
+  export interface UVMetrics {
+    readonly loopCount: number;
+    readonly events: number;
+    readonly eventsWaiting: number;
+  }
+  export class PerformanceObserverEntryList {
+    getEntries(): PerformanceEntry[];
+    getEntriesByName(name: string, type?: EntryType): PerformanceEntry[];
+    getEntriesByType(type: EntryType): PerformanceEntry[];
+  }
+  export type PerformanceObserverCallback = (
+    list: PerformanceObserverEntryList,
+    observer: PerformanceObserver,
+  ) => void;
+  export class PerformanceObserver {
+    constructor(callback: PerformanceObserverCallback);
+    /* The entry types this process reports (Node's fixed list, frozen). */
+    static readonly supportedEntryTypes: readonly EntryType[];
+    disconnect(): void;
+    observe(
+      options:
+        | { entryTypes: readonly EntryType[]; buffered?: boolean | undefined }
+        | { type: EntryType; buffered?: boolean | undefined },
+    ): void;
+    takeRecords(): PerformanceEntry[];
   }
   export interface MarkOptions {
     detail?: unknown | undefined;
@@ -1613,6 +1860,8 @@ declare module "node:perf_hooks" {
     start?: number | string | undefined;
   }
   export interface Performance {
+    readonly timeOrigin: number;
+    readonly nodeTiming: PerformanceNodeTiming;
     now(): number;
     mark(name: string, options?: MarkOptions): PerformanceMark;
     measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
@@ -1622,6 +1871,9 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
+     * utilization, in that key order. */
+    toJSON(): any;
     eventLoopUtilization(
       utilization1?: EventLoopUtilization,
       utilization2?: EventLoopUtilization,
@@ -1635,6 +1887,12 @@ declare module "node:perf_hooks" {
     active: number;
     utilization: number;
   }
+  /* The module's own eventLoopUtilization: the same function as
+   * performance.eventLoopUtilization. */
+  export function eventLoopUtilization(
+    utilization1?: EventLoopUtilization,
+    utilization2?: EventLoopUtilization,
+  ): EventLoopUtilization;
   export interface EventLoopMonitorOptions {
     resolution?: number | undefined;
   }
@@ -1664,6 +1922,17 @@ declare module "perf_hooks" {
  * stands down and its wider global serves; the lowered surface stays
  * performance.now() either way. */
 declare var performance: import("node:perf_hooks").Performance;
+/* Node 24 also defines the perf_hooks classes as globals (the module export
+ * and the global are the same class, as with performance itself): new
+ * PerformanceMark(name, options?), PerformanceObserver with observe,
+ * disconnect and takeRecords, and the three Node keeps unconstructible
+ * (PerformanceEntry, PerformanceMeasure and PerformanceObserverEntryList
+ * throw ERR_ILLEGAL_CONSTRUCTOR). */
+declare var PerformanceEntry: typeof import("node:perf_hooks").PerformanceEntry;
+declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
+declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
+declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
+declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and
@@ -1713,8 +1982,12 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
-  /* The id is coerced to a string before the registry lookup; a
-   * compiled program registers no blob URLs, so every id misses. */
+  /* Registers a Blob (or File) under a fresh "blob:nodedata:<uuid>" and
+   * answers that id; any other value throws ERR_INVALID_ARG_TYPE. fetch()
+   * of the id resolves the registered bytes. */
+  createObjectURL(blob: Blob): string;
+  /* The id is coerced to a string and looked up; ids that were never
+   * registered (or were revoked) miss. */
   revokeObjectURL(url: string | URL): void;
 };
 

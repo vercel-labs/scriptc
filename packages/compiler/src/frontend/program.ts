@@ -166,8 +166,10 @@ import {
   trackedAccessibleEntries,
   trackedFileExists,
   trackedReadFile,
+  trackedReadSource,
   trackedRealpath,
 } from "./input-tracker.js";
+import { scriptcConditionManifestAt } from "./scriptc-condition.js";
 import { NODE_GLOBAL_NAMES } from "./node-global-names.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { isBundledLibraryFile } from "./default-library.js";
@@ -190,6 +192,7 @@ import {
   resetDeclBoundaryOrigins,
   type DeclProjection,
 } from "./decl-projection.js";
+import { importTypeIndexedAccessSources } from "./import-type-indexed-access.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
 import {
   isVoidInitializerFile,
@@ -1575,6 +1578,21 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
     }
+    // A type-position `import('spec')['name']` (import-type-indexed-access.ts)
+    // names the type of the member's value, the type `typeof import('spec')['name']`
+    // names. The checker refuses the form as written (TS1340) and types it
+    // `any`, so every world below, the tsc gate included, reads the file with
+    // `typeof ` before the import type: a diagnostic the refused type would
+    // have caused (`const g: F = (x) => x + 1`, F typed `any`) is the one tsc
+    // reports for the spelled-out form, and a program without a site is
+    // served its files untouched.
+    const importTypeSources = importTypeIndexedAccessSources(program);
+    if (importTypeSources.size > 0) {
+      const previous = program;
+      for (const [file, text] of importTypeSources) host.addVirtualFile(file, text);
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+    }
     // JSX: the program above checks the files as written; the program the
     // lowering compiles holds them with their JSX lowered.
     const jsx = lowerProgramJsx7(program, options);
@@ -2124,11 +2142,20 @@ export function loadProgram(
     if (source === null) return shadowed;
     return voidInitializerShadow(path, source, castVoid) ?? shadowed;
   };
+  // A manifest whose condition objects name scriptc's own condition serves
+  // with that branch first (scriptc-condition.ts) in both worlds, so the
+  // checker types the file scriptc compiles for the import.
+  const scriptcManifest = (path: string): string | undefined => {
+    if (!path.endsWith("package.json")) return undefined;
+    const source = trackedReadSource(path);
+    return source === null ? undefined : (scriptcConditionManifestAt(path, source) ?? undefined);
+  };
   const fsShadow = {
     readFile: (path: string) =>
       voidCasts(
         path,
         npmShadow?.readFile(path) ??
+          scriptcManifest(path) ??
           programBuiltinAliasSource(services, path) ??
           definedSource(services, path) ??
           undefined,
@@ -2137,7 +2164,7 @@ export function loadProgram(
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };
   const authoredShadow = {
-    readFile: (path: string) => voidCasts(path, undefined),
+    readFile: (path: string) => voidCasts(path, scriptcManifest(path)),
     hideFile: () => false,
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
@@ -5521,6 +5548,7 @@ function computeCycleEarlyBindings7(
             end: stmt.end,
             reference: null,
             deferredReference: null,
+            deferredFolded: null,
             folded: null,
             localNames: new Map(),
           });
@@ -5579,8 +5607,6 @@ function computeCycleEarlyBindings7(
         }
         const c = symbol === undefined ? undefined : candidates.get(symbol);
         if (c === undefined || ref === c.name) continue;
-        if (c.folded === null && foldablePosition7(ref)) c.folded = ref;
-        if (c.reference !== null) continue;
         // A class body names its own inner binding, initialized throughout.
         if (
           c.kind === "class" &&
@@ -5589,27 +5615,40 @@ function computeCycleEarlyBindings7(
           ref.end <= c.end
         )
           continue;
+        const foldable = foldablePosition7(ref);
         if (inDeferredPosition7(ref)) {
           if (c.exposed && c.deferredReference === null) c.deferredReference = ref;
+          if (c.exposed && foldable && c.deferredFolded === null) c.deferredFolded = ref;
           continue;
         }
         let early: boolean;
         if (sf === c.module) early = ts.tokenStartOfNode(ref) < c.start;
         else if (!memberSet.has(sf) || !rankOf.has(sf)) early = false;
         else early = !known || rankOf.get(sf)! < c.rank;
-        if (early) c.reference = ref;
+        if (!early) continue;
+        if (c.reference === null) c.reference = ref;
+        // Only a reference that can run before the declaration is a folding
+        // hazard: one that runs after it observes the initialized binding.
+        if (foldable && c.folded === null) c.folded = ref;
       }
     }
     // With a static evaluation order, a deferred reference only runs early
     // when the code that runs before the declaration completes can reach
     // the function holding it.
     const reached =
-      known && [...candidates.values()].some((c) => c.reference === null && c.deferredReference)
+      known && [...candidates.values()].some((c) => c.deferredReference)
         ? cycleReachedDeferredReferences7(program, evaluation, candidates)
         : null;
     for (const c of candidates.values()) {
-      if (c.reference === null && c.deferredReference !== null)
-        c.reference = reached === null ? c.deferredReference : (reached.get(c.symbol) ?? null);
+      if (reached === null) {
+        if (c.reference === null && c.deferredReference !== null) c.reference = c.deferredReference;
+        if (c.folded === null) c.folded = c.deferredFolded;
+      } else {
+        const hit = reached.get(c.symbol);
+        if (c.reference === null && c.deferredReference !== null)
+          c.reference = hit?.reference ?? null;
+        if (c.folded === null && hit?.folded !== undefined) c.folded = hit.folded;
+      }
       if (c.reference === null) continue;
       const settled = new Set<ts.SourceFile>(order.filter((sf) => !rankOf.has(sf)));
       if (known) for (const m of evaluation.slice(c.rank + 1)) settled.add(m);
@@ -5701,6 +5740,12 @@ interface CycleCandidate7 {
   /** A deferred reference (function body, parameter default, instance
    * field) when user code may run before the declaration completes. */
   deferredReference: ts.Identifier | null;
+  /** An exposed deferred reference in a position the lowering may resolve
+   * from the binding's type when the static order says every deferred
+   * reference can run early. */
+  deferredFolded: ts.Identifier | null;
+  /** An early reference in a position the lowering may resolve at compile
+   * time from the binding's type (a property key, a `typeof` operand). */
   folded: ts.Identifier | null;
   localNames: Map<string, string>;
 }
@@ -5722,7 +5767,7 @@ function cycleReachedDeferredReferences7(
   program: ts.Program,
   evaluation: readonly ts.SourceFile[],
   candidates: ReadonlyMap<ts.Symbol, CycleCandidate7>,
-): Map<ts.Symbol, ts.Identifier> | null {
+): Map<ts.Symbol, { reference: ts.Identifier; folded: ts.Identifier | null }> | null {
   const checker = program.getTypeChecker();
   const members = new Set(evaluation);
   for (const sf of evaluation) {
@@ -5833,7 +5878,7 @@ function cycleReachedDeferredReferences7(
     symbol.declarations.some((d) => ts.isSourceFile(d) && members.has(d));
   const declared = new Set<ts.Symbol>();
   const reachedUnits = new Set<ts.Node>();
-  const out = new Map<ts.Symbol, ts.Identifier>();
+  const out = new Map<ts.Symbol, { reference: ts.Identifier; folded: ts.Identifier | null }>();
   const work: ts.Node[] = [];
   const reach = (unit: ts.Node): void => {
     if (reachedUnits.has(unit)) return;
@@ -5879,7 +5924,6 @@ function cycleReachedDeferredReferences7(
         c !== undefined &&
         node !== c.name &&
         !declared.has(symbol) &&
-        !out.has(symbol) &&
         inDeferredPosition7(node) &&
         !(
           c.kind === "class" &&
@@ -5887,8 +5931,14 @@ function cycleReachedDeferredReferences7(
           ts.tokenStartOfNode(node) >= c.start &&
           node.end <= c.end
         )
-      )
-        out.set(symbol, node);
+      ) {
+        const hit = out.get(symbol);
+        if (hit === undefined) {
+          out.set(symbol, { reference: node, folded: foldablePosition7(node) ? node : null });
+        } else if (hit.folded === null && foldablePosition7(node)) {
+          hit.folded = node;
+        }
+      }
       for (const unit of unitsBySymbol.get(symbol) ?? []) reach(unit);
       return undefined;
     });
@@ -6376,7 +6426,12 @@ const SYNC_CALLBACK_HOST_APIS7 = new Set([
 /** True for a reference whose value the lowering can take from the
  * binding's checker type instead of its storage: a property key (element
  * access argument, computed name, `in` operand, through parentheses,
- * casts and template spans) or a `typeof` operand. */
+ * casts and template spans). A `typeof` operand is not one: the typeof
+ * lowering keeps the read of a flagged binding, so its initialization
+ * check runs (Node's typeof throws for a binding not yet initialized).
+ * That holds for every answer it folds from the binding's type, through
+ * type wrappers, and in the `typeof x === "lit"` tests
+ * (withCycleBindingRead, typeof.ts). */
 function foldablePosition7(ref: ts.Identifier): boolean {
   let child: ts.Node = ref;
   for (let p: ts.Node | undefined = ref.parent; p !== undefined; p = p.parent) {
@@ -6391,7 +6446,7 @@ function foldablePosition7(ref: ts.Identifier): boolean {
       child = p;
       continue;
     }
-    if (ts.isTypeOfExpression(p)) return true;
+    if (ts.isTypeOfExpression(p)) return false;
     if (ts.isElementAccessExpression(p)) return p.argumentExpression === child;
     if (ts.isComputedPropertyName(p)) return true;
     if (ts.isBinaryExpression(p))
@@ -8007,7 +8062,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
    * typedef half sits inside the comment, and the code half is suppressed
    * exactly when its partner (same file, same name) was comment-side, so
    * a REAL duplicate declaration (both halves in code — Node's own
-   * SyntaxError) keeps tsc's voice. */
+   * SyntaxError) keeps tsc's voice. A generic written without its type
+   * arguments (`{Array}`, `{Set}`) draws 2314 from tsgo, where 5.9.3
+   * instantiates every omitted argument as `any` and reports nothing. The
+   * checker still types the reference with those `any` arguments, so
+   * admitting the diagnostic restores the 5.9.3 verdict without changing
+   * the type the lowering sees. A `@readonly` tag on a getter, setter, or
+   * method is documentation 5.9.3 ignores and tsgo turns into a synthesized
+   * modifier, which it then reports as 1024 for appearing outside a property
+   * declaration. The diagnostic sits inside the comment, so the member keeps
+   * the accessor or method its code declares. */
   const insideBlockComment = (text: string, pos: number): boolean => {
     const open = text.lastIndexOf("/*", pos);
     if (open < 0) return false;
@@ -8020,7 +8084,15 @@ function preflightGate7(load: LoadResult): PreflightGate {
     commentDup: Set<string>,
   ): boolean => {
     if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
-    if (d.code !== 2304 && d.code !== 2552 && d.code !== 2300 && d.code !== 1003) return false;
+    if (
+      d.code !== 2304 &&
+      d.code !== 2552 &&
+      d.code !== 2300 &&
+      d.code !== 1003 &&
+      d.code !== 2314 &&
+      d.code !== 1024
+    )
+      return false;
     if (d.pos === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (!sf) return false;

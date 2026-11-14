@@ -703,22 +703,30 @@ const islandHelpers = {
   // its code and detail, which Node's report prints, come beside it. While
   // native code has process.noDeprecation set, Node's report reads it as set
   // for this warning, and finds its own value again afterwards.
-  processWarning(warning, noDeprecation, code, detail) {
+  processWarning(warning, noDeprecation, traceWarnings, traceDeprecation, code, detail) {
     if (warning !== null && typeof warning === "object") {
       if (typeof code === "string" && warning.code === undefined) warning.code = code;
       if (typeof detail === "string" && warning.detail === undefined) warning.detail = detail;
     }
-    if (!noDeprecation || process.noDeprecation) {
-      process.emit("warning", warning);
-      return;
-    }
-    const own = Object.getOwnPropertyDescriptor(process, "noDeprecation");
-    process.noDeprecation = true;
+    // The flags native code set stand in for Node's command-line flags for
+    // the emit: Node's own report reads them from its process object. Each
+    // is restored (or deleted) afterwards, as the program saw it.
+    const saved = [];
+    const mirror = (name, value) => {
+      const own = Object.getOwnPropertyDescriptor(process, name);
+      process[name] = value;
+      saved.push([name, own]);
+    };
+    if (noDeprecation && !process.noDeprecation) mirror("noDeprecation", true);
+    if (traceWarnings) mirror("traceProcessWarnings", true);
+    if (traceDeprecation) mirror("traceDeprecation", true);
     try {
       process.emit("warning", warning);
     } finally {
-      if (own === undefined) delete process.noDeprecation;
-      else Object.defineProperty(process, "noDeprecation", own);
+      for (const [name, own] of saved) {
+        if (own === undefined) delete process[name];
+        else Object.defineProperty(process, name, own);
+      }
     }
   },
   // process.exitCode is Node's property once Node is loaded: the runtime

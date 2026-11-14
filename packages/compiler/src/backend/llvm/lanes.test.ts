@@ -581,16 +581,30 @@ test("the outer row's guard bounds the start, the bound and the accumulator", as
   expect(fn).toMatch(/fadd double [^,]+, [^,]+\n\s*store double [^,]+, ptr %sc_l_inside_0/);
 });
 
-test("the target's vector width decides the row's lane count", async () => {
-  const v3 = await emittedLlvm("outer-v3", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v3" });
-  expect(body(v3, "sc_f_row")).toMatch(/bitcast <8 x i1> [^,]+ to i8/);
-  expect(body(v3, "sc_f_row")).toMatch(/alloca <8 x double> ; lane z\.re/);
-  const v4 = await emittedLlvm("outer-v4", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v4" });
-  expect(body(v4, "sc_f_row")).toMatch(/bitcast <16 x i1> [^,]+ to i16/);
-  expect(body(v4, "sc_f_row")).toMatch(/alloca <16 x double> ; lane z\.re/);
-  const v2 = await emittedLlvm("outer-v2", OUTER_SOURCE, { plan: "outer", targetCpu: "x86-64-v2" });
-  expect(body(v2, "sc_f_row")).toMatch(/bitcast <4 x i1> [^,]+ to i4/);
-});
+// Same as the inner row's test above: these level names only compile where
+// the host is the target (the frontend refuses them elsewhere with SC3002).
+test.skipIf(process.arch !== "x64")(
+  "the target's vector width decides the row's lane count",
+  async () => {
+    const v3 = await emittedLlvm("outer-v3", OUTER_SOURCE, {
+      plan: "outer",
+      targetCpu: "x86-64-v3",
+    });
+    expect(body(v3, "sc_f_row")).toMatch(/bitcast <8 x i1> [^,]+ to i8/);
+    expect(body(v3, "sc_f_row")).toMatch(/alloca <8 x double> ; lane z\.re/);
+    const v4 = await emittedLlvm("outer-v4", OUTER_SOURCE, {
+      plan: "outer",
+      targetCpu: "x86-64-v4",
+    });
+    expect(body(v4, "sc_f_row")).toMatch(/bitcast <16 x i1> [^,]+ to i16/);
+    expect(body(v4, "sc_f_row")).toMatch(/alloca <16 x double> ; lane z\.re/);
+    const v2 = await emittedLlvm("outer-v2", OUTER_SOURCE, {
+      plan: "outer",
+      targetCpu: "x86-64-v2",
+    });
+    expect(body(v2, "sc_f_row")).toMatch(/bitcast <4 x i1> [^,]+ to i4/);
+  },
+);
 
 test("rows the lane body cannot take keep their scalar loops", async () => {
   const llvm = await emittedLlvm("outer-refused", OUTER_SOURCE, { plan: "outer" });

@@ -336,6 +336,32 @@
     ]
   },
   {
+    "href": "/docs/dual-run",
+    "title": "Dual-Run Testing",
+    "headings": [
+      {
+        "text": "Run a suite with the reporter",
+        "id": "run-a-suite-with-the-reporter"
+      },
+      {
+        "text": "Compare one file from a test runner",
+        "id": "compare-one-file-from-a-test-runner"
+      },
+      {
+        "text": "What is compared",
+        "id": "what-is-compared"
+      },
+      {
+        "text": "API",
+        "id": "api"
+      },
+      {
+        "text": "Limits",
+        "id": "limits"
+      }
+    ]
+  },
+  {
     "legacy": "/wasm",
     "href": "/docs/wasm",
     "title": "WebAssembly Modules",

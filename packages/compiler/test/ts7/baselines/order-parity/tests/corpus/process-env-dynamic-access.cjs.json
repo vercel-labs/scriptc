@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-env-dynamic-access.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-base-with-any-argument/widget.js",
+  "<repo>/tests/corpus/generic-base-with-any-argument/app.js",
+  "<repo>/tests/corpus/generic-base-with-any-argument/model.ts",
+  "<repo>/tests/corpus/generic-base-with-any-argument/main.ts"
+ ],
+ "diags": []
+}

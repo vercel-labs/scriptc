@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/variadic-field-call-from-typed-code/renderer.js",
+  "<repo>/tests/corpus/variadic-field-call-from-typed-code/main.ts"
+ ],
+ "diags": []
+}

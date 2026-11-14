@@ -159,7 +159,7 @@ static bool scr_dnsp_host_without_nul(const ScrStr *host) {
 
 /* lookup's options, validated as lib/internal/dns/promises.js validates
  * them. False with the argument error pending. */
-static bool scr_dnsp_options(const ScrDyn *opts, double *family, bool *all, int *order) {
+static bool scr_dnsp_options(const ScrDyn *opts, double *family, bool *all, int *order, int *hints) {
   if (opts->kind == SCR_DYN_NUM) {
     double f = opts->v.num;
     if (f != 0 && f != 4 && f != 6) {
@@ -169,23 +169,14 @@ static bool scr_dnsp_options(const ScrDyn *opts, double *family, bool *all, int 
     *family = f + 0.0; /* Node coerces -0 to +0 */
     return true;
   }
-  if (opts->kind != SCR_DYN_UNDEF && opts->kind != SCR_DYN_OBJ && opts->kind != SCR_DYN_NULL) {
+  if (opts->kind != SCR_DYN_UNDEF && opts->kind != SCR_DYN_OBJ && opts->kind != SCR_DYN_ARR &&
+      opts->kind != SCR_DYN_NULL) {
     scr_dyn_arg_type_fail("options", "of type object or integer", opts);
     return false;
   }
-  if (opts->kind != SCR_DYN_OBJ) return true;
-  const ScrDyn *v = scr_dyn_obj_get(opts, "hints", 5);
-  if (scr_dnsp_given(v)) {
-    if (v->kind != SCR_DYN_NUM) {
-      scr_dyn_prop_type_fail("options.hints", "of type number", v);
-      return false;
-    }
-    if (v->v.num != 0) {
-      scr_throw_error_msg_code(SCR_ERR_ERROR, "dns.lookup hints are not supported yet", 38, "SC2020");
-      return false;
-    }
-  }
-  v = scr_dyn_obj_get(opts, "family", 6);
+  if (opts->kind != SCR_DYN_OBJ && opts->kind != SCR_DYN_ARR) return true;
+  if (!scr_dns_hints_flags(opts, hints)) return false;
+  const ScrDyn *v = scr_dyn_obj_get(opts, "family", 6);
   if (scr_dnsp_given(v)) {
     if (v->kind != SCR_DYN_NUM || (v->v.num != 0 && v->v.num != 4 && v->v.num != 6)) {
       scr_dyn_arg_value_fail("options.family", "must be one of: 0, 4, 6", v);
@@ -222,11 +213,13 @@ static bool scr_dnsp_options(const ScrDyn *opts, double *family, bool *all, int 
   return true;
 }
 
-/* The callback form's options for a validated promise lookup. +1 dyn. */
-static ScrDyn *scr_dnsp_normalized(double family, bool all, int order) {
+/* The callback form's options for a validated promise lookup. Hints reach
+ * getaddrinfo through the callback form's own options. +1 dyn. */
+static ScrDyn *scr_dnsp_normalized(double family, bool all, int order, int hints) {
   ScrDyn *o = scr_dyn_new_obj();
   scr_dyn_obj_set(o, "family", 6, scr_dyn_new_num(family));
   scr_dyn_obj_set(o, "all", 3, scr_dyn_new_bool(all));
+  if (hints != 0) scr_dyn_obj_set(o, "hints", 5, scr_dyn_new_num((double)hints));
   const char *name = scr_dnsp_orders[order];
   ScrStr *s = scr_str_new(name, strlen(name));
   scr_dyn_obj_set(o, "order", 5, scr_dyn_new_str(s));
@@ -244,12 +237,13 @@ static ScrPromise *scr_dnsp_lookup(const ScrDyn *hostname, const ScrDyn *opts) {
   double family = 0;
   bool all = false;
   int order = scr_dnsp_default_order();
-  if (!scr_dnsp_options(opts, &family, &all, &order)) return NULL;
+  int hints = 0;
+  if (!scr_dnsp_options(opts, &family, &all, &order, &hints)) return NULL;
   ScrPromise *p = scr_promise_new();
   if (!host_given) {
     /* The callback form emits the shared DEP0118 warning; its own answer
      * goes to a callback that ignores it. */
-    ScrDyn *normalized = scr_dnsp_normalized(family, all, order);
+    ScrDyn *normalized = scr_dnsp_normalized(family, all, order, hints);
     ScrDyn *ignore = scr_dyn_new_func(scr_closure_new((void *)scr_dnsp_ignore, 0), scr_dnsp_ignore,
                                       0, "", "");
     scr_dns_lookup_dyn(hostname, normalized, ignore, false);
@@ -258,7 +252,14 @@ static ScrPromise *scr_dnsp_lookup(const ScrDyn *hostname, const ScrDyn *opts) {
     if (all) {
       scr_dnsp_fulfill(p, scr_dyn_new_arr());
     } else {
-      scr_dnsp_fulfill(p, scr_dnsp_pair("address", 7, scr_dyn_new_null(), "family", 6,
+      /* Node settles `{ address: null, family }` here. The promise result
+       * is checked against the declared LookupAddress, whose address is a
+       * string, so the checked value substitutes the empty string (the
+       * typed lookup substitution); a dyn caller reads the same shape. */
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *address = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      scr_dnsp_fulfill(p, scr_dnsp_pair("address", 7, address, "family", 6,
                                         scr_dyn_new_num(family == 6 ? 6 : 4)));
     }
     return p;
@@ -278,7 +279,7 @@ static ScrPromise *scr_dnsp_lookup(const ScrDyn *hostname, const ScrDyn *opts) {
   }
   ScrDyn *cb = scr_dnsp_callback(p, all ? scr_dnsp_all_settle : scr_dnsp_one_settle, all ? 2 : 3);
   {
-    ScrDyn *normalized = scr_dnsp_normalized(family, all, order);
+    ScrDyn *normalized = scr_dnsp_normalized(family, all, order, hints);
     scr_dns_lookup_dyn(hostname, normalized, cb, false);
     scr_dyn_release(normalized);
   }

@@ -198,6 +198,7 @@ console.log(zlib.Z_NO_FLUSH, process.browser, process.connected);
         "exact.mjs",
         `console.log(process.debugPort, process.sourceMapsEnabled, typeof performance.timeOrigin);
 console.log(typeof process.abort, typeof process.finalization);
+console.log(typeof performance.nodeTiming, typeof performance.nodeTiming.loopStart);
 `,
       ),
     ).toEqual([]);
@@ -205,12 +206,8 @@ console.log(typeof process.abort, typeof process.finalization);
 
   test("refuses the read of any other value by name", () => {
     for (const [source, surface] of [
-      [`console.log(process.finalization);\n`, "process.finalization"],
+      [`console.log(process.config);\n`, "process.config"],
       [`import { snapshot } from "node:test";\nconsole.log(snapshot);\n`, "test.snapshot"],
-      [
-        `import { performance } from "node:perf_hooks";\nconsole.log(performance.nodeTiming);\n`,
-        "performance.nodeTiming",
-      ],
     ] as const) {
       const found = refusals(`${surface}.mjs`, source);
       expect(found, surface).toHaveLength(1);

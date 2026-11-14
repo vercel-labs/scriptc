@@ -1009,8 +1009,10 @@ jobs:
     # Each LLVM differential slice takes 30 to 40 minutes on a hosted runner.
     # The package/install and link-parity contracts and the Node island
     # harness run in their own job (llvm_artifacts_macos_arm64_contracts), so
-    # no slice carries them.
-    timeout-minutes: 50
+    # no slice carries them. A recent run measured 39 to 46 minutes per slice,
+    # and a busy runner was cancelled inside shard 4/5 at the 50-minute limit.
+    # Keep a quarter hour of slack so a slow runner finishes its slice.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -1055,8 +1057,12 @@ jobs:
     # and took that job to 45-50 minutes. The Node island harness (7 to 10
     # minutes) runs here for the same reason: in front of shard 1's slice it
     # kept that job at 43-50 minutes, against the slices' 50-minute limit.
-    # Its native CLI build alone can pass 30 minutes on a busy runner.
-    timeout-minutes: 50
+    # Its native CLI build, the first thing the packed npm installation smoke
+    # runs, is the long pole: a scheduled full run measures 31 minutes for the
+    # build and 41 for the job, and a run of the job was cancelled inside that
+    # smoke at the 50-minute limit. Keep a quarter hour of slack so a busy
+    # runner finishes the contracts rather than timing out in them.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0

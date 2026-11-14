@@ -1,10 +1,12 @@
 `process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2.
-In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag: it is kept out of `process.argv` and appears in `process.execArgv`, which is otherwise `[]`.
+In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag, and leading `--test-reporter=spec` and `--test-reporter-destination=...` arguments are Node's reporter options: each is kept out of `process.argv` and appears in `process.execArgv`, in the order given, which is otherwise `[]`.
 `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
 The `process.features` object cannot be changed: under Node nine of its flags are writable and a program may add keys, but a compiled binary reads a flag as a constant, so a write to the object throws the `TypeError` of a frozen object and `Object.isFrozen(process.features)` is `true`.
 
 Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value.
 An uncaught Error and an unhandled rejection with an Error reason also print the stack frames the Error carries, one `at` line each under that first line.
+An unhandled rejection keeps Node.js's default throw-mode behaviour: the process reports the reason on stderr and exits with code 1 at the end of the current turn, so a timer, immediate, or I/O callback queued for a later turn never runs.
+A program that registers a `process.on("unhandledRejection")` listener handles the event instead: each rejection reaches the listener, the default report is suppressed, and the loop continues.
 A release build keeps stack frames only in programs that read an error's `stack`; in every other program its report is the first line alone.
 A build with `--optimization dev` and without `--strip` keeps a frame in every function that can raise an error, and each frame names the file, line, and column of the statement that was running: `at decode (/app/src/user.ts:8:3)`.
 A function that only computes, and so could fail in no other way than by exhausting the stack, keeps no frame in either build: a stack overflow in it is reported at the statement that called it.

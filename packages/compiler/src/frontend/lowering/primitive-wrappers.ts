@@ -166,6 +166,7 @@ export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   "insp.dynS",
   "insp.dynFormatS",
 ]);
@@ -222,7 +223,9 @@ export function routeWrapperConsumers(lowerer: Lowerer, functions: IrFunction[])
       }
       if (
         expr.kind === "intrinsic" &&
-        (expr.name === "console.log" || expr.name === "console.error")
+        (expr.name === "console.log" ||
+          expr.name === "console.error" ||
+          expr.name === "console.trace")
       )
         return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.name)) };
       return expr;

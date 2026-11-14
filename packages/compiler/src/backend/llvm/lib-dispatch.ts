@@ -28,6 +28,7 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
+import { typedRefRecipe } from "./expr-calls.js";
 import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
@@ -197,6 +198,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     const once = host.emitExpr(e.args[3]!);
     host.toHeap(cb);
     let adapter = "null";
+    let box = "null";
     if (evArg.value === 0 || evArg.value === 4) {
       const param = cbT.params[0];
       const kind =
@@ -205,15 +207,21 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     } else if (evArg.value === 5 && cbT.params.length === 1) {
-      const name =
-        cbT.params[0]!.kind === "dyn" ? "scr_rl_history_thunk_dyn" : "scr_rl_history_thunk_arr";
-      host.declare(`declare void @${name}(ptr, ptr)`);
-      adapter = `@${name}`;
+      if (cbT.params[0]!.kind === "dyn") {
+        // A checked-dynamic listener receives the interface's history array
+        // itself: the runtime boxes it with the same interned live capsule a
+        // typed `rl.history` read yields, so `h === rl.history` holds and the
+        // listener's writes land in the array.
+        box = typedRefRecipe(host, { kind: "array", elem: { kind: "string" } });
+      } else {
+        host.declare(`declare void @scr_rl_history_thunk_arr(ptr, ptr)`);
+        adapter = "@scr_rl_history_thunk_arr";
+      }
     }
     const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
-    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
+    host.declare(`declare void @${target}(double, double, ptr, ptr, ptr, i1)`);
     B.line(
-      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, ptr ${box}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -1131,6 +1139,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return out;
   }
+  // events.on over a compiled emitter builds its typed listener adapters
+  // beside the emitter calls (lib-process.ts), like events.once: the
+  // dedicated arm below the generic table, and a call that may throw.
+  if (e.fn === "events.onTyped") return host.emitErrorsEventsLibCall(e);
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
@@ -1694,6 +1706,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "weakMap":
     case "weakSet":
     case "finalizationRegistry":
+    case "weakRef":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":

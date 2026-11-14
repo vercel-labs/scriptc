@@ -416,6 +416,7 @@ typedef struct NcHandle {
   NcGroup *group;      /* +1, once a listener was registered */
   ScrChild *face;      /* a child: its ScrChild (not owned) */
   ScrArr *spawnargs;   /* a child: +1 once read */
+  ScrArr *stdio_array; /* a child: the compiler-built stdio array, +1 once read */
   struct NcHandle *next; /* a child: the identity table's chain */
 } NcHandle;
 
@@ -602,6 +603,13 @@ static ScrStr *nc_string(void *island, int prop) {
   return s;
 }
 
+/* subprocess.channel: the island's own Control object (+1), forwarded so
+ * its ref()/unref() reach Node's handle; undefined when it has none. */
+static ScrDyn *nc_channel(void *island) {
+  ScrDyn *d = nc_get(island, "channel");
+  return d != NULL ? d : scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* child.spawnargs: read once, so repeated reads answer one array, as the
  * island's property does. */
 static ScrArr *nc_spawnargs(void *island) {
@@ -725,6 +733,35 @@ static void nc_stdio(ScrChild *child) {
   if (err != NULL) child->err_stream = scr_child_stream_island_new(err);
 }
 
+/* ChildProcess.stdio's length on the island's own object: Node's array, one
+ * entry per slot (3, or 4 for a fork's IPC slot). */
+static double nc_stdio_len(void *island) {
+  ScrDyn *stdio = nc_get(island, "stdio");
+  double len = stdio != NULL ? scr_dyn_arr_len(stdio) : 3;
+  scr_dyn_release(stdio);
+  return len;
+}
+
+/* The compiled program's view of ChildProcess.stdio on an island child: the
+ * compiler builds the array from the child's own stdio handles on the first
+ * read and keeps it on this handle, so repeated reads answer that array.
+ * Node's object keeps its own array; this one holds the same handles the
+ * compiler's child.stdin/stdout/stderr answer. */
+static bool nc_stdio_cached(void *island) {
+  NcHandle *h = island;
+  return h->stdio_array != NULL;
+}
+
+static ScrArr *nc_stdio_array(void *island) {
+  NcHandle *h = island;
+  return h->stdio_array != NULL ? scr_arr_retain(h->stdio_array) : NULL;
+}
+
+static void nc_stdio_store(void *island, ScrArr *array) {
+  NcHandle *h = island;
+  if (h->stdio_array == NULL) h->stdio_array = scr_arr_retain(array);
+}
+
 static void nc_drop(void *island) {
   NcHandle *h = island;
   if (h->kind == NC_CHILD) {
@@ -732,6 +769,7 @@ static void nc_drop(void *island) {
     while (*at != NULL && *at != h) at = &(*at)->next;
     if (*at == h) *at = h->next;
     if (h->spawnargs != NULL) scr_arr_release(h->spawnargs);
+    if (h->stdio_array != NULL) scr_arr_release(h->stdio_array);
   }
   nc_group_release(h->group);
   scr_dyn_release(h->child);
@@ -741,8 +779,9 @@ static void nc_drop(void *island) {
 
 static const ScrChildIslandOps nc_ops = {
     nc_drop,      nc_stdio,    nc_on,           nc_off,         nc_on_dyn, nc_number,
-    nc_boolean,   nc_string,   nc_spawnargs,    nc_kill,        nc_call,   nc_send,
-    nc_set_encoding, nc_write, nc_bridge_write, nc_bridge_final,
+    nc_boolean,   nc_string,   nc_channel,      nc_spawnargs,   nc_kill,   nc_call,
+    nc_send,      nc_set_encoding, nc_write,    nc_bridge_write, nc_bridge_final,
+    nc_stdio_len, nc_stdio_cached, nc_stdio_array, nc_stdio_store,
 };
 
 /* ── the conversions (dyn.ts, ISLAND_ADOPTED_KINDS) ─────────────────────── */

@@ -11,10 +11,14 @@
  * call). NEVER throws: spawn failure (nonexistent binary, EACCES) is data
  * — has_status false and empty outputs — like Node's `error` property
  * (Node types stdout/stderr null there; divergence in SEMANTICS.md).
- * A signal-killed child also has no status (Node's status: null). */
+ * A signal-killed child also has no status (Node's status: null).
+ * `encoding` names the call's encoding option (a Buffer encoding name;
+ * "" = the unencoded form, whose string reads answer the raw bytes). The
+ * STRING reads of stdout/stderr decode the capture through it; the Buffer
+ * reads (scr_spawn_res_*_bytes) always answer the captured bytes. */
 typedef struct ScrSpawnRes ScrSpawnRes;
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args); /* +1, never throws */
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding); /* +1, never throws */
 /* The options form (cp.spawnSyncOpts): timeout_ms > 0 sends killsignal
  * (a signal NAME; "" = SIGTERM) at the deadline and the result carries
  * error: ETIMEDOUT + the signal — never a throw. stdio modes: stdin 0 =
@@ -22,12 +26,12 @@ ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args); /* +1, never throws */
  * inherit (non-captured outputs read "" — the documented stance). */
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                   ScrStr *killsignal, double in_mode,
-                                  double out_mode, double err_mode);
+                                  double out_mode, double err_mode, ScrStr *encoding);
 /* scr_spawn_sync_opts with an `env` option: [k,v,...] pairs replace the
  * child's environment (NULL inherits the parent's). */
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs);
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding);
 /* The cwd/input/shell forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the
  * options entry with the child started in `cwd` (NULL or "" = the
  * parent's directory), `input` written to its stdin (has_input false
@@ -42,15 +46,17 @@ ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell);
+                                 bool has_input, bool shell, ScrStr *encoding);
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs);
+                                     bool has_input, bool shell, ScrArr *env_pairs,
+                                     ScrStr *encoding);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                       ScrStr *killsignal, ScrStr *stdio);
+                                       ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding);
 /* execFileSync/execSync behind one entry: posix_spawn(p) + piped utf8
  * capture + waitpid with Node's exact error shapes — non-zero exit or
  * signal death throws Error("Command failed: <cmd>[\n<stderr>]"), spawn
@@ -69,13 +75,20 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * no-stdio-option default), 1 captures only, 2 ignores, 3 inherits.
  * Result is the captured utf8 stdout (+1) — "" when nothing captures
  * (Node answers null there; discarded results cannot tell). A failure's
- * error carries Node's status, signal, output, pid, stdout and stderr;
- * `buffers` (no encoding option) makes those outputs Buffers. All args
+ * error carries Node's status, signal, output, pid, stdout and stderr.
+ * `encoding` is the encoding option's canonical Buffer encoding name: the
+ * result and those error outputs decode the captured bytes through it (the
+ * compiler validates the name; an unknown one reads as utf8). All args
  * borrowed. */
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
-                       bool buffers);
+                       ScrStr *encoding);
+/* The unencoded form (cp.execSyncBytes): the same call with Node's Buffer
+ * result and Buffer error outputs (+1). */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode);
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
  * scr_exec_sync — the /bin/sh -c argv): the same core in the
  * async shape — both streams captured (no echo), Node's ASYNC error
@@ -98,8 +111,12 @@ void *scr_spawn_res_retain_v(void *p);
 void scr_spawn_res_release_v(void *p);
 bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1 */
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1, decoded per encoding */
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1, decoded per encoding */
+/* The captured bytes, undecoded (whatever the encoding option): the Buffer
+ * reads and the capture memo work from these. +1. */
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r);
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r);
 /* The Buffer captures (spawnSync without an encoding option): the same
  * bytes as a bytes<u8> value, carrying the Buffer brand Node's capture has
  * (+1). All three entries live in scr_child_capture.c, a unit linked only
@@ -201,6 +218,22 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 /* Runtime options use the same spawn core; validation and explicit
  * unsupported-option refusals throw before starting a child. Borrows. */
 ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
+/* cp.spawnArmed: the options core plus Node's spawn-side options
+ * (SCR_CHILD_CP_OPTIONS). After the launch checks (validateTimeout,
+ * validateAbortSignal, sanitizeKillSignal — the errors throw before any
+ * process starts), timeout_ms > 0 arms Node's timer: at the deadline the
+ * runtime sends killSignal (SIGTERM without one) and leaves the pipes
+ * alone, unlike exec's timer. signal's abort sends the same signal and
+ * emits Node's AbortError (code ABORT_ERR, cause signal.reason) once,
+ * right after 'spawn' when the signal was already aborted. `add` is
+ * scr_events_add_abort_listener, NULL when the program cannot pass a
+ * signal. kill_signal and signal may be NULL or a checked-dynamic
+ * undefined; timeout_ms 0 = no timer. Borrows. */
+ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_mode,
+                          double err_mode, double out_fd, double err_fd, bool detached,
+                          bool shell, bool has_env, ScrArr *env_pairs, ScrStr *cwd,
+                          double timeout_ms, const ScrDyn *kill_signal, ScrDyn *signal,
+                          ScrAbortAddFn add);
 /* cp.checkArgs: Node's argument checks for the launch that follows it
  * (normalizeSpawnArguments, normalizeExecArgs). A NUL in the file or
  * command, an argument, cwd ("" = absent) or an environment key or value
@@ -223,6 +256,20 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * (SCR_CHILD_CP_OPTIONS), like the spawnSync cwd/input entries. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                             ScrExecFileFn fn, bool shell, ScrStr *cwd);
+/* The same with `env`, `timeout` and `killSignal`, the rest of Node's
+ * exec/execFile option surface for the callback form (SCR_CHILD_CP_OPTIONS).
+ * env_pairs REPLACES the environment when has_env (an empty list with
+ * has_env is Node's `env: {}` — an empty environment), cwd NULL or "" =
+ * the parent's directory, timeout_ms 0 = no deadline. Node's
+ * validateTimeout runs here (a non-integer, negative or NaN value throws
+ * ERR_OUT_OF_RANGE; a value past 2^31-1 warns TimeoutOverflowWarning and
+ * becomes 1ms, as setTimeout does), then the killSignal name resolves
+ * ("" = SIGTERM; unknown names throw ERR_UNKNOWN_SIGNAL). At the deadline
+ * the runtime destroys the capture streams and sends the signal, Node's
+ * exec/execFile kill(); the callback still reports the exit's own status. */
+ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                             ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);
@@ -238,6 +285,20 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
+ * child (whose entry is null), as Node's own stdio array reports. */
+double scr_child_stdio_len(ScrChild *c);
+/* ChildProcess.stdio's one array per child: the compiler builds it on the
+ * first read, stores it here, and answers it (+1) on every later read. */
+bool scr_child_stdio_cached(ScrChild *c);
+ScrArr *scr_child_stdio_cached_array(ScrChild *c); /* +1, or NULL */
+void scr_child_stdio_store(ScrChild *c, ScrArr *array); /* retains */
+/* subprocess.channel: the Control object (+1), undefined when the child
+ * has no IPC channel, null once the channel is disconnected. The handle's
+ * methods move the channel's keep-alive state, not the child's. */
+ScrDyn *scr_child_channel(ScrChild *c);
+void scr_child_channel_ref(ScrChild *c);
+void scr_child_channel_unref(ScrChild *c);
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json);
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json,
                            ScrClosure *cb /*moves*/, ScrIpcSendFn fn);
@@ -258,6 +319,9 @@ void scr_process_ipc_disconnect(void);
 void scr_process_ipc_on_message(ScrClosure *cb /*moves*/,
                                 ScrIpcMessageFn fn, bool once);
 void scr_process_ipc_on_disconnect(ScrClosure *cb /*moves*/, bool once);
+/* process.channel (Node's Control): undefined without a channel, null once
+ * it is gone, else the cached object with ref()/unref(). +1. */
+ScrDyn *scr_process_channel_value(void);
 void scr_child_exit_thunk0(ScrClosure *cb, bool has_code, double code,
                             const char *signal_name);
 void scr_child_err_thunk0(ScrClosure *cb, ScrStr *msg);
@@ -328,6 +392,9 @@ ScrStr *scr_child_spawnfile(ScrChild *c);
 ScrArr *scr_child_spawnargs(ScrChild *c);
 bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);
+/* ChildProcess[Symbol.dispose](): sends SIGTERM while `killed` is false,
+ * Node's dispose method; answers nothing. */
+void scr_child_dispose(ScrChild *c);
 void scr_child_unref(ScrChild *c);
 void scr_child_ref(ScrChild *c);
 /* Installs ChildProcess's checked-dynamic handle identity bridge. Emitted
@@ -419,6 +486,9 @@ typedef struct ScrChildIslandOps {
   bool (*number)(void *island, int prop, double *value); /* false: null or undefined */
   bool (*boolean)(void *island, int prop);
   ScrStr *(*string)(void *island, int prop); /* +1; NULL: null or undefined */
+  /* subprocess.channel as the island's own Control object (+1), undefined
+   * when the child has none, null after a disconnect. */
+  ScrDyn *(*channel)(void *island);
   ScrArr *(*spawnargs)(void *island);        /* +1 */
   bool (*kill)(void *island, const ScrStr *signal, double signum); /* signal NULL: the number */
   void (*call)(void *island, const char *method); /* a method without arguments or result */
@@ -430,6 +500,16 @@ typedef struct ScrChildIslandOps {
   void (*bridge_write)(void *island, ScrStream *stream, ScrBytes *chunk,
                        const ScrChildStreamOps *stream_ops);
   void (*bridge_final)(void *island, ScrStream *stream, const ScrChildStreamOps *stream_ops);
+  /* ChildProcess.stdio's length on the island's own object (3, or 4 for a
+   * fork's IPC slot): read from the object's array, never synthesized. */
+  double (*stdio_len)(void *island);
+  /* ChildProcess.stdio's one array per child, as the compiler's cache keeps
+   * it: the island's handle answers whether it stored one, that array (+1)
+   * once it did, and the store itself (retains). The island's own object
+   * keeps Node's array; this is the compiled program's view of it. */
+  bool (*stdio_cached)(void *island);
+  ScrArr *(*stdio_array)(void *island);                /* +1, or NULL */
+  void (*stdio_store)(void *island, ScrArr *array);    /* retains */
 } ScrChildIslandOps;
 /* Defined by the SCR_NODE_ISLANDS build of scr_child.c; set with the first
  * island child a program adopts. */
@@ -442,6 +522,7 @@ void scr_children_teardown(void);
 /* Node's signal-name table (scr_lib.c), shared with child.kill: the
  * resolved signal number, or -1 for names outside the table. */
 int scr_signal_from_name(const ScrStr *signal);
+int scr_signal_from_name_ci(const ScrStr *signal);
 /* The reverse walk (spawnSync's result.signal): Node's spelling for the
  * host number, NULL outside the table. Static storage. */
 const char *scr_signal_name(int sig);
@@ -469,6 +550,11 @@ typedef struct ScrLoopChildren {
   bool (*ready)(void);
   bool (*reffed_pending)(void);
   bool (*failed_pending)(void);
+  /* The earliest exec/execFile timeout deadline among running children
+   * (ms on the loop's clock), or -1 while none waits: the loop wakes for
+   * it, and it keeps the loop alive like Node's un-unref'd timeout timer
+   * even when the child itself is unref'd. */
+  double (*next_deadline)(void);
   void (*poll)(void);
   bool (*wait)(double max_wait_ms);
   int (*wake_fd)(void);

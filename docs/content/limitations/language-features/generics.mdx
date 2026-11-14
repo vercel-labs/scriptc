@@ -1,5 +1,9 @@
 - **Generics:** Generic functions declared inside other functions, generic class expressions, and generic methods requiring dynamic dispatch are unsupported.
   Generic classes can extend generic bases when each specialization has a concrete layout.
+  An `any` type argument, written or taken from the type parameter's default, is concrete: a subclass that extends `Base<any>` or leaves `Base`'s `[P=any]` default in place stores its parameter slots as checked-dynamic values.
+  A generic class used as a value without type arguments, such as `{ Box }` or a `typeof Box` parameter, is one class whose type parameters hold checked-dynamic values, and `instanceof` through it answers for every specialization.
+  A typed construction through such a value whose type arguments infer to anything else, such as a default `T = string`, is unsupported.
+  Two instantiation expressions such as `Box<number>` and `Box<string>` are different values, where Node.js has one class.
   Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
   Other generic calls compile when the target resolves statically.
   Generic generator methods, sync and async, compile like other generic methods.

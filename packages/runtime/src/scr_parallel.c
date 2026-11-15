@@ -67,6 +67,11 @@ struct ScrParPool {
   pthread_cond_t idle; /* the caller waits here for the job to finish */
   ScrParJob *job;
   unsigned generation; /* incremented when a job is published */
+  /* The generation when the pool was created. A helper that the OS first
+   * schedules while a later job is already published records this, not the
+   * generation it happens to run under, so it joins that job instead of
+   * waiting for the next one. */
+  unsigned spawn_generation;
   unsigned helpers;
   unsigned active; /* helpers inside the current job */
   bool shutdown;
@@ -121,7 +126,11 @@ static void scr_par_run_chunks(ScrParJob *job);
 static void *scr_par_helper(void *arg) {
   ScrParPool *pool = arg;
   pthread_mutex_lock(&pool->lock);
-  unsigned seen = pool->generation;
+  /* The pool may already have a job published by the time this thread is
+   * first scheduled, especially on a loaded machine. Start from the
+   * generation the pool was created at, so that job is not mistaken for
+   * one this helper has already run. */
+  unsigned seen = pool->spawn_generation;
   for (;;) {
     while (!pool->shutdown && (pool->job == NULL || pool->generation == seen))
       pthread_cond_wait(&pool->wake, &pool->lock);
@@ -155,6 +164,9 @@ static ScrParPool *scr_par_get_pool(void) {
     pthread_mutex_init(&pool->lock, NULL);
     pthread_cond_init(&pool->wake, NULL);
     pthread_cond_init(&pool->idle, NULL);
+    /* No job has been published yet: the pool exists only after a call
+     * reaches this function, and the caller publishes after it returns. */
+    pool->spawn_generation = pool->generation;
     int want = scr_par_threads() - 1;
     pthread_attr_t attr;
     if (pthread_attr_init(&attr) == 0) {

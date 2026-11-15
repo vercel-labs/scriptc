@@ -434,8 +434,7 @@ export class LlWalkers {
         // A tuple slot keeps the array rule for a value the runtime walk
         // handles: its toJSON runs with the index as the key and an
         // undefined result is written `null`.
-        if (this.serializationMayCallUserCode(f.type))
-          this.emitRuntimeElement(B, v, f.type, f64Lit(i));
+        if (this.memberRunsHook(f.type)) this.emitRuntimeElement(B, v, f.type, f64Lit(i));
         else this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`, member);
       });
       this.putc(B, "%b", "93"); // ']'
@@ -466,8 +465,7 @@ export class LlWalkers {
         .map((n) => byName.get(n))
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
-      const runtimeMember = (f: { type: IrType }): boolean =>
-        this.serializationMayCallUserCode(f.type);
+      const runtimeMember = (f: { type: IrType }): boolean => this.memberRunsHook(f.type);
       const droppable =
         emitFields.some(
           (f) =>
@@ -785,7 +783,7 @@ export class LlWalkers {
         B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
-      if (this.serializationMayCallUserCode(f.type)) {
+      if (this.memberRunsHook(f.type)) {
         // The value may be written by the runtime walk, which owns the
         // comma, the key and the member's omission. This callback answers
         // whether it wrote anything, so the caller's first-member flag
@@ -920,7 +918,7 @@ export class LlWalkers {
         B.br(next);
         B.startBlock(write);
       }
-      if (this.serializationMayCallUserCode(iv)) {
+      if (this.memberRunsHook(iv)) {
         // The entry's value may be written by the runtime walk: it owns the
         // comma, the key and the entry's omission, with the key as the
         // value's toJSON argument.
@@ -989,6 +987,33 @@ export class LlWalkers {
       case "union":
         return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.serializationMayCallUserCode(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Whether a value of `t` can run JSON's `toJSON` hook of its own with the
+   * member's key, so the member must go through the runtime walk: a
+   * checked-dynamic value, a class instance its writer sends through the
+   * runtime walk, or a union that can hold one of those. A record or an
+   * array has no prototype of its own in this subset, and its members reach
+   * their hooks through the type-directed writer, which keeps the catchable
+   * circular-structure TypeError on a cyclic value. Handing the whole
+   * composite to the runtime walk would deep-copy it instead, and a cycle
+   * in that copy aborts the process. */
+  private memberRunsHook(t: IrType, seen = new Set<string>()): boolean {
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "dyn":
+        return true;
+      case "object":
+        return !this.host.jsonClassReadsLayout(t.className);
+      case "union":
+        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.memberRunsHook(arm, seen),
         );
       default:
         return false;
@@ -1145,7 +1170,7 @@ export class LlWalkers {
         host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
         const v = B.tmp();
         B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
-        if (this.serializationMayCallUserCode(elem)) {
+        if (this.memberRunsHook(elem)) {
           // The element may be written by the runtime walk: it runs the
           // element's toJSON with the index as its key, and the array's
           // slot is re-read each iteration (the walk above already chose

@@ -777,6 +777,10 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
+    // An unknown-key write can install any name on a prototype, including a
+    // redacting `toJSON` that no class declares. Mark the hook name here so
+    // class JSON eligibility sees it, not only the declared methods below.
+    markPrototypeReplacement(unknownKey);
     for (const method of methods) {
       lowerer.prototypeMethodAccesses.set(method, unknownKey);
       for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);

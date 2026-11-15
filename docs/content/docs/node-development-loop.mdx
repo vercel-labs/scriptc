@@ -29,6 +29,12 @@ const path: string = process.argv[2] ?? "sample.txt";
 console.log(`${path}: ${await wordCount(path)} words`);
 ```
 
+Create the file the program counts:
+
+```text:sample.txt
+one two three
+```
+
 Start Node.js with the preload and the code-generation flag:
 
 ```console
@@ -76,7 +82,7 @@ test("counts words", async () => {
 Run it with the dual-run reporter in place of the built-in one:
 
 ```console
-$ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+$ NODE_OPTIONS=--disallow-code-generation-from-strings node --import @scriptc/experimental/register --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
 ✔ test/app.test.ts (1 passed)
 ```
 

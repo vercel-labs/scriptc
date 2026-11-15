@@ -21,7 +21,7 @@ Run the program and its tests with the load hook and the code-generation flag:
 
 ```console
 $ NODE_OPTIONS=--disallow-code-generation-from-strings node --import @scriptc/experimental/register app.ts
-$ NODE_OPTIONS=--disallow-code-generation-from-strings node --test
+$ NODE_OPTIONS=--disallow-code-generation-from-strings node --import @scriptc/experimental/register --test
 ```
 
 The hook refuses the builtin imports and native addons that a build refuses, and reports the compiler's diagnostic codes. Pass both options to every Node.js command in the loop.

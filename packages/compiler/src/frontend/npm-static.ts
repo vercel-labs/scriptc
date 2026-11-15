@@ -282,7 +282,21 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
       seen.add(key);
       entries.push([key, value]);
     };
-    // 0. The "node" condition HOISTS: Node's runtime resolution matches it
+    // 0. scriptc's own condition leads AND supplies the runtime branches:
+    //    the program compiles the branch a package publishes for scriptc,
+    //    and resolveExports selects that branch before node, import,
+    //    require and default whatever order the map lists. The tsgo host
+    //    matches only {types, import, default}, so its own answer for
+    //    import/node/default would name a file the lowering never compiles
+    //    (the edge then reaches a module with no symbol, and its binding
+    //    lowers to nothing). Publishing the scriptc target under those keys
+    //    makes both resolution worlds answer one file.
+    const scriptc = (v as Record<string, unknown>)["scriptc"];
+    if (scriptc !== undefined) {
+      add("scriptc", scriptc);
+      for (const key of ["import", "require", "default"]) add(key, scriptc);
+    }
+    // 0b. The "node" condition HOISTS: Node's runtime resolution matches it
     //    (yaml's `{ types, node: "./dist/index.js", default: "./browser/
     //    index.js" }` runs the node dist; the browser dist is a DIFFERENT
     //    artifact), while the bundler condition set both resolution worlds
@@ -293,7 +307,7 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
     //    Node's first-match-in-key-order rule.
     for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
       if (key !== "node") {
-        add(key, value);
+        if (key !== "scriptc") add(key, value);
         continue;
       }
       const inner: Record<string, unknown> =

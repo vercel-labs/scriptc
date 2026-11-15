@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -110,12 +111,14 @@ import {
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
+  DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
-import { lowerX509PublicKey } from "../builtins/x509.js";
+import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
@@ -486,6 +489,18 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  // `l.renderToString` where `l` is a module-local variable whose whole value
+  // is a require() chosen at run time among static export tables
+  // (react-dom/server.node.js): the slot the executed write filled, or Node's
+  // TypeError when the read runs before that write (cjs-inline-require.ts).
+  if (ts.isIdentifier(expr.expression) && expr.questionDotToken === undefined) {
+    const aliasMember = cjsConditionalAliasMemberReadOf(lowerer, expr.expression, expr.name.text);
+    if (aliasMember !== null) {
+      if ("throwMessage" in aliasMember)
+        return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
+      return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
+    }
+  }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
   // TypeScript source; JavaScript reads it from the untyped value). The
@@ -499,6 +514,34 @@ export function lowerPropertyAccessExpr(
     builtinConstructorNames(lowerer, expr.expression) !== null
   )
     lowerer.noLowering("the prototype of a held built-in constructor", expr);
+  // A method or accessor read on an instance whose prototype may have been
+  // replaced (reprototyped-reads.ts).
+  if (expr.questionDotToken === undefined && ts.isIdentifier(expr.name)) {
+    const name = expr.name.text;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const info = type?.kind === "object" ? lowerer.classes.get(type.className) : undefined;
+    if (
+      info &&
+      !info.fields.has(name) &&
+      (lowerer.findMethodOn(info, name) || lowerer.findMethodOn(info, `get:${name}`))
+    ) {
+      const read = reprototypedGuard(
+        lowerer,
+        expr,
+        expr.expression,
+        loc,
+        (boxed) => ({
+          kind: "dynKeyGet",
+          value: boxed,
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          type: DYN,
+          loc,
+        }),
+        () => lowerPropertyAccessExpr(lowerer, expr, loc),
+      );
+      if (read !== null) return read;
+    }
+  }
   const heldLoaderMember = heldLoaderMemberThrow(lowerer, expr);
   if (heldLoaderMember !== null) return heldLoaderMember;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
@@ -630,6 +673,12 @@ export function lowerPropertyAccessExpr(
   {
     const publicKey = lowerX509PublicKey(lowerer, expr);
     if (publicKey) return publicKey;
+  }
+  // An X509Certificate's issuerCertificate: certificates carry no issuer
+  // chain, so the getter answers undefined (Node's prototype getter).
+  {
+    const issuer = lowerX509IssuerCertificate(lowerer, expr);
+    if (issuer) return issuer;
   }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.
@@ -1107,6 +1156,19 @@ export function lowerPropertyAccessExpr(
     // their pre-registered export globals).
     const viaClass = lowerStaticFieldRead(lowerer, expr);
     if (viaClass) return viaClass;
+    // A module whose whole export is chosen at run time among static
+    // export tables (react/index.js's `module.exports = require(…)` in an
+    // if/else): the member is that module's own slot, which its executed
+    // branch filled. The checker's synthesized member symbols are shared
+    // between modules that re-export the same tables, so the module decides.
+    if (ts.isIdentifier(expr.name)) {
+      const dep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const slot =
+        dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, expr.name.text);
+      if (slot !== null) return { kind: "varRef", localId: slot.id, type: slot.type, loc };
+    }
     return lowerExpr(lowerer, expr.name);
   }
   // `module.exports` READ in a CommonJS file whose whole export IS a
@@ -1961,12 +2023,16 @@ export function lowerPropertyAccessExpr(
   // or undefined (JS's own-property answer), throwing JS's TypeError
   // on undefined/null receivers unless an earlier `?.` guards the
   // chain. Scalar-narrowed occurrences bridge via maybeNarrow's
-  // validated dynCheck as usual.
+  // validated dynCheck as usual. A private name is not a property key:
+  // the brand-checked lowerings above claim the ones that resolve, and
+  // the rest keep the refusal below rather than read a public property
+  // of the same spelling.
   if (
-    recvLowered.type.kind === "dyn" ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
-        (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type))))
+    !ts.isPrivateIdentifier(expr.name) &&
+    (recvLowered.type.kind === "dyn" ||
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
+          (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type)))))
   ) {
     const key: IrExpr = {
       kind: "strLit",
@@ -2110,16 +2176,18 @@ export function lowerPropertyAccessExpr(
       !info.builtinEmitter &&
       !info.builtinStream
     ) {
-      return lowerer.maybeNarrow(
-        {
-          kind: "dynKeyGet",
-          value: lowerer.coerceToExpected(recvLowered, DYN),
-          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-          type: DYN,
-          loc,
-        },
-        expr,
-      );
+      const read: IrExpr = {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      // A name the class's index signature answers: a missing property
+      // reads undefined (Lowerer.classIndexSignatureRead).
+      const indexValue = lowerer.classIndexSignatureRead(expr);
+      const optional = indexValue ? lowerer.withUndefinedArmOf(indexValue) : null;
+      return optional ? lowerer.coerceInto(expr, read, optional) : lowerer.maybeNarrow(read, expr);
     }
   }
   // A member a JavaScript module attached to one of its functions
@@ -2238,6 +2306,27 @@ export function lowerPropertyAccessExpr(
       expr,
     );
   }
+  // A checker-`any` receiver whose value is a typed HANDLE (`const ds: any
+  // = sock` adopts the socket's static kind): JavaScript's [[Get]] on the
+  // value, which the handle's checked-dynamic table answers — Node's own
+  // member read (a socket's `server`, a connection's `bufferSize`). The
+  // box shares the handle, so it needs no fresh-result restriction.
+  if (
+    !ts.isPrivateIdentifier(expr.name) &&
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    DYN_HANDLE_KINDS.has(recvLowered.type.kind)
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
   // A NULLISH receiver: JavaScript's RequireObjectCoercible throws Node's
   // TypeError at the read (only an optional chain, lowered elsewhere,
   // answers undefined). A primitive receiver that is not nullish never
@@ -2265,6 +2354,7 @@ export function lowerPropertyAccessExpr(
   // through any other view of the same object.
   if (
     !expr.questionDotToken &&
+    !ts.isPrivateIdentifier(expr.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     lowerer.jsDynamicMemberTarget(recvLowered.type) &&
     !declaredMemberOf(lowerer, expr.expression, expr.name.text)
@@ -3181,13 +3271,21 @@ export function lowerIntrinsicProperty(
       };
       return { kind: "libCall", fn: "child.signalCode", args: [receiver], type, loc };
     }
+    // channel: the IPC channel's Control object — undefined for a spawn,
+    // the fork's stable-identity handle, null once the channel disconnected
+    // or the child exited. It is a checked-dynamic value; its ref()/unref()
+    // reach the runtime handle rather than the ChildProcess' own switch.
+    if (name === "channel") {
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "child.channel", args: [receiver], type: DYN, loc };
+    }
     if (name === "on" || name === "once" || name === "kill" || name === "unref") {
       lowerer.unsupported("SC1090", expr, `child methods as values (call '${name}' directly)`);
     }
     lowerer.noLowering(
       `ChildProcess.${name}`,
       expr,
-      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, kill(signal?), ref(), and unref() are the supported ChildProcess members',
+      'on/once("exit" | "close" | "error", cb), pid, exitCode, killed, spawnfile, spawnargs, channel, kill(signal?), ref(), and unref() are the supported ChildProcess members',
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -3251,8 +3349,21 @@ export function lowerIntrinsicProperty(
   }
   if (kind === "stats" || kind === "bigintStats") {
     const bigintStats = kind === "bigintStats";
+    const receiver = lowerer.lowerExpr(expr.expression);
+    if (receiver.type.kind === "dyn") {
+      // A Stats/BigIntStats spelling over a checked-dynamic value (a stat
+      // call lowered to the run-time options ladder, which picks the member
+      // table at the call): the member reads off the object at run time.
+      return {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: name, type: STRING, loc: locOf(expr) },
+        ...(expr.questionDotToken ? { optional: true as const } : {}),
+        value: receiver,
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     if (name === "size") {
-      const receiver = lowerer.lowerExpr(expr.expression);
       return {
         kind: "libCall",
         fn: bigintStats ? "bigstats.size" : "stats.size",
@@ -5486,6 +5597,54 @@ export function lowerUnionKeyedRead(
 /** A structural TypeScript view does not change a nominal object's layout
  * or accessor dispatch. Resolve the property from the represented class;
  * the optional checker view must not turn its getter into a record read. */
+/** Whether `access` is written: the target of an assignment (`=` or a
+ * compound operator), of `++` or `--`, or an element of a destructuring
+ * assignment's pattern (`({ v: x.data } = r)`, `for ([x.data] of rows)`). */
+function isWrittenAccess(access: ts.Node | undefined): boolean {
+  if (!access) return false;
+  let node: ts.Node = access;
+  for (;;) {
+    const up: ts.Node | undefined = node.parent;
+    if (!up) return false;
+    // A pattern element: the property or element is assigned when the
+    // pattern is (a default `x.data = d` inside a pattern is the element).
+    if (
+      ts.isParenthesizedExpression(up) ||
+      ts.isArrayLiteralExpression(up) ||
+      ts.isSpreadElement(up) ||
+      ts.isSpreadAssignment(up) ||
+      (ts.isPropertyAssignment(up) && up.initializer === node) ||
+      (ts.isShorthandPropertyAssignment(up) && up.name === node) ||
+      (ts.isObjectLiteralExpression(up) && node !== access) ||
+      (ts.isBinaryExpression(up) &&
+        up.left === node &&
+        up.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        node === access &&
+        up.parent !== undefined &&
+        (ts.isArrayLiteralExpression(up.parent) || ts.isPropertyAssignment(up.parent)))
+    ) {
+      node = up;
+      continue;
+    }
+    break;
+  }
+  const parent = node.parent;
+  if (!parent) return false;
+  if (node !== access && ts.isForOfStatement(parent)) return parent.initializer === node;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    );
+  return false;
+}
+
 export function classFieldTarget(
   lowerer: Lowerer,
   receiverNode: ts.Expression,
@@ -5573,12 +5732,17 @@ export function classFieldTarget(
   const setF = lowerer.findMethodOn(info, `set:${fieldName}`);
   if (getF || setF) {
     const obj = lowerObjectReceiver();
+    // A pair may declare different types (`get data(): string` beside
+    // `set data(v: string | number)`, as tsc 5.1+ admits): a written
+    // access converts its value into the setter's parameter type, and a
+    // read answers the getter's return.
+    const written = setF !== null && isWrittenAccess(receiverNode.parent);
     return {
       container: "accessor",
       obj,
       className: receiverType.className,
       field: fieldName,
-      fieldType: getF ? getF.sig.ret : setF!.sig.params[0]!.type,
+      fieldType: getF && !written ? getF.sig.ret : setF!.sig.params[0]!.type,
     };
   }
   if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
@@ -5801,6 +5965,12 @@ export function fieldTarget(
         owner,
         lowerer.lowerExpr(access.expression),
         access.expression,
+        name,
+        ts.isBinaryExpression(access.parent) &&
+          access.parent.left === access &&
+          access.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          ? "set"
+          : "read",
       );
       return classFieldTarget(
         lowerer,

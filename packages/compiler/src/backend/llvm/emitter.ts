@@ -11,6 +11,7 @@ import type { JsGroup, JsGroupPlan } from "../../ir/js-groups.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitThreadSlotsIntrinsic } from "./thread-slots.js";
+import { emitParallelIntrinsic } from "./parallel-loops.js";
 import {
   CYC_BUF,
   CYC_HDR,
@@ -435,7 +436,6 @@ import { LlWalkers } from "./walkers.js";
 import {
   classJsonFields,
   classJsonReadsLayout,
-  emitClassJsonBagHeld,
   emitClassJsonDynWrite,
   emitClassJsonFieldRead,
 } from "./class-json.js";
@@ -2956,13 +2956,13 @@ export class LlEmitter {
       jsonClassFields: (className) => classJsonFields(this, className),
       jsonClassFieldRead: (B, obj, className, field) =>
         emitClassJsonFieldRead(this, B, obj, className, field),
-      jsonClassBagHeld: (B, obj, className) => emitClassJsonBagHeld(this, B, obj, className),
       jsonClassReadsLayout: (className) => {
         const meta = this.classMeta.get(className);
         return meta !== undefined && classJsonReadsLayout(meta);
       },
       jsonClassDynWrite: (B, buf, obj, className) =>
         emitClassJsonDynWrite(this, B, buf, obj, className),
+      toDynHelper: (t) => this.dyn.toDynHelper(t),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       nodeIslands: () => this.nodeIslands,
@@ -3508,14 +3508,34 @@ export class LlEmitter {
     return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
+  /** Whether a function of the module calls dyn.setPrototype. */
+  private setsPrototypes(): boolean {
+    let found = false;
+    for (const fn of this.mod.functions) {
+      everyStmtList(fn.body, {
+        stmt: () => !found,
+        expr: (expr) => {
+          if (expr.kind === "libCall" && expr.fn === "dyn.setPrototype") found = true;
+          return !found;
+        },
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+
   /** The dispose-observer gates the emitted frees and record writers test
    * (alloc.ts): defined after every helper is emitted, because dynCheck
    * builders, JSON schemas and weak collection constructors are requested
    * lazily. */
   disposeObserverGates(): string[] {
-    const weak = [...this.decls].some(
-      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
-    );
+    // Object.setPrototypeOf on a class instance keeps the prototype in a
+    // table the instance's disposal clears (scr_instance_proto_set), so a
+    // module that can call it observes disposals as a weak collection does.
+    const weak =
+      [...this.decls].some(
+        (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+      ) || this.setsPrototypes();
     // The frontend removed the source tests of these record types because
     // nothing in the module gives a record a source
     // (IrModule.recordSourcesFolded). A helper that keeps one for such a
@@ -8603,6 +8623,7 @@ export class LlEmitter {
       return this.emitRegionIntrinsic(e);
     if (e.name.startsWith("itable.")) return this.emitInternTableIntrinsic(e);
     if (e.name.startsWith("slots.")) return emitThreadSlotsIntrinsic(this, e);
+    if (e.name.startsWith("par.")) return emitParallelIntrinsic(this, e);
     return emitIntrinsicExpr(this, e);
   }
 

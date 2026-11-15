@@ -5800,9 +5800,23 @@ export class LlDyn {
       for (const [kind, label] of labels) branches.push(`i32 ${kind}, label %${label}`);
       B.terminate(`switch i32 ${kd}, label %${done} [ ${branches.join(" ")} ]`);
       B.startBlock(labels.get(DYN_KIND.PROXY)!);
-      host.declare(`declare void @scr_dyn_proxy_unsupported(ptr)`);
-      B.line(`call void @scr_dyn_proxy_unsupported(ptr ${host.cstr("string conversion")})`);
-      B.br(done);
+      {
+        // String(p) / `${p}`: ToPrimitive through the Proxy's own traps, then
+        // ToString of the primitive. Null leaves the exception the conversion
+        // threw pending.
+        host.declare(`declare ptr @scr_dyn_proxy_to_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_proxy_to_string(ptr %d)`);
+        const converted = B.tmp();
+        B.line(`${converted} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.px");
+        B.condBr(converted, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
+        B.br(done);
+      }
       B.startBlock(labels.get(DYN_KIND.TYPED_REF)!);
       {
         host.declare(`declare ptr @scr_dyn_typed_ref_string_view(ptr)`);
@@ -6393,7 +6407,26 @@ export class LlDyn {
       B.line(
         `${r} = call ptr @scr_dyn_obj_read(ptr %d, ptr ${kParts.data}, ${host.sizeType} ${kParts.len})`,
       );
+      // A program's non-constant key (`o[k]`, a Proxy get trap forwarding
+      // `t[k]`) that misses answers the Object.prototype member the object
+      // inherits, as a constant-key read does. Constant keys on an object
+      // read through the site cache instead and never reach this block, and
+      // only an undefined read pays the runtime call.
+      const lRead = B.newLabel("kg.ob.read");
+      const lInherit = B.newLabel("kg.ob.inherit");
+      const lMiss = B.newLabel("kg.ob.miss");
+      const present = B.tmp();
+      B.line(`${present} = icmp ne ptr ${r}, null`);
+      B.condBr(present, lRead, lMiss);
+      B.startBlock(lRead);
+      B.condBr(this.isUndefined(B, r), lInherit, lMiss);
+      B.startBlock(lMiss);
       B.terminate(`ret ptr ${r}`);
+      B.startBlock(lInherit);
+      host.declare(`declare ptr @scr_dyn_computed_inherited_read(ptr, ptr, ptr)`);
+      const inherited = B.tmp();
+      B.line(`${inherited} = call ptr @scr_dyn_computed_inherited_read(ptr %d, ptr %k, ptr ${r})`);
+      B.terminate(`ret ptr ${inherited}`);
       B.startBlock(lNext);
     }
     // HANDLE: the tag's modeled properties through the installed ops.

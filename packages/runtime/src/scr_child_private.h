@@ -49,7 +49,25 @@ struct ScrChild {
   size_t n_spawn, cap_spawn;
   bool has_code;
   bool killed;
+  /* exec/execFile's timeout (scr_exec_file_opts): the deadline on the
+   * loop's clock (0 = none), the resolved signal to send there, and
+   * whether it fired. */
+  double deadline_ms;
+  int deadline_signo;
+  bool deadline_fired;
   bool reffed;
+  /* spawn's `signal` (cp.spawnArmed): the AbortSignal (+1) while the
+   * subscription lives, its disposer (+1) when one is registered, and
+   * whether the signal was already aborted when the child started. */
+  ScrDyn *abort_signal;
+  ScrDyn *abort_dispose;
+  bool abort_pre;   /* aborted before spawn(): the abort runs after 'spawn' */
+  bool abort_fired; /* the abort listener's kill and 'error' ran */
+  int kill_signo;   /* the resolved killSignal (SIGTERM default) */
+  /* Node's Control object keeps the IPC channel handle in or out of the
+   * loop's keep-alive set (subprocess.channel.ref()/.unref()); the process
+   * handle above stays independent of it. */
+  bool channel_reffed;
   int spawn_uv_errno;       /* spawn failure: Node's exitCode (negative) */
   const char *spawn_errname; /* spawn failure: the `code` stamp */
   double code;
@@ -69,11 +87,18 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   ScrChildStream *out_stream;
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
@@ -111,7 +136,24 @@ struct ScrChild {
   bool unwatched; /* no kqueue NOTE_EXIT armed: the loop must poll for it */
   bool has_code;
   bool killed;    /* a kill() successfully sent a signal (Node's flag) */
+  /* exec/execFile's timeout (scr_exec_file_opts): the deadline on the
+   * loop's clock (0 = none), the resolved signal to send there, and
+   * whether it fired. */
+  double deadline_ms;
+  int deadline_signo;
+  bool deadline_fired;
   bool reffed;    /* keeps the loop alive; unref() clears it (Node) */
+  /* spawn's `signal` (cp.spawnArmed): the AbortSignal (+1) while the
+   * subscription lives, its disposer (+1) when one is registered, and
+   * whether the signal was already aborted when the child started. */
+  ScrDyn *abort_signal;
+  ScrDyn *abort_dispose;
+  bool abort_pre;   /* aborted before spawn(): the abort runs after 'spawn' */
+  bool abort_fired; /* the abort listener's kill and 'error' ran */
+  int kill_signo;   /* the resolved killSignal (SIGTERM default) */
+  /* The IPC channel's own keep-alive state (Node's Control): channel
+   * .ref()/.unref() move this, never `reffed`. */
+  bool channel_reffed;
   int spawn_errno; /* spawn failure only: Node's exitCode is -errno there */
   double code;
   /* Signal death only: the terminating signal's name (static storage) —
@@ -131,6 +173,9 @@ struct ScrChild {
   ScrArr *exec_args; /* a spawn failure's path and spawnargs */
   ScrStr *spawnfile; /* ChildProcess.spawnfile: the file that was spawned */
   ScrArr *spawnargs; /* ChildProcess.spawnargs: the file followed by its arguments */
+  /* ChildProcess.stdio's array (+1): built on the first read and answered
+   * by every later one, as Node's ChildProcess keeps one array per child. */
+  ScrArr *stdio_array;
   void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
   /* Piped stdio (stdio mode 3): the stream handles child.stdout /
    * child.stderr answer — owned (+1 each), NULL when not piped. */
@@ -138,6 +183,10 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
+   * the channel was made (a fork that failed to spawn keeps stdio's fourth
+   * entry). */
+  bool ipc_slot;
   struct ScrIpc *ipc;
   /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
    * a store): 'spawn', 'error', 'exit' and 'close' run in it. */

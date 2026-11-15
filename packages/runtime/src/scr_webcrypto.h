@@ -60,6 +60,9 @@ typedef struct {
   ScrPromise *(*sign)(const ScrDyn *args);
   ScrPromise *(*verify)(const ScrDyn *args);
   bool (*is_key)(const ScrDyn *value);
+  /* An asymmetric key's private/public pair member: true for the private
+   * key. node:crypto's key type error names the member. */
+  bool (*key_is_private)(const ScrDyn *value);
 } ScrWcAsymmetric;
 
 extern const ScrWcAsymmetric *scr_wc_asymmetric;

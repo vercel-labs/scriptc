@@ -1,6 +1,16 @@
 import { keyedHelperName } from "../stable-names.js";
-import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { spellsInertValue } from "../builtin-member-writes.js";
+import { isJsSourceFile } from "../../program.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import { knownBufEncoding } from "../containers/bytes.js";
 import { type Lowerer } from "../lowerer.js";
 import {
@@ -8,7 +18,9 @@ import {
   BYTES_U8,
   DYN,
   F64,
+  NULL_T,
   type IrExpr,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   STRING,
@@ -16,8 +28,51 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  sortArms,
   typeKey,
 } from "../../../ir/ir.js";
+
+/** `UserInfo` as @types/node declares it (the mapper intern keys and
+ * declared order): the record os.userInfo() answers even when the checker
+ * could not tie an untyped JavaScript call to that declaration. */
+function canonicalUserInfoType(lowerer: Lowerer, bytes: boolean): IrType & { kind: "record" } {
+  const text = bytes ? BYTES_U8 : STRING;
+  const shell: IrType = bytes
+    ? BYTES_U8
+    : { kind: "union", unionId: lowerer.unions.intern(sortArms([NULL_T, STRING])) };
+  return {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(
+      [
+        { name: "gid", type: F64 },
+        { name: "homedir", type: text },
+        { name: "shell", type: shell },
+        { name: "uid", type: F64 },
+        { name: "username", type: text },
+      ],
+      false,
+      undefined,
+      ["uid", "gid", "username", "homedir", "shell"],
+    ),
+  };
+}
+
+/** A non-string encoding value Node's ParseEncoding reads as its utf8
+ * default: null, undefined, and the other primitives (an unknown spelling
+ * never selects a decoder). */
+function absentEncodingValue(lowerer: Lowerer, value: ts.Expression): boolean {
+  return (
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword ||
+    ts.isNumericLiteral(value) ||
+    ts.isBigIntLiteral(value) ||
+    (ts.isIdentifier(value) &&
+      value.text === "undefined" &&
+      (lowerer.isStdlibGlobal(value, "undefined") ||
+        (lowerer.typeOf(value).flags & ts.TypeFlags.Undefined) !== 0))
+  );
+}
 
 /** `os.userInfo()` — the passwd-entry snapshot, Node's uv_os_get_passwd
  * for the effective uid behind the call site's own mapped record shape:
@@ -37,64 +92,219 @@ export function lowerOsUserInfoCall(
   loc: SrcLoc,
 ): IrExpr {
   const args = call.arguments.nodes;
-  if (args.length > 1) {
-    lowerer.noLowering(`userInfo with ${args.length} arguments`, call);
-  }
   // The options object names the encoding Node's binding hands the passwd
   // bytes to StringBytes::Encode: 'buffer' answers the three strings as
   // Buffers, any other Buffer encoding (aliases and letter case folded)
   // answers the passwd text re-encoded in it, and a spelling Node does not
-  // know reads as utf8 — its ParseEncoding default. The argument must
-  // spell the decision statically: a runtime encoding would make both the
-  // result shape and the decoder depend on the value.
+  // know reads as utf8 — its ParseEncoding default. Node evaluates the
+  // argument at the call site and then reads `options.encoding` off the
+  // object it built, so the argument's own expressions run here in source
+  // order and the last definition of the member decides the record. The
+  // shape must be spelled at compile time: a member whose value (or key)
+  // Node only learns while running the program fences, never reads absent.
   let encoding = "utf8";
-  if (args.length === 1) {
+  const sideEffects: IrExpr[] = [];
+  const evaluate = (node: ts.Expression): void => {
+    if (spellsInertValue(node)) return;
+    const expr = lowerer.lowerExpr(node);
+    // `undefined` and `null` lower to a bare unitLit, which carries no
+    // effect and is not a valid IR expression statement.
+    if (expr.kind === "unitLit") return;
+    sideEffects.push(expr);
+  };
+  if (args.length >= 1) {
+    // Node still reads `options.encoding` off the first argument when the
+    // call passes more; only arguments past it are ignored.
+    if (ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("userInfo with a spread options argument", args[0]!);
+    }
     let options: ts.Expression = args[0]!;
     while (ts.isParenthesizedExpression(options)) options = options.expression;
-    if (!ts.isObjectLiteralExpression(options)) {
+    const runtimeEncoding = (node: ts.Node): never =>
       lowerer.noLowering(
-        "userInfo with a non-literal options object",
-        call,
-        "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
+        "userInfo with a runtime encoding",
+        node,
+        "the encoding must be the literal 'buffer' or a non-buffer string literal in an options object spelled at the call site",
+      );
+    /** The property key a member's name spells, or `undefined` when only
+     * the program can compute it. `run` is the expression a computed name
+     * evaluates at the call site beyond a literal the source spells. */
+    const staticKey = (name: ts.PropertyName): { key: string | undefined; run?: ts.Expression } => {
+      if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return { key: name.text };
+      if (ts.isNumericLiteral(name)) return { key: String(Number(name.text)) };
+      if (!ts.isComputedPropertyName(name)) return { key: undefined };
+      let expr: ts.Expression = name.expression;
+      while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+      if (ts.isStringLiteralLike(expr)) return { key: expr.text };
+      if (ts.isNumericLiteral(expr)) return { key: String(Number(expr.text)) };
+      // A computed key whose expression the checker pinned to a literal:
+      // ToPropertyKey answers that spelling, and the expression still runs.
+      const t = lowerer.typeOf(expr);
+      if ((t.flags & ts.TypeFlags.StringLiteral) !== 0)
+        return { key: (t as ts.StringLiteralType).value, run: expr };
+      if ((t.flags & ts.TypeFlags.NumberLiteral) !== 0)
+        return { key: String((t as ts.NumberLiteralType).value), run: expr };
+      return { key: undefined };
+    };
+    const encodingOf = (text: string): string =>
+      text.toLowerCase() === "buffer" ? "buffer" : (knownBufEncoding(text) ?? "utf8");
+    // Node reads `options.encoding` only when the argument is an object
+    // (every other value is replaced with null and answers the default utf8
+    // record), but the argument itself is always evaluated, so its effects
+    // stay. A declared type that may carry an encoding member makes the
+    // decoder a runtime choice, so it keeps the fence.
+    if (!ts.isObjectLiteralExpression(options)) {
+      const t = lowerer.typeOf(options);
+      if (
+        (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0 ||
+        lowerer.checker.getPropertyOfType(t, "encoding") !== undefined
+      )
+        runtimeEncoding(options);
+      evaluate(options);
+    } else {
+      // Walk the members the way Node builds the object: every computed key
+      // and property value runs (in source order, before the binding reads
+      // anything), a method or accessor is only defined, and the last
+      // definition of `encoding` is what the binding reads. Another
+      // member's value is dead unless spelling it runs something, so it is
+      // evaluated for its effects and dropped.
+      let decision: { text: string } | { runtime: ts.Node } = { text: "utf8" };
+      // An object literal's accessor pair defines ONE property: a getter
+      // followed by a setter still reads through the getter, so the setter
+      // must not reset the decision to the undefined default. A later data
+      // definition (a method or an ordinary property) replaces the accessor.
+      let getterDecides = false;
+      for (const prop of options.properties.nodes) {
+        if (ts.isSpreadAssignment(prop)) {
+          // The spread copies the source's own properties and reads them at
+          // call time: the encoding can come from the source.
+          lowerer.noLowering(
+            "userInfo options spread from another object",
+            prop,
+            "pass an options object literal with only the encoding property",
+          );
+        }
+        if (ts.isMethodDeclaration(prop)) {
+          // A method's value is a function, never the encoding string; its
+          // body does not run here. An unresolved computed key may name a
+          // member whose value the binding would read.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined) decision = { runtime: prop };
+          else if (k.key === "encoding") decision = { text: "utf8" };
+          if (k.key === undefined || k.key === "encoding") getterDecides = false;
+          continue;
+        }
+        if (ts.isGetAccessorDeclaration(prop)) {
+          // Node reads through the getter: its value is the program's to
+          // compute, and the record's shape depends on it.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined || k.key === "encoding") {
+            decision = { runtime: prop };
+            // An unresolved key may name the encoding member, so a later
+            // setter must not clear the fence either.
+            getterDecides = true;
+          }
+          continue;
+        }
+        if (ts.isSetAccessorDeclaration(prop)) {
+          // A setter-only member reads as undefined: the utf8 default. A
+          // setter placed after the getter completes the same accessor
+          // pair, so the getter still decides what the read answers.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined) {
+            decision = { runtime: prop };
+            getterDecides = false;
+          } else if (k.key === "encoding" && !getterDecides) {
+            decision = { text: "utf8" };
+          }
+          continue;
+        }
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          if (ts.isIdentifier(prop.name) && prop.name.text !== "encoding") {
+            // Node evaluates the variable read; that read is the member's
+            // only effect, and dropping it would drop a dead-zone throw.
+            evaluate(prop.name);
+            continue;
+          }
+          if (!ts.isIdentifier(prop.name)) {
+            decision = { runtime: prop };
+            getterDecides = false;
+            continue;
+          }
+          // The value is the variable's, not a literal spelled here: a
+          // constant whose type pins the spelling reads as that encoding.
+          const t = lowerer.typeOf(prop.name);
+          if ((t.flags & ts.TypeFlags.StringLiteral) !== 0) {
+            evaluate(prop.name);
+            decision = { text: encodingOf((t as ts.StringLiteralType).value) };
+          } else {
+            decision = { runtime: prop };
+          }
+          getterDecides = false;
+          continue;
+        }
+        if (!ts.isPropertyAssignment(prop)) {
+          lowerer.noLowering(
+            "userInfo options beyond a plain encoding property",
+            prop,
+            "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
+          );
+        }
+        const k = staticKey(prop.name);
+        if (k.run) evaluate(k.run);
+        if (k.key === undefined) {
+          // Whether the run-time key names `encoding` is the program's to
+          // decide.
+          evaluate(prop.initializer);
+          decision = { runtime: prop };
+          getterDecides = false;
+          continue;
+        }
+        if (k.key !== "encoding") {
+          // Node never reads another member; evaluating the initializer
+          // keeps the effects spelling it runs.
+          evaluate(prop.initializer);
+          continue;
+        }
+        let value: ts.Expression = prop.initializer;
+        while (ts.isParenthesizedExpression(value)) value = value.expression;
+        getterDecides = false;
+        if (ts.isStringLiteralLike(value)) {
+          decision = { text: encodingOf(value.text) };
+        } else {
+          const t = lowerer.typeOf(value);
+          if ((t.flags & ts.TypeFlags.StringLiteral) !== 0) {
+            // A constant whose type pins the spelling: the binding reads
+            // that string, and the read itself is evaluated.
+            evaluate(value);
+            decision = { text: encodingOf((t as ts.StringLiteralType).value) };
+          } else if (absentEncodingValue(lowerer, value)) {
+            // null, undefined and the other non-strings are ParseEncoding's
+            // utf8 default.
+            decision = { text: "utf8" };
+          } else {
+            decision = { runtime: prop };
+          }
+        }
+      }
+      if ("runtime" in decision) runtimeEncoding(decision.runtime);
+      else encoding = decision.text;
+    }
+  }
+  // Arguments past the options object are ignored, but a JavaScript caller
+  // still evaluates them — after the options object, as the call site does.
+  for (const extra of args.slice(1)) {
+    if (ts.isSpreadElement(extra)) {
+      lowerer.noLowering(
+        "a spread argument past the userInfo options",
+        extra,
+        "write the ignored arguments out positionally",
       );
     }
-    let encodingExpr: ts.Expression | undefined;
-    for (const prop of options.properties.nodes) {
-      if (
-        !ts.isPropertyAssignment(prop) ||
-        !ts.isIdentifier(prop.name) ||
-        prop.name.text !== "encoding"
-      ) {
-        lowerer.noLowering(
-          "userInfo options beyond a plain encoding property",
-          prop,
-          "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
-        );
-      }
-      encodingExpr = prop.initializer;
-    }
-    if (encodingExpr !== undefined) {
-      let value: ts.Expression = encodingExpr;
-      while (ts.isParenthesizedExpression(value)) value = value.expression;
-      if (ts.isStringLiteralLike(value)) {
-        encoding =
-          value.text.toLowerCase() === "buffer"
-            ? "buffer"
-            : (knownBufEncoding(value.text) ?? "utf8");
-      } else if (
-        !(
-          ts.isIdentifier(value) &&
-          value.text === "undefined" &&
-          lowerer.isStdlibGlobal(value, "undefined")
-        )
-      ) {
-        lowerer.noLowering(
-          "userInfo with a runtime encoding",
-          encodingExpr,
-          "the encoding must be the literal 'buffer' or a non-buffer string literal",
-        );
-      }
-    }
+    evaluate(extra);
   }
   const fence: () => never = () =>
     lowerer.noLowering(
@@ -102,13 +312,49 @@ export function lowerOsUserInfoCall(
       call,
       "{ username, uid, gid, shell, homedir } is the supported result shape",
     );
-  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (result?.kind !== "record") fence();
+  const isBytes = (t: IrType): boolean => t.kind === "bytes" && t.elem === "u8";
+  const buffer = encoding === "buffer";
+  const canonical = () => canonicalUserInfoType(lowerer, buffer);
+  /** Whether a record shape's text fields are the ones this encoding
+   * answers: Buffers for the Buffer form, strings (shell nullable)
+   * otherwise. */
+  const encodesAs = (shape: IrRecordShape): boolean =>
+    shape.fields.every((f) => {
+      if (f.name === "uid" || f.name === "gid") return f.type.kind === "f64";
+      if (buffer) return isBytes(f.type);
+      if (f.type.kind === "string") return true;
+      return (
+        f.name === "shell" && f.type.kind === "union" && lowerer.armTag(f.type.unionId, STRING) >= 0
+      );
+    });
+  const jsCall = isJsSourceFile(ts.getSourceFileOfNode(call));
+  /** The record the call's result type names. An untyped JavaScript call
+   * whose overloads the checker could not tie to a UserInfo type (an
+   * options object with extra members, a non-object argument — Node accepts
+   * both) still answers Node's record, so the canonical shape stands in for
+   * the missing type; an intersection of the overloads' result types maps
+   * to nothing, so both "the mapper declined" (null) and "no IR type"
+   * (undefined) count. The encoding decides what the fields hold, and the
+   * checker's overload answer can disagree with it — untyped JavaScript's
+   * "Buffer" spelling resolves to the string record while the binding
+   * answers Buffers — so a JavaScript call takes the canonical record for
+   * the encoding it asked for. A typed call that names another result shape
+   * keeps the fence. */
+  const userInfoRecord = (): IrType & { kind: "record" } => {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (mapped?.kind === "record") {
+      const mappedShape = lowerer.shapes.get(mapped.shapeId);
+      if (!(jsCall && mappedShape && !encodesAs(mappedShape))) return mapped;
+    } else if (mapped !== null && mapped !== undefined) {
+      fence();
+    }
+    if (jsCall) return canonical();
+    return fence();
+  };
+  const result = userInfoRecord();
   const shape = lowerer.shapes.get(result.shapeId);
   if (!shape || shape.tuple || shape.indexValue || shape.fields.length === 0) fence();
   const fields: { name: string; value: IrExpr }[] = [];
-  const isBytes = (t: IrType): boolean => t.kind === "bytes" && t.elem === "u8";
-  const buffer = encoding === "buffer";
   const textField = (
     fn: "os.userName" | "os.userHomedir" | "os.userShell",
     bufferFn: "os.userNameBuf" | "os.userHomedirBuf" | "os.userShellBuf",
@@ -173,6 +419,7 @@ export function lowerOsUserInfoCall(
   return {
     kind: "seqExpr",
     stmts: [
+      ...sideEffects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc: expr.loc })),
       {
         kind: "exprStmt",
         expr: { kind: "libCall", fn: "os.userInfoBegin", args: [], type: VOID, loc },
@@ -190,13 +437,6 @@ export function lowerOsNetworkInterfacesCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.nodes.length !== 0) {
-    lowerer.noLowering(
-      `networkInterfaces with ${call.arguments.nodes.length} arguments`,
-      call,
-      "networkInterfaces() takes no arguments",
-    );
-  }
   // Annotated as a never-returning const so tsc's control flow narrows
   // through the structural checks below.
   const fence: () => never = () =>
@@ -265,7 +505,13 @@ export function lowerOsNetworkInterfacesCall(
     }
   }
   if (!saw4 || !saw6) fence();
-  return { kind: "libCall", fn: "os.networkInterfaces", args: [], type: result, loc };
+  return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+    kind: "libCall",
+    fn: "os.networkInterfaces",
+    args: [],
+    type: result,
+    loc,
+  }));
 }
 
 /** `os.cpus()` — one uv_cpu_info snapshot as the call site's CpuInfo[]:
@@ -274,13 +520,6 @@ export function lowerOsNetworkInterfacesCall(
  * record per CPU from the snapshot accessors, in the mapped shapes' own
  * field order. Other result shapes fence. */
 export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (call.arguments.nodes.length !== 0) {
-    lowerer.noLowering(
-      `cpus with ${call.arguments.nodes.length} arguments`,
-      call,
-      "cpus() takes no arguments",
-    );
-  }
   const fence: () => never = () =>
     lowerer.noLowering(
       "cpus() where the result is not the CpuInfo array",
@@ -403,7 +642,13 @@ export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: 
       loc,
     });
   }
-  return { kind: "call", callee: helper, args: [], type: result, loc };
+  return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+    kind: "call",
+    callee: helper,
+    args: [],
+    type: result,
+    loc,
+  }));
 }
 
 const PATH_FIELDS = ["root", "dir", "base", "ext", "name"];
@@ -633,90 +878,140 @@ export function lowerPathFormatCall(
   return { kind: "call", callee: helper, args: [value], type: STRING, loc };
 }
 
+/** A priority argument for the checked-dynamic form: the boxed value
+ * Node's validateInteger renders, or null when the type cannot enter the
+ * checked-dynamic tree (the caller keeps the checked conversion then). */
+function priorityDynArg(lowerer: Lowerer, value: IrExpr): IrExpr | null {
+  if (value.type.kind === "dyn") return value;
+  if (!lowerer.dynConvertible(value.type)) return null;
+  return { kind: "dynFrom", value, type: DYN, loc: value.loc };
+}
+
 /** `os.setPriority([pid, ]priority)` — the one-argument form is pid 0
  * (Node's `if (priority === undefined) { priority = pid; pid = 0; }`);
- * the runtime validates both. */
+ * the runtime validates both. Arguments past the pair only evaluate. */
 export function lowerOsSetPriorityCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = call.arguments.nodes;
-  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
-    lowerer.noLowering(
-      "setPriority with these arguments",
-      call,
-      "setPriority(priority) or setPriority(pid, priority) takes numbers",
+  const all = call.arguments.nodes;
+  if (all.some(ts.isSpreadElement)) {
+    lowerer.noLowering("setPriority with spread arguments", call);
+  }
+  const args = all.slice(0, 2);
+  const surplus = all.slice(2);
+  const finish = (used: readonly IrExpr[], build: (args: IrExpr[]) => IrExpr): IrExpr =>
+    withIgnoredArguments(lowerer, used, surplus, build);
+  if (args.length === 0) {
+    // Node's own `if (priority === undefined)` branch reads the missing
+    // argument as undefined and validateInteger throws on it.
+    return nodeThrowExpr(
+      1,
+      "ERR_INVALID_ARG_TYPE",
+      'The "priority" argument must be of type number. Received undefined',
+      VOID,
+      loc,
     );
   }
-  const [pid, priority] =
-    args.length === 1
-      ? [numLit(0, loc), lowerer.lowerExprExpecting(args[0]!, F64)]
-      : [lowerer.lowerExprExpecting(args[0]!, F64), lowerer.lowerExprExpecting(args[1]!, F64)];
-  return { kind: "libCall", fn: "os.setPriority", args: [pid, priority], type: VOID, loc };
+  // The arguments evaluate in source order, before the call — the same
+  // order Node's own parameter evaluation uses.
+  const values = args.map((arg) => lowerer.lowerExpr(arg));
+  if (values.every((value) => value.type.kind === "f64")) {
+    return finish(values, (staged) => ({
+      kind: "libCall",
+      fn: "os.setPriority",
+      args: staged.length === 1 ? [numLit(0, loc), staged[0]!] : [staged[0]!, staged[1]!],
+      type: VOID,
+      loc,
+    }));
+  }
+  // An argument that is not statically a number (untyped JavaScript's
+  // strings, booleans and objects, and values only the runtime knows):
+  // Node's own ladder runs at run time — a missing or undefined priority
+  // selects the one-argument form, validateInteger renders its Received
+  // tail from the value itself, and a valid number still sets the
+  // priority.
+  const dyns = values.map((value) => priorityDynArg(lowerer, value));
+  if (dyns.every((dyn) => dyn !== null)) {
+    const used = [dyns[0]!, dyns[1] ?? dynUndefinedExpr(loc)];
+    return finish(used, (staged) => ({
+      kind: "libCall",
+      fn: "os.setPriorityChk",
+      args: [staged[0]!, staged[1] ?? dynUndefinedExpr(loc)],
+      type: VOID,
+      loc,
+    }));
+  }
+  // A value outside the checked-dynamic tree: the usual checked
+  // conversion, which raises its own TypeError for a non-number.
+  const coerce = (value: IrExpr): IrExpr => lowerer.coerceToExpected(value, F64);
+  return finish(values, (staged) => ({
+    kind: "libCall",
+    fn: "os.setPriority",
+    args:
+      staged.length === 1
+        ? [numLit(0, loc), coerce(staged[0]!)]
+        : [coerce(staged[0]!), coerce(staged[1]!)],
+    type: VOID,
+    loc,
+  }));
 }
 
 /** `os.getPriority(pid?)` — an omitted or undefined pid is 0 (Node's
- * `if (pid === undefined) pid = 0`); the runtime validates the rest. */
+ * default parameter); the runtime validates the rest. Arguments past the
+ * pid only evaluate. */
 export function lowerOsGetPriorityCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
   const arg = call.arguments.nodes[0];
-  if (call.arguments.nodes.length > 1 || (arg && ts.isSpreadElement(arg))) {
-    lowerer.noLowering(
-      "getPriority with these arguments",
-      call,
-      "getPriority(pid?) takes one number",
-    );
+  if (arg !== undefined && ts.isSpreadElement(arg)) {
+    lowerer.noLowering("getPriority with spread arguments", call);
   }
-  let pid: IrExpr = numLit(0, loc);
-  if (arg) {
-    const value = lowerer.lowerExpr(arg);
-    if (value.type.kind === "f64") {
-      pid = value;
-    } else if (
-      value.type.kind === "union" &&
-      lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
-      lowerer.armTag(value.type.unionId, F64) >= 0 &&
-      lowerer.unions.get(value.type.unionId)?.arms.length === 2
-    ) {
-      const unionId = value.type.unionId;
-      const temp = lowerer.declareHiddenLocal("%pid", value.type);
-      const ref = varRef(temp.id, value.type, loc);
-      pid = {
-        kind: "seqExpr",
-        stmts: [{ kind: "varDecl", localId: temp.id, init: value, loc }],
-        result: {
-          kind: "ternary",
-          cond: {
-            kind: "unionIsTag",
-            unionId,
-            tag: lowerer.armTag(unionId, UNDEFINED_T),
-            negated: false,
-            value: ref,
-            type: BOOL,
-            loc,
-          },
-          then: numLit(0, loc),
-          else_: {
-            kind: "unionNarrow",
-            unionId,
-            tag: lowerer.armTag(unionId, F64),
-            value: ref,
-            type: F64,
-            loc,
-          },
-          type: F64,
-          loc,
-        },
-        type: F64,
-        loc,
-      };
-    } else {
-      pid = lowerer.lowerExprExpecting(arg, F64);
+  const surplus = call.arguments.nodes.slice(1);
+  const direct = (pid: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "os.getPriority",
+    args: [pid],
+    type: F64,
+    loc,
+  });
+  const finish = (used: IrExpr, build: (staged: IrExpr) => IrExpr): IrExpr =>
+    withIgnoredArguments(lowerer, [used], surplus, ([staged]) => build(staged!));
+  if (!arg) return direct(numLit(0, loc));
+  const value = lowerer.lowerExpr(arg);
+  if (value.type.kind === "f64") return finish(value, direct);
+  if (value.type.kind === "undefinedT") {
+    // Node's default parameter: an undefined pid reads the current
+    // process's priority (pid 0). The expression still evaluates — but a
+    // bare unitLit has no effect and is not a valid IR statement, so it
+    // is dropped rather than staged.
+    const query = direct(numLit(0, loc));
+    if (value.kind === "unitLit") {
+      return withIgnoredArguments(lowerer, [], surplus, () => query);
     }
+    return finish(value, (staged) => ({
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: staged, loc }],
+      result: query,
+      type: F64,
+      loc,
+    }));
   }
-  return { kind: "libCall", fn: "os.getPriority", args: [pid], type: F64, loc };
+  // Anything else (a string, a boolean, an object, a value only the
+  // runtime knows): Node's validateInteger runs in the runtime, which
+  // renders its type error from the value itself.
+  const dyn = priorityDynArg(lowerer, value);
+  if (dyn) {
+    return withIgnoredArguments(lowerer, [dyn], surplus, ([staged]) => ({
+      kind: "libCall",
+      fn: "os.getPriorityChk",
+      args: [staged!],
+      type: F64,
+      loc,
+    }));
+  }
+  return finish(value, (staged) => direct(lowerer.coerceToExpected(staged, F64)));
 }

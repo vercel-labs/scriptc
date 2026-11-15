@@ -29,6 +29,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
+import { icuAvailable } from "./icu.js";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
@@ -194,11 +195,6 @@ function wantsNoDeprecation(file: string): boolean {
  * refuses the forms there with SC3002. */
 function requiresIcu(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
-}
-
-/** Whether this machine's runtime pack can link ICU (see requiresIcu). */
-function icuAvailable(): boolean {
-  return process.platform === "linux" && process.arch === "x64";
 }
 
 /** `// @skip-darwin` in the directive head: the Node oracle itself does not

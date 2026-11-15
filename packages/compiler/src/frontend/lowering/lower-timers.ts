@@ -257,6 +257,43 @@ export function timerStyleCallback(
     : adaptZeroArgTimerCallback(lowerer, lowerer.lowerExpr(callArgs[0]!), callArgs[0]!, loc);
 }
 
+/** The callback turn shared by the timer surfaces that validate their
+ * callback synchronously at the call (setImmediate's lowering inline and
+ * process.nextTick's): adapt the callback and its trailing arguments, and
+ * when the runtime has to validate the value, run the gate between the
+ * argument evaluation and the call itself. `call` builds the scheduling
+ * call over the adapted callback; the result is its expression, wrapped in
+ * the gate's sequence when the gate runs. */
+export function checkedTimerStyleCallback(
+  lowerer: Lowerer,
+  callArgs: readonly ts.Expression[],
+  what: string,
+  loc: SrcLoc,
+  call: (cb: IrExpr) => IrExpr,
+): IrExpr {
+  const cbNode = callArgs[0]!;
+  const trailing = callArgs.slice(1);
+  const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+  const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+  const cbValue = retained ? (trailing.length > 0 ? retained.value : retained.callback) : cbLowered;
+  let cb =
+    trailing.length > 0
+      ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, what, loc)
+      : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc);
+  if (!retained) return call(cb);
+  // The gate follows the callback and its trailing arguments — the only
+  // other expressions the call evaluates.
+  const preStmts: IrStmt[] = [...retained.hold];
+  if (trailing.length > 0) {
+    const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+    preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+    cb = varRef(held.id, cb.type, loc);
+  }
+  preStmts.push(timerCallbackCheck(retained.value, loc));
+  const result = call(cb);
+  return { kind: "seqExpr", stmts: preStmts, result, type: result.type, loc };
+}
+
 function makeTimerArgsThunk(
   lowerer: Lowerer,
   cbLowered: IrExpr,

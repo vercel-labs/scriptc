@@ -74,14 +74,14 @@ export interface WalkerHost extends ShapeHost {
     className: string,
     field: { name: string; type: IrType },
   ): { value: string; release: string | null };
-  /** i1: the instance's property bag holds something past the layout, or
-   * null when the class has no bag. */
-  jsonClassBagHeld(B: BlockBuilder, obj: string, className: string): string | null;
   /** Whether the class's layout describes its instances exactly (its
    * jsonLayout flag and the class graph agree). */
   jsonClassReadsLayout(className: string): boolean;
   /** Writes the instance with the runtime walk, from its live capsule. */
   jsonClassDynWrite(B: BlockBuilder, buf: string, obj: string, className: string): void;
+  /** `@`-ref of the checked-dynamic converter for `t`: returns an owned
+   * (+1) box of the value. */
+  toDynHelper(t: IrType): string;
 }
 
 const FN_ATTRS = "#0";
@@ -233,6 +233,22 @@ export class LlWalkers {
 
   /* ── type-directed JSON serializers (jsonWriteHelper, ported) ─────────── */
 
+  /** Whether the writer for `t` takes the nesting depth of the value it
+   * serializes. Every container takes it so a value graph deeper than the
+   * runtime walk's limit raises Node's catchable RangeError instead of
+   * exhausting the native stack; a union forwards it to the arm that
+   * matches. Leaves cannot recurse, so they take no depth. */
+  jsonWriteTakesDepth(t: IrType): boolean {
+    return t.kind === "record" || t.kind === "object" || t.kind === "array" || t.kind === "union";
+  }
+
+  /** The `, size depth` argument of a call to `t`'s writer, or nothing when
+   * the writer takes no depth (a leaf). The root site passes 0; a container
+   * writer passes the level of its members. */
+  jsonWriteDepthArg(t: IrType, depth: string | null): string {
+    return this.jsonWriteTakesDepth(t) ? `, ${this.S} ${depth ?? "0"}` : "";
+  }
+
   jsonWriteHelper(t: IrType): string {
     const key = typeKey(t);
     const existing = this.jsonWriters.get(key);
@@ -241,6 +257,27 @@ export class LlWalkers {
     this.jsonWriters.set(key, name);
     this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
+    const takesDepth = this.jsonWriteTakesDepth(t);
+    // The runtime's own walk (scr_json_callback_depth) bounds nesting at
+    // SCR_JSON_MAX_DEPTH = 1000, throwing Node's catchable RangeError. The
+    // emitted writers must do the same: a long chain of distinct instances
+    // (or an acyclic-but-deep value graph the collector analysis cannot
+    // call a cycle) otherwise recurses until the native stack ends the
+    // process. `%d` is the value's level, so a chain of 1001 containers
+    // (levels 0..1000) develops before the check trips, exactly the depth
+    // the runtime walk allows.
+    if (takesDepth) {
+      const over = B.newLabel("jw.deep");
+      const ok = B.newLabel("jw.ok");
+      const too = B.tmp();
+      B.line(`${too} = icmp ugt ${this.S} %d, 1000`);
+      B.condBr(too, over, ok);
+      B.startBlock(over);
+      this.host.declare(`declare void @scr_stack_overflow()`);
+      B.line(`call void @scr_stack_overflow() ; Maximum call stack size exceeded`);
+      B.terminate("ret void");
+      B.startBlock(ok);
+    }
     switch (t.kind) {
       case "f64":
         this.host.declare(`declare void @scr_jb_put_f64(ptr, double)`);
@@ -279,16 +316,18 @@ export class LlWalkers {
         B.line(`call void @scr_jb_put_dyn(ptr %b, ptr %v)`);
         break;
       case "record":
-        this.emitRecordWriter(B, t.shapeId);
+        this.emitRecordWriter(B, t.shapeId, "%d");
         break;
       case "object":
-        this.emitClassWriter(B, t.className);
+        this.emitClassWriter(B, t.className, "%d");
         break;
       case "array":
-        this.emitArrayWriter(B, t.elem, traceAdapter(this.host, t) !== null);
+        this.emitArrayWriter(B, t.elem, traceAdapter(this.host, t) !== null, "%d");
         break;
       case "union":
-        this.emitUnionWriter(B, t.unionId);
+        // A union is not itself a JSON container: its arm carries the
+        // value at the union's own level.
+        this.emitUnionWriter(B, t.unionId, "%d");
         break;
       case "map":
       case "set":
@@ -306,7 +345,7 @@ export class LlWalkers {
     }
     B.terminate("ret void");
     this.defs.push(
-      `define internal void @${name}(ptr %b, ${this.valTy(t)} %v) ${FN_ATTRS} { ; stringify ${key}`,
+      `define internal void @${name}(ptr %b, ${this.valTy(t)} %v${takesDepth ? `, ${this.S} %d` : ""}) ${FN_ATTRS} { ; stringify ${key}`,
       B.render(),
       `}`,
       ``,
@@ -365,7 +404,7 @@ export class LlWalkers {
     return b;
   }
 
-  private emitRecordWriter(B: BlockBuilder, shapeId: string): void {
+  private emitRecordWriter(B: BlockBuilder, shapeId: string, depth: string): void {
     const shape = this.host.recordsById.get(shapeId);
     if (!shape)
       throw new InternalCompilerError(
@@ -373,7 +412,9 @@ export class LlWalkers {
       );
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
-    this.emitLinkedRecordWriter(B, shapeId);
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
+    this.emitLinkedRecordWriter(B, shapeId, depth);
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -390,7 +431,12 @@ export class LlWalkers {
         if (i > 0) this.putc(B, "%b", "44"); // ','
         if (edgeable(f.type)) this.jbEdgeIdx(B, String(i));
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`);
+        // A tuple slot keeps the array rule for a value the runtime walk
+        // handles: its toJSON runs with the index as the key and an
+        // undefined result is written `null`.
+        if (this.serializationMayCallUserCode(f.type))
+          this.emitRuntimeElement(B, v, f.type, f64Lit(i));
+        else this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`, member);
       });
       this.putc(B, "%b", "93"); // ']'
       if (cyclic) this.jbLeave(B);
@@ -420,19 +466,25 @@ export class LlWalkers {
         .map((n) => byName.get(n))
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
+      const runtimeMember = (f: { type: IrType }): boolean =>
+        this.serializationMayCallUserCode(f.type);
       const droppable =
         emitFields.some(
           (f) =>
             undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
             (f.optional === true && f.type.kind === "dyn"),
-        ) || !!shape.indexValue;
+        ) ||
+        !!shape.indexValue ||
+        // The runtime member walk owns the comma: it must not run between
+        // statically written commas, or after one.
+        emitFields.some(runtimeMember);
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
         emitFields.forEach((f, i) => {
           this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
           const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`, member);
         });
       } else {
         const first = B.slot();
@@ -473,16 +525,25 @@ export class LlWalkers {
             B.condBr(isa, skip, lw);
             B.startBlock(lw);
           }
-          comma();
-          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
-          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+          if (runtimeMember(f)) {
+            // The value may be written by the runtime walk (a class that
+            // gained a property bag, a checked-dynamic value, a foreign
+            // element). It owns the comma and the key so an omitted member
+            // leaves the buffer untouched.
+            this.emitRuntimeMember(B, v, f.type, f.name, first, "%v");
+          } else {
+            comma();
+            this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+            if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+            this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`, member);
+          }
           if (skip !== null) {
             B.br(skip);
             B.startBlock(skip);
           }
         }
-        if (shape.indexValue) this.emitOverflowEntries(B, shape, first, edgeable(shape.indexValue));
+        if (shape.indexValue)
+          this.emitOverflowEntries(B, shape, first, member, edgeable(shape.indexValue));
       }
     });
     this.putc(B, "%b", "125"); // '}'
@@ -491,40 +552,37 @@ export class LlWalkers {
 
   /** A class instance whose own properties the static layout describes
    * exactly serializes from its slots, in the order the runtime walk lists
-   * them. The bag test runs first: an instance holding anything past the
-   * layout (a property taken through an untyped reference, a tracked
-   * class's field record, a deletion) keeps the runtime walk from its live
-   * capsule, which always answers. Any other class instance is written that
-   * way unconditionally. */
-  private emitClassWriter(B: BlockBuilder, className: string): void {
+   * them. The class graph decides: a class that gained a property bag or
+   * field attributes after the frontend admitted it is written by the
+   * runtime walk instead (jsonClassReadsLayout), and a member or element
+   * whose own class did so is written by the runtime walk at its position
+   * (emitRuntimeMember / emitRuntimeElement), so its hook runs with the
+   * right key and an omitted member drops. */
+  private emitClassWriter(B: BlockBuilder, className: string, depth: string): void {
     const host = this.host;
     if (!host.jsonClassReadsLayout(className)) {
       host.jsonClassDynWrite(B, "%b", "%v", className);
       return;
     }
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
     const t: Extract<IrType, { kind: "object" }> = { kind: "object", className };
     const fields = host.jsonClassFields(className);
     const cyclic = traceAdapter(host, t) !== null;
     const edgeable = (ft: IrType): boolean => cyclic && traceAdapter(host, ft) !== null;
-    const bag = host.jsonClassBagHeld(B, "%v", className);
-    if (bag !== null) {
-      const lFast = B.newLabel("jcl.f");
-      const lBag = B.newLabel("jcl.b");
-      B.condBr(bag, lBag, lFast);
-      B.startBlock(lBag);
-      host.jsonClassDynWrite(B, "%b", "%v", className);
-      B.terminate("ret void");
-      B.startBlock(lFast);
-    }
+    const runtimeMember = (f: { type: IrType }): boolean =>
+      this.serializationMayCallUserCode(f.type);
     // CYCLE-CAPABLE instances bracket the walk exactly like records.
     if (cyclic) this.jbEnter(B, false);
-    const droppable = fields.some((f) => undefinedArmTag(f.type, host.unionsById) >= 0);
+    const droppable =
+      fields.some((f) => undefinedArmTag(f.type, host.unionsById) >= 0) ||
+      fields.some(runtimeMember);
     this.putc(B, "%b", "123"); // '{'
     if (!droppable) {
       fields.forEach((f, i) => {
         this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
         if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-        this.writeClassField(B, className, f);
+        this.writeClassField(B, className, f, member);
       });
     } else {
       const first = B.slot();
@@ -563,10 +621,18 @@ export class LlWalkers {
           B.condBr(isu, skip, lw);
           B.startBlock(lw);
         }
-        comma();
-        this.puts(B, "%b", jsonObjectKeyLabel(f.name));
-        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-        this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`);
+        if (runtimeMember(f)) {
+          // The value's class took the runtime walk after the frontend
+          // admitted it, or its serialization may call user code: the
+          // runtime member walk runs its toJSON with this field's key and
+          // drops an omitted member.
+          this.emitRuntimeMember(B, read.value, f.type, f.name, first, "%v");
+        } else {
+          comma();
+          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+          this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`, member);
+        }
         // Released once, at the join both arms reach: a present nullable
         // class reference's union box is owned by this read, and the
         // undefined arm owns the unit box it was given — releasing twice
@@ -588,22 +654,26 @@ export class LlWalkers {
     B: BlockBuilder,
     className: string,
     f: { name: string; type: IrType },
+    depth: string,
   ): void {
     if (f.type.kind === "nullT") {
       this.puts(B, "%b", "null");
       return;
     }
     const read = this.host.jsonClassFieldRead(B, "%v", className, f);
-    this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`);
+    this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`, depth);
     if (read.release !== null) B.line(read.release);
   }
 
   /** A record copy linked to its source (IrModule.recordLinks) serializes
    * as its composed record, a record of the source's type with the copy's
    * values for the fields both declare. */
-  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string): void {
+  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string, depth: string): void {
     emitLinkedRecordBranches(this.host, B, shapeId, "%v", (sourceT, composed) => {
-      B.line(`call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed})`);
+      // The composed record is the same value at the same nesting level.
+      B.line(
+        `call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed}${this.jsonWriteDepthArg(sourceT, depth)})`,
+      );
       return "ret void";
     });
   }
@@ -715,6 +785,22 @@ export class LlWalkers {
         B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
+      if (this.serializationMayCallUserCode(f.type)) {
+        // The value may be written by the runtime walk, which owns the
+        // comma, the key and the member's omission. This callback answers
+        // whether it wrote anything, so the caller's first-member flag
+        // travels through a slot.
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca i1`);
+        B.line(`store i1 %first, ptr ${slot}`);
+        this.emitRuntimeMember(B, v, f.type, fieldName, slot, "%v");
+        const left = B.tmp();
+        const wrote = B.tmp();
+        B.line(`${left} = load i1, ptr ${slot}`);
+        B.line(`${wrote} = xor i1 ${left}, true`);
+        B.terminate(`ret i1 ${wrote}`);
+        return;
+      }
       const lComma = B.newLabel("jwf.comma");
       const lKey = B.newLabel("jwf.key");
       B.condBr("%first", lKey, lComma);
@@ -724,7 +810,7 @@ export class LlWalkers {
       B.startBlock(lKey);
       this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
       if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
-      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`);
+      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`, "0");
       B.terminate("ret i1 true");
     });
     B.startBlock(lSkip);
@@ -739,46 +825,15 @@ export class LlWalkers {
     return name;
   }
 
-  /** Whether the walker for `t` can leave an exception pending: cyclic
-   * values, records serialized through a kept checked source, and
-   * checked-dynamic values (toJSON methods, getters, BigInts), including
-   * the foreign elements of arrays that can hold them. */
-  jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
-    if (traceAdapter(this.host, t) !== null) return true;
-    switch (t.kind) {
-      case "dyn":
-      case "object":
-        // A class instance written from its layout never calls user code,
-        // but an instance holding properties past the layout takes the
-        // runtime walk (toJSON, getters, BigInt), and the class may be
-        // circular.
-        return true;
-      case "array":
-        return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
-      case "union": {
-        // A union can reach itself through an array arm; its other arms
-        // are already being asked.
-        const key = `union:${t.unionId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
-          this.jsonWriteMayThrow(arm, seen),
-        );
-      }
-      case "record": {
-        if (seen.has(t.shapeId)) return false;
-        seen.add(t.shapeId);
-        const shape = this.host.recordsById.get(t.shapeId);
-        if (!shape) return false;
-        if (recordMayKeepSource(shape)) return true;
-        return (
-          shape.fields.some((f) => this.jsonWriteMayThrow(f.type, seen)) ||
-          (shape.indexValue !== undefined && this.jsonWriteMayThrow(shape.indexValue, seen))
-        );
-      }
-      default:
-        return false;
-    }
+  /** Whether the walker for `t` can leave an exception pending. Every
+   * container writer checks its nesting depth and can raise the catchable
+   * RangeError (scr_stack_overflow), and a checked-dynamic value runs
+   * arbitrary user code (toJSON methods, getters, BigInts); the leaves
+   * cannot throw. Cyclic values and kept checked sources throw from inside
+   * a container writer, so they are covered by the first answer too. */
+  jsonWriteMayThrow(t: IrType): boolean {
+    if (this.jsonWriteTakesDepth(t)) return true;
+    return t.kind === "dyn";
   }
 
   /** Overflow entries follow the declared fields, in JS OWN-KEY order
@@ -788,6 +843,7 @@ export class LlWalkers {
     B: BlockBuilder,
     shape: IrRecordShape,
     first: string,
+    depth: string,
     edgeKeys = false,
   ): void {
     const iv = shape.indexValue!;
@@ -864,8 +920,13 @@ export class LlWalkers {
         B.br(next);
         B.startBlock(write);
       }
-      // The comma dance over the shared `first` flag.
-      {
+      if (this.serializationMayCallUserCode(iv)) {
+        // The entry's value may be written by the runtime walk: it owns the
+        // comma, the key and the entry's omission, with the key as the
+        // value's toJSON argument.
+        this.emitRuntimeMemberKeyed(B, val, iv, k, first, "%v");
+      } else {
+        // The comma dance over the shared `first` flag.
         const isf = B.tmp();
         const lcm = B.newLabel("ovf.cm");
         const lj = B.newLabel("ovf.cj");
@@ -876,15 +937,17 @@ export class LlWalkers {
         B.br(lj);
         B.startBlock(lj);
         B.line(`store i1 false, ptr ${first}`);
+        host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
+        B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
+        this.putc(B, "%b", "58"); // ':'
+        if (edgeKeys) {
+          this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
+          B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
+        }
+        B.line(
+          `call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val}${this.jsonWriteDepthArg(iv, depth)})`,
+        );
       }
-      host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
-      B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
-      this.putc(B, "%b", "58"); // ':'
-      if (edgeKeys) {
-        this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
-        B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
-      }
-      B.line(`call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val})`);
       B.line(`call void @scr_str_release(ptr ${k})`);
       if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
     });
@@ -894,26 +957,35 @@ export class LlWalkers {
 
   /** Serializing a value of `t` can call user code that changes the
    * arrays or records holding it: it reaches an array that can hold
-   * foreign elements (their toJSON and getters), or a value whose own
-   * serialization may (a class instance, a checked-dynamic value), in a
-   * program that has foreign elements at all. */
+   * foreign elements (their toJSON and getters), a checked-dynamic value,
+   * or a class instance its writer sends through the runtime walk. The
+   * runtime walk runs `toJSON` and accessors, including ones installed on
+   * an instance after the frontend admitted its class (a property bag) —
+   * that is independent of whether the program holds foreign array
+   * elements, so the answer cannot be gated on them. */
   private serializationMayCallUserCode(t: IrType, seen = new Set<string>()): boolean {
     const host = this.host;
-    if (!host.mayHoldForeign({ kind: "f64" }) && !host.mayHoldForeign({ kind: "string" }))
-      return false;
     const key = typeKey(t);
     if (seen.has(key)) return false;
     seen.add(key);
     switch (t.kind) {
       case "dyn":
-      case "object":
         return true;
+      // A class instance calls user code when its class takes the runtime
+      // walk; a layout writer reads slots and runs nothing.
+      case "object":
+        return !host.jsonClassReadsLayout(t.className);
       case "array":
         return host.mayHoldForeign(t.elem) || this.serializationMayCallUserCode(t.elem, seen);
-      case "record":
-        return (host.recordsById.get(t.shapeId)?.fields ?? []).some((field) =>
-          this.serializationMayCallUserCode(field.type, seen),
+      case "record": {
+        const shape = host.recordsById.get(t.shapeId);
+        if (!shape) return false;
+        return (
+          shape.fields.some((field) => this.serializationMayCallUserCode(field.type, seen)) ||
+          (shape.indexValue !== undefined &&
+            this.serializationMayCallUserCode(shape.indexValue, seen))
         );
+      }
       case "union":
         return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.serializationMayCallUserCode(arm, seen),
@@ -923,19 +995,80 @@ export class LlWalkers {
     }
   }
 
-  /** Write a field value loaded borrowed from its record. When its
-   * serialization can call user code that replaces the field, the value
-   * is held across the write. */
-  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string): void {
+  /** Write a field value loaded borrowed from its record, at nesting level
+   * `depth`. When its serialization can call user code that replaces the
+   * field, the value is held across the write. */
+  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string, depth: string): void {
     const held = isRefCounted(t) && this.serializationMayCallUserCode(t);
     if (held) B.line(`call ptr ${retainSym(this.host, t)}(ptr ${v})`);
-    B.line(`call void @${this.jsonWriteHelper(t)}(ptr %b, ${this.valTy(t)} ${v}) ; ${comment}`);
+    const w = this.jsonWriteHelper(t);
+    B.line(
+      `call void @${w}(ptr %b, ${this.valTy(t)} ${v}${this.jsonWriteDepthArg(t, depth)}) ; ${comment}`,
+    );
     if (held) B.line(`call void ${releaseSym(this.host, t)}(ptr ${v})`);
   }
 
-  private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean): void {
+  /** Writes one OBJECT member (`name`) whose value may be serialized by
+   * the runtime walk: the comma, the key, the value's `toJSON` with that
+   * key, and the written value, dropping the member when the hook answers
+   * undefined. `first` is the writer's first-member flag slot (the runtime
+   * owns the comma so an omitted member leaves no trace); `rec` is the
+   * container the member belongs to, already on the circular-detection
+   * stack when the writer pushed it. */
+  private emitRuntimeMember(
+    B: BlockBuilder,
+    v: string,
+    t: IrType,
+    name: string,
+    first: string,
+    rec: string | null,
+  ): void {
+    this.emitRuntimeMemberKeyed(B, v, t, this.host.internLiteral(name), first, rec);
+  }
+
+  /** emitRuntimeMember for a key that is only known at run time (an
+   * `unknown`-indexed record's entry): `keyRef` is an LLVM value naming the
+   * borrowed ScrStr key. */
+  private emitRuntimeMemberKeyed(
+    B: BlockBuilder,
+    v: string,
+    t: IrType,
+    keyRef: string,
+    first: string,
+    rec: string | null,
+  ): void {
+    const host = this.host;
+    const conv = host.toDynHelper(t);
+    const box = B.tmp();
+    B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+    host.declare(`declare void @scr_jb_put_dyn_member(ptr, ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_jb_put_dyn_member(ptr %b, ptr ${rec ?? "null"}, ptr ${keyRef}, ptr ${box}, ptr ${first})`,
+    );
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    B.line(`call void @scr_dyn_release(ptr ${box})`);
+  }
+
+  /** Writes one ARRAY element at `index` whose value may be serialized by
+   * the runtime walk: the value's `toJSON` with the index as its key and
+   * the written value (`undefined` becomes `null`, an array slot's rule).
+   * The caller writes the separator. */
+  private emitRuntimeElement(B: BlockBuilder, v: string, t: IrType, index: string): void {
+    const host = this.host;
+    const conv = host.toDynHelper(t);
+    const box = B.tmp();
+    B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+    host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+    B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${box}, double ${index})`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    B.line(`call void @scr_dyn_release(ptr ${box})`);
+  }
+
+  private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean, depth: string): void {
     const host = this.host;
     const w = this.jsonWriteHelper(elem);
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
     host.declare(`declare double @scr_arr_len(ptr)`);
     // A cycle-capable array joins the circular-detection stack exactly
     // like a cycle-capable record.
@@ -947,7 +1080,7 @@ export class LlWalkers {
     // shrink the array or replace the element, the general walk below
     // reads each index afresh and holds its element instead.
     if (elem.kind !== "bool" && !this.serializationMayCallUserCode(elem))
-      this.emitDenseArrayElements(B, elem, w, cyclic, finish);
+      this.emitDenseArrayElements(B, elem, w, cyclic, finish, member);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
@@ -1012,7 +1145,15 @@ export class LlWalkers {
         host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
         const v = B.tmp();
         B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
-        B.line(`call void @${w}(ptr %b, ptr ${v})`);
+        if (this.serializationMayCallUserCode(elem)) {
+          // The element may be written by the runtime walk: it runs the
+          // element's toJSON with the index as its key, and the array's
+          // slot is re-read each iteration (the walk above already chose
+          // the general path for it).
+          this.emitRuntimeElement(B, v, elem, i);
+        } else {
+          B.line(`call void @${w}(ptr %b, ptr ${v}${this.jsonWriteDepthArg(elem, member)})`);
+        }
         B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
       }
       B.br(doneBlock);
@@ -1035,6 +1176,7 @@ export class LlWalkers {
     w: string,
     cyclic: boolean,
     finish: string,
+    depth: string,
   ): void {
     const S = this.S;
     this.host.declare(`declare ptr @scr_arr_dense_slots(ptr, ptr)`);
@@ -1079,7 +1221,9 @@ export class LlWalkers {
     B.line(`${raw} = load i64, ptr ${at}`);
     if (elem.kind === "f64") B.line(`${v} = bitcast i64 ${raw} to double`);
     else B.line(`${v} = inttoptr i64 ${raw} to ptr`);
-    B.line(`call void @${w}(ptr %b, ${this.valTy(elem)} ${v}) ; borrowed`);
+    B.line(
+      `call void @${w}(ptr %b, ${this.valTy(elem)} ${v}${this.jsonWriteDepthArg(elem, depth)}) ; borrowed`,
+    );
     const next = B.tmp();
     B.line(`${next} = add nuw ${S} ${i}, 1`);
     B.line(`store ${S} ${next}, ptr ${indexSlot}`);
@@ -1087,7 +1231,7 @@ export class LlWalkers {
     B.startBlock(general);
   }
 
-  private emitUnionWriter(B: BlockBuilder, unionId: string): void {
+  private emitUnionWriter(B: BlockBuilder, unionId: string, depth: string): void {
     const def = this.host.unionsById.get(unionId);
     if (!def)
       throw new InternalCompilerError(
@@ -1129,7 +1273,9 @@ export class LlWalkers {
       } else {
         // Payload is BORROWED out of the box for the write.
         const p = this.unionPeek(B, "%v", unionId);
-        B.line(`call void @${w}(ptr %b, ptr ${p}) ; ${arm.kind}`);
+        B.line(
+          `call void @${w}(ptr %b, ptr ${p}${this.jsonWriteDepthArg(arm, depth)}) ; ${arm.kind}`,
+        );
       }
       B.br(done);
     });

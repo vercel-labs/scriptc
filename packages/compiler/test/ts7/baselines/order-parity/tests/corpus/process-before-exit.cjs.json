@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-before-exit.cjs"
+ ],
+ "diags": []
+}

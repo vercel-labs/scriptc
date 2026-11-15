@@ -126,53 +126,18 @@ export function emitClassJsonFieldRead(
   return { value, release: null };
 }
 
-/** i1: the instance's property bag holds anything, so properties exist past
- * the layout (a property taken through an untyped reference, a field a
- * tracked class recorded, a deletion), or null when the class has no bag at
- * all — then nothing outside the layout can exist. */
-export function emitClassJsonBagHeld(
-  host: LlvmEmitterContext,
-  B: BlockBuilder,
-  obj: string,
-  className: string,
-): string | null {
-  const meta = host.classMeta.get(className);
-  if (meta === undefined || !meta.def.fields.some((f) => f.name === DYN_CLASS_PROPERTIES))
-    return null;
-  const { index, compressed } = classFieldIndex(meta, DYN_CLASS_PROPERTIES, "compressed");
-  const slot = B.tmp();
-  B.line(
-    `${slot} = getelementptr inbounds %${classStructSym(className)}, ptr ${obj}, i64 0, i32 ${index}`,
-  );
-  let bag: string;
-  if (compressed) {
-    const idx = B.tmp();
-    B.line(`${idx} = load i32, ptr ${slot}`);
-    bag = B.tmp();
-    for (const line of compactRefLoadLines(host.compactRefBase, idx, bag, `${bag}.b`))
-      B.line(line.trimStart());
-  } else {
-    bag = B.tmp();
-    B.line(`${bag} = load ptr, ptr ${slot}`);
-  }
-  // The bag is absent both as NULL (no field written) and as the shared
-  // undefined value it starts out as; anything else is a live object.
-  host.declare(`declare ptr @scr_dyn_undefined()`);
-  const nonNull = B.tmp(),
-    undefinedWord = B.tmp(),
-    defined = B.tmp(),
-    held = B.tmp();
-  B.line(`${nonNull} = icmp ne ptr ${bag}, null`);
-  B.line(`${undefinedWord} = call ptr @scr_dyn_undefined()`);
-  B.line(`${defined} = icmp ne ptr ${bag}, ${undefinedWord}`);
-  B.line(`${held} = and i1 ${nonNull}, ${defined}`);
-  return held;
-}
-
 /** Writes the instance through the runtime walk: its live capsule keeps the
  * native slots, the property bag and the prototype, so the walk sees the
  * same own properties, in the same order, as it would without the compiler
- * (toJSON, getters, the circular-structure stack included). */
+ * (toJSON, getters, the circular-structure stack included).
+ *
+ * This is the ROOT write: `scr_jb_put_dyn_root` runs JSON.stringify's
+ * SerializeJSONProperty step for the root value (toJSON with the empty key,
+ * a dropped result spelled `undefined`, exactly as scr_dyn_format_j does for
+ * a checked-dynamic root) before walking the result. The member and array
+ * positions never reach it: a field or element whose class took the runtime
+ * walk after the frontend admitted it is written by the runtime member or
+ * element walk at its own position, which passes that position's key. */
 export function emitClassJsonDynWrite(
   host: LlvmEmitterContext,
   B: BlockBuilder,
@@ -183,21 +148,29 @@ export function emitClassJsonDynWrite(
   const conv = host.dyn.toDynHelper({ kind: "object", className });
   const box = B.tmp();
   B.line(`${box} = call ptr @${conv}(ptr ${obj}) ; +1`);
-  host.declare(`declare void @scr_jb_put_dyn(ptr, ptr)`);
-  B.line(`call void @scr_jb_put_dyn(ptr ${buf}, ptr ${box})`);
+  host.declare(`declare void @scr_jb_put_dyn_root(ptr, ptr)`);
+  B.line(`call void @scr_jb_put_dyn_root(ptr ${buf}, ptr ${box})`);
   host.declare(`declare void @scr_dyn_release(ptr)`);
   B.line(`call void @scr_dyn_release(ptr ${box})`);
 }
 
 /** Whether the writer for `meta` reads the layout: the frontend admitted
- * the class (jsonLayout) and the class graph still gives it no subclass
- * whose instance could stand in for it. */
+ * the class (jsonLayout), the class graph still gives it no subclass whose
+ * instance could stand in for it, and nothing that appeared after the
+ * frontend's answer changes its own-property set or order. A property bag
+ * (`%dynProperties`) holds properties taken through an untyped reference,
+ * such as a `toJSON` installed with `Object.defineProperty`, and a `%attr:`
+ * field records attributes that can hide a declared field. Either one keeps
+ * every write of an instance on the runtime walk; the bag's presence is
+ * known here because the dynamic-property pass adds it before the backend
+ * runs. */
 export function classJsonReadsLayout(meta: LlClassMeta): boolean {
   return (
     meta.def.jsonLayout === true &&
     meta.children.length === 0 &&
     meta.def.runtime !== true &&
     meta.root.def.runtime !== true &&
-    !meta.def.fields.some((f) => f.name.startsWith("%attr:"))
+    !meta.def.fields.some((f) => f.name.startsWith("%attr:")) &&
+    !meta.def.fields.some((f) => f.name === DYN_CLASS_PROPERTIES)
   );
 }

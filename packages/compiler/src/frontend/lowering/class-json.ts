@@ -52,7 +52,16 @@ function classEligible(lowerer: Lowerer, className: string, visiting: Set<string
   // replaces a method called `toJSON` anywhere can install one at run time.
   if (lowerer.prototypeMethodAccesses.has("toJSON")) return false;
   for (let current: ClassInfo | null = info; current !== null; current = current.base) {
-    if (current.methods.has("toJSON")) return false;
+    // A method, or an accessor (`get toJSON()` / `set toJSON()`, which the
+    // class collects under the `get:`/`set:` spellings), answers for the
+    // whole value. JSON.stringify reads an inherited callable `toJSON` from
+    // the prototype chain, so any of them keeps the runtime walk.
+    if (
+      current.methods.has("toJSON") ||
+      current.methods.has("get:toJSON") ||
+      current.methods.has("set:toJSON")
+    )
+      return false;
     // A runtime-provided root keeps its own layout (an Error's slots, a
     // stream's state): the declared fields are not the whole own-property
     // set, and its order is the runtime's.
@@ -71,10 +80,16 @@ function classEligible(lowerer: Lowerer, className: string, visiting: Set<string
         continue;
       }
       if (symbols.has(field.name)) continue;
+      // `toJSON` answers for the whole value whether it holds a function
+      // (JSON.stringify calls it) or any other value (the runtime walk
+      // emits it as an ordinary field, which the layout writer would too,
+      // but the hook case must never reach the layout writer). Checked
+      // before the function-valued skip below: an arrow-function `toJSON`
+      // field is still the hook.
+      if (field.name === "toJSON") return false;
       // A function-valued field is dropped from the output, like any
       // function-valued property; the writer skips it.
       if (field.type.kind === "func") continue;
-      if (field.name === "toJSON") return false;
       if (!fieldJsonSafe(lowerer, field.type, visiting)) return false;
     }
   }

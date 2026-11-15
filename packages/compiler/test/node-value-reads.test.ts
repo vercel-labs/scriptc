@@ -206,7 +206,7 @@ console.log(typeof performance.nodeTiming, typeof performance.nodeTiming.loopSta
 
   test("refuses the read of any other value by name", () => {
     for (const [source, surface] of [
-      [`console.log(process.finalization);\n`, "process.finalization"],
+      [`console.log(process.config);\n`, "process.config"],
       [`import { snapshot } from "node:test";\nconsole.log(snapshot);\n`, "test.snapshot"],
     ] as const) {
       const found = refusals(`${surface}.mjs`, source);

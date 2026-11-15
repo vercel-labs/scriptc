@@ -8,3 +8,5 @@
   An override may also declare fewer parameters than its base: the arguments past its last parameter are dropped, as in Node.js.
   A call through an untyped value must still pass the base's arguments, and a shorter override that a subclass overrides again is callable through its own class only when the dropped parameters are optional.
   An override with fewer parameters whose body reads `arguments`, or with a tuple where the base declares an array, is refused as a member.
+  A getter override may narrow its base getter's type to some arms of the base's union, or to a subclass of the base's class, and a read through the override's own class has the narrower type; a setter override whose parameter type differs from its base setter's is refused as a member.
+  A getter and setter pair may declare different types: a write converts its value into the setter's parameter type, and a read has the getter's type.

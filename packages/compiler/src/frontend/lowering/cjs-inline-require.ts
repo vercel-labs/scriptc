@@ -619,6 +619,367 @@ export function cjsNestedExportReplacementOf(sf: ts.SourceFile): ts.BinaryExpres
   return found;
 }
 
+/** The whole-export assignments of a CommonJS module that choose between
+ * statically known export tables when the module runs — the shape
+ * react/index.js has:
+ *
+ *   if (process.env.NODE_ENV === "production") {
+ *     module.exports = require("./prod.cjs");
+ *   } else {
+ *     module.exports = require("./dev.cjs");
+ *   }
+ *
+ * Every assignment to `module.exports` in the file must be an inline require
+ * of a program module whose own exports are a static table, and every table
+ * must name the same members. The module's export globals then take their
+ * values from the branch that ran, so importers read the same members Node
+ * answers. Null when the file has no such assignment, when one resolves to
+ * anything else (a computed object, a function, an object literal), or when
+ * the tables disagree on their members. */
+export function cjsConditionalWholeExportTargetsOf(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): { assign: ts.BinaryExpression; req: InlineRequire; names: string[] }[] | null {
+  // A top-level whole-export statement keeps its own treatment (a pure
+  // re-export resolves through the target module's own table).
+  if (sf.statements.nodes.some((stmt) => cjsExportAssignmentOf(stmt) !== null)) return null;
+  const found: { assign: ts.BinaryExpression; req: InlineRequire }[] = [];
+  ts.walkPreorder(sf, (node) => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(node.left)
+    ) {
+      const req = inlineProgramRequireOf(lowerer, node.right);
+      if (req === null || !cjsNamespaceModule(lowerer, req.dep)) return "stop";
+      found.push({ assign: node, req });
+    }
+    return undefined;
+  });
+  if (found.length < 2) return null;
+  const first = cjsWholeExportMemberNamesOf(lowerer, found[0]!.req.dep);
+  if (first === null) return null;
+  for (const { req } of found) {
+    const names = cjsWholeExportMemberNamesOf(lowerer, req.dep);
+    if (names === null || names.length !== first.length) return null;
+    const have = new Set(names);
+    if (first.some((name) => !have.has(name))) return null;
+  }
+  return found.map((entry) => ({ ...entry, names: first }));
+}
+
+/** The member names a module exports, as a conditional whole export's
+ * branch answers them. A module whose export writes are top-level
+ * statements answers its static table's names; one that attaches them
+ * inside a wrapper (react.development.js's `if (…) { (function() {
+ * exports.x = … })(); }`) answers the checker's export list, which names
+ * exactly the members it exports. */
+function cjsWholeExportMemberNamesOf(lowerer: Lowerer, dep: ts.SourceFile): string[] | null {
+  const table = cjsTableExportNamesInOrder(lowerer, dep);
+  if (table !== null && table.length > 0) return table;
+  const target = cjsNamespaceTargetOf(lowerer, dep) ?? dep;
+  const moduleSym = lowerer.checker.getSymbolAtLocation(target);
+  if (moduleSym === undefined) return table;
+  const names = lowerer.checker
+    .getExportsOfModule(moduleSym)
+    .map((symbol) => ts.symbolName(symbol))
+    .filter((name) => name !== "export=");
+  return names.length > 0 ? names : table;
+}
+
+/** One module-local variable whose whole value is a `require()` chosen at
+ * run time among statically known export tables — react-dom/server.node.js's
+ *
+ *   var l, s;
+ *   if (process.env.NODE_ENV === 'production') { l = require('./a'); … }
+ *   else { l = require('./b'); … }
+ *   exports.renderToString = l.renderToString;
+ *
+ * Every write is such a require, every target names the same members, and
+ * the writes cover every path through one top-level if/else chain. Each
+ * member then has one slot the executed write fills from the table it
+ * required, and a `l.member` read after the write answers that slot — the
+ * value Node's `l.member` answers. The slot also follows the table's later
+ * writes of that member, since `l` is the table's own exports object. A read
+ * the executed path reaches before the write sees Node's uninitialized
+ * `undefined`, and `l.member` throws its TypeError; the slot model has no
+ * uninitialized state, so such a read throws that TypeError itself. */
+export interface CjsConditionalAlias {
+  symbol: ts.Symbol;
+  decl: ts.VariableDeclaration;
+  writes: { assign: ts.BinaryExpression; req: InlineRequire }[];
+  /** The members every target table exports, in the first table's order. */
+  names: string[];
+  /** The top-level statement index of the if/else chain the writes live in. */
+  branchIndex: number;
+}
+
+/** The conditional module alias a symbol names, or null (cached). */
+export function cjsConditionalAliasOf(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+): CjsConditionalAlias | null {
+  const cached = lowerer.cjsConditionalAliases.get(symbol);
+  if (cached !== undefined) return cached;
+  const result = computeConditionalAlias(lowerer, symbol);
+  lowerer.cjsConditionalAliases.set(symbol, result);
+  return result;
+}
+
+function computeConditionalAlias(lowerer: Lowerer, symbol: ts.Symbol): CjsConditionalAlias | null {
+  const declarations = symbol.declarations.filter(ts.isVariableDeclaration);
+  if (declarations.length !== 1) return null;
+  const decl = declarations[0]!;
+  // The alias is an UNINITIALIZED top-level binding: `var l, s;` — the
+  // writes below are its only values.
+  if (decl.initializer !== undefined || !ts.isIdentifier(decl.name)) return null;
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) !== 0) return null;
+  const stmt = list.parent;
+  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (!ts.sourceTextIncludes(sf, "require")) return null;
+  const writes: { assign: ts.BinaryExpression; req: InlineRequire }[] = [];
+  const readNames = new Set<string>();
+  let conforms = true;
+  ts.walkPreorder(sf, (node) => {
+    if (!conforms) return "stop";
+    if (!ts.isIdentifier(node) || node.text !== decl.name.text) return undefined;
+    // The declaration itself is not a read of a value.
+    if (node === decl.name) return undefined;
+    if (symbolOfIdentifierValue(lowerer, node) !== symbol) return undefined;
+    const target = writeTargetOf(node);
+    if (target === null) {
+      // Reads of the variable are `l.member` values, which the alias slots
+      // answer. The variable itself has no storage, so any other use
+      // (`typeof l`, `l[k]`, a call `l.f()` that passes `l` as its receiver,
+      // a member write) keeps the ordinary treatment.
+      const member = conditionalAliasMemberValueRead(node);
+      if (member === null) {
+        conforms = false;
+        return "stop";
+      }
+      readNames.add(member);
+      // Reads must run at the module's own top level: one inside a function
+      // may run before the branch did.
+      let inFunction = false;
+      for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
+        if (ts.isSourceFile(p)) break;
+        if (ts.isFunctionLike(p)) inFunction = true;
+      }
+      if (inFunction) {
+        conforms = false;
+        return "stop";
+      }
+      return undefined;
+    }
+    // Every write must be the plain left side of `l = require("<literal>")`
+    // naming a table module: that is the one write the slot model can take
+    // apart into its members.
+    if (
+      !ts.isBinaryExpression(target) ||
+      target.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      target.left !== node
+    ) {
+      conforms = false;
+      return "stop";
+    }
+    const req = inlineProgramRequireOf(lowerer, target.right);
+    if (req === null || !cjsNamespaceModule(lowerer, req.dep)) {
+      conforms = false;
+      return "stop";
+    }
+    writes.push({ assign: target, req });
+    return undefined;
+  });
+  if (!conforms || writes.length < 2) return null;
+  // The slot model has no uninitialized state: a read the executed path
+  // reaches before the write must throw Node's TypeError itself, which needs
+  // the writes to assign the variable on every path (an if/else chain whose
+  // arms each write it) so that a read after the chain always has a slot.
+  if (!conditionalAliasWritesCoverPaths(writes)) return null;
+  const branchIndex = topLevelStatementIndexOf(writes[0]!.assign);
+  if (branchIndex < 0) return null;
+  // Every target must export the same members: a member only some branch
+  // exports is absent (undefined) on the others in Node, which one slot
+  // shared by the branches cannot answer.
+  const first = cjsWholeExportMemberNamesOf(lowerer, writes[0]!.req.dep);
+  if (first === null) return null;
+  for (const { req } of writes) {
+    const names = cjsWholeExportMemberNamesOf(lowerer, req.dep);
+    if (names === null || names.length !== first.length) return null;
+    const have = new Set(names);
+    if (first.some((name) => !have.has(name))) return null;
+  }
+  // A member no table exports reads undefined in Node; it has no slot.
+  for (const name of readNames) if (!first.includes(name)) return null;
+  return { symbol, decl, writes, names: first, branchIndex };
+}
+
+/** The member name when `ident` is the object of a plain `ident.member` read
+ * whose value is all the program uses: not written, deleted, called (a call
+ * passes the object as `this`), or constructed. Null for every other use. */
+function conditionalAliasMemberValueRead(ident: ts.Identifier): string | null {
+  const access = ident.parent;
+  if (
+    !ts.isPropertyAccessExpression(access) ||
+    access.expression !== ident ||
+    access.questionDotToken !== undefined ||
+    !ts.isIdentifier(access.name)
+  )
+    return null;
+  if (writeTargetOf(access) !== null) return null;
+  // `(l.f)()` still passes `l` as the receiver.
+  let outer: ts.Node = access;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const user = outer.parent;
+  if (ts.isDeleteExpression(user)) return null;
+  if ((ts.isCallExpression(user) || ts.isNewExpression(user)) && user.expression === outer)
+    return null;
+  if (ts.isTaggedTemplateExpression(user) && user.tag === outer) return null;
+  return access.name.text;
+}
+
+/** Whether the alias's writes leave it assigned on every path: each is a
+ * direct statement of an arm of one top-level if/else chain, and every arm
+ * of that chain writes it (the chain ends in a plain else). Anything the
+ * check cannot prove — a loop, a nested conditional, separate if statements
+ * — keeps the variable on its ordinary treatment. */
+function conditionalAliasWritesCoverPaths(
+  writes: { assign: ts.BinaryExpression; req: InlineRequire }[],
+): boolean {
+  let topIf: ts.IfStatement | null = null;
+  const writtenArms = new Set<ts.Statement>();
+  for (const { assign } of writes) {
+    const arm = directIfArmOf(assign);
+    if (arm === null) return false;
+    if (topIf !== null && arm.topIf !== topIf) return false;
+    topIf = arm.topIf;
+    writtenArms.add(arm.arm);
+  }
+  const arms = terminalArmsOf(topIf!);
+  return arms !== null && arms.every((arm) => writtenArms.has(arm));
+}
+
+/** The arm of a top-level if/else chain that directly contains a write
+ * statement, when every step from the write up to the chain is a statement
+ * list (no nested conditional, loop, or function body). */
+function directIfArmOf(
+  write: ts.BinaryExpression,
+): { topIf: ts.IfStatement; arm: ts.Statement } | null {
+  const stmt = write.parent;
+  if (!ts.isExpressionStatement(stmt) || stmt.expression !== write) return null;
+  const holder = stmt.parent;
+  const arm = ts.isBlock(holder) ? holder : stmt;
+  const owner = ts.isBlock(holder) ? holder.parent : holder;
+  if (!ts.isIfStatement(owner)) return null;
+  // Else-if links climb through the chain to the statement the module runs.
+  let top: ts.Statement = owner;
+  while (!ts.isSourceFile(top.parent)) {
+    if (!ts.isIfStatement(top.parent) || top.parent.elseStatement !== top) return null;
+    top = top.parent;
+  }
+  return ts.isIfStatement(top) ? { topIf: top, arm } : null;
+}
+
+/** The arms of an if/else chain when every path through it lands in one of
+ * them (the chain ends in a plain else), or null when a path falls through. */
+function terminalArmsOf(ifStmt: ts.IfStatement): ts.Statement[] | null {
+  const arms: ts.Statement[] = [];
+  let current: ts.IfStatement = ifStmt;
+  for (;;) {
+    arms.push(current.thenStatement);
+    const otherwise = current.elseStatement;
+    if (otherwise === undefined) return null;
+    if (ts.isIfStatement(otherwise)) {
+      current = otherwise;
+      continue;
+    }
+    arms.push(otherwise);
+    return arms;
+  }
+}
+
+/** Whether a member read of a conditional alias runs after the write that
+ * fills its slots. A read before the chain, or in an arm before that arm's
+ * write (a later nested statement in the arm is still after it), runs while
+ * Node's variable is undefined, so the read must throw its TypeError rather
+ * than answer a slot. */
+function conditionalAliasReadFollowsWrite(read: ts.Node, alias: CjsConditionalAlias): boolean {
+  if (topLevelStatementIndexOf(read) > alias.branchIndex) return true;
+  const first = directIfArmOf(alias.writes[0]!.assign);
+  if (first === null) return false;
+  const arms = terminalArmsOf(first.topIf);
+  if (arms === null) return false;
+  let arm: ts.Statement | undefined;
+  for (let node: ts.Node | undefined = read; node !== undefined; node = node.parent) {
+    if (arms.includes(node as ts.Statement)) {
+      arm = node as ts.Statement;
+      break;
+    }
+    if (ts.isSourceFile(node)) break;
+  }
+  if (arm === undefined) return false;
+  // Only the write of the arm the read runs in precedes it: a read in the
+  // other arm runs on a path that never wrote. The write statement must end
+  // before the read starts, which covers reads nested in constructs after it.
+  for (const entry of alias.writes) {
+    const written = directIfArmOf(entry.assign);
+    if (written === null || written.arm !== arm) continue;
+    const stmt = entry.assign.parent;
+    if (stmt === undefined) continue;
+    return stmt.end <= ts.tokenStartOfNode(read);
+  }
+  return false;
+}
+
+/** The module statement a node sits in (the index of the top-level
+ * statement whose span contains it), or -1 outside the file's statements. */
+function topLevelStatementIndexOf(node: ts.Node): number {
+  const sf = ts.getSourceFileOfNode(node);
+  const stmts = sf.statements.nodes;
+  const pos = ts.tokenStartOfNode(node);
+  for (let i = 0; i < stmts.length; i++) if (stmts[i]!.end > pos) return i;
+  return stmts.length - 1;
+}
+
+/** The alias a `l = require("./x")` assignment statement writes, or null. */
+export function cjsConditionalAliasWriteOf(
+  lowerer: Lowerer,
+  assign: ts.BinaryExpression,
+): CjsConditionalAlias | null {
+  if (assign.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !ts.isIdentifier(assign.left))
+    return null;
+  const symbol = symbolOfIdentifierValue(lowerer, assign.left);
+  if (symbol === undefined) return null;
+  const alias = cjsConditionalAliasOf(lowerer, symbol);
+  if (alias === null || !alias.writes.some((entry) => entry.assign === assign)) return null;
+  return alias;
+}
+
+/** What a `l.<name>` read of a conditional module alias answers: the slot a
+ * preceding write filled, or, for a read the executed path reaches before the
+ * write, Node's TypeError for a member read of its still-undefined variable.
+ * Null when the read is not such an alias member read. */
+export type CjsConditionalAliasMemberRead = { slot: IrGlobal } | { throwMessage: string };
+
+export function cjsConditionalAliasMemberReadOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  name: string,
+): CjsConditionalAliasMemberRead | null {
+  const symbol = symbolOfIdentifierValue(lowerer, ident);
+  if (symbol === undefined) return null;
+  const alias = cjsConditionalAliasOf(lowerer, symbol);
+  if (alias === null || !alias.names.includes(name)) return null;
+  const slot = lowerer.cjsConditionalAliasGlobals.get(symbol)?.get(name);
+  if (slot === undefined) return null;
+  if (!conditionalAliasReadFollowsWrite(ident, alias))
+    return { throwMessage: `Cannot read properties of undefined (reading '${name}')` };
+  return { slot };
+}
+
 /** The table behind pure CommonJS re-exports (inline, initialized, or split
  * require bindings). Member reads use the original table's symbols, while
  * each require still initializes its own wrapper at its source position. */
@@ -1219,24 +1580,55 @@ export function cjsExportValueByName(
   key: string,
   blame: ts.Node,
 ): IrExpr | null {
+  // The member's storage registered where the module writes it, by name:
+  // exactly what the module's export write left, including members the
+  // checker gives no readable declaration (react.development.js attaches
+  // `exports.x` inside its IIFE, where the value is a local of that
+  // function's evaluation, not a global the importing module can read).
+  const byName = lowerer.cjsInFileExportMemberGlobals.get(dep)?.get(key) ?? null;
+  const slot = (): IrExpr | null =>
+    byName === null
+      ? null
+      : { kind: "varRef", localId: byName.id, type: byName.type, loc: locOf(blame) };
   let sym = lowerer.cjsModuleExportSymbol(dep, key);
-  if (sym === undefined) return null;
-  if (sym.flags & ts.SymbolFlags.Alias) sym = lowerer.checker.getAliasedSymbol(sym);
-  const direct = lowerer.globalsBySymbol.get(sym);
+  if (sym !== undefined && sym.flags & ts.SymbolFlags.Alias)
+    sym = lowerer.checker.getAliasedSymbol(sym);
+  const direct = sym === undefined ? undefined : lowerer.globalsBySymbol.get(sym);
   if (direct) return { kind: "varRef", localId: direct.id, type: direct.type, loc: locOf(blame) };
-  for (const d of sym.declarations) {
+  for (const d of sym?.declarations ?? []) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
     if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
+    // A getter is a function Node runs on every read, so it keeps its call.
     if (ts.isGetAccessorDeclaration(d)) return cjsAccessorCall(lowerer, d, locOf(blame));
+  }
+  const stored = slot();
+  if (stored !== null) return stored;
+  for (const d of sym?.declarations ?? []) {
     // Alias plumbing: a shorthand/identifier table entry or a member
-    // export naming a declaration. Reading that identifier IS the value.
+    // export naming a declaration. Reading that identifier IS the value —
+    // when it names a module-level binding. One nested in a function is
+    // that function's local, and the export write's slot answered above.
     if (ts.isShorthandPropertyAssignment(d)) return lowerer.lowerShorthandValue(d);
     if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer)) {
-      return lowerer.lowerExpr(d.initializer);
+      if (declarationIsModuleLevel(lowerer, d.initializer)) return lowerer.lowerExpr(d.initializer);
+      continue;
     }
-    if ((ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) && d.name !== undefined) {
-      return lowerer.lowerExpr(d.name);
-    }
+    if ((ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) && d.name !== undefined)
+      if (declarationIsModuleLevel(lowerer, d)) return lowerer.lowerExpr(d.name);
   }
   return null;
+}
+
+/** Whether a declaration is a module-level binding of its file: nothing
+ * between it and the source file opens a function frame. A declaration
+ * inside a function belongs to that call's frame, so another module's
+ * evaluation cannot read it. A flattened namespace block hoists its
+ * declarations to module level. */
+function declarationIsModuleLevel(lowerer: Lowerer, node: ts.Node): boolean {
+  for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent) {
+    if (ts.isSourceFile(p)) return true;
+    if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) return false;
+    if (lowerer.nsBlocks.get(p) === "flattened") return true;
+  }
+  return false;
 }

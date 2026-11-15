@@ -206,6 +206,21 @@ void scr_jb_put_dyn(ScrJsonBuf *b, const ScrDyn *d);
  * array): its toJSON runs first, with the index as its key. May leave an
  * exception pending. */
 void scr_jb_put_dyn_element(ScrJsonBuf *b, const ScrDyn *d, double index);
+/* scr_jb_put_dyn at an OBJECT member position (`key`) of container `rec`:
+ * the value's toJSON runs first with that key, an undefined, function or
+ * symbol result drops the member (the runtime writes the comma, key and
+ * value, so an omitted member leaves the buffer untouched), and any other
+ * result is written through the protocol walk. `first` is the container's
+ * first-member flag. `rec`, when not NULL, is the container on the
+ * circular-structure stack. May leave an exception pending. */
+void scr_jb_put_dyn_member(ScrJsonBuf *b, void *rec, const ScrStr *key, const ScrDyn *value,
+                           bool *first);
+/* scr_jb_put_dyn for the ROOT value: its toJSON runs with the empty key,
+ * then the result is written. An omitted result (JSON.stringify returns the
+ * undefined value) is appended as the text `undefined`, the spelling
+ * scr_dyn_format_j gives a dropped checked-dynamic root. May leave an
+ * exception pending. */
+void scr_jb_put_dyn_root(ScrJsonBuf *b, const ScrDyn *d);
 /* The entries of record `rec`'s `unknown` index signature (its overflow
  * map) after the record's earlier members: separators, keys and values in
  * JS own-key order with JSON.stringify's member rules (toJSON called with

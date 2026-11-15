@@ -382,6 +382,12 @@ typedef struct ScrDnsPending {
 
 static SCR_TL ScrDnsPending *scr_dns_pending = NULL;
 
+/* The stub resolver's loop share and default-resolver server reading
+ * (scr_dns_resolve.c, linked only for programs that use it — the
+ * scr_dns_resolve_install story). NULL for dgram-only programs. */
+const ScrDnsqHooks *scr_dnsq_hooks = NULL;
+ScrDyn *(*scr_dns_servers_hook)(bool promises) = NULL;
+
 /* ── RC ──────────────────────────────────────────────────────────────── */
 
 static void scr_dgram_close_fd_raw(int fd); /* forget-then-close, defined below */
@@ -466,6 +472,21 @@ static void scr_dgram_unregister(ScrDgramSocket *s) {
     s->in_registry = false;
     scr_dgram_release(s);
   }
+}
+
+/* Whether a poll key still names a socket of this unit. The dns queries
+ * share this poller and free their keys from inside a drain
+ * (scr_dnsq_finish), so a copied batch can name a key that owns nothing any
+ * more: the dispatch must not read it as a socket. The drain order is not a
+ * guard by itself — epoll appends expired timers after the socket events,
+ * but kqueue copies the kernel's order, where a timeout that exhausts a
+ * query can come before that query's readiness. Every socket with an armed
+ * read is registered (bind/connect/send register it), and settlement happens
+ * in the sweep before the next drain, so membership is stable for a batch. */
+static bool scr_dgram_key_is_socket(const void *udata) {
+  for (ScrDgramSocket *s = scr_dgram_socks; s != NULL; s = s->next)
+    if ((const void *)s == udata) return true;
+  return false;
 }
 
 /* ── the surface ─────────────────────────────────────────────────────── */
@@ -1242,6 +1263,42 @@ static int scr_dns_order_of(const ScrDyn *v) {
   return -1;
 }
 
+/* JavaScript's ToUint32: truncate toward zero, then modulo 2^32 (NaN and
+ * the infinities convert to 0). Node's validateHints receives the result
+ * of `hints >>> 0`. */
+static uint32_t scr_dns_to_uint32(double d) {
+  if (!isfinite(d)) return 0;
+  double t = trunc(d);
+  double m = fmod(t, 4294967296.0);
+  if (m < 0) m += 4294967296.0;
+  return (uint32_t)m;
+}
+
+/* lookup options' hints, validated as Node validates them: a number, then
+ * ToUint32, then only dns.ADDRCONFIG, dns.V4MAPPED and dns.ALL (the
+ * getaddrinfo flags). Stores the flags for getaddrinfo. True when the
+ * options carry no hints or a valid mask; otherwise the argument error is
+ * pending and false is returned. Shared by the callback and promise
+ * forms, which report the same errors. */
+bool scr_dns_hints_flags(const ScrDyn *options, int *ai_flags) {
+  const ScrDyn *v = scr_dyn_obj_get(options, "hints", 5);
+  if (v == NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return true;
+  if (v->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail("options.hints", "of type number", v);
+    return false;
+  }
+  uint32_t hints = scr_dns_to_uint32(v->v.num);
+  uint32_t allowed = (uint32_t)(AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL);
+  if ((hints & ~allowed) != 0) {
+    ScrDyn *shown = scr_dyn_new_num((double)hints);
+    scr_dyn_arg_value_fail("hints", "is invalid", shown);
+    scr_dyn_release(shown);
+    return false;
+  }
+  *ai_flags = (int)hints;
+  return true;
+}
+
 ScrStr *scr_dns_get_default_result_order(void) {
   const char *o = scr_dns_orders[scr_dns_default_order];
   return scr_str_new(o, strlen(o));
@@ -1387,27 +1444,14 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
     }
     family = f;
   } else if (options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_OBJ &&
-             options->kind != SCR_DYN_NULL) {
-    scr_dyn_arg_type_fail("options", "of type integer or an instance of Object", options);
+             options->kind != SCR_DYN_ARR && options->kind != SCR_DYN_NULL) {
+    /* Node tests `typeof options !== 'object'`, so an array is an options
+     * object too (its members read as undefined). */
+    scr_dyn_arg_type_fail("options", "of type object or integer", options);
     return;
-  } else if (options->kind == SCR_DYN_OBJ) {
-    const ScrDyn *v = scr_dyn_obj_get(options, "hints", 5);
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
-      if (v->kind != SCR_DYN_NUM) {
-        scr_dyn_prop_type_fail("options.hints", "of type number", v);
-        return;
-      }
-      /* Node's validateHints: only dns.ADDRCONFIG, dns.V4MAPPED and
-       * dns.ALL (getaddrinfo's own flags), which then reach getaddrinfo */
-      double h = v->v.num;
-      int allowed = AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL;
-      if (!(h == h && trunc(h) == h && h >= 0 && h <= 0x7fffffff) || ((int)h & ~allowed) != 0) {
-        scr_dyn_arg_value_fail("hints", "is invalid", v);
-        return;
-      }
-      ai_flags = (int)h;
-    }
-    v = scr_dyn_obj_get(options, "family", 6);
+  } else if (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_ARR) {
+    if (!scr_dns_hints_flags(options, &ai_flags)) return;
+    const ScrDyn *v = scr_dyn_obj_get(options, "family", 6);
     if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
       if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv4", 4) == 0) family = 4;
       else if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv6", 4) == 0) family = 6;
@@ -1468,7 +1512,19 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
       ScrDyn *args[2] = { scr_dyn_new_null(), scr_dyn_new_arr() };
       scr_dns_call_later(callback, args, 2, true);
     } else {
-      ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_new_null(), scr_dyn_new_num(family == 6 ? 6 : 4) };
+      /* Node answers `null` here. A typed callback signature declares the
+       * address as a string, so the typed form substitutes the empty
+       * string, as it does for a failed lookup (scr_dns_fail); the untyped
+       * form gets Node's null. */
+      ScrDyn *address;
+      if (typed) {
+        ScrStr *empty = scr_str_new("", 0);
+        address = scr_dyn_new_str(empty);
+        scr_str_release(empty);
+      } else {
+        address = scr_dyn_new_null();
+      }
+      ScrDyn *args[3] = { scr_dyn_new_null(), address, scr_dyn_new_num(family == 6 ? 6 : 4) };
       scr_dns_call_later(callback, args, 3, true);
     }
     return;
@@ -1690,6 +1746,7 @@ ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *
 /* dns.getServers(): the nameserver lines of /etc/resolv.conf, as c-ares
  * reads them ("[addr]:port" only for a port other than 53). +1. */
 ScrDyn *scr_dns_get_servers(void) {
+  if (scr_dns_servers_hook != NULL) return scr_dns_servers_hook(false);
   ScrDyn *out = scr_dyn_new_arr();
 #ifndef _WIN32
   FILE *f = fopen("/etc/resolv.conf", "r");
@@ -1722,6 +1779,7 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
 
 static bool scr_dgram_flags_pending(void) {
   if (scr_dns_pending) return true;
+  if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     if (s->pending_err || s->emit_listening || s->emit_connect) return true;
     if (s->closing && !s->close_emitted) return true;
@@ -1818,6 +1876,7 @@ static void scr_dgram_sweep(void) {
 
 static bool scr_dgram_pending(void) {
   if (scr_dns_pending) return true;
+  if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     /* Undelivered emits hold the loop even on an unref'd socket (they
      * are due NOW); otherwise an open registered socket holds it unless
@@ -1836,21 +1895,40 @@ static int scr_dgram_pollfd(void) {
 }
 
 static void scr_dgram_dispatch(void) {
-  if (!scr_dgram_socks && !scr_dns_pending) return;
-  for (;;) {
-    scr_dgram_sweep();
-    if (scr_exc_pending()) return;
-    if (scr_dgram_poller == NULL) return;
-    ScrPollerEvent evs[64];
-    int n = scrp_drain(scr_dgram_poller, evs, 64);
-    for (int i = 0; i < n; i++) {
-      ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
-      if (!s || s->fd < 0) continue; /* closed earlier in this batch */
-      scr_dgram_read(s);
+  if (!scr_dgram_socks && !scr_dns_pending &&
+      (scr_dnsq_hooks == NULL || !scr_dnsq_hooks->pending()))
+    return;
+  /* One poller drain per call, like the net unit (the events stay queued in
+   * the level-triggered poller and the loop calls back while its fd is
+   * readable). "Pending" here includes work that is only WAITING on an fd or
+   * a timer — a dns query in flight, a listening socket — so draining again
+   * straight away would spin to the next deadline and starve the other
+   * stations: a dns response answered by the program's own net server could
+   * never arrive. */
+  scr_dgram_sweep();
+  if (scr_exc_pending()) return;
+  if (scr_dgram_poller == NULL) return;
+  ScrPollerEvent evs[64];
+  int n = scrp_drain(scr_dgram_poller, evs, 64);
+  for (int i = 0; i < n; i++) {
+    if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->owns(evs[i].udata)) {
+      scr_dnsq_hooks->event(evs[i].udata, evs[i].events);
       if (scr_exc_pending()) return;
+      continue;
     }
-    if (!scr_dgram_flags_pending()) return;
-    if (scr_loop_has_ready()) return; /* microtasks interleave first */
+    if ((evs[i].events & SCRP_TIMER) != 0) {
+      /* Timers on this poller belong to the dns queries. One whose query no
+       * longer owns the key was copied by the same drain that delivered the
+       * response finishing that query; its key is gone, so there is nothing
+       * to deliver. Reading the pointer as a socket would touch freed
+       * memory. */
+      continue;
+    }
+    if (!scr_dgram_key_is_socket(evs[i].udata)) continue; /* a query's key, already freed */
+    ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
+    if (s->fd < 0) continue; /* closed earlier in this batch */
+    scr_dgram_read(s);
+    if (scr_exc_pending()) return;
   }
 }
 
@@ -1858,6 +1936,7 @@ static void scr_dgram_dispatch(void) {
  * program legitimately leaves live at exit release their listeners and
  * registry references so the RC audit sees a clean heap. */
 static void scr_dgram_cleanup_atexit(void) {
+  if (scr_dnsq_hooks != NULL) scr_dnsq_hooks->cleanup();
   while (scr_dgram_socks) {
     ScrDgramSocket *s = scr_dgram_socks;
     scr_dgram_ls_drop(&s->msg_ls);
@@ -2227,4 +2306,46 @@ double scr_dgram_unix_close(double fd) {
 #else
   return close((int)fd) != 0 ? -(double)errno : 0;
 #endif
+}
+
+/* ── the stub resolver's primitives (scr_dns_resolve.c) ────────────────
+ * The unit poller and its watches/timers, the forget-then-close pair,
+ * and deferred delivery on the pending queue. Each is a thin spelling of
+ * an internal helper above, so the resolver's queries ride the dgram
+ * loop's exact lifecycle without a second poller. */
+void scr_dgram_poll_ready(void) { (void)scr_dgram_poller_init(); }
+
+void scr_dgram_poll_read(int fd, void *udata, bool on) {
+  scr_dgram_watch_read(fd, udata, on);
+}
+
+void scr_dgram_poll_write(int fd, void *udata, bool on) {
+  if (scr_dgram_poller == NULL || fd < 0) return;
+  (void)scrp_watch_write(scr_dgram_poller, fd, udata, on);
+}
+
+void scr_dgram_poll_forget(int fd) {
+  if (scr_dgram_poller == NULL || fd < 0) return;
+  scrp_forget(scr_dgram_poller, fd);
+}
+
+void scr_dgram_poll_close(int fd) { scr_dgram_close_fd_raw(fd); }
+
+bool scr_dgram_poll_timer(void *key, double ms, void *udata) {
+  if (scr_dgram_poller == NULL) return false;
+  return scrp_timer_arm(scr_dgram_poller, key, ms, udata);
+}
+
+void scr_dgram_poll_timer_cancel(void *key) {
+  if (scr_dgram_poller == NULL) return;
+  scrp_timer_cancel(scr_dgram_poller, key);
+}
+
+void scr_dns_deliver_dyn(ScrDyn *call) {
+  ScrDnsPending *p = calloc(1, sizeof *p);
+  if (!p) scr_dgram_oom();
+  p->call = call; /* moves */
+  ScrDnsPending **link = &scr_dns_pending;
+  while (*link) link = &(*link)->next;
+  *link = p;
 }

@@ -10,7 +10,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
-import { zlibConstantsValue } from "../builtins/constants.js";
+import { cryptoConstantsValue, zlibConstantsValue } from "../builtins/constants.js";
 import { legacyUrlClassValue } from "../builtins/url.js";
 import { captureRejectionSymbolValue } from "../lower-event-emitter.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
@@ -805,6 +805,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // answers.
       if (bi.module === "zlib" && bi.member === "constants")
         return zlibConstantsValue(lowerer, loc);
+      // `import { constants } from "node:crypto"`: the same singleton the
+      // property form answers.
+      if (bi.module === "crypto" && bi.member === "constants")
+        return cryptoConstantsValue(lowerer, loc);
       // `import { O_RDONLY } from "constants"`: the member of the frozen
       // module object.
       if (bi.module === "constants") {
@@ -830,6 +834,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // crypto.fips is getFips() behind a once-per-process DEP0093
+      // deprecation report, which the runtime emits on the read.
+      if (bi.module === "crypto" && bi.member === "fips")
+        return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
       // `import { argv, execArgv } from "node:process"`: a data member of
       // the process module reads what `process.<member>` reads. `env` stays
       // out: the spelled read answers a snapshot record, and a write through

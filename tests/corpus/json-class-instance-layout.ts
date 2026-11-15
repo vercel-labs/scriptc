@@ -216,3 +216,70 @@ console.log(JSON.stringify(extended));
 // that walk is the runtime's, whatever the static type says.
 const boxed: unknown = new Point(1, 2);
 console.log(JSON.stringify(boxed));
+
+// A function-valued own `toJSON` field is the JSON hook, exactly like a
+// method: the class is not eligible for the layout writer, and the runtime
+// walk calls it.
+class HookField {
+  secret = 7;
+  toJSON = () => ({ redacted: true });
+}
+console.log(JSON.stringify(new HookField()));
+console.log(JSON.stringify({ hooked: new HookField() }));
+
+// A class instance that took a dynamic property is written by the runtime
+// walk at whatever position it appears: a member of a record, an element of
+// an array, or the root.
+console.log(JSON.stringify({ tagged: extended, point }));
+console.log(JSON.stringify([extended, frozen]));
+
+// A getter in an element's property bag replaces the parent's array field
+// while the array is being serialized. The walk keeps the array it read, so
+// both elements still serialize (Node's captured value), rather than reading
+// freed slots.
+class Item {
+  v: number;
+  constructor(v: number) {
+    this.v = v;
+  }
+}
+class Box {
+  items: Item[];
+  constructor(items: Item[]) {
+    this.items = items;
+  }
+}
+const box = new Box([]);
+const item = new Item(1);
+let replaced = false;
+const baggedItem: any = item;
+Object.defineProperty(baggedItem, "extra", {
+  enumerable: true,
+  get() {
+    if (!replaced) {
+      replaced = true;
+      box.items = [];
+    }
+    return 2;
+  },
+});
+box.items = [item, item];
+console.log(JSON.stringify(box));
+
+// A chain far deeper than JSON.stringify's nesting limit throws Node's
+// catchable RangeError instead of exhausting the native stack.
+class DeepChain {
+  label: number;
+  next: DeepChain | undefined;
+  constructor(label: number, next: DeepChain | undefined) {
+    this.label = label;
+    this.next = next;
+  }
+}
+let deepChain = new DeepChain(0, undefined);
+for (let i = 1; i < 100000; i++) deepChain = new DeepChain(i, deepChain);
+try {
+  console.log(JSON.stringify(deepChain).length);
+} catch (error) {
+  if (error instanceof Error) console.log(error.name);
+}

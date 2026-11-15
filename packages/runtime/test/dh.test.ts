@@ -38,6 +38,7 @@ const runtimeSources = [
   "scr_util_style.c",
   "scr_bigint.c",
   "scr_async.c",
+  "scr_context.c",
   "scr_async_dyn.c",
   "scr_child.c",
   "scr_path.c",

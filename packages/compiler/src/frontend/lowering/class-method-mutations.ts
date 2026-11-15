@@ -25,6 +25,17 @@ const FUNCTION_MEMBER_NAMES = new Set([
   "valueOf",
 ]);
 
+/** Whether a setPrototypeOf call the census found may give an instance of
+ * `info` another prototype (Lowerer.reprototypedClasses). */
+export function mayReplacePrototype(
+  lowerer: Lowerer,
+  info: { decl: ts.Node | null; def: { runtime?: boolean } },
+): boolean {
+  if (info.def.runtime) return false;
+  const facts = lowerer.reprototypedClasses;
+  return facts.all || (info.decl !== null && facts.decls.has(info.decl));
+}
+
 /** Census observable slots before choosing native calls. Names are shared
  * conservatively across classes: aliases cannot hide a named replacement. */
 export function collectClassMethodMutations(
@@ -56,6 +67,11 @@ export function collectClassMethodMutations(
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  /** Every class of the program, and the targets of the setPrototypeOf
+   * calls the census found (null: a reference to the function that is not
+   * a call, or a call without a target). */
+  const allClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  const prototypeTargets: (ts.Expression | null)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
   /** Every write with an unknown key: each may install a replacement of any
@@ -64,6 +80,13 @@ export function collectClassMethodMutations(
   const markUnknownKey = (site: ts.Node): void => {
     unknownKey = site;
     unknownKeySites.push(site);
+  };
+  /** A new prototype can carry a `toJSON` that JSON.stringify reads from the
+   * prototype chain, on an instance the static class layout admits (the
+   * property bag only records properties written to the instance itself).
+   * Marks the hook name like a method the program may replace. */
+  const markPrototypeReplacement = (site: ts.Node): void => {
+    lowerer.noteMethodAccess("toJSON", site);
   };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
@@ -102,8 +125,19 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") markUnknownKey(site);
-    if (methods.has(name)) lowerer.noteMethodAccess(name, site);
+    if (name === "prototype" || name === "__proto__") {
+      markUnknownKey(site);
+      markPrototypeReplacement(site);
+    }
+    // A dynamic store under the name `toJSON` can install the JSON hook on a
+    // class prototype (`Object.defineProperty(C.prototype, "toJSON", …)`), or
+    // on an instance the static layout admits. JSON.stringify reads that hook
+    // from the prototype chain, so the class writers must not assume it is
+    // absent: mark the name like a method the program reads or replaces. The
+    // name may have no declared method anywhere, which is why this is not
+    // limited to `methods`.
+    if (name === "toJSON") lowerer.noteMethodAccess(name, site);
+    else if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
   // Structural types can be live views of class instances. A fresh
@@ -348,6 +382,7 @@ export function collectClassMethodMutations(
   };
   for (const file of files)
     ts.walkPreorder(file, (node) => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) allClasses.push(node);
       if (
         (ts.isPropertyDeclaration(node) ||
           ts.isPropertyAssignment(node) ||
@@ -518,8 +553,19 @@ export function collectClassMethodMutations(
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") {
       markUnknownKey(node);
+      const call = node.parent;
+      const target =
+        ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[0] : undefined;
+      prototypeTargets.push(target && !ts.isSpreadElement(target) ? target : null);
+      // A prototype other than `null` may carry the JSON hook.
+      const next =
+        ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[1] : undefined;
+      const value = next === undefined ? undefined : withoutParenthesesAssertionsNonNull(next);
+      if (value === undefined || value.kind !== ts.SyntaxKind.NullKeyword)
+        markPrototypeReplacement(node);
+    }
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -622,6 +668,25 @@ export function collectClassMethodMutations(
       return null;
     return type;
   };
+  // The classes whose instances a setPrototypeOf call may reprototype: every
+  // class whose instances its target's type admits, or all of them for a
+  // target `receiverType` cannot judge.
+  for (const target of prototypeTargets) {
+    const type = target ? receiverType(target) : null;
+    if (type === null) {
+      lowerer.reprototypedClasses.all = true;
+      break;
+    }
+    for (const cls of allClasses) {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      if (!symbol) {
+        lowerer.reprototypedClasses.decls.add(cls);
+        continue;
+      }
+      if (lowerer.checker.isTypeAssignableTo(lowerer.checker.getDeclaredTypeOfSymbol(symbol), type))
+        lowerer.reprototypedClasses.decls.add(cls);
+    }
+  }
   // A function-typed write shadows a method only on an object that has the
   // method: an instance of a class with method `name` that the receiver's
   // type admits. Without one (a callback field of an unrelated class that

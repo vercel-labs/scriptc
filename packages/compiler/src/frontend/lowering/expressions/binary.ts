@@ -107,7 +107,7 @@ import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
-import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
+import { lowerDynTypeofTest, lowerErrorCodeTypeofTest, withTypeofTestCycleRead } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
 import {
   lowerRuntimeConstructorIs,
@@ -2187,6 +2187,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               stmts: [
                 { kind: "varDecl", localId: tmp.id, init: value, loc },
                 { kind: "assign", localId: g.id, value: result, loc },
+                // A conditional whole export that selected this table answers
+                // Node's shared exports object, so its slots follow the write.
+                ...lowerer.cjsConditionalExportMirrorStmts(g.id, result, expr.right, loc),
               ],
               result,
               type: value.type,
@@ -2386,7 +2389,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
       lowerUnionTypeofTest(lowerer, expr, loc);
-    if (test) return test;
+    // These tests can answer from the operand's type alone (a union
+    // whose arms all answer alike): a binding an import cycle can reach
+    // before its declaration ran keeps its checked read.
+    if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.
@@ -3467,10 +3473,16 @@ export function lowerStrictEquality(
       if (leftDef && rightDef) {
         const leftValues = leftDef.arms.filter((arm) => !isUnitType(arm));
         const rightValues = rightDef.arms.filter((arm) => !isUnitType(arm));
-        const sameValueArms =
-          leftValues.length === rightValues.length &&
-          leftValues.every((arm) => rightValues.some((candidate) => typeEquals(candidate, arm)));
-        if (sameValueArms) {
+        // One side's value arms may be a SUBSET of the other's (a
+        // `Readable | null` against a `Writable | Readable | null`
+        // element read, the way `child.stdio[1] === child.stdout`
+        // compares them): both sides convert into the common union and
+        // the tag comparison is then the identity test. Two disjoint
+        // value-arm sets still fence.
+        const covers = (superset: IrType[], subset: IrType[]): boolean =>
+          subset.every((arm) => superset.some((candidate) => typeEquals(candidate, arm)));
+        const subsetValueArms = covers(leftValues, rightValues) || covers(rightValues, leftValues);
+        if (subsetValueArms) {
           const arms = [...leftDef.arms];
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);

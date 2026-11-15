@@ -7,7 +7,7 @@
  * `static-only` build of a program whose `auto` build was cached printed
  * the cached executable's path and exited 0. */
 import { execFile } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -21,7 +21,9 @@ const windows = process.platform === "win32";
 let directory = "";
 
 beforeAll(() => {
-  directory = mkdtempSync(join(windows ? tmpdir() : "/tmp", "scriptc-cache-tier-"));
+  // macOS's /tmp is a link to /private/tmp: the CLI reports the paths it
+  // resolves, so the scratch project starts from its real path.
+  directory = realpathSync(mkdtempSync(join(windows ? tmpdir() : "/tmp", "scriptc-cache-tier-")));
   // A program `auto` compiles and `static-only` refuses (SC2003).
   cpSync(join(repoRoot, "tests/diagnostics/union-spread-merge.ts"), join(directory, "main.ts"));
 });

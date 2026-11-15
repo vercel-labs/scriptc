@@ -526,6 +526,25 @@ bool scr_webcrypto_is_crypto_key(const ScrDyn *value) {
   return scr_crypto_key_of(value) != NULL || (scr_wc_asymmetric && scr_wc_asymmetric->is_key(value));
 }
 
+/* node:crypto's key argument (scr_crypto_crypto_key_info): a secret
+ * CryptoKey's bytes, or which member of an asymmetric pair it is. */
+static int scr_wc_crypto_key_info(const ScrDyn *value, const unsigned char **bytes, size_t *len) {
+  ScrCryptoKey *key = scr_crypto_key_of(value);
+  if (key) {
+    *bytes = key->data;
+    *len = key->len;
+    return 1;
+  }
+  if (scr_wc_asymmetric && scr_wc_asymmetric->is_key(value))
+    return scr_wc_asymmetric->key_is_private(value) ? 3 : 2;
+  return 0;
+}
+
+/* Any path that can hand out a CryptoKey: make, import and generate. */
+static void scr_wc_install_crypto_key_info(void) {
+  scr_crypto_crypto_key_info = scr_wc_crypto_key_info;
+}
+
 ScrDyn *scr_wc_cstr(const char *s) {
   ScrStr *str = scr_str_new(s, strlen(s));
   ScrDyn *out = scr_dyn_new_str(str);
@@ -641,6 +660,7 @@ static ScrDyn *scr_crypto_key_new(const unsigned char *data, size_t len, const c
   static SCR_TL bool installed;
   if (!installed) {
     installed = true;
+    scr_wc_install_crypto_key_info();
     scr_dyn_handle_install(SCR_DYNH_CRYPTO_KEY, &scr_crypto_key_ops);
   }
   ScrCryptoKey *key = malloc(sizeof *key + (len ? len : 1));
@@ -1138,6 +1158,7 @@ done:
 }
 
 ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
+  scr_wc_install_crypto_key_info();
   const char *asymmetric = scr_wc_asymmetric_name(args, 2);
   if (asymmetric) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->import_key(args)
@@ -1154,6 +1175,7 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
  * the final byte's unused low bits). ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and
  * RSA-PSS key pairs generate in scr_webcrypto_pki.c. */
 ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
+  scr_wc_install_crypto_key_info();
   const char *asymmetric = scr_wc_asymmetric_name(args, 0);
   if (asymmetric) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->generate_key(args)

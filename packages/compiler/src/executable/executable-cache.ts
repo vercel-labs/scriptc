@@ -189,6 +189,7 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dnsResolve: boolean;
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;

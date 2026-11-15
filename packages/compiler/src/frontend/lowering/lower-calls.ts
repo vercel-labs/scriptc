@@ -91,7 +91,11 @@ import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { lowerReadlineDisposeCall } from "./builtins/readline.js";
 import { errorToStringCall } from "./error-methods.js";
-import { lowerClassPrototypeAssign, lowerClassPrototypeDescriptors } from "./class-prototypes.js";
+import {
+  isPrototypeViewReference,
+  lowerClassPrototypeAssign,
+  lowerClassPrototypeDescriptors,
+} from "./class-prototypes.js";
 import {
   BYTES_ELEMENT_NAME,
   BYTES_U8,
@@ -9658,10 +9662,11 @@ function lowerDefineReceiver(lowerer: Lowerer, targetNode: ts.Expression): IrExp
   // The checker gives C.prototype the instance type, but its lowered
   // value is the shared prototype table, not an instance to unbox.
   const prototypeTarget =
-    ts.isPropertyAccessExpression(targetNode) &&
-    targetNode.name.text === "prototype" &&
-    (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
-      storedClassValueType(lowerer, targetNode.expression)?.kind === "classval");
+    (ts.isPropertyAccessExpression(targetNode) &&
+      targetNode.name.text === "prototype" &&
+      (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
+        storedClassValueType(lowerer, targetNode.expression)?.kind === "classval")) ||
+    isPrototypeViewReference(lowerer, targetNode);
   const declaredTarget =
     target?.type.kind === "dyn" &&
     !prototypeTarget &&

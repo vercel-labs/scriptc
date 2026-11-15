@@ -547,6 +547,22 @@ export function staticTableMemberRefused(
   return memberNeedsNativeReceiver(lowerer, info, member, true, true);
 }
 
+/** Whether `member` of `info` can run over a checked-dynamic receiver, the
+ * way JavaScript's methods do: a TypeScript member (a JavaScript one already
+ * lowers receiver-independently) that reads no `super` and only brand-checks
+ * its `#private` members. Its `this` is then the caller's actual receiver,
+ * which may be an object made from the class's prototype. */
+export function runsOverDynamicReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): boolean {
+  return (
+    !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+    !memberNeedsNativeReceiver(lowerer, info, member, false, true)
+  );
+}
+
 function reflectedMethodValue(
   lowerer: Lowerer,
   info: ClassInfo,

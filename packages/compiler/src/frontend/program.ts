@@ -8891,6 +8891,31 @@ function analyzeEsmNamedImportLinks(
         // two of them is ambiguous exactly as two ES modules' would be.
         if (!isCjsJsFile7(target, program)) continue;
         if (!cjsNamespaceExportNames(program, target).has(name)) continue;
+        // The member's own symbol when the checker declares it: a named
+        // re-export of the same member (`export { name } from './x.cjs'`,
+        // reached directly or through another star) resolves to that symbol,
+        // so both paths agree and the name is not called ambiguous. Node
+        // spreads bindings, not paths.
+        const member = checker
+          .getSymbolAtLocation(target)
+          ?.getExports()
+          .get(ts.escapedSymbolName(name));
+        if (member !== undefined) {
+          let resolved = member;
+          const seenSymbols = new Set<ts.Symbol>();
+          while ((resolved.flags & ts.SymbolFlags.Alias) !== 0 && !seenSymbols.has(resolved)) {
+            seenSymbols.add(resolved);
+            resolved = checker.getAliasedSymbol(resolved);
+          }
+          if (resolved.flags & ts.SymbolFlags.Value) {
+            if (starExport !== undefined && starExport !== resolved) return undefined;
+            starExport = resolved;
+            continue;
+          }
+        }
+        // A name only the lexer detects (the checker declares no member):
+        // one identity per contributing module, so the same module reached
+        // through two stars stays unambiguous.
         let sentinel = cjsStarExports.get(target);
         if (sentinel === undefined) {
           sentinel = { commonJsStar: target.fileName };

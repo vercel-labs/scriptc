@@ -7930,6 +7930,9 @@ export function lowerVarDecl(
     if (type.kind === "dyn" && isLet && decl.type === undefined) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
+    // A JSDoc-typed `let` the program writes values outside the annotation
+    // to holds them (analyzeJsWidenedBindings), annotated or not.
+    if (declSymbol !== undefined && lowerer.jsWidenedBindings.has(declSymbol)) type = DYN;
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
     // the unit-only union (its undefined arm is the unassigned state,
     // which is also the only state).

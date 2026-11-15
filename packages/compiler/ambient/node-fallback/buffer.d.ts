@@ -4,8 +4,8 @@
  * third-party .d.ts files that `import { Buffer } from "node:buffer"` —
  * file-entry-cache in a typed-JS source graph — typecheck). */
 declare module "buffer" {
-  export function isAscii(input: ArrayBuffer | ArrayBufferView): boolean;
-  export function isUtf8(input: ArrayBuffer | ArrayBufferView): boolean;
+  export function isAscii(input: ArrayBuffer | ScriptcBufferView): boolean;
+  export function isUtf8(input: ArrayBuffer | ScriptcBufferView): boolean;
   export function transcode(source: Uint8Array, fromEncoding: string, toEncoding: string): Buffer;
   export function atob(data: string): string;
   export function btoa(data: string): string;

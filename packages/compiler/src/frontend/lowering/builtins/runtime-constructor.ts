@@ -159,7 +159,7 @@ function exactClassTest(lowerer: Lowerer, ref: IrExpr, target: ClassInfo, loc: S
 /** The run-time refusal for an instance whose class has no class value. */
 function refusalCall(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrExpr {
   const name = `%constructor.refusal:${type.kind === "classval" ? type.className : ""}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [],

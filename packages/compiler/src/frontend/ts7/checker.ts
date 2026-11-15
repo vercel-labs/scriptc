@@ -1,13 +1,13 @@
 import { CheckerCache } from "./checker-cache.js";
-/* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
+/* The checker facade: 5.9.3-shaped TypeChecker methods over 7.1's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
- * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
+ * of the sync client costs 0.1-0.3 ms of IPC per query; the census counted
  * 32,226 checker calls lowering mock-gateway, so a transparent adapter would
  * add seconds. Batched, the same queries run at ~0.005 ms/call — parity with
  * 5.9.3. Three mechanisms make batching and reuse the DEFAULT path:
  *
  * 1. IDENTITY MEMOS. One program-owned Map per query kind, keyed on the client-side
- *    node/type/symbol object. Safe because the 7.0.2 client registry dedupes
+ *    node/type/symbol object. Safe because the client registry dedupes
  *    by server handle id (probe-verified: the same symbol/type from any two
  *    queries is the same object), and a snapshot is immutable — an answer
  *    never changes for the life of the program. The client itself does NOT
@@ -256,9 +256,12 @@ export class CheckerFacade {
   /** Batch methods the server answered as unknown. Lowering asks those
    * node by node from then on, without a failed request per prefetch. */
   private readonly unknownBatchMethods = new Set<string>();
+  /** Whether the server answers `getResolvedSignatures`; undefined until
+   * asked (resolvesSignatureBatches). */
+  private signatureBatches: boolean | undefined;
 
   constructor(
-    /** The underlying 7.0.2 sync checker — exposed for methods the facade
+    /** The underlying 7.1 sync checker — exposed for methods the facade
      * does not shim; going around the facade forfeits memoization only. */
     readonly raw: Checker,
     private readonly options: { autoPrefetch?: boolean; project?: Project } = {},
@@ -434,6 +437,59 @@ export class CheckerFacade {
       this.unknownBatchMethods.add(method);
   }
 
+  /** Whether the server answers `getResolvedSignatures`: asked once, with an
+   * empty batch, which asks the checker nothing. */
+  private resolvesSignatureBatches(): boolean {
+    if (this.signatureBatches === undefined) {
+      try {
+        this.raw.getResolvedSignatures([]);
+        this.signatureBatches = true;
+      } catch (error) {
+        if (!unknownMethod(error, "getResolvedSignatures")) throw error;
+        this.unknownBatchMethods.add("getResolvedSignatures");
+        this.signatureBatches = false;
+      }
+    }
+    return this.signatureBatches;
+  }
+
+  /** Resolves the calls among `nodes`, in order, before a type query about
+   * `nodes`, on a server without the node batch methods (tsgo).
+   *
+   * A checker's answer about a generic call nested in another call's
+   * argument depends on which of the two it resolves first. Asked about the
+   * inner call first, it resolves the outer call for the inner one's
+   * contextual type, which resolves the inner call again while that is
+   * still being resolved; the recursive resolution skips the constraint
+   * checks and its signature is the one the checker keeps (`T = undefined`
+   * for the `T extends Shape` of `f(g(undefined))`). tsgo and tsc-ts both
+   * answer so. A type sweep asks in source order, the outer call before the
+   * inner one, and tsc-ts resolves a call when asked for its type. tsgo
+   * answers the type of a call that has one signature without type
+   * parameters from that signature's return type, without resolving the
+   * call, so its sweep reaches the inner call first. Resolving the calls
+   * before the sweep gives tsgo the order tsc-ts's sweep has; the
+   * signatures land in the memo getResolvedSignature reads. A query that
+   * fails stays out of the memo, so the direct query throws again where it
+   * is made. */
+  private resolveCallsFirst(nodes: readonly Node[]): void {
+    if (!NODE_BATCH_QUERIES) return;
+    let asked = false;
+    for (const node of nodes) {
+      if (node.kind !== SyntaxKind.CallExpression || this.cache.resolvedSignature.has(node))
+        continue;
+      if (!asked) {
+        if (this.resolvesSignatureBatches()) return;
+        asked = true;
+      }
+      try {
+        this.cache.resolvedSignature.set(node, this.raw.getResolvedSignature(node));
+      } catch {
+        // Unanswered: the direct query asks again.
+      }
+    }
+  }
+
   /** Batches symbol queries for every identifier under roots without the
    * usual companion getTypeOfSymbol batch. Preflight uses this for AST
    * analyses that themselves inspect deferred bodies for binding identity:
@@ -452,6 +508,20 @@ export class CheckerFacade {
     this.ensureActive();
     this.markManaged(nodes);
     this.prefetchSymbolNodes([...new Set(nodes)], false, false);
+  }
+
+  /** prefetchSymbolNodesExact for nodes of any kind. An analysis that asks
+   * for the symbol at a module specifier (the module it names) beside the
+   * identifiers it compares batches those questions too: the identifier
+   * sweeps leave such a node to one request each. */
+  prefetchSymbolsAtExact(nodes: readonly Node[]): void {
+    this.ensureActive();
+    this.markManaged(nodes);
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.symbolAtLocation.has(node));
+    const symbols = chunked(missing, (chunk) =>
+      withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
+    );
+    missing.forEach((node, i) => this.cache.symbolAtLocation.set(node, symbols[i]));
   }
 
   /** Batches the hot getTypeAtLocation nodes structure collection may read
@@ -482,6 +552,7 @@ export class CheckerFacade {
     const distinctTypes = [...new Set(typeNodes)].filter(
       (node) => !this.cache.typeAtLocation.has(node),
     );
+    this.resolveCallsFirst(distinctTypes);
     const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
     distinctTypes.forEach((node, index) => this.cache.typeAtLocation.set(node, types[index]));
   }
@@ -495,9 +566,11 @@ export class CheckerFacade {
   prefetchTypeQueries(nodes: readonly Node[]): void {
     if (!NODE_BATCH_QUERIES) return;
     this.ensureActive();
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.typeAtLocation.has(node));
+    this.resolveCallsFirst(missing);
     this.batchNodes(
       "getTypeAtLocations",
-      [...new Set(nodes)].filter((node) => !this.cache.typeAtLocation.has(node)),
+      missing,
       (chunk) => this.raw.getTypeAtLocation(chunk) as (Type | undefined)[],
       (node, type) => this.cache.typeAtLocation.set(node, type),
     );
@@ -526,6 +599,7 @@ export class CheckerFacade {
     const nodes = allNodes.filter(
       (n) => TYPE_PREFETCH_KINDS.has(n.kind) && !this.cache.typeAtLocation.has(n),
     );
+    this.resolveCallsFirst(nodes);
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
     nodes.forEach((n, i) => this.cache.typeAtLocation.set(n, types[i]));
   }
@@ -601,12 +675,28 @@ export class CheckerFacade {
     this.autoPrefetch(node, "types");
     if (this.cache.typeAtLocation.has(node))
       return this.cache.typeAtLocation.get(node) ?? this.anyType();
+    this.resolveCallsFirst([node]);
     const type = this.raw.getTypeAtLocation(node);
     this.cache.typeAtLocation.set(node, type);
     return type ?? this.anyType();
   }
 
+  /** While set, answers getSymbolAtLocation for a node the checker
+   * resolves no symbol at. The lowering sets it while a refused JavaScript
+   * statement lowers again with its reads typed by what their bindings
+   * declare (Lowerer.bindingTypedRetry): the checker calls such a receiver
+   * `any` and resolves no member on it, and the member the binding's type
+   * declares is the one the code names. */
+  unresolvedSymbol: ((node: Node) => Ts7Symbol | undefined) | null = null;
+
   getSymbolAtLocation(node: Node): Ts7Symbol | undefined {
+    const symbol = this.symbolAtLocation(node);
+    return symbol === undefined && this.unresolvedSymbol !== null
+      ? this.unresolvedSymbol(node)
+      : symbol;
+  }
+
+  private symbolAtLocation(node: Node): Ts7Symbol | undefined {
     this.ensureActive();
     if (this.cache.symbolAtLocation.has(node)) return this.cache.symbolAtLocation.get(node);
     this.autoPrefetch(node, "symbols");
@@ -655,6 +745,14 @@ export class CheckerFacade {
       this.cache.aliasedSymbol.set(symbol, aliased);
     }
     return aliased;
+  }
+
+  /** The symbol one declaration further along an alias chain (the export
+   * an import names, the binding a local export passes on), or undefined
+   * where the chain ends. getAliasedSymbol answers the chain's end. */
+  getImmediateAliasedSymbol(symbol: Ts7Symbol): Ts7Symbol | undefined {
+    this.ensureActive();
+    return this.raw.getImmediateAliasedSymbol(symbol);
   }
 
   /** A module symbol's exports, with the members of its `export *`
@@ -884,10 +982,10 @@ export class CheckerFacade {
 
   /** 5.9.3's checker.isTupleType answers true for tuple SHAPES and for
    * REFERENCES to them (Pair<number>, a readonly [T, T] instantiation).
-   * The 7.0.2 client-side Type.isTupleType() sees only the shape — a
-   * reference answers false there (measured; the facade suite pins it) —
-   * so shape-true and non-object-false resolve locally and only object
-   * types that are not visibly tuples round-trip, memoized. */
+   * The client-side Type.isTupleType() answers for a reference, and a tuple
+   * target itself does not qualify there, so references and non-object
+   * types resolve locally and only object types that are not references
+   * round-trip, memoized. */
   isTupleType(type: Type): boolean {
     this.ensureActive();
     if (type.isTupleType()) return true;
@@ -982,8 +1080,10 @@ export class CheckerFacade {
     return this.intrinsic("boolean", () => this.raw.getBooleanType());
   }
 
-  /** 7.0.2 dropped getAwaitedType (the census's one MISSING checker method).
-   * Shimmed per the survey: unwrap Promise/PromiseLike references through
+  /** 5.9.3's checker.getAwaitedType. A 7.0 server has no such method (the
+   * census's one MISSING checker method), and the facade answers the same
+   * way on both protocols, so it computes the answer client-side per the
+   * survey: unwrap Promise/PromiseLike references through
    * their type argument, distributing over unions. The client cannot BUILD
    * union types, so a union whose arms unwrap to more than one distinct type
    * returns undefined (callers fall back to the input; the census's one call

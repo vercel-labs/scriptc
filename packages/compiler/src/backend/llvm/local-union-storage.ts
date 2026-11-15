@@ -95,7 +95,7 @@ export function isScalarOptionalSource(expr: IrExpr, sources: UnionSources): boo
       supportedSource(expr.else_, expr.type, sources)
     );
   return (
-    expr.kind === "nullish" &&
+    (expr.kind === "nullish" || expr.kind === "logical") &&
     supportedSource(expr.left, expr.type, sources) &&
     supportedSource(expr.right, expr.type, sources)
   );
@@ -242,6 +242,7 @@ export function storeLocalUnion(
   } else if (
     expr.kind === "optChain" ||
     expr.kind === "nullish" ||
+    expr.kind === "logical" ||
     expr.kind === "call" ||
     expr.kind === "arrIntrinsic"
   ) {
@@ -316,7 +317,7 @@ export function storeLocalUnion(
  * is only overwritten after the whole value is known. */
 export function emitScalarOptional(
   host: LlvmEmitterContext,
-  expr: ExprOf<"optChain" | "nullish" | "ternary" | "arrIntrinsic">,
+  expr: ExprOf<"optChain" | "nullish" | "logical" | "ternary" | "arrIntrinsic">,
 ): LlValue {
   const B = host.B;
   const storage = allocateLocalUnion(host, { ownerType: null });
@@ -344,11 +345,21 @@ export function emitScalarOptional(
     B.br(join);
   } else {
     storeLocalUnion(host, storage, expr.left);
-    const unionId = expr.type.kind === "union" ? expr.type.unionId : "";
-    const arms = host.unionsById.get(unionId)!.arms;
-    const unitTags = arms.flatMap((arm, tag) => (isUnitType(arm) ? [tag] : []));
     const fallback = B.newLabel("optional.default");
-    B.condBr(host.tagInSet(storage.box, unionId, unitTags), fallback, join);
+    if (expr.kind === "logical") {
+      // `&&` and `||` yield the deciding operand itself, so the left
+      // snapshot stays (falsy for `&&`, truthy for `||`) or the right one
+      // replaces it. The truth value comes from the left arm's own payload,
+      // exactly as the boxed form's truthiness switch does.
+      const truthy = host.truthy({ name: storage.box, type: expr.type });
+      if (expr.op === "&&") B.condBr(truthy, fallback, join);
+      else B.condBr(truthy, join, fallback);
+    } else {
+      const unionId = expr.type.kind === "union" ? expr.type.unionId : "";
+      const arms = host.unionsById.get(unionId)!.arms;
+      const unitTags = arms.flatMap((arm, tag) => (isUnitType(arm) ? [tag] : []));
+      B.condBr(host.tagInSet(storage.box, unionId, unitTags), fallback, join);
+    }
     B.startBlock(fallback);
     host.frames.push([]);
     storeLocalUnion(host, storage, expr.right);

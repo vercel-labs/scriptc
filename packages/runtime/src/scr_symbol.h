@@ -35,4 +35,18 @@ ScrStr *scr_sym_to_string(ScrSym *s); /* +1 "Symbol(desc)" ("Symbol()" when abse
 typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 void scr_dyn_dirent_finish(ScrDyn *obj);
 
+/* A symbol event name's registry key is a ScrStr-shaped identity key
+ * (scr_str_symbol_key in scr_string.h). The emitter's symbol-keyed
+ * buckets reach this unit through scr_sym_event_ops, the table this unit
+ * installs from a constructor — scr_string.h declares it beside the key.
+ */
+
+/* process.ref(maybeRefable) / process.unref(maybeRefable): read the
+ * nodejs.ref / nodejs.unref symbol on the value (falling back to its ref /
+ * unref member) and call it with the value as the receiver. null and
+ * undefined are Node's no-op; a non-callable member's TypeError propagates
+ * from the call, so both can throw (MAY THROW). */
+void scr_process_ref(ScrDyn *maybe);
+void scr_process_unref(ScrDyn *maybe);
+
 #endif /* SCR_SYMBOL_H */

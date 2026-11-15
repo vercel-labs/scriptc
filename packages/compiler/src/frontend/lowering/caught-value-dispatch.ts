@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 import { varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -12,6 +13,7 @@ import {
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
 import type { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, FixpointWorklist } from "./fixpoint-worklist.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -26,8 +28,14 @@ export class CaughtValueDispatch {
    * and class (dynamicPayloads). */
   private readonly payloadHelpers = new Map<string, IrFunction>();
   private readonly payloadHelperFns = new Set<IrFunction>();
+  /** The bodies whose caught conversions it has still to rewrite. */
+  private worklist: FixpointWorklist | null = null;
 
   process(lowerer: Lowerer, functions: readonly IrFunction[], sites: DispatchSites): boolean {
+    const worklist = (this.worklist ??= new FixpointWorklist(sites));
+    /** The bodies whose caught conversions the worklist settled: the check
+     * mode walks them again and they must come out unchanged. */
+    const settled = new Set<IrFunction>();
     const consumers: IrFunction[] = [];
     for (const fn of functions) {
       if (fn === this.helper) continue;
@@ -36,7 +44,12 @@ export class CaughtValueDispatch {
         const info = lowerer.classes.get(className);
         if (info) this.thrownClasses.add(info.def.name);
       }
-      if (found.caughtValues) consumers.push(fn);
+      if (!found.caughtValues) continue;
+      if (worklist.needsRewrite(fn, () => "")) consumers.push(fn);
+      else if (checkIncremental) {
+        consumers.push(fn);
+        settled.add(fn);
+      }
     }
     if (!this.helper && consumers.length === 0) return false;
     let changed = false;
@@ -97,13 +110,31 @@ export class CaughtValueDispatch {
       changed = true;
     }
     for (const fn of consumers) {
-      fn.body = transformStmtList(fn.body, {
+      let touched = false;
+      const body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
-        expr: (expr) =>
-          expr.kind === "caughtToDyn"
-            ? { kind: "call", callee: helper.name, args: [expr.value], type: DYN, loc: expr.loc }
-            : expr,
+        expr: (expr) => {
+          if (expr.kind !== "caughtToDyn") return expr;
+          touched = true;
+          return {
+            kind: "call",
+            callee: helper.name,
+            args: [expr.value],
+            type: DYN,
+            loc: expr.loc,
+          };
+        },
       });
+      if (settled.has(fn)) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(
+            `the settled caught-value rewrite of ${fn.name} changed its body`,
+          );
+        continue;
+      }
+      if (touched) fn.body = body;
+      worklist.record(fn);
       changed = true;
     }
     return changed;
@@ -226,6 +257,20 @@ export class CaughtValueDispatch {
     });
     const type: IrType = { kind: "object", className };
     const returnType = kind === "instanceof" ? BOOL : type;
+    // The checked conversion of an untyped value names the class, except for
+    // a builtin error class below Error (TypeError, RangeError, ...), which
+    // has none: the Error check answers the thrown instance, and the class
+    // test that guards this conversion already established that it is a C.
+    const errorType: IrType = { kind: "object", className: "%Error" };
+    const converted = (): IrExpr =>
+      info.builtinError && className !== "%Error"
+        ? {
+            kind: "downcast",
+            value: lowerer.coerceToExpected(dynamic(), errorType),
+            type,
+            loc,
+          }
+        : lowerer.coerceToExpected(dynamic(), type);
     let value: IrExpr;
     if (kind === "instanceof") {
       value = {
@@ -241,7 +286,7 @@ export class CaughtValueDispatch {
         kind: "ternary",
         cond: native,
         then: { kind: "caughtNarrow", value: caught(), type, loc },
-        else_: lowerer.coerceToExpected(dynamic(), type),
+        else_: converted(),
         type,
         loc,
       };
@@ -249,7 +294,7 @@ export class CaughtValueDispatch {
       value = {
         kind: "ternary",
         cond: dynamicInstance(),
-        then: lowerer.coerceToExpected(dynamic(), type),
+        then: converted(),
         else_: { kind: "caughtCheck", value: caught(), className, type, loc },
         type,
         loc,

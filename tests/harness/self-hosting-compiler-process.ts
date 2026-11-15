@@ -43,7 +43,9 @@ async function compilerProcess(
       // The caller's test budget: the child must outlive the band the test
       // allows, or the exec would kill a build the test still times.
       timeout: control.timeout ?? 300_000,
-      maxBuffer: 16 * 1024 * 1024,
+      // The result carries the build's warnings, and the compiler's own
+      // source has several thousand SC6001 (frontend/lowering/width-copies.ts).
+      maxBuffer: 64 * 1024 * 1024,
     },
   );
   if (stderr !== "") throw new Error(stderr);

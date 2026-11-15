@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-reason-stays-callers-value.ts"
+ ],
+ "diags": []
+}

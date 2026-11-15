@@ -1,5 +1,6 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
+import { BOOL } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { pipelinePumpedRuns } from "../../ir/builtin-signatures.js";
@@ -136,6 +137,58 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const out = B.tmp();
     B.line(`${out} = call ptr @scr_child_stream_set_encoding(ptr ${s0.name}, ptr ${enc.name})`);
     return host.own({ name: out, type: e.type });
+  }
+  if (e.fn === "stream.childPause" || e.fn === "stream.childResume") {
+    // The receiver again, +1 (Node returns the stream).
+    const s0 = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "stream.childPause" ? "scr_child_stream_pause" : "scr_child_stream_resume";
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call ptr @${sym}(ptr ${s0.name})`);
+    return host.own({ name: out, type: e.type });
+  }
+  if (e.fn === "stream.childIsPaused") {
+    const s0 = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_child_stream_is_paused(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call zeroext i1 @scr_child_stream_is_paused(ptr ${s0.name})`);
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "stream.childFlowing") {
+    // `boolean | null` over the runtime's answer: 0 false, 1 true, -1 null.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const boolTag = def ? def.arms.findIndex((a) => a.kind === "bool") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    if (boolTag < 0 || nullTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const s0 = host.emitExpr(e.args[0]!);
+    host.declare(`declare double @scr_child_stream_flowing(ptr)`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const state = B.tmp();
+    B.line(`${state} = call double @scr_child_stream_flowing(ptr ${s0.name})`);
+    const known = B.tmp();
+    B.line(`${known} = fcmp oge double ${state}, 0.0`);
+    const lp = B.newLabel("cf.p");
+    const la = B.newLabel("cf.a");
+    const lj = B.newLabel("cf.j");
+    B.condBr(known, lp, la);
+    B.startBlock(lp);
+    const flowing = B.tmp();
+    B.line(`${flowing} = fcmp one double ${state}, 0.0`);
+    B.line(
+      `store ptr ${host.unionNewOwned(e.type.unionId, boolTag, { name: flowing, type: BOOL })}, ptr ${slot}`,
+    );
+    B.br(lj);
+    B.startBlock(la);
+    B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, nullTag)}, ptr ${slot}`);
+    B.br(lj);
+    B.startBlock(lj);
+    const t = B.tmp();
+    B.line(`${t} = load ptr, ptr ${slot}`);
+    return host.own({ name: t, type: e.type });
   }
   if (/^(readable|writable|duplex|transform|passthrough)\.(new|init)$/.test(e.fn)) {
     // Head args then flags then the PRESENT option callbacks in

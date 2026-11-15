@@ -245,10 +245,40 @@ export function lowerForOfArrayIter(
 ): IrStmt {
   const loc = locOf(stmt);
   const arrT = iterable.type;
-  if (arrT.kind !== "array" && arrT.kind !== "bytes")
+  // A fixed tuple: its length is the number of positions, and a position
+  // is read when the walk reaches it, so the loop sees what its own body
+  // writes (the tuple for-of's rule).
+  const tupleShape = arrT.kind === "record" ? lowerer.shapes.get(arrT.shapeId) : undefined;
+  const tupleFields =
+    arrT.kind === "record" && tupleShape?.tuple
+      ? [...tupleShape.fields].sort((a, b) => Number(a.name) - Number(b.name))
+      : null;
+  if (arrT.kind !== "array" && arrT.kind !== "bytes" && tupleFields === null)
     throw new InternalCompilerError("array iterator requires indexed storage");
-  const elemT = arrT.kind === "array" ? arrayValueType(lowerer, arrT.elem) : F64;
   const yieldsPair = proj === "entries";
+  if (tupleFields !== null && tupleFields.length === 0) {
+    lowerer.noLowering(`for-of over the ${proj}() of an empty tuple`, stmt.expression);
+  }
+  // The element type of a tuple's entries is the checker's own: the second
+  // position of the pair the loop declares.
+  let tupleElemT: IrType | null = null;
+  if (tupleFields !== null && yieldsPair && ts.isVariableDeclarationList(stmt.initializer)) {
+    const pairT = lowerer.mapTypeOf(
+      lowerer.checker.getTypeAtLocation(stmt.initializer.declarations.nodes[0]!.name),
+    );
+    const pairShape = pairT?.kind === "record" ? lowerer.shapes.get(pairT.shapeId) : undefined;
+    tupleElemT = pairShape?.tuple
+      ? (pairShape.fields.find((field) => field.name === "1")?.type ?? null)
+      : null;
+    if (tupleElemT === null) {
+      lowerer.noLowering(
+        "for-of over a tuple's entries() with this loop variable",
+        stmt.initializer,
+        "declare the loop variable as a pattern: for (const [index, value] of tuple.entries())",
+      );
+    }
+  }
+  const elemT = arrT.kind === "array" ? arrayValueType(lowerer, arrT.elem) : (tupleElemT ?? F64);
   if (!ts.isVariableDeclarationList(stmt.initializer)) {
     lowerer.unsupported(
       "SC1090",
@@ -270,17 +300,59 @@ export function lowerForOfArrayIter(
     i.mutable = true;
 
     const keyRead = (): IrExpr => varRef(i.id, F64, loc);
-    const valRead = (): IrExpr =>
-      arrT.kind === "array"
-        ? arrayValueRead(lowerer, varRef(arr.id, arrT, loc), varRef(i.id, F64, loc), arrT.elem, loc)
-        : {
-            kind: "bytesIntrinsic",
-            method: "get",
-            receiver: varRef(arr.id, arrT, loc),
-            args: [varRef(i.id, F64, loc)],
-            type: F64,
+    const tupleRead = (fields: { name: string; type: IrType }[]): IrExpr => {
+      const at = (position: number): IrExpr =>
+        lowerer.coerceInto(
+          stmt.expression,
+          {
+            kind: "recordGet",
+            obj: varRef(arr.id, arrT, loc),
+            shapeId: (arrT as IrType & { kind: "record" }).shapeId,
+            field: fields[position]!.name,
+            type: fields[position]!.type,
             loc,
-          };
+          },
+          elemT,
+        );
+      let read = at(fields.length - 1);
+      for (let position = fields.length - 2; position >= 0; position--) {
+        read = {
+          kind: "ternary",
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: varRef(i.id, F64, loc),
+            right: numLit(position, loc),
+            type: BOOL,
+            loc,
+          },
+          then: at(position),
+          else_: read,
+          type: elemT,
+          loc,
+        };
+      }
+      return read;
+    };
+    const valRead = (): IrExpr =>
+      tupleFields !== null
+        ? tupleRead(tupleFields)
+        : arrT.kind === "array"
+          ? arrayValueRead(
+              lowerer,
+              varRef(arr.id, arrT, loc),
+              varRef(i.id, F64, loc),
+              arrT.elem,
+              loc,
+            )
+          : {
+              kind: "bytesIntrinsic",
+              method: "get",
+              receiver: varRef(arr.id, arrT, loc),
+              args: [varRef(i.id, F64, loc)],
+              type: F64,
+              loc,
+            };
 
     const binds: IrStmt[] = [];
     const isPlainIdent = (
@@ -400,23 +472,25 @@ export function lowerForOfArrayIter(
         op: "<",
         left: varRef(i.id, F64, loc),
         right:
-          arrT.kind === "array"
-            ? {
-                kind: "arrIntrinsic",
-                method: "length",
-                receiver: varRef(arr.id, arrT, loc),
-                args: [],
-                type: F64,
-                loc,
-              }
-            : {
-                kind: "bytesIntrinsic",
-                method: "length",
-                receiver: varRef(arr.id, arrT, loc),
-                args: [],
-                type: F64,
-                loc,
-              },
+          tupleFields !== null
+            ? numLit(tupleFields.length, loc)
+            : arrT.kind === "array"
+              ? {
+                  kind: "arrIntrinsic",
+                  method: "length",
+                  receiver: varRef(arr.id, arrT, loc),
+                  args: [],
+                  type: F64,
+                  loc,
+                }
+              : {
+                  kind: "bytesIntrinsic",
+                  method: "length",
+                  receiver: varRef(arr.id, arrT, loc),
+                  args: [],
+                  type: F64,
+                  loc,
+                },
         type: BOOL,
         loc,
       },

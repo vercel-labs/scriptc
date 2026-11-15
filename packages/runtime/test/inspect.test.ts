@@ -24,6 +24,9 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_inspect.c"),
     join(testDir, "../src/scr_inspect.c"),
+    // The inspect color/style tables the static rendering and styleText
+    // share (scr_inspect.c reads them through scr_util_style.h).
+    join(testDir, "../src/scr_util_style.c"),
     // scr_insp_dyn drives the layout engine through parsed JSON trees;
     // the JSON module and its dependencies join the link (scr_closure.c:
     // releasing a dyn tree releases SCR_DYN_FUNC boxes' closures).
@@ -49,6 +52,17 @@ beforeAll(async () => {
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
     join(testDir, "../src/scr_alloc.c"),
+    // A promise value renders through the async core's state accessors
+    // (scr_promise_is_pending, scr_promise_is_rejected and the settled-value
+    // reader), so the async core joins the link. Its fs references
+    // (readFile, writeFile and copyFile promises) pull the units that
+    // define them, built in their SCR_FS_FLAGS shape.
+    join(testDir, "../src/scr_async.c"),
+    join(testDir, "../src/scr_bytes_io.c"),
+    join(testDir, "../src/scr_fs_bytes_write.c"),
+    join(testDir, "../src/scr_fs_flags.c"),
+    join(testDir, "../src/scr_fs_cp.c"),
+    "-DSCR_FS_FLAGS",
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
   ]);
 });

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/builtin-polyfill-guard-void-operand.ts"
+ ],
+ "diags": []
+}

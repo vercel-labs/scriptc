@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9793-promise-resolver-scheduled.ts"
+ ],
+ "diags": []
+}

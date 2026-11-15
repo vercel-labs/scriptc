@@ -2,5 +2,6 @@
   "entry": "workloads/typed-array-kernels.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

@@ -7,6 +7,7 @@ import { analyzeInChild, compileInChild } from "./self-hosting-compiler-process.
 import { spawnResult } from "./spawn-result.js";
 import { nativeCodegenTarget } from "../../packages/compiler/src/backend/targets.js";
 import type { NativeLinkFeatures } from "../../packages/compiler/src/backend/native-link-info.js";
+import { noLinkFeatures } from "../../packages/compiler/src/backend/native-link-info-core.js";
 import type { RuntimePackManifest } from "../../packages/compiler/src/backend/runtime-pack-core.js";
 import type { NativeToolchainManifest } from "../../packages/compiler/src/native/toolchain.js";
 import {
@@ -16,52 +17,7 @@ import {
 
 const root = join(import.meta.dirname, "../..");
 const entry = join(root, "tests/fixtures/self-hosting/native-toolchain.ts");
-const features: NativeLinkFeatures = {
-  regex: false,
-  copying: false,
-  textDecoderLegacy: false,
-  bigintBytes: false,
-  fileHandle: false,
-  fetch: false,
-  zlib: false,
-  assert: false,
-  inspect: false,
-  dynInvoke: false,
-  dc: false,
-  dynAsync: false,
-  events: false,
-  emitter: false,
-  symbol: false,
-  bigint: false,
-  searchParams: false,
-  qs: false,
-  utilPromisify: false,
-  dynBuiltinClass: false,
-  dynBuiltinStream: false,
-  parseArgs: false,
-  stream: false,
-  net: false,
-  http: false,
-  http2: false,
-  dgram: false,
-  dnsPromises: false,
-  dgramDyn: false,
-  textCodecDyn: false,
-  watch: false,
-  watchFile: false,
-  foreignFfi: false,
-  nodeTest: false,
-  tls: false,
-  tlsCa: false,
-  cipher: false,
-  ecdh: false,
-  dh: false,
-  pki: false,
-  ed25519: false,
-  x509: false,
-  webcrypto: false,
-  perfLoop: false,
-};
+const features: NativeLinkFeatures = noLinkFeatures();
 
 test("native toolchain configuration, staging and helper validation are static", async () => {
   const coverage = await analyzeInChild(entry, {});

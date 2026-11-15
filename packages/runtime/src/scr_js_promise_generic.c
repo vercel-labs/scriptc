@@ -841,6 +841,6 @@ ScrDyn *scr_js_promise_generic_call(const ScrStr *name, const ScrDyn *thisArg, c
   if (mode >= 0) return js_pg_combine(mode, thisArg, native, arg);
   if (resolve_mode) return js_pg_resolve_call(thisArg, arg, native);
   if (reject_mode) return js_pg_reject_call(thisArg, arg, native);
-  js_pg_throw_type("Promise static is not supported");
+  { static const char refused[] = "Promise static is not supported"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
   return NULL;
 }

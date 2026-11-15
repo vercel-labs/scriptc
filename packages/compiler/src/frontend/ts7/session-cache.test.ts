@@ -10,14 +10,7 @@ const { SourceFileCache } = require(
 ) as {
   SourceFileCache: new () => {
     getRetained(path: string, snapshot: number, project: string): SourceFile | undefined;
-    set(
-      path: string,
-      file: SourceFile,
-      options: string,
-      hash: string,
-      snapshot: number,
-      project: string,
-    ): SourceFile;
+    set(file: SourceFile, snapshot: number, project: string): SourceFile;
     retainForSnapshot(snapshot: number, previous: number, changes?: Ts7SnapshotChanges): void;
     releaseSnapshot(snapshot: number): void;
     clear(): void;
@@ -123,6 +116,16 @@ test("retention and eviction agree with the pinned SDK through interleaved snaps
   const sdk = new SourceFileCache();
   const projects = ["/one.json", "/two.json", "/three.json"];
   const paths = ["/a.ts", "/b.ts", "/c.ts"];
+  /** The SDK's cache reads the identity fields off the source file itself. */
+  const sdkSource = (path: string, file: SourceFile) =>
+    ({
+      ...file,
+      path,
+      fileName: path,
+      contentHash: file.file.wire.contentHash,
+      parseOptionsKey: file.file.wire.parseOptionsKey,
+      scriptKind: 0,
+    }) as unknown as SourceFile;
   let seed = 117;
   const random = () => {
     seed = (seed * 16807) % 2147483647;
@@ -139,15 +142,9 @@ test("retention and eviction agree with the pinned SDK through interleaved snaps
       for (const path of paths) {
         if (cache.get(path, snapshot, project) !== undefined) continue;
         const file = source(String(random() % 4), String(random() % 2));
-        expect(cache.set(path, file, snapshot, project)).toBe(
-          sdk.set(
-            path,
-            file,
-            file.file.wire.parseOptionsKey,
-            file.file.wire.contentHash,
-            snapshot,
-            project,
-          ),
+        const sdkFile = sdkSource(path, file);
+        expect(cache.set(path, file, snapshot, project) === file).toBe(
+          sdk.set(sdkFile, snapshot, project) === sdkFile,
         );
       }
     if (snapshot > 2) {
@@ -158,7 +155,9 @@ test("retention and eviction agree with the pinned SDK through interleaved snaps
     for (let id = 1; id <= snapshot; id++)
       for (const project of projects)
         for (const path of paths)
-          expect(cache.get(path, id, project)).toBe(sdk.getRetained(path, id, project));
+          expect(cache.get(path, id, project) !== undefined).toBe(
+            sdk.getRetained(path, id, project) !== undefined,
+          );
     expect(cache.size).toBe(sdk.size);
   }
   for (let id = 1; id <= 15; id++) {

@@ -44,16 +44,23 @@
  * cannot round either, so both produce the same double. */
 
 import type {
+  LaneCompare,
+  LaneCond,
   LaneContainer,
+  LaneCountPlan,
   LaneElemName,
+  LaneNum,
+  LaneOuterPlan,
+  LaneOuterSlot,
   LanePlan,
   LaneShape,
   LaneStorePlan,
+  LaneSumPlan,
   LaneValueNode,
 } from "../../ir/lane-plans.js";
 import { laneElem, laneShapesFromEnvironment, planLaneLoops } from "../../ir/lane-plans.js";
 import { withinInt32, type IntegerRange } from "../../ir/integer-ranges.js";
-import { loadArrCount, SCR_ARR_FIELD } from "./common.js";
+import { f64Lit, loadArrCount, SCR_ARR_FIELD } from "./common.js";
 import { SCR_ELEM_F64, SCR_ELEM_I32 } from "./dense-array-access.js";
 import { emitBytesData, emitBytesHeaderLength } from "./expr-bytes.js";
 import type { LlValue } from "./expr-context.js";
@@ -119,20 +126,39 @@ export function beginFunctionLanes(emitter: LlEmitter, fn: IrFunction): void {
   state.plans =
     state.shapes.size === 0 || emitter.debug !== null
       ? new Map()
-      : planLaneLoops(fn, emitter.numericLocals, state.shapes);
+      : planLaneLoops(
+          fn,
+          emitter.numericLocals,
+          state.shapes,
+          emitter.mod.classes ?? [],
+          emitter.mod.functions,
+        );
+}
+
+/** The lane shapes lowered by the array matchers: every shape but the outer
+ * one, which has its own emitter. */
+type LoweredLanePlan = LaneSumPlan | LaneCountPlan | LaneStorePlan;
+
+/** Whether this emission may lower a lane loop at all: a target with vector
+ * registers, a debug build that keeps the source's statement order, and no
+ * value-layout copy the lane body does not write. */
+function lanesUsable(emitter: LlEmitter): boolean {
+  const state = LANES.of(emitter);
+  if (state.width < 2 || emitter.debug !== null) return false;
+  if (emitter.mod.workers === true || emitter.mod.bytesHeadersMutable === true) return false;
+  if (emitter.speculation !== null || emitter.speculationResume !== null) return false;
+  if (emitter.int32Kinds !== null) return false;
+  return true;
 }
 
 /** The plan for one loop, when the emitter can lower it here: a synchronous
  * function on a target with vector integers, outside every value-layout copy
  * the lane body does not write. */
-export function laneLoopPlan(emitter: LlEmitter, loop: IrStmt): LanePlan | null {
+export function laneLoopPlan(emitter: LlEmitter, loop: IrStmt): LoweredLanePlan | null {
   const state = LANES.of(emitter);
-  if (state.width < 2 || emitter.debug !== null) return null;
-  if (emitter.mod.workers === true || emitter.mod.bytesHeadersMutable === true) return null;
-  if (emitter.speculation !== null || emitter.speculationResume !== null) return null;
-  if (emitter.int32Kinds !== null) return null;
+  if (!lanesUsable(emitter)) return null;
   const plan = state.plans.get(loop);
-  if (plan === undefined) return null;
+  if (plan === undefined || plan.shape === "outer") return null;
   // The lane body stores the accumulator's double slot directly; an int32
   // local keeps an integer in that slot, and its copies handle those loops.
   if (plan.shape !== "store") {
@@ -310,7 +336,7 @@ function emitLaneEntry(
  * did not. */
 export function emitLaneLoop(
   emitter: LlEmitter,
-  plan: LanePlan,
+  plan: LoweredLanePlan,
   receiver: Parameters<LlEmitter["emitStableReceiver"]>[0],
   inductionSlot: string,
   cont: string,
@@ -917,6 +943,377 @@ function emitLaneStore(
   B.line(`store ${size} ${next}, ptr ${inductionSlot}`);
   B.br(header);
   B.startBlock(exit);
+  B.br(cont);
+  B.startBlock(cont);
+}
+
+/* ---- Outer loops ---- */
+
+/** The ordered comparison a lane test lowers to. `===` is ordered equality
+ * and `!==` unordered inequality, which is JavaScript's: NaN is unequal to
+ * everything, itself included. */
+const OUTER_FCMP: ReadonlyMap<LaneCompare, string> = new Map([
+  ["<", "olt"],
+  ["<=", "ole"],
+  [">", "ogt"],
+  [">=", "oge"],
+  ["===", "oeq"],
+  ["!==", "une"],
+]);
+
+/** The key one carried value's vector slot is filed under. */
+function outerSlotKey(id: string, field: string | null): string {
+  return field === null ? id : `${id}.${field}`;
+}
+
+/** The state one outer loop's lane body carries. */
+interface OuterLanes {
+  emitter: LlEmitter;
+  width: number;
+  /** The group's counter value per lane, `<W x double>`. */
+  induction: string;
+  /** One `<W x double>` per carried number local or class field. */
+  slots: ReadonlyMap<string, string>;
+}
+
+/** `<W x double>` <0.0, 1.0, ... W-1>: what each lane adds to the group's
+ * first counter value. Constant folding turns the chain into a constant. */
+function laneDoubles(emitter: LlEmitter, width: number): string {
+  const B = emitter.B;
+  let vec = B.tmp();
+  B.line(`${vec} = insertelement <${width} x double> poison, double 0.0, i32 0`);
+  for (let lane = 1; lane < width; lane++) {
+    const next = B.tmp();
+    B.line(`${next} = insertelement <${width} x double> ${vec}, double ${lane}.0, i32 ${lane}`);
+    vec = next;
+  }
+  return vec;
+}
+
+/** Whether `value` is an exact integer small enough that adding a lane
+ * offset or a group's lane count stays exact: an integer below 2^45 in
+ * magnitude. The conversion is guarded by a `select`, because `fptosi` is
+ * undefined for a value it cannot hold. Negative zero is refused: the round
+ * trip through `i64` turns it into positive zero, and `fcmp oeq` cannot tell
+ * the two apart, so a counter starting at `-0` would lose its sign. */
+function laneExactInteger(emitter: LlEmitter, value: string): string {
+  const B = emitter.B;
+  const low = B.tmp(),
+    high = B.tmp(),
+    inRange = B.tmp(),
+    safe = B.tmp(),
+    whole = B.tmp(),
+    back = B.tmp(),
+    same = B.tmp(),
+    digits = B.tmp(),
+    negativeZero = B.tmp(),
+    notNegativeZero = B.tmp(),
+    ok = B.tmp(),
+    guarded = B.tmp();
+  B.line(`${low} = fcmp ogt double ${value}, ${f64Lit(-(2 ** 45))}`);
+  B.line(`${high} = fcmp olt double ${value}, ${f64Lit(2 ** 45)}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${safe} = select i1 ${inRange}, double ${value}, double 0.0`);
+  B.line(`${whole} = fptosi double ${safe} to i64`);
+  B.line(`${back} = sitofp i64 ${whole} to double`);
+  B.line(`${same} = fcmp oeq double ${back}, ${value}`);
+  B.line(`${digits} = bitcast double ${value} to i64`);
+  B.line(`${negativeZero} = icmp eq i64 ${digits}, -9223372036854775808`);
+  B.line(`${notNegativeZero} = xor i1 ${negativeZero}, true`);
+  B.line(`${ok} = and i1 ${inRange}, ${same}`);
+  B.line(`${guarded} = and i1 ${ok}, ${notNegativeZero}`);
+  return guarded;
+}
+
+/** Evaluates `num` lane by lane: one `<W x double>`. */
+function evalLaneNum(lanes: OuterLanes, num: LaneNum): string {
+  const B = lanes.emitter.B;
+  const width = lanes.width;
+  const vec = `<${width} x double>`;
+  switch (num.kind) {
+    case "const":
+      return splatValue(lanes.emitter, "double", f64Lit(num.value), width);
+    case "invariant": {
+      const value = lanes.emitter.emitExpr(num.expr);
+      return splatValue(lanes.emitter, "double", value.name, width);
+    }
+    case "induction": {
+      const at = B.tmp();
+      B.line(`${at} = load ${vec}, ptr ${lanes.induction}`);
+      return at;
+    }
+    case "state": {
+      const slot = lanes.slots.get(outerSlotKey(num.id, num.field));
+      if (slot === undefined) throw new Error(`lane state ${outerSlotKey(num.id, num.field)}`);
+      const value = B.tmp();
+      B.line(`${value} = load ${vec}, ptr ${slot}`);
+      return value;
+    }
+    case "op": {
+      const left = evalLaneNum(lanes, num.left);
+      const right = evalLaneNum(lanes, num.right);
+      const op =
+        num.op === "+" ? "fadd" : num.op === "-" ? "fsub" : num.op === "*" ? "fmul" : "fdiv";
+      const value = B.tmp();
+      B.line(`${value} = ${op} ${vec} ${left}, ${right}`);
+      return value;
+    }
+    case "neg": {
+      const operand = evalLaneNum(lanes, num.operand);
+      const value = B.tmp();
+      B.line(`${value} = fneg ${vec} ${operand}`);
+      return value;
+    }
+  }
+}
+
+/** Evaluates `cond` lane by lane: one `<W x i1>`. Both operands are pure, so
+ * the lanes may evaluate the whole tree where the scalar code stops at the
+ * first false one. */
+function evalLaneCond(lanes: OuterLanes, cond: LaneCond): string {
+  const B = lanes.emitter.B;
+  const width = lanes.width;
+  const vec = `<${width} x double>`;
+  const mask = `<${width} x i1>`;
+  switch (cond.kind) {
+    case "const":
+      return `splat (i1 ${cond.value})`;
+    case "not": {
+      const operand = evalLaneCond(lanes, cond.operand);
+      const value = B.tmp();
+      B.line(`${value} = xor ${mask} ${operand}, splat (i1 true)`);
+      return value;
+    }
+    case "and":
+    case "or": {
+      const left = evalLaneCond(lanes, cond.left);
+      const right = evalLaneCond(lanes, cond.right);
+      const value = B.tmp();
+      B.line(`${value} = ${cond.kind} ${mask} ${left}, ${right}`);
+      return value;
+    }
+    case "cmp": {
+      const left = evalLaneNum(lanes, cond.left);
+      const right = evalLaneNum(lanes, cond.right);
+      const predicate = OUTER_FCMP.get(cond.op);
+      if (predicate === undefined) throw new Error(`lane compare ${cond.op}`);
+      const value = B.tmp();
+      B.line(`${value} = fcmp ${predicate} ${vec} ${left}, ${right}`);
+      return value;
+    }
+  }
+}
+
+/** Computes the slots of `slots` group by group, then stores them. Every
+ * value of one statement is computed before any of them is written, which is
+ * the order the scalar statement gives its own right-hand side. With a
+ * `guard`, a lane whose test is false keeps its value. */
+function storeLaneSlots(
+  lanes: OuterLanes,
+  slots: readonly LaneOuterSlot[],
+  guard: string | null,
+): void {
+  const B = lanes.emitter.B;
+  const width = lanes.width;
+  const vec = `<${width} x double>`;
+  let group = Number.NaN;
+  let pending: { slot: string; value: string }[] = [];
+  const flush = (): void => {
+    for (const { slot, value } of pending) {
+      if (guard === null) {
+        B.line(`store ${vec} ${value}, ptr ${slot}`);
+        continue;
+      }
+      const was = B.tmp(),
+        next = B.tmp();
+      B.line(`${was} = load ${vec}, ptr ${slot}`);
+      B.line(`${next} = select <${width} x i1> ${guard}, ${vec} ${value}, ${vec} ${was}`);
+      B.line(`store ${vec} ${next}, ptr ${slot}`);
+    }
+    pending = [];
+  };
+  for (const slot of slots) {
+    if (slot.group !== group) {
+      flush();
+      group = slot.group;
+    }
+    const at = lanes.slots.get(outerSlotKey(slot.id, slot.field));
+    if (at === undefined) throw new Error(`lane slot ${outerSlotKey(slot.id, slot.field)}`);
+    pending.push({ slot: at, value: evalLaneNum(lanes, slot.value) });
+  }
+  flush();
+}
+
+/** Adds one to `accumulator` for each lane whose test holds, once for the
+ * group the lanes consumed. The accumulator is an exact integer below 2^45
+ * at the entry (outerLanePlan guards on it), so `acc + count` is the sum of
+ * `count` additions of one whatever the order. */
+function emitLaneTail(lanes: OuterLanes, test: LaneCond, accumulator: string): void {
+  const B = lanes.emitter.B;
+  const width = lanes.width;
+  const cond = evalLaneCond(lanes, test);
+  const counts = B.tmp();
+  B.line(`${counts} = zext <${width} x i1> ${cond} to <${width} x i64>`);
+  let total: string | null = null;
+  for (let lane = 0; lane < width; lane++) {
+    const one = B.tmp();
+    B.line(`${one} = extractelement <${width} x i64> ${counts}, i32 ${lane}`);
+    if (total === null) total = one;
+    else {
+      const sum = B.tmp();
+      B.line(`${sum} = add i64 ${total}, ${one}`);
+      total = sum;
+    }
+  }
+  const count = B.tmp(),
+    was = B.tmp(),
+    after = B.tmp();
+  B.line(`${count} = sitofp i64 ${total} to double`);
+  B.line(`${was} = load double, ptr ${accumulator}`);
+  B.line(`${after} = fadd double ${was}, ${count}`);
+  B.line(`store double ${after}, ptr ${accumulator}`);
+}
+
+/** The outer plan for `loop` and the double slot of its counter, when the
+ * emitter can lower it here. */
+export interface OuterLoop {
+  plan: LaneOuterPlan;
+  counter: string;
+}
+
+export function outerLanePlan(emitter: LlEmitter, loop: IrStmt): OuterLoop | null {
+  if (!lanesUsable(emitter)) return null;
+  const plan = LANES.of(emitter).plans.get(loop);
+  if (plan === undefined || plan.shape !== "outer") return null;
+  // The counter and the accumulator are ordinary number locals the lane
+  // body writes; the integer copies and the int32 kinds keep their values
+  // somewhere else.
+  const own = (id: string): string | null => {
+    if (emitter.integerLoopBindings.has(id) || emitter.int32Locals.has(id)) return null;
+    const binding = emitter.binding(id);
+    return binding.kind === "local" && binding.type.kind === "f64" ? binding.slot : null;
+  };
+  const counter = own(plan.induction);
+  if (counter === null) return null;
+  if (plan.tail !== null && own(plan.tail.accumulator) === null) return null;
+  return { plan, counter };
+}
+
+/** Emits the entry guard and the masked lane loop of an outer plan, then
+ * starts `cont`. The lanes run whole groups of the outer loop, each lane
+ * running its inner loop to its own exit with its false iterations discarded
+ * by the selects. The counter the lanes leave behind is the first row the
+ * scalar loop runs, so the rows of a group the lanes could not fill, and
+ * every row after them, reach the loop's own scalar copies. */
+export function emitLaneOuter(emitter: LlEmitter, loop: OuterLoop, cont: string): void {
+  const { plan, counter } = loop;
+  const B = emitter.B;
+  const width = LANES.of(emitter).width;
+  const vec = `<${width} x double>`;
+  const start = B.tmp();
+  B.line(`${start} = load double, ptr ${counter}`);
+  const bound = emitter.emitExpr(plan.bound).name;
+  const exactStart = laneExactInteger(emitter, start);
+  // A bound the lanes never pass keeps every lane value and every advance
+  // an exact integer: the counter is one below the bound.
+  const ahead = B.tmp(),
+    fits = B.tmp(),
+    sizeable = B.tmp(),
+    tight = B.tmp(),
+    opened = B.tmp(),
+    enabled = B.tmp(),
+    on = B.tmp();
+  B.line(`${ahead} = fadd double ${start}, ${width}.0`);
+  B.line(`${fits} = fcmp ole double ${ahead}, ${bound}`);
+  B.line(`${sizeable} = fcmp ole double ${bound}, ${f64Lit(2 ** 45)}`);
+  B.line(`${tight} = and i1 ${exactStart}, ${fits}`);
+  B.line(`${opened} = and i1 ${tight}, ${sizeable}`);
+  B.line(`${enabled} = load i32, ptr ${TOGGLE}`);
+  B.line(`${on} = icmp ne i32 ${enabled}, 0`);
+  let ok = B.tmp();
+  B.line(`${ok} = and i1 ${on}, ${opened}`);
+  let accumulator: string | null = null;
+  if (plan.tail !== null) {
+    accumulator = emitter.binding(plan.tail.accumulator).slot;
+    const held = B.tmp(),
+      whole = B.tmp();
+    B.line(`${held} = load double, ptr ${accumulator}`);
+    const exact = laneExactInteger(emitter, held);
+    B.line(`${whole} = and i1 ${ok}, ${exact}`);
+    ok = whole;
+  }
+  const init = B.newLabel("outer.init"),
+    group = B.newLabel("outer.g"),
+    reset = B.newLabel("outer.s"),
+    body = B.newLabel("outer.b"),
+    finish = B.newLabel("outer.x"),
+    done = B.newLabel("outer.done");
+  B.condBr(ok, init, cont);
+  B.startBlock(init);
+  const xslot = B.slot(),
+    ivslot = B.slot();
+  B.entryAllocas.push(`${xslot} = alloca double ; lane counter`);
+  B.entryAllocas.push(`${ivslot} = alloca ${vec} ; lane counter vector`);
+  B.line(`store double ${start}, ptr ${xslot}`);
+  const offsets = laneDoubles(emitter, width);
+  const spread = splatValue(emitter, "double", start, width);
+  const firstRows = B.tmp();
+  B.line(`${firstRows} = fadd ${vec} ${spread}, ${offsets}`);
+  B.line(`store ${vec} ${firstRows}, ptr ${ivslot}`);
+  const slots = new Map<string, string>();
+  const allocSlot = (id: string, field: string | null): void => {
+    const key = outerSlotKey(id, field);
+    if (slots.has(key)) return;
+    const at = B.slot();
+    const name = emitter.currentLocals.get(id)?.name ?? id;
+    B.entryAllocas.push(`${at} = alloca ${vec} ; lane ${name}${field === null ? "" : `.${field}`}`);
+    slots.set(key, at);
+  };
+  for (const slot of plan.initial) allocSlot(slot.id, slot.field);
+  for (const slot of plan.steps) allocSlot(slot.id, slot.field);
+  const lanes: OuterLanes = { emitter, width, induction: ivslot, slots };
+  B.br(group);
+  // A group boundary: the lanes take the next `width` counter values when
+  // every one of them is inside the loop's range, and leave the rest to the
+  // scalar copies.
+  B.startBlock(group);
+  const at = B.tmp(),
+    next = B.tmp(),
+    within = B.tmp();
+  B.line(`${at} = load double, ptr ${xslot}`);
+  B.line(`${next} = fadd double ${at}, ${width}.0`);
+  B.line(`${within} = fcmp ole double ${next}, ${bound}`);
+  B.condBr(within, reset, done);
+  // Every group starts from the body's own declarations again.
+  B.startBlock(reset);
+  storeLaneSlots(lanes, plan.initial, null);
+  B.br(body);
+  B.startBlock(body);
+  const cond = evalLaneCond(lanes, plan.cond);
+  const bits = B.tmp(),
+    live = B.tmp();
+  B.line(`${bits} = bitcast <${width} x i1> ${cond} to i${width}`);
+  B.line(`${live} = icmp ne i${width} ${bits}, 0`);
+  storeLaneSlots(lanes, plan.steps, cond);
+  B.condBr(live, body, finish);
+  // The group is complete: its lanes hold what their own scalar iterations
+  // would leave, the counter moves past them, and the next group's counter
+  // vector advances by one width.
+  B.startBlock(finish);
+  if (plan.tail !== null && accumulator !== null) emitLaneTail(lanes, plan.tail.test, accumulator);
+  const past = B.tmp(),
+    running = B.tmp(),
+    onward = B.tmp();
+  B.line(`${past} = fadd double ${at}, ${width}.0`);
+  B.line(`store double ${past}, ptr ${xslot}`);
+  B.line(`${running} = load ${vec}, ptr ${ivslot}`);
+  B.line(`${onward} = fadd ${vec} ${running}, ${vectorSplatLiteral("double", `${width}.0`)}`);
+  B.line(`store ${vec} ${onward}, ptr ${ivslot}`);
+  B.br(group);
+  B.startBlock(done);
+  const left = B.tmp();
+  B.line(`${left} = load double, ptr ${xslot}`);
+  B.line(`store double ${left}, ptr ${counter}`);
   B.br(cont);
   B.startBlock(cont);
 }

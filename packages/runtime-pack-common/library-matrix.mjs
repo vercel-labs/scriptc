@@ -8,6 +8,9 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_assert.c",
     "scr_inspect.c",
     "scr_console_native.c",
+    // The inspect unit reads inspect.colors from the style unit's table, so
+    // a library whose program renders a colored value carries it too.
+    "scr_util_style.c",
     "scr_symbol.c",
     "scr_bigint_assert.c",
     "scr_url_params.c",
@@ -24,6 +27,14 @@ export function withLibraryRuntimeFlavors(matrix) {
     // detaches a buffer names scr_js_buffers_arm from its own object, so the
     // library flavors must carry the unit the executable flavors compile.
     "scr_js_buffers.c",
+    // The kept-source read of a record-to-record conversion: a library
+    // whose program projects a record calls it, so the library flavors
+    // carry the same optional unit the executable flavors compile.
+    "scr_record_source_get.c",
+    // The join of an array of strings: a library whose program joins one
+    // calls scr_arr_join_str, so the library flavors carry the same optional
+    // unit the executable flavors compile.
+    "scr_arr_join_str.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
@@ -37,9 +48,13 @@ export function withLibraryRuntimeFlavors(matrix) {
   ].map((unit) => ({
     ...unit,
     // Libraries run neither workers nor the young-in nursery (an
-    // executable-only experiment).
+    // executable-only experiment), and they carry no promise unit, so no
+    // promise adapter exists for a checked-dynamic key to name.
     variants: unit.variants.filter(
-      (variant) => !variant.defines.includes("SCR_WORKERS") && !variant.defines.includes("SCR_YIN"),
+      (variant) =>
+        !variant.defines.includes("SCR_WORKERS") &&
+        !variant.defines.includes("SCR_YIN") &&
+        !variant.defines.includes("SCR_DYN_PROMISE_KEYS"),
     ),
   }));
   const flavors = { ...matrix.flavors };

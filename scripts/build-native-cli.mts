@@ -14,11 +14,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { compile } from "../packages/compiler/src/index.js";
-import {
-  NATIVE_TARGETS,
-  executableStripLinkerArgs,
-  nativeCodegenTarget,
-} from "../packages/compiler/src/backend/targets.js";
+import { NATIVE_TARGETS, nativeCodegenTarget } from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
@@ -194,34 +190,7 @@ for (const name of ["ts7-process", "codegen-process", "host"]) {
 const ffi = join(seed, "compiler.ffi.json");
 writeFileSync(ffi, JSON.stringify({ ffi_format: 6, functions, libraries }, null, 2) + "\n");
 const executable = join(bin, "scriptc" + target.outputSuffixes.exe);
-const comptime = join(lib, "scriptc-comptime" + target.outputSuffixes.exe);
 const strip = process.env["SCRIPTC_NATIVE_KEEP_SYMBOLS"] !== "1";
-execFileSync(
-  compiler,
-  [
-    ...compilerArgs,
-    ...cFlags,
-    "-O2",
-    ...(strip ? ["-g0", ...executableStripLinkerArgs(target.platform, true)] : []),
-    "-I",
-    join(root, "packages/runtime/vendor/quickjs-ng"),
-    join(nativeSources, "comptime.c"),
-    join(
-      root,
-      "packages",
-      target.runtimePackPackage.replace("@scriptc/", ""),
-      "artifacts/vendor/quickjs/libscriptc-quickjs.a",
-    ),
-    "-lm",
-    "-lpthread",
-    "-o",
-    comptime,
-  ],
-  { stdio: "inherit" },
-);
-// The Windows link writes the debug database beside the executable.
-if (strip && target.platform === "win32")
-  rmSync(comptime.replace(/\.exe$/, ".pdb"), { force: true });
 const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), {
   outDir: seed,
   outPath: executable,
@@ -294,7 +263,6 @@ const manifest: NativeToolchainManifest = {
   linker_args:
     process.env["SCRIPTC_LINKER"] === undefined ? [...installedTarget.defaultLinkerArgs] : [],
   dsymutil: process.env["SCRIPTC_DSYMUTIL"] ?? "dsymutil",
-  comptime: relative(bin, comptime),
 };
 writeFileSync(executable + ".json", JSON.stringify(manifest, null, 2) + "\n");
 // The prebuilt lib diagnostics (frontend/ts7/lib-diagnostics.ts): the

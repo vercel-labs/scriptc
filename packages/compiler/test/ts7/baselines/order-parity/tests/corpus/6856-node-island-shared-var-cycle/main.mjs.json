@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6856-node-island-shared-var-cycle/main.mjs"
+ ],
+ "diags": []
+}

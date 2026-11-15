@@ -2,5 +2,6 @@
   "entry": "workloads/record-untyped-writes.ts",
   "args": [
     "4"
-  ]
+  ],
+  "scaleArg": 0
 }

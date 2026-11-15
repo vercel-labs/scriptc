@@ -16,11 +16,20 @@ export type UndiciHeaders = Record<string, string | string[] | undefined> | stri
  * bodies are outside the implemented subset. */
 export type RequestBody = string | Buffer | Uint8Array | null;
 
+/** undici's Dispatcher.DispatchOptions. The method is any string, as it
+ * is in 7.x's declarations (5.x's name nine). A dispatcher typed by a
+ * project's own undici-types (the dispatcher of the global fetch's init)
+ * is handed to slots typed by this package's dispatch(): for that, every
+ * member here takes at least what undici-types declare for it, and a
+ * value this implementation does not send is refused where it is read. */
 export interface DispatchOptions {
   origin?: string | URL;
   path: string;
   method: string;
-  body?: RequestBody;
+  /** undici-types declare streams and FormData here beside strings and
+   * bytes; what is sent is RequestBody, and any other value is refused
+   * where the request is made (request.ts). */
+  body?: unknown;
   headers?: UndiciHeaders;
   idempotent?: boolean;
   blocking?: boolean;
@@ -32,6 +41,10 @@ export interface DispatchOptions {
   // dispatch() is copied to this shape, and interceptors read them back
   // through a `params as Dispatcher.RequestOptions` cast, as with undici.
   opaque?: unknown;
+  /** Set by this package's fetch for a request undici would hand to
+   * Node's own dispatcher: the client frames it as a 7.x client does
+   * (client.ts, expectsPayload). */
+  __framedAsNode?: boolean;
   signal?: AbortSignal | null;
   onInfo?: (info: { statusCode: number; headers: IncomingHttpHeaders }) => void;
   highWaterMark?: number;

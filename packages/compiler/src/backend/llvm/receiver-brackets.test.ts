@@ -45,9 +45,12 @@ function walk(root: Node, cb: (node: Node, depth: number) => void | "skip" | "st
 class Counter {
   count = 0;
   run(root: Node): number {
-    walk(root, (node) => {
+    // A binding's function keeps its own signature: the walker's slot
+    // adapts it. (A literal written at the call takes the slot's.)
+    const visit = (node: Node): void => {
       if (node.kind === 3) this.count++;
-    });
+    };
+    walk(root, visit);
     return this.count;
   }
 }

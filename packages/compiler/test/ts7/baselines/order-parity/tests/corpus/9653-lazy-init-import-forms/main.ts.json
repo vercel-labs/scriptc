@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9653-lazy-init-import-forms/ids.ts",
+  "<repo>/tests/corpus/9653-lazy-init-import-forms/squares.ts",
+  "<repo>/tests/corpus/9653-lazy-init-import-forms/main.ts"
+ ],
+ "diags": []
+}

@@ -56,9 +56,9 @@ const bareU = undefined;
 const bareN = null;
 
 // Whole-union string conversion lowers for primitive/unit arms (the
-// per-union ToString helper — `${mk()}` compiles); an OBJECT arm has no
-// honest text (JS prints "[object Object]") and stays fenced.
-const templated = `${mkAB()}`;
+// per-union ToString helper — `${mk()}` compiles), and a record or array
+// arm converts as it does alone (corpus string-of-union-record-arms) —
+// no pin here anymore.
 
 // A DECLARED `T | string` param infers nothing for T (no union
 // unification); the body's use of T then fails with the instantiation.

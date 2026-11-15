@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/unhandled-rejection-default.ts"
+ ],
+ "diags": []
+}

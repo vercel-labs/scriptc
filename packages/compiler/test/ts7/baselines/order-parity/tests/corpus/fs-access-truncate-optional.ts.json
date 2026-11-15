@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-access-truncate-optional.ts"
+ ],
+ "diags": []
+}

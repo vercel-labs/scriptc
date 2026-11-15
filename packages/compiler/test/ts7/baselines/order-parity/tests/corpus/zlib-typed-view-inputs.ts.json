@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/zlib-typed-view-inputs.ts"
+ ],
+ "diags": []
+}

@@ -211,6 +211,25 @@ function buildFetchCompatProfile() {
         conversion: "native AbortSignal handle or absent",
         evidence: [fixture("static"), fixture("static-abort-throw")],
       },
+      {
+        id: "stdlib.fetch.request-init.cache",
+        name: "RequestInit.cache",
+        conversion:
+          "WebIDL enum after String(): default, no-store, reload, no-cache, force-cache, only-if-cached (only-if-cached pairs with same-origin mode); no-store and reload send Pragma: no-cache and Cache-Control: no-cache, no-cache sends Cache-Control: max-age=0, and a default-mode request with a conditional header revalidates like no-store",
+        evidence: [fixture("static-request")],
+      },
+      {
+        id: "stdlib.fetch.request-init.credentials",
+        name: "RequestInit.credentials",
+        conversion: "WebIDL enum after String(): omit, same-origin, include",
+        evidence: [fixture("static-request")],
+      },
+      {
+        id: "stdlib.fetch.request-init.priority",
+        name: "RequestInit.priority",
+        conversion: "ignored, as Node ignores it: undici's Request has no priority",
+        evidence: [fixture("static-request")],
+      },
     ],
     responseInit: [
       {
@@ -262,7 +281,7 @@ function buildFetchCompatProfile() {
         kind: "constructor",
         facets: ["webidl-conversion", "body-consumption", "error-shape"],
         scope:
-          "Absolute URLs with method, headers, body, duplex, redirect, and signal; other RequestInit members retain explicit fences",
+          "Absolute URLs with method, headers, body, duplex, redirect, signal, cache, and credentials; priority is accepted and ignored as Node ignores it; other RequestInit members retain explicit fences",
         evidence: [fixture("static-request")],
       },
       ...[
@@ -536,6 +555,20 @@ function buildFetchCompatProfile() {
           evidence: [fixture("static"), fixture("static-coercion")],
         }),
       ),
+      ...["keys", "values", "entries"].map((member): FetchCompatOperation => ({
+        id: `stdlib.headers.${member}`,
+        name: `Headers.${member}`,
+        kind: "method",
+        facets: ["liveness", "mutation", "state-machine"],
+        evidence: [fixture("static-headers-iteration")],
+      })),
+      {
+        id: "stdlib.headers.symbol.iterator",
+        name: "Headers.[Symbol.iterator]",
+        kind: "method",
+        facets: ["liveness", "mutation", "state-machine"],
+        evidence: [fixture("static-headers-iteration")],
+      },
       ...["ok", "status", "statusText", "url", "redirected", "headers", "body", "bodyUsed"].map(
         (member): FetchCompatOperation => ({
           id: `stdlib.response.${member}`,
@@ -652,21 +685,14 @@ function buildFetchCompatProfile() {
           staticEntry(`stdlib.headers.${member}`, "Headers", member, "prototype"),
         ),
         ...["keys", "values", "entries"].map((member) =>
-          unsupportedEntry(
-            `stdlib.headers.${member}`,
-            "Headers",
-            member,
-            "prototype",
-            "native Headers iteration does not yet expose a static iterator handle",
-          ),
+          staticEntry(`stdlib.headers.${member}`, "Headers", member, "prototype"),
         ),
         staticEntry("stdlib.headers.forEach", "Headers", "forEach", "prototype"),
-        unsupportedEntry(
+        staticEntry(
           "stdlib.headers.symbol.iterator",
           "Headers",
           "[Symbol.iterator]",
           "prototype-symbol",
-          "native Headers iteration does not expose an engine-free iterator handle",
         ),
         outOfScopeEntry(
           "stdlib.headers.symbol.toStringTag",
@@ -898,7 +924,17 @@ function buildFetchCompatProfile() {
           "window",
         ].map((member) => {
           const id = `stdlib.fetch.request-init.${member}`;
-          const supported = new Set(["body", "duplex", "headers", "method", "redirect", "signal"]);
+          const supported = new Set([
+            "body",
+            "cache",
+            "credentials",
+            "duplex",
+            "headers",
+            "method",
+            "priority",
+            "redirect",
+            "signal",
+          ]);
           return supported.has(member)
             ? staticEntry(id, "RequestInit", member, "dictionary")
             : member === "dispatcher"

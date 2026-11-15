@@ -1,0 +1,10 @@
+{
+  "name": "node-island-marked-ts-module",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "nodeIslands": {
+      "modules": ["legacy.ts"]
+    }
+  }
+}

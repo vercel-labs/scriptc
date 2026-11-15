@@ -1,0 +1,8 @@
+exact-record-accessor-source.ts:39:18 - error SC2002: record shapes must match exactly or width-coerce: expected '{ author: string; id: number; note: string | undefined; text: string }', got '{ get text(): string; author: string; id: number }' — the expected field 'text' is missing on the source and is not optional
+
+  38 | };
+  39 | const row: Row = source;
+     |                  ^~~~~~
+  40 | console.log(isExactRow(row));
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

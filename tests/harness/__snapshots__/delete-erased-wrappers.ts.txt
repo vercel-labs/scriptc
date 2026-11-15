@@ -1,0 +1,38 @@
+delete-erased-wrappers.ts:14:3 - error SC1090: 'delete' of 'model': the operand's type '{ model: string }' declares 'model' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make 'model' optional if the program must remove it) is not supported yet
+
+  13 | function dropRequired(params: Params | undefined): void {
+  14 |   delete (params as { model?: string })!.model;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 | }
+
+delete-erased-wrappers.ts:18:10 - error SC1090: 'delete' of 'model': the operand's type '{ model: string }' declares 'model' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make 'model' optional if the program must remove it) is not supported yet
+
+  17 | function dropRequiredUnderSatisfies(params: Params): boolean {
+  18 |   return delete ((params as { model?: string }) satisfies { model?: string }).model;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | }
+
+delete-erased-wrappers.ts:28:13 - error SC1090: 'delete' of 'k': the operand's type '{ x: number }' does not declare 'k', but '{ k: number; x: number }' declares it (a '{ k: number; x: number }' converted to a narrower record type is copied, and the delete cannot remove that record's 'k' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  27 | const copy: Narrow = wide;
+  28 | console.log(delete (copy as Narrow & { k?: number })!.k, wide.k);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  29 | 
+
+  hint: delete 'k' through the value's own type, '{ k: number; x: number }', with the field declared optional there
+
+delete-erased-wrappers.ts:31:3 - error SC1090: 'delete' of 'k': the operand's type '{ x: number }' does not declare 'k', but '{ k: number; x: number }' declares it (a '{ k: number; x: number }' converted to a narrower record type is copied, and the delete cannot remove that record's 'k' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  30 | function dropFromOptionalCopy(narrow: Narrow | undefined): void {
+  31 |   delete (narrow as Narrow & { k?: number }).k;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  32 | }
+
+  hint: delete 'k' through the value's own type, '{ k: number; x: number }', with the field declared optional there
+
+delete-erased-wrappers.ts:37:10 - error SC1090: 'delete' through an optional chain on an asserted value that may be undefined or null (the chain answers true for a nullish value, and the assertion's conversion would build a copy of a present one — narrow the value first, or delete through the value's own type) is not supported yet
+
+  36 | function dropThroughChain(params: { model?: string } | undefined): boolean {
+  37 |   return delete (params as { model?: string; extra?: number })?.model;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  38 | }

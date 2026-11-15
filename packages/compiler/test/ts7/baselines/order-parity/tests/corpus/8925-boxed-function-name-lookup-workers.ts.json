@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8925-boxed-function-name-lookup-workers.ts"
+ ],
+ "diags": []
+}

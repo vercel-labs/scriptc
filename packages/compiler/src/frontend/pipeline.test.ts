@@ -6,10 +6,14 @@ import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 const opened: ReturnType<ProgramLoader>[] = [];
 const loadPackages = new Map<ReturnType<ProgramLoader>, readonly string[] | undefined>();
 const preflight = vi.spyOn(program, "checkPreflight");
+// The scout is walked for its module order alone: the injected loads have no
+// program to walk, and the package walk reads the fields they carry.
+const moduleOrder = vi.spyOn(program, "checkModuleOrder").mockImplementation(() => {});
 afterEach(() => {
   opened.length = 0;
   loadPackages.clear();
   preflight.mockReset();
+  moduleOrder.mockClear();
 });
 
 const loader: ProgramLoader = (_path, options) => {
@@ -58,8 +62,29 @@ test.each([undefined, "auto", "lib"] as const)(
   },
 );
 
+test("checks a scout only when it is the frontend's program", () => {
+  preflight.mockReturnValue([]);
+  // A selection replaces the scout: its order is walked, its report is not.
+  const selecting = runFrontend("/main.ts", loader, ["fixture"]);
+  expect(opened).toHaveLength(2);
+  expect(moduleOrder).toHaveBeenCalledTimes(1);
+  expect(preflight).toHaveBeenCalledTimes(1);
+  expect(opened[0]!.dispose).toHaveBeenCalledTimes(1);
+  selecting.dispose();
+  opened.length = 0;
+  preflight.mockClear();
+  moduleOrder.mockClear();
+  // No selection: the scout is retained, and its report is the frontend's.
+  const plain = runFrontend("/main.ts", loader, "lib");
+  expect(opened).toHaveLength(1);
+  expect(moduleOrder).toHaveBeenCalledTimes(1);
+  expect(preflight).toHaveBeenCalledTimes(1);
+  plain.dispose();
+});
+
 test("closes the current program and an interrupted per-package probe", () => {
-  preflight.mockReturnValueOnce([typeError]).mockImplementationOnce(() => {
+  // The scout is replaced unchecked; the opted-in load's preflight throws.
+  preflight.mockImplementationOnce(() => {
     throw new Error("probe failed");
   });
   expect(() => runFrontend("/main.ts", loader, ["fixture"])).toThrow("probe failed");
@@ -80,7 +105,6 @@ test("closes the current program if opening a probe fails", () => {
 
 test("does not retain or close disposed fallback loads twice", () => {
   preflight
-    .mockReturnValueOnce([]) // the scout
     .mockReturnValueOnce([typeError]) // the opted-in load
     .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
     .mockReturnValueOnce([{ ...typeError, loc: { file: "/main.ts", start: 5, end: 6 } }]) // the solo probe: this package breaks its own import site
@@ -96,7 +120,6 @@ test("does not retain or close disposed fallback loads twice", () => {
 
 test("preserves the original failure and continues cleanup when a disposer throws", () => {
   preflight
-    .mockReturnValueOnce([])
     .mockImplementationOnce(() => {
       vi.mocked(opened[1]!.dispose).mockImplementation(() => {
         throw new Error("close failed");
@@ -114,7 +137,7 @@ test("preserves the original failure and continues cleanup when a disposer throw
 test("reports program type errors instead of refusing the package", () => {
   // The program fails to typecheck against the package's inferred surface
   // and against its declarations alike: the errors are the program's.
-  preflight.mockReturnValueOnce([]).mockReturnValue([typeError]);
+  preflight.mockReturnValue([typeError]);
   const frontend = runFrontend("/main.ts", loader, ["fixture"]);
   // The package stays statically compiled — no package caused the error.
   expect(frontend.npmStatic).toEqual([{ package: "fixture", status: "static" }]);
@@ -131,7 +154,7 @@ test("reports program type errors that name the package's module", () => {
     message: `Module '"fixture"' has no exported member 'open'.`,
     loc: { file: "/main.ts", start: 9, end: 13 },
   };
-  preflight.mockReturnValueOnce([]).mockReturnValue([missingExport]);
+  preflight.mockReturnValue([missingExport]);
   const frontend = runFrontend("/main.ts", loader, ["fixture"]);
   expect(frontend.npmStatic).toEqual([]);
   expect(frontend.preflight).toEqual([missingExport]);
@@ -144,7 +167,6 @@ test("keeps the whole set when no probe can attribute the diagnostic", () => {
   // separates itself, so no package is a culprit and none is refused — the
   // diagnostic is reported once, at its own location.
   preflight
-    .mockReturnValueOnce([]) // the scout
     .mockReturnValueOnce([typeError]) // the opted-in load
     .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
     .mockReturnValue([typeError]); // every solo probe reproduces the load's error
@@ -169,7 +191,7 @@ test("one program diagnostic does not refuse every package in the set", () => {
   // reproduces (the diagnostic depends on the opt-in, not on WHICH package
   // was opted in). Probing alone cannot attribute it, and reporting one
   // refusal per package hides the one diagnostic that is real.
-  preflight.mockReturnValueOnce([]).mockReturnValue([typeError]);
+  preflight.mockReturnValue([typeError]);
   const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
   // The no-opt-in baseline load left its empty set live; the retained program
   // is reloaded so lowering reads the set it was compiled with.

@@ -2,7 +2,9 @@
 // A merged generic record crossing INTO the island (`object<T>(properties)`
 // is `Type.Object(props)`): the merged type is an intersection — the base's
 // fields without one, plus the overrides — and the island reads the
-// program's own object, not a copy of it.
+// program's own object, not a copy of it. Reading the schema's properties
+// back into the program record type is an explicit `structuredClone`
+// (SPEC 1b = B).
 import { keys, object } from "recordkit";
 
 interface ProviderBase {
@@ -24,8 +26,9 @@ function merged(name: string, stream: boolean): MergedProvider {
 const props: MergedProvider = merged("openai", true);
 const schema = object(props);
 console.log(schema.kind, schema.describe());
-console.log(keys(props), keys(schema.properties));
-console.log(schema.properties.name, schema.properties.stream);
+const returned = structuredClone(schema.properties);
+console.log(keys(props), keys(returned));
+console.log(returned.name, returned.stream);
 
 const inline = object({ name: "anthropic", stream: false });
-console.log(inline.kind, inline.describe(), inline.properties.name);
+console.log(inline.kind, inline.describe(), structuredClone(inline.properties).name);

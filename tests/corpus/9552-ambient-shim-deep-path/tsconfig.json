@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "moduleResolution": "node10",
+    "strict": true
+  },
+  "include": [
+    "shims",
+    "main.ts"
+  ]
+}

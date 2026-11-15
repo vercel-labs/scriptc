@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { indexStoreInBounds } from "./runtime-optional-bounds.js";
 
 /** Program queries the element-state scan needs from the optional-read
@@ -19,6 +20,9 @@ export interface ElementStateHost {
   /** Iterating `node`, an iterable other than an array (a Set, a Map's
    * values, a generator), can yield `undefined`. */
   iterationMayYieldUndefined?(node: ts.Expression): boolean;
+  /** An entry of the `Promise.all` call `node` can settle with `undefined`:
+   * the checker types an element of its result as possibly undefined. */
+  settledMayBeUndefined?(node: ts.CallExpression): boolean;
   /** A callback argument can return `undefined` at runtime. */
   callbackReturnsUndefined(node: ts.Expression): boolean;
   /** The value may be a plain array-like object, whose missing indices
@@ -50,6 +54,21 @@ export interface ElementStateHost {
   /** Element keys of the native arrays a value converted to a dynamic type
    * can reach, as live views ("*" for any array). */
   nativeViewKeys(): ReadonlySet<string>;
+  /** `node`'s type is a type parameter (or another type only an instance
+   * resolves), so it has no element key here and may be a native array in
+   * an instance (`xs: A` with `A extends readonly T[]`). */
+  instanceTyped?(node: ts.Expression): boolean;
+  /** For a call of a generic function, method or constructor (its
+   * declaration, or one enclosing it, has type parameters): the callee's
+   * bodies (a function with a body, or the class a constructor belongs to;
+   * null when one is not in the program), and a function that answers the
+   * element keys of every native array reachable from the types of the
+   * call's arguments, its receiver and its result. Null for any other
+   * call. */
+  genericCall?(call: ts.CallExpression | ts.NewExpression): {
+    bodies: readonly ts.Node[] | null;
+    keys(): readonly string[];
+  } | null;
   /** Debug provenance for a new fact. */
   note:
     | ((fact: "undefined" | "holes" | "foreign", key: string, site: ts.Node | undefined) => void)
@@ -67,6 +86,12 @@ const ANY_ARRAY = "*";
 const VIEW_HOLES = "%view";
 /** The fact name of values stored through dynamic views. */
 const VIEW_VALUES = "%view-values";
+/** The fact names of "some element key can hold holes" and "some element
+ * key can hold undefined". */
+const HOLEY_KEYS = "%holey-keys";
+const UNDEFINED_KEYS = "%undefined-keys";
+/** The fact name of "another function builds arrays from generic ones". */
+const BUILDERS = "%generic-builders";
 
 /** Element keys whose arrays store a value written through a dynamic view
  * that the element type cannot hold, as a foreign element: `number[]` and
@@ -81,6 +106,7 @@ interface Contents {
 }
 
 const NOTHING: Contents = { undefined: false, holes: false };
+const NO_SOURCES: readonly ts.Expression[] = [];
 
 /** Methods whose callbacks also visit holes, as `undefined`. */
 const HOLE_VISITING = new Set(["find", "findIndex", "findLast", "findLastIndex"]);
@@ -91,6 +117,8 @@ const HOLES_KEPT = new Set(["slice", "splice", "concat"]);
 const HOLES_SKIPPED = new Set(["filter", "flat"]);
 const HOLES_FILLED = new Set(["toSorted", "toReversed", "toSpliced", "with"]);
 const IN_PLACE = new Set(["sort", "reverse", "fill", "copyWithin"]);
+/** Methods that store their arguments into the receiver. */
+const STORES_ARGUMENTS = new Set(["push", "unshift", "splice", "fill"]);
 
 /** Whole-program facts about which native array element ABIs can hold an
  * explicit `undefined` value or a hole, refined per expression for arrays
@@ -117,6 +145,34 @@ export class ArrayElementStates {
   private readonly undefinedOwners = new Set<ts.Symbol>();
   private readonly holeyOwners = new Set<ts.Symbol>();
 
+  /** Generic arrays whose elements the arrays of an owning slot were built
+   * from (`const ys = xs.slice()` in a generic function), by what the slot's
+   * arrays take from them: their undefined values (and their holes, copied
+   * as undefined), or their holes. The slot's own facts say nothing about
+   * either. */
+  private readonly ownerSources = new Map<
+    ts.Symbol,
+    { undefined: Set<ts.Expression>; holes: Set<ts.Expression> }
+  >();
+  /** While set, collects the generic arrays the current judgement read:
+   * expressions with no element key outside an instance, whose facts are
+   * those of each instance's key (sourcesMayHoldMissing). */
+  private sources: Set<ts.Expression> | null = null;
+  /** Functions and classes whose code builds an array from a generic
+   * array's elements or stores them into another array (a spread, a copying
+   * method, a rest pattern, a push of a spread), directly or by calling a
+   * generic function that does. Code that only reads a generic array, or
+   * returns it, is not among them. */
+  private readonly genericBuilders = new Set<ts.Node>();
+  /** Counts the generic arrays judgements have read, collected or not. */
+  private genericReads = 0;
+  /** The collector of scan(), reused between sites. */
+  private readonly siteSources = new Set<ts.Expression>();
+  /** How a generic array is judged: its contents are unknown, or, to find
+   * what an array built from it takes from it, it holds nothing missing or
+   * both a hole and undefined. */
+  private genericArrays: "unknown" | "present" | "missing" = "unknown";
+
   /** The node being scanned, for provenance notes. */
   private site: ts.Node | undefined;
   /** While set, arrays judged only by their element ABI count as present. */
@@ -127,14 +183,175 @@ export class ArrayElementStates {
   /** Every element a callback of `method` receives from `receiver` is a
    * present value. */
   elementsPresent(receiver: ts.Expression, method: string): boolean {
+    const reads = this.genericReads;
     const contents = this.contents(receiver);
-    return (
-      contents !== null && !contents.undefined && !(HOLE_VISITING.has(method) && contents.holes)
+    if (contents === null || contents.undefined || (HOLE_VISITING.has(method) && contents.holes))
+      return false;
+    if (this.genericReads === reads) return true;
+    // An array built from generic arrays (a slot that owns a copy of one, a
+    // literal that spreads one) holds in an instance what they hold there.
+    // No instance is known here, so that counts as soon as any array of the
+    // program can hold a missing element.
+    const built = this.judged(receiver, "missing");
+    if (!built.undefined && !(HOLE_VISITING.has(method) && built.holes)) return true;
+    this.host.read?.(ANY_ARRAY);
+    this.host.read?.(HOLEY_KEYS);
+    this.host.read?.(UNDEFINED_KEYS);
+    this.host.read?.(VIEW_HOLES);
+    this.host.read?.(VIEW_VALUES);
+    return !(
+      this.anyUndefined ||
+      this.anyHoley ||
+      this.viewHoles ||
+      this.viewValues ||
+      this.holeyKeys.size > 0 ||
+      this.undefinedKeys.size > 0
     );
+  }
+
+  /** The contents of `node` with every generic array judged one way. */
+  private judged(node: ts.Expression, generic: "present" | "missing"): Contents {
+    const outer = this.genericArrays;
+    const sources = this.sources;
+    this.genericArrays = generic;
+    this.sources = null;
+    try {
+      return this.contents(node) ?? { undefined: true, holes: true };
+    } finally {
+      this.genericArrays = outer;
+      this.sources = sources;
+    }
+  }
+
+  /** Null when a for-of loop can bind `undefined` (loopMayYieldUndefined).
+   * Otherwise the generic arrays its elements come from: the loop binds
+   * `undefined` in an instance where one of them holds a hole or undefined
+   * (sourcesMayHoldMissing). Empty for a loop that reads no generic array. */
+  loopSources(node: ts.ForOfStatement): readonly ts.Expression[] | null {
+    const reads = this.genericReads;
+    if (this.loopMayYieldUndefined(node)) return null;
+    if (this.genericReads === reads) return NO_SOURCES;
+    const sources = new Set<ts.Expression>();
+    const outer = this.sources;
+    this.sources = sources;
+    try {
+      this.loopMayYieldUndefined(node);
+    } finally {
+      this.sources = outer;
+    }
+    return [...sources];
+  }
+
+  /** Arrays with this element key can hold a hole or undefined. */
+  keyMayHoldMissing(key: string): boolean {
+    const contents = this.stored([key]);
+    return contents === null || contents.undefined || contents.holes;
+  }
+
+  /** One of `sources` (generic arrays, see loopSources) can hold a hole or
+   * undefined under the element key it has where this is asked: inside an
+   * instance, whose type-parameter bindings the host's queries resolve. A
+   * source that has no key there either (its element type has no mapping
+   * for another reason) is judged as the loop was, by the facts every
+   * array shares. */
+  sourcesMayHoldMissing(sources: readonly ts.Expression[]): boolean {
+    for (const source of sources) {
+      const keys = this.host.arrayKeys(source);
+      if (keys === null || keys.length === 0) continue;
+      const contents = this.stored(keys);
+      if (contents === null || contents.undefined || contents.holes) return true;
+    }
+    return false;
   }
 
   /** Scans one syntax node; true when a fact was added. */
   scan(node: ts.Node): boolean {
+    const sources = this.siteSources;
+    if (sources.size > 0) sources.clear();
+    this.sources = sources;
+    let changed: boolean;
+    try {
+      changed = this.scanFacts(node);
+    } finally {
+      this.sources = null;
+    }
+    if (sources.size === 0) return changed;
+    // A loop only reads; any other site that judged a generic array's
+    // contents built or stored an array from them.
+    if (!ts.isForOfStatement(node) && this.noteGenericBuilder(node)) changed = true;
+    // What this site stored into an owning slot's array came from generic
+    // arrays: the slot is judged with them in each instance.
+    const owner = this.writtenOwner(node);
+    if (owner === null) return changed;
+    // An array built here takes what its contents differ by when the
+    // generic arrays hold something missing; a store takes either.
+    let takes = { undefined: true, holes: true };
+    if (
+      (ts.isArrayLiteralExpression(node) ||
+        ts.isCallExpression(node) ||
+        ts.isNewExpression(node)) &&
+      this.host.allocationOwner(node) === owner
+    ) {
+      const missing = this.judged(node, "missing");
+      const present = this.judged(node, "present");
+      takes = {
+        undefined: missing.undefined && !present.undefined,
+        holes: missing.holes && !present.holes,
+      };
+    }
+    let known = this.ownerSources.get(owner);
+    if (known === undefined)
+      this.ownerSources.set(owner, (known = { undefined: new Set(), holes: new Set() }));
+    const before = known.undefined.size + known.holes.size;
+    for (const source of sources) {
+      if (takes.undefined) known.undefined.add(source);
+      if (takes.holes) known.holes.add(source);
+    }
+    if (known.undefined.size + known.holes.size === before) return changed;
+    this.host.changed?.(owner);
+    return true;
+  }
+
+  /** Marks the functions and classes around `node` as building arrays from
+   * generic ones; true when one was not marked yet. */
+  private noteGenericBuilder(node: ts.Node): boolean {
+    let grew = false;
+    for (let outer = node.parent; outer; outer = outer.parent) {
+      if (
+        !ts.isFunctionLike(outer) &&
+        !ts.isClassDeclaration(outer) &&
+        !ts.isClassExpression(outer)
+      )
+        continue;
+      if (this.genericBuilders.has(outer)) continue;
+      this.genericBuilders.add(outer);
+      grew = true;
+    }
+    if (grew) this.host.changed?.(BUILDERS);
+    return grew;
+  }
+
+  /** The owning slot whose array `node` builds or stores into. */
+  private writtenOwner(node: ts.Node): ts.Symbol | null {
+    if (ts.isArrayLiteralExpression(node)) return this.host.allocationOwner(node);
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const allocated = this.host.allocationOwner(node);
+      if (allocated !== null) return allocated;
+      const callee = withoutParenthesesTypeWrappers(node.expression);
+      return ts.isPropertyAccessExpression(callee) && STORES_ARGUMENTS.has(callee.name.text)
+        ? this.host.ownerOf(callee.expression)
+        : null;
+    }
+    if (ts.isBinaryExpression(node)) {
+      const target = withoutParenthesesTypeWrappers(node.left);
+      if (!ts.isArrayLiteralExpression(target)) return null;
+      const last = target.elements.nodes[target.elements.nodes.length - 1];
+      return last && ts.isSpreadElement(last) ? this.host.ownerOf(last.expression) : null;
+    }
+    return null;
+  }
+
+  private scanFacts(node: ts.Node): boolean {
     this.site = node;
     if (ts.isBinaryExpression(node)) return this.scanAssignment(node);
     if (
@@ -143,7 +360,7 @@ export class ArrayElementStates {
         node.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
       // `xs[i]++` writes index i, and `xs.length++` grows the array.
-      const target = peel(node.operand as ts.Expression);
+      const target = withoutParenthesesTypeWrappers(node.operand as ts.Expression);
       if (ts.isElementAccessExpression(target)) return this.addHolesTo(target.expression);
       if (
         ts.isPropertyAccessExpression(target) &&
@@ -154,7 +371,7 @@ export class ArrayElementStates {
       return false;
     }
     if (ts.isDeleteExpression(node)) {
-      const target = peel(node.expression);
+      const target = withoutParenthesesTypeWrappers(node.expression);
       return ts.isElementAccessExpression(target) ? this.addHolesTo(target.expression) : false;
     }
     if (ts.isArrayLiteralExpression(node)) return this.record(node);
@@ -183,7 +400,7 @@ export class ArrayElementStates {
 
   /** `[a, ...rest] = source` as an assignment. */
   private scanRestAssignment(node: ts.BinaryExpression): boolean {
-    const pattern = peel(node.left);
+    const pattern = withoutParenthesesTypeWrappers(node.left);
     if (!ts.isArrayLiteralExpression(pattern)) return false;
     const last = pattern.elements.nodes[pattern.elements.nodes.length - 1];
     if (!last || !ts.isSpreadElement(last)) return false;
@@ -195,7 +412,7 @@ export class ArrayElementStates {
    * is generic. Arrays the expression creates are judged by how they are
    * built; any other array by the facts of its element ABI. */
   private contents(node: ts.Expression): Contents | null {
-    const e = peel(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isArrayLiteralExpression(e)) {
       let undefinedValue = false;
       let holes = false;
@@ -221,16 +438,45 @@ export class ArrayElementStates {
     const owner = this.host.ownerOf(e);
     if (owner !== null) {
       this.host.read?.(owner);
-      return { undefined: this.undefinedOwners.has(owner), holes: this.holeyOwners.has(owner) };
+      const own = {
+        undefined: this.undefinedOwners.has(owner),
+        holes: this.holeyOwners.has(owner),
+      };
+      // A slot whose array was built from generic arrays also holds what
+      // they hold in an instance.
+      const built = this.ownerSources.get(owner);
+      if (built === undefined) return own;
+      this.genericReads++;
+      if (this.sources !== null) {
+        for (const source of built.undefined) this.sources.add(source);
+        for (const source of built.holes) this.sources.add(source);
+      }
+      if (this.genericArrays !== "missing") return own;
+      return {
+        undefined: own.undefined || built.undefined.size > 0,
+        holes: own.holes || built.holes.size > 0,
+      };
     }
-    return this.stored(this.host.arrayKeys(e));
+    return this.storedIn(e);
+  }
+
+  /** The facts recorded for the arrays `node` can evaluate to. A generic
+   * array has none here; it is noted as a source for its instances. */
+  private storedIn(node: ts.Expression): Contents | null {
+    const keys = this.host.arrayKeys(node);
+    if (keys === null || (keys.length === 0 && (this.host.instanceTyped?.(node) ?? false))) {
+      this.genericReads++;
+      this.sources?.add(node);
+      if (this.genericArrays === "missing") return { undefined: true, holes: true };
+    }
+    return this.stored(keys);
   }
 
   /** Contents of an array a call creates; undefined when the call is not a
    * known array constructor or method. */
   private builtContents(node: ts.CallExpression | ts.NewExpression): Contents | null | undefined {
     const args = node.arguments?.nodes ?? [];
-    const callee = peel(node.expression);
+    const callee = withoutParenthesesTypeWrappers(node.expression);
     if (ts.isIdentifier(callee)) {
       if (!this.host.isGlobal(callee, "Array")) return undefined;
       // `new Array(n)` allocates holes; more arguments are the elements.
@@ -265,10 +511,25 @@ export class ArrayElementStates {
         : undefined;
     }
     if (this.host.isGlobal(owner, "Promise")) {
-      // A settled value can be a runtime-absent result.
-      return method === "all" || method === "allSettled"
-        ? { undefined: true, holes: false }
-        : undefined;
+      if (method === "all") {
+        // Promise.all fulfills with each entry's settled value, so the
+        // result holds undefined where an entry is a hole or an undefined
+        // value, or where an entry's settled type admits undefined
+        // (`Promise<T | undefined>`, whose result stores T elements).
+        const source = args[0];
+        return {
+          undefined:
+            source !== undefined &&
+            (ts.isSpreadElement(source) ||
+              !ts.isCallExpression(node) ||
+              (this.host.settledMayBeUndefined?.(node) ?? true) ||
+              this.mayYieldUndefined(source) ||
+              (this.host.iterationMayYieldUndefined?.(source) ?? false)),
+          holes: false,
+        };
+      }
+      // An allSettled outcome can carry a runtime-absent result.
+      return method === "allSettled" ? { undefined: true, holes: false } : undefined;
     }
     if (method === "match" || method === "matchAll" || method === "exec" || method === "split") {
       const separator = args[0];
@@ -299,7 +560,7 @@ export class ArrayElementStates {
       if (callback !== undefined && this.host.callbackReturnsUndefined(callback))
         return { undefined: true, holes: false };
       // Returned arrays are flattened, keeping their explicit undefined.
-      const flattened = this.stored(this.host.arrayKeys(node));
+      const flattened = this.storedIn(node);
       return flattened === null ? null : { undefined: flattened.undefined, holes: false };
     }
     if (
@@ -342,7 +603,7 @@ export class ArrayElementStates {
     if (HOLES_SKIPPED.has(method)) {
       if (method === "flat") {
         // Nested arrays are flattened, keeping their explicit undefined.
-        const flattened = this.stored(this.host.arrayKeys(node));
+        const flattened = this.storedIn(node);
         if (flattened === null) return null;
         return { undefined: receiver.undefined || flattened.undefined, holes: false };
       }
@@ -360,7 +621,10 @@ export class ArrayElementStates {
   private stored(keys: readonly string[] | null): Contents | null {
     if (this.ownFactsOnly) return NOTHING;
     this.host.read?.(ANY_ARRAY);
-    if (keys === null) return null;
+    if (keys === null)
+      return this.genericArrays === "unknown"
+        ? null
+        : { undefined: this.anyUndefined, holes: this.anyHoley };
     for (const key of keys) this.host.read?.(key);
     this.host.read?.(VIEW_HOLES);
     this.host.read?.(VIEW_VALUES);
@@ -426,7 +690,13 @@ export class ArrayElementStates {
    * an undefined value when it is stored. */
   private mayYieldUndefined(node: ts.Expression): boolean {
     const keys = this.host.arrayKeys(node);
-    if (keys !== null && keys.length === 0) return false;
+    if (keys !== null && keys.length === 0) {
+      // A value typed by a type parameter is an array in some instances.
+      if (!(this.host.instanceTyped?.(node) ?? false)) return false;
+      this.genericReads++;
+      this.sources?.add(node);
+      return this.genericArrays === "missing";
+    }
     const contents = this.contents(node);
     this.host.read?.(ANY_ARRAY);
     return contents === null
@@ -536,6 +806,7 @@ export class ArrayElementStates {
     let changed = false;
     for (const key of keys) {
       if (this.undefinedKeys.has(key)) continue;
+      if (this.undefinedKeys.size === 0) this.host.changed?.(UNDEFINED_KEYS);
       this.undefinedKeys.add(key);
       this.host.changed?.(key);
       this.host.note?.("undefined", key, this.site);
@@ -555,6 +826,7 @@ export class ArrayElementStates {
     let changed = false;
     for (const key of keys) {
       if (this.holeyKeys.has(key)) continue;
+      if (this.holeyKeys.size === 0) this.host.changed?.(HOLEY_KEYS);
       this.holeyKeys.add(key);
       this.host.changed?.(key);
       this.host.note?.("holes", key, this.site);
@@ -563,10 +835,38 @@ export class ArrayElementStates {
     return changed;
   }
 
+  /** A generic function's body is judged without its instances' element
+   * keys, so what it builds from an argument's elements carries no fact of
+   * its own: holes that `map` keeps under another element type, holes that
+   * a copy (`[...xs]`, `Array.from`) turns into present undefined
+   * elements, elements moved into another argument. When the callee builds
+   * arrays from generic ones (genericBuilders) and an array the call can
+   * reach may hold holes, every array it can reach, and its result, may
+   * hold holes and undefined. Explicit undefined values cross element types
+   * only through typed callbacks, judged where they are written. */
+  private scanGenericCall(node: ts.CallExpression | ts.NewExpression): boolean {
+    const callee = this.host.genericCall?.(node) ?? null;
+    if (callee === null) return false;
+    this.host.read?.(BUILDERS);
+    if (callee.bodies !== null && !callee.bodies.some((body) => this.genericBuilders.has(body)))
+      return false;
+    // The code around this call builds through the callee.
+    const builder = this.noteGenericBuilder(node);
+    this.host.read?.(HOLEY_KEYS);
+    this.host.read?.(VIEW_HOLES);
+    if (this.holeyKeys.size === 0 && !this.viewHoles) return builder;
+    const keys = callee.keys();
+    for (const key of keys) this.host.read?.(key);
+    if (!keys.some((key) => this.holeyKeys.has(key) || this.viewed(key))) return builder;
+    const holes = this.addHoles(keys);
+    const undefinedValues = this.addUndefined(keys);
+    return builder || holes || undefinedValues;
+  }
+
   private scanAssignment(node: ts.BinaryExpression): boolean {
     const op = node.operatorToken.kind;
     if (op < ts.SyntaxKind.FirstAssignment || op > ts.SyntaxKind.LastAssignment) return false;
-    const target = peel(node.left);
+    const target = withoutParenthesesTypeWrappers(node.left);
     if (op === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(target))
       return this.scanRestAssignment(node);
     if (ts.isElementAccessExpression(target)) {
@@ -629,7 +929,8 @@ export class ArrayElementStates {
         )
           changed = true;
     if (this.record(node)) changed = true;
-    const callee = peel(node.expression);
+    if (this.scanGenericCall(node)) changed = true;
+    const callee = withoutParenthesesTypeWrappers(node.expression);
     if (!ts.isPropertyAccessExpression(callee)) return changed;
     if (this.scanReflectiveWrite(callee, args)) changed = true;
     // In-place stores into the receiver.
@@ -671,7 +972,7 @@ export class ArrayElementStates {
     args: readonly ts.Expression[],
   ): boolean {
     const method = callee.name.text;
-    const owner = peel(callee.expression);
+    const owner = withoutParenthesesTypeWrappers(callee.expression);
     const reflective =
       (this.host.isGlobal(owner, "Object") &&
         (method === "assign" ||
@@ -682,10 +983,12 @@ export class ArrayElementStates {
         (method === "set" || method === "defineProperty" || method === "apply")) ||
       ((method === "call" || method === "apply") &&
         ts.isPropertyAccessExpression(owner) &&
-        ts.isPropertyAccessExpression(peel(owner.expression)) &&
-        (peel(owner.expression) as ts.PropertyAccessExpression).name.text === "prototype" &&
+        ts.isPropertyAccessExpression(withoutParenthesesTypeWrappers(owner.expression)) &&
+        (withoutParenthesesTypeWrappers(owner.expression) as ts.PropertyAccessExpression).name
+          .text === "prototype" &&
         this.host.isGlobal(
-          (peel(owner.expression) as ts.PropertyAccessExpression).expression,
+          (withoutParenthesesTypeWrappers(owner.expression) as ts.PropertyAccessExpression)
+            .expression,
           "Array",
         ));
     if (!reflective) return false;
@@ -731,15 +1034,17 @@ export class ArrayElementStates {
   }
 
   private loopSource(node: ts.ForOfStatement): ts.Expression {
-    let source = peel(node.expression);
+    let source = withoutParenthesesTypeWrappers(node.expression);
     if (
       ts.isCallExpression(source) &&
       ts.isPropertyAccessExpression(source.expression) &&
       (source.expression.name.text === "values" || source.expression.name.text === "entries") &&
       source.arguments.nodes.length === 0
     ) {
-      const receiver = this.host.arrayKeys(source.expression.expression);
-      if (receiver === null || receiver.length > 0) source = source.expression.expression;
+      const array = source.expression.expression;
+      const receiver = this.host.arrayKeys(array);
+      if (receiver === null || receiver.length > 0 || (this.host.instanceTyped?.(array) ?? false))
+        source = array;
     }
     return source;
   }
@@ -787,7 +1092,7 @@ const ARRAY_BUILDERS = new Set([
 ]);
 
 function buildsArray(node: ts.CallExpression | ts.NewExpression): boolean {
-  const callee = peel(node.expression);
+  const callee = withoutParenthesesTypeWrappers(node.expression);
   if (ts.isIdentifier(callee)) return callee.text === "Array";
   return ts.isPropertyAccessExpression(callee) && ARRAY_BUILDERS.has(callee.name.text);
 }
@@ -850,22 +1155,9 @@ function merge(a: Contents | null, b: Contents | null): Contents | null {
   return { undefined: a.undefined || b.undefined, holes: a.holes || b.holes };
 }
 
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
-
 function sameReference(a: ts.Expression, b: ts.Expression): boolean {
-  const left = peel(a);
-  const right = peel(b);
+  const left = withoutParenthesesTypeWrappers(a);
+  const right = withoutParenthesesTypeWrappers(b);
   if (ts.isIdentifier(left) && ts.isIdentifier(right)) return left.text === right.text;
   if (left.kind === ts.SyntaxKind.ThisKeyword && right.kind === ts.SyntaxKind.ThisKeyword)
     return true;
@@ -876,7 +1168,7 @@ function sameReference(a: ts.Expression, b: ts.Expression): boolean {
 
 /** `xs[xs.length] = v` appends without leaving a hole. */
 function isAppendIndex(target: ts.ElementAccessExpression): boolean {
-  const index = peel(target.argumentExpression);
+  const index = withoutParenthesesTypeWrappers(target.argumentExpression);
   return (
     ts.isPropertyAccessExpression(index) &&
     index.name.text === "length" &&
@@ -887,7 +1179,7 @@ function isAppendIndex(target: ts.ElementAccessExpression): boolean {
 /** `o["name"]`: a string literal key that is not an array index writes a
  * named property, never an element. */
 function namesProperty(target: ts.ElementAccessExpression): boolean {
-  const key = peel(target.argumentExpression);
+  const key = withoutParenthesesTypeWrappers(target.argumentExpression);
   if (!ts.isStringLiteral(key) && !ts.isNoSubstitutionTemplateLiteral(key)) return false;
   return !/^(0|[1-9][0-9]*)$/.test(key.text) || Number(key.text) >= 2 ** 32 - 1;
 }
@@ -899,15 +1191,15 @@ function isShrinkingLength(
   target: ts.PropertyAccessExpression,
 ): boolean {
   const op = node.operatorToken.kind;
-  const right = peel(node.right);
+  const right = withoutParenthesesTypeWrappers(node.right);
   if (op === ts.SyntaxKind.MinusEqualsToken) return ts.isNumericLiteral(right);
   if (op !== ts.SyntaxKind.EqualsToken) return false;
   if (ts.isNumericLiteral(right)) return Number(right.text) === 0;
   if (!ts.isBinaryExpression(right) || right.operatorToken.kind !== ts.SyntaxKind.MinusToken)
     return false;
-  const length = peel(right.left);
+  const length = withoutParenthesesTypeWrappers(right.left);
   return (
-    ts.isNumericLiteral(peel(right.right)) &&
+    ts.isNumericLiteral(withoutParenthesesTypeWrappers(right.right)) &&
     ts.isPropertyAccessExpression(length) &&
     length.name.text === "length" &&
     sameReference(length.expression, target.expression)
@@ -915,7 +1207,7 @@ function isShrinkingLength(
 }
 
 function isNumberLike(node: ts.Expression): boolean {
-  const e = peel(node);
+  const e = withoutParenthesesTypeWrappers(node);
   return !(
     ts.isStringLiteral(e) ||
     ts.isNoSubstitutionTemplateLiteral(e) ||

@@ -177,6 +177,7 @@ ScrJsVal scr_js_bitwise(ScrJsVal left, ScrJsVal right, const ScrStr *operation);
 bool scr_js_compare(ScrJsVal left, ScrJsVal right, const ScrStr *operation);
 ScrJsVal scr_js_to_numeric(ScrJsVal value);
 ScrJsVal scr_js_increment(ScrJsVal value, bool increment);
+ScrJsVal scr_js_negate(ScrJsVal value);
 double scr_js_to_number(ScrJsVal value);
 bool scr_js_truthy(ScrJsVal value);
 

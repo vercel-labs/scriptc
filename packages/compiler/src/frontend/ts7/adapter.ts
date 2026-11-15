@@ -15,7 +15,8 @@
  * prevents their ASTs from entering this frontend.
  *
  * APIs replaced by dedicated services:
- *   - ts.transpileModule — lower-comptime keeps 5.9.3 (island).
+ *   - ts.transpileModule — the comptime evaluator runs TypeScript 7's
+ *     command line (comptime.ts).
  *   - ts.resolveModuleName / ts.resolveTypeReferenceDirective — replaced by
  *     resolve.ts, the one resolver shared by the TypeScript 7 program graph
  *     and lowering.

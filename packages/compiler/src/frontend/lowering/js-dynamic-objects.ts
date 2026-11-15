@@ -23,6 +23,7 @@
  * compile exactly as before. */
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { BOOL, DYN, type IrExpr, type IrStmt } from "../../ir/ir.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
@@ -38,13 +39,8 @@ const SCANNED_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.CallExpression,
 ]);
 
-function unparenthesized(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node)) node = node.expression;
-  return node;
-}
-
 function isLiteralKey(node: ts.Expression): boolean {
-  const key = unparenthesized(node);
+  const key = withoutParentheses(node);
   return (
     ts.isStringLiteral(key) || ts.isNumericLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
   );
@@ -101,7 +97,7 @@ function markNested(literal: ts.ObjectLiteralExpression, out: Set<ts.Node>): voi
   out.add(literal);
   for (const property of literal.properties.nodes) {
     if (!ts.isPropertyAssignment(property)) continue;
-    const value = unparenthesized(property.initializer);
+    const value = withoutParentheses(property.initializer);
     if (ts.isObjectLiteralExpression(value)) markNested(value, out);
   }
 }
@@ -117,7 +113,7 @@ export function jsDynamicDeclarations(
     const reshaped = new Set<ts.Symbol>();
     const receiver = (expression: ts.Expression | undefined): void => {
       if (expression === undefined) return;
-      const target = unparenthesized(expression);
+      const target = withoutParentheses(expression);
       if (!ts.isIdentifier(target)) return;
       const symbol = checker.getSymbolAtLocation(target);
       if (symbol !== undefined) reshaped.add(symbol);
@@ -127,7 +123,7 @@ export function jsDynamicDeclarations(
       (node) => {
         if (ts.isVariableDeclaration(node)) {
           if (!ts.isIdentifier(node.name) || node.initializer === undefined) return;
-          const init = unparenthesized(node.initializer);
+          const init = withoutParentheses(node.initializer);
           // An empty literal's binding is already checked-dynamic
           // (jsOpenObjectType), and its type describes no layout.
           if (!ts.isObjectLiteralExpression(init) || init.properties.nodes.length === 0) return;
@@ -141,19 +137,19 @@ export function jsDynamicDeclarations(
         }
         if (ts.isBinaryExpression(node)) {
           if (!isAssignmentOperator(node.operatorToken.kind)) return;
-          const left = unparenthesized(node.left);
+          const left = withoutParentheses(node.left);
           if (ts.isElementAccessExpression(left) && !isLiteralKey(left.argumentExpression))
             receiver(left.expression);
           return;
         }
         if (ts.isDeleteExpression(node)) {
-          const operand = unparenthesized(node.expression);
+          const operand = withoutParentheses(node.expression);
           if (ts.isElementAccessExpression(operand) || ts.isPropertyAccessExpression(operand))
             receiver(operand.expression);
           return;
         }
         if (ts.isCallExpression(node)) {
-          const callee = unparenthesized(node.expression);
+          const callee = withoutParentheses(node.expression);
           if (
             ts.isPropertyAccessExpression(callee) &&
             ts.isIdentifier(callee.expression) &&
@@ -185,7 +181,7 @@ export function lowerValueReturningConstructorNew(
 ): IrExpr | null {
   const isDynamic = lowerer.typeCtx.jsDynamicDeclaration;
   if (isDynamic === undefined) return null;
-  const callee = unparenthesized(expr.expression);
+  const callee = withoutParentheses(expr.expression);
   if (!ts.isIdentifier(callee)) return null;
   let symbol = lowerer.resolveValueSymbol(callee);
   if (symbol !== null && (symbol.flags & ts.SymbolFlags.Alias) !== 0)

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/global-object-binding-modules/polyfill.mjs",
+  "<repo>/tests/corpus/global-object-binding-modules/main.mjs"
+ ],
+ "diags": []
+}

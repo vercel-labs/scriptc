@@ -258,6 +258,10 @@ function intoChannel(lowerer: Lowerer, value: IrExpr, target: IrType): IrExpr | 
   return coerced;
 }
 
+/** The prefix of the keys dynIteratorAdapter interns its adapters under
+ * (Lowerer.valueHelpers). */
+export const ITERATOR_ADAPTER_KEY = "iterAdapt:";
+
 /** A checked-dynamic iterator (a Map, Set or array iterator, or any other
  * object following the iterator protocol) flowing into a generator-typed
  * slot (`IterableIterator<T>`, `Iterator<T>`, `Generator<T>`). The interned
@@ -280,7 +284,7 @@ function dynIteratorAdapter(
   );
   if (!resultType) return null;
   const loc = expr.loc;
-  const key = `iterAdapt:${typeKey(expected)}`;
+  const key = `${ITERATOR_ADAPTER_KEY}${typeKey(expected)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%iter.adapt", key);

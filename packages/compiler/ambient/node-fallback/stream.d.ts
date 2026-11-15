@@ -239,10 +239,21 @@ declare module "stream" {
     readonly readableLength: number;
     readonly readableHighWaterMark: number;
     readonly readableObjectMode: boolean;
+    /* Destroyed or errored before 'end'. */
+    readonly readableAborted: boolean;
+    /* A 'data' event was emitted. */
+    readonly readableDidRead: boolean;
+    /* null, the `encoding` option as written, or setEncoding()'s decoder. */
+    readonly readableEncoding: string | null;
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly errored: Error | null;
+    /* Destroys an unfinished stream with an AbortError and resolves once
+     * the stream has finished. */
+    [Symbol.asyncDispose](): Promise<void>;
     static from(iterable: unknown, options?: ReadableOptions): Readable;
+    /* stream.isDisturbed. */
+    static isDisturbed(stream: unknown): boolean;
     /* A Readable over a web ReadableStream's reader. */
     static fromWeb(
       readableStream: globalThis.ReadableStream,
@@ -383,9 +394,14 @@ declare module "stream" {
     readonly writableObjectMode: boolean;
     readonly writableNeedDrain: boolean;
     readonly writableCorked: number;
+    /* Destroyed or errored before 'finish'. */
+    readonly writableAborted: boolean;
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly errored: Error | null;
+    [Symbol.asyncDispose](): Promise<void>;
+    /* stream.isDisturbed (the classes inherit the module's functions). */
+    static isDisturbed(stream: unknown): boolean;
     on(event: "drain" | "finish" | "close", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     on(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
@@ -463,6 +479,10 @@ declare module "stream" {
     readonly writableObjectMode: boolean;
     readonly writableNeedDrain: boolean;
     readonly writableCorked: number;
+    /* Node's Duplex.prototype does not define this getter (it copies a
+     * fixed list of Writable's), so the read is undefined. Declared, as
+     * `any`, so a Duplex stays assignable to Writable. */
+    readonly writableAborted: any;
     readonly allowHalfOpen: boolean;
     on(event: "data", listener: (chunk: any) => void): this;
     on(
@@ -590,6 +610,15 @@ declare module "stream" {
   /* Folds to the TARGET platform's default at compile time (win32 16384,
    * else 65536 — Node's own state.js split); literal argument only. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  /* Node's duck-typed state predicates. A native stream answers from its
+   * state, and a primitive as Node's property reads do; isDestroyed,
+   * isReadable and isWritable answer null for a value without that side.
+   * Other objects are refused by name. */
+  function isDestroyed(stream: unknown): boolean | null;
+  function isErrored(stream: unknown): boolean;
+  function isReadable(stream: unknown): boolean | null;
+  function isWritable(stream: unknown): boolean | null;
+  function isDisturbed(stream: unknown): boolean;
   /* The promise pipeline's result: a last stage that is an async
    * function resolves the promise with its value (before the options
    * argument, when one follows). */
@@ -626,6 +655,11 @@ declare module "stream" {
     compose,
     finished,
     getDefaultHighWaterMark,
+    isDestroyed,
+    isErrored,
+    isReadable,
+    isWritable,
+    isDisturbed,
     promises,
   };
   export type {

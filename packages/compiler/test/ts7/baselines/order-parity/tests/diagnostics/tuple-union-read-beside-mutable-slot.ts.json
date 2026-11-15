@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tuple-union-read-beside-mutable-slot.ts"
+ ],
+ "diags": []
+}

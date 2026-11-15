@@ -78,15 +78,17 @@ console.log(leaves.has(undefined), counts.get(a), counts.get(null), child(1)?.na
   expect(ir).not.toMatch(/call ptr @scr_union_new_ref/);
 });
 
-test("Maps keyed by a string or undefined keep union keys, which compare by value", async () => {
+test("Maps keyed by a string or undefined key the string, which compares by value", async () => {
   const ir = await llvmFor(`
 const names = new Map<string | undefined, number>([["a", 1], [undefined, 2]]);
 names.set(["a"].join(""), 3);
 console.log(names.size, names.get("a"), names.get(undefined));
 `);
-  // SCR_MAP_KEY_UNION_VALUE (7): the strings compare by their text.
-  expect(ir).toMatch(/call ptr @scr_map_new\(i32 7,/);
-  expect(ir).not.toMatch(/call ptr @scr_map_new\(i32 2,/);
+  // SCR_MAP_KEY_STR (1): the strings compare by their text and undefined is a
+  // key string of its own (string-union-keys.ts); never the pointer key (2),
+  // and no boxed union key (7).
+  expect(ir).toMatch(/call ptr @scr_map_new\(i32 1,/);
+  expect(ir).not.toMatch(/call ptr @scr_map_new\(i32 [27],/);
 });
 
 const recordType = (shapeId: string): IrType => ({ kind: "record", shapeId });

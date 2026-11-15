@@ -8,6 +8,9 @@
  * runtime heap. The entry initializes that thread's runtime before user code;
  * the thread wrapper drains its context before publishing the exit event. */
 typedef struct ScrWorkerThread ScrWorkerThread;
+/* The thread's process.env (scr_context.c under SCR_WORKERS). Named here so
+ * the start prototype compiles in every configuration. */
+typedef struct ScrContextEnv ScrContextEnv;
 typedef int (*ScrWorkerEntry)(uint32_t root);
 
 enum {
@@ -26,12 +29,17 @@ enum {
  * stack_size of 0 selects the default 8 MiB thread stack. capture (1
  * stdout, 2 stderr) posts the worker's writes to those descriptors to the
  * parent as SCR_WORKER_STDOUT/STDERR events; 4 (stdin) has the worker's
- * process.stdin read what scr_worker_thread_post_stdin sends. */
+ * process.stdin read what scr_worker_thread_post_stdin sends. environment,
+ * when not NULL, is the thread's process.env and the thread record owns it;
+ * otherwise the thread captures a copy of the parent's. share_environment
+ * skips both: the thread reads and writes the process environment itself,
+ * as worker_threads.SHARE_ENV asks. */
 ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
                                         size_t stack_size, const ScrStr *name,
-                                        unsigned capture);
+                                        unsigned capture, ScrContextEnv *environment,
+                                        bool share_environment);
 ScrWorkerThread *scr_worker_thread_retain(ScrWorkerThread *worker);
 void scr_worker_thread_release(ScrWorkerThread *worker);
 /* Join is owner-only and idempotent. The caller holds a reference. */

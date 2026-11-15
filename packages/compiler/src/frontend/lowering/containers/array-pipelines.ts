@@ -21,6 +21,7 @@ import {
   typeEquals,
   typeKey,
 } from "../../../ir/ir.js";
+import type { IrLibFn } from "../../../ir/builtin-signatures.js";
 import {
   everyExpr,
   everyExprChild,
@@ -110,7 +111,7 @@ function mergeEffects(into: Effects, from: Effects): void {
   for (const id of from.writes) into.writes.add(id);
 }
 
-const PURE_MATH = new Set<string>([
+const PURE_MATH = new Set<IrLibFn>([
   "math.abs",
   "math.acos",
   "math.acosh",

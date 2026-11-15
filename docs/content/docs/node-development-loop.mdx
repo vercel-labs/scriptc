@@ -1,0 +1,119 @@
+---
+title: "Node.js Development Loop"
+---
+
+Run and test the program with Node.js while you work on it, and compile it with scriptc to ship. The loop has three parts: run with the scriptc load hook, check the files you edited with `scriptc coverage`, and compare the Node.js and compiled runs before you ship.
+
+## Prerequisites
+
+- Node.js 24 or later. Node.js runs TypeScript by stripping the types, so the same file runs in the development loop and is the input to a build.
+- `scriptc` and `@scriptc/experimental` in the project:
+
+```console
+$ npm install --save-dev scriptc @scriptc/experimental
+```
+
+## Run with the load hook
+
+Create the program:
+
+```ts:app.ts
+import { readFile } from "node:fs/promises";
+
+export async function wordCount(path: string): Promise<number> {
+  const text: string = await readFile(path, "utf8");
+  return text.trim().split(/\s+/).length;
+}
+
+const path: string = process.argv[2] ?? "sample.txt";
+console.log(`${path}: ${await wordCount(path)} words`);
+```
+
+Create the file the program counts:
+
+```text:sample.txt
+one two three
+```
+
+Start Node.js with the preload and the code-generation flag:
+
+```console
+$ NODE_OPTIONS=--disallow-code-generation-from-strings node --import @scriptc/experimental/register app.ts sample.txt
+sample.txt: 3 words
+```
+
+The preload applies a scriptc build's load-time refusals before the program starts. An import of an unsupported builtin module fails with `SC1010`, a native addon fails with `SC2020`, and `process.getBuiltinModule` applies the same module check.
+
+The code-generation flag makes `eval`, `Function`, and the function constructors throw the `EvalError` that a compiled program throws. A preload cannot set the flag for the process it joins, so pass it in `NODE_OPTIONS`. The hook prints a warning when the flag is missing.
+
+Pass both parts to every Node.js command in the loop, including your test runner.
+
+## Check edits with coverage
+
+After you edit a file, run `scriptc coverage` on the entry path:
+
+```console
+$ scriptc coverage app.ts
+
+  statements analyzed   4
+  compile statically    4  (100%)
+
+  fully static — all analyzed statements compile to native code.
+```
+
+When part of the program does not compile, the report groups the sites by diagnostic code with a reason, a location, and a hint. Fix the blocker, or change the types so the operation compiles. A program that does not typecheck is not analyzed, so fix type errors first.
+
+`scriptc coverage` stores its verdict and reuses it while everything the analysis read is unchanged, so repeated runs on an unchanged program replay the previous result. An edit that the analysis can observe asks for a new analysis. For a large program, `--coverage=reached` skips code the entry never reaches. See [Coverage Reports](/docs/coverage).
+
+## Compare before shipping
+
+Start with a test file:
+
+```ts:test/app.test.ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { wordCount } from "../app.ts";
+
+test("counts words", async () => {
+  assert.equal(await wordCount("sample.txt"), 3);
+});
+```
+
+Run it with the dual-run reporter in place of the built-in one:
+
+```console
+$ NODE_OPTIONS=--disallow-code-generation-from-strings node --import @scriptc/experimental/register --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-reporter-destination=stdout
+✔ test/app.test.ts (1 passed)
+```
+
+From vitest or jest, call `dualRun` on a file instead:
+
+```ts:test/compiled.test.ts
+import { expect, test } from "vitest";
+import { dualRun } from "@scriptc/experimental/dual-run";
+
+test("the compiled test file matches Node.js", async () => {
+  const result = await dualRun("test/app.test.ts");
+  expect(result.diff).toBe("");
+});
+```
+
+Build the binary you ship and run it once before you push:
+
+```console
+$ scriptc build app.ts -o app >/dev/null
+$ ./app sample.txt
+sample.txt: 3 words
+```
+
+See [Dual-Run Testing](/docs/dual-run) for what the comparison normalizes and for the program API.
+
+## What each step checks
+
+The load hook refuses the unsupported builtin imports and native addons that a build refuses. It does not analyze the program.
+
+Coverage analyzes the code without running it. It reports what compiles and what does not, and it cannot find a problem that depends on a value.
+
+Dual-run runs the program both ways and compares the output and exit code, so it finds a difference that appears only at run time.
+
+Node.js is the behavior oracle for the loop. The compiled binary should do what Node.js does, and dual-run fails the change when it does not.

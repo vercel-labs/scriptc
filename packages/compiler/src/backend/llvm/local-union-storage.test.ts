@@ -425,6 +425,120 @@ test("number bindings of optional reads and `??` chains stay in stack storage", 
   expect(body(mod, 64)).not.toMatch(/@scr_union_(?:new|retain|release)/);
 });
 
+test("`&&` and `||` over optional scalars join in a private stack box", () => {
+  const maybe: IrType = { kind: "union", unionId: "maybe" };
+  const numbers: IrType = { kind: "array", elem: F64 };
+  const one: IrExpr = { kind: "numLit", value: 1, type: F64, loc };
+  const read = (index: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: ref("values", numbers), index, type: F64, loc },
+      right: { kind: "numLit", value: 1, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: {
+      kind: "unionWrap",
+      value: { kind: "arrayGet", arr: ref("values", numbers), index, type: F64, loc },
+      tag: 0,
+      unionId: "maybe",
+      type: maybe,
+      loc,
+    },
+    else_: {
+      kind: "unionWrap",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      tag: 1,
+      unionId: "maybe",
+      type: maybe,
+      loc,
+    },
+    type: maybe,
+    loc,
+  });
+  const logical = (op: "&&" | "||", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "logical",
+    op,
+    left,
+    right,
+    type: maybe,
+    loc,
+  });
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [{ id: "maybe", arms: [F64, UNDEFINED_T] }],
+    functions: [
+      { name: "main", params: [], locals: [], body: [], returnType: VOID, loc },
+      {
+        name: "work",
+        loc,
+        returnType: F64,
+        params: [
+          { localId: "values", name: "values", type: numbers },
+          { localId: "i", name: "i", type: F64 },
+        ],
+        locals: [
+          { id: "values", name: "values", type: numbers, mutable: true },
+          { id: "i", name: "i", type: F64, mutable: true },
+          { id: "value", name: "value", type: maybe, mutable: true },
+        ],
+        body: [
+          {
+            kind: "varDecl",
+            localId: "value",
+            loc,
+            // `values[i] && (values[i] || values[1])`: the right operand of
+            // `&&` is itself a union-typed `||`.
+            init: logical("&&", read(ref("i", F64)), logical("||", read(ref("i", F64)), read(one))),
+          },
+          {
+            kind: "return",
+            loc,
+            value: {
+              kind: "nullish",
+              left: ref("value", maybe),
+              right: { kind: "numLit", value: -1, type: F64, loc },
+              type: F64,
+              loc,
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const ir = body(mod, 64);
+  // The left snapshot answers the truth test from its own tag and payload,
+  // and only the deciding operand is written into the storage.
+  expect(ir).toContain("fcmp one double");
+  expect(ir).toContain("%optional.default");
+  expect(ir).not.toMatch(/@scr_union_(?:new|retain|release)/);
+});
+
+test("`&&` and `||` of a union with a reference arm keep the boxed path", () => {
+  const mod = fixture();
+  const fn = mod.functions[1]!;
+  fn.returnType = optional;
+  fn.body = [
+    {
+      kind: "return",
+      loc,
+      value: {
+        kind: "logical",
+        op: "||",
+        left: ref("item"),
+        right: ref("item"),
+        type: optional,
+        loc,
+      },
+    },
+  ];
+  expect(body(mod, 64)).toMatch(/@scr_union_(?:new|retain)/);
+});
+
 test("a statement-position sequence reassigns a local without moving it to the heap", () => {
   const mod = fixture();
   const update = (value: IrExpr) => ({

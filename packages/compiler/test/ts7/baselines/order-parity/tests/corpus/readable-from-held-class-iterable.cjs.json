@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readable-from-held-class-iterable.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bounded-import-after-literal/main.ts"
+ ],
+ "diags": []
+}

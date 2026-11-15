@@ -1,0 +1,6 @@
+- **HTTP/2:** Server push is not implemented: `pushStream`, `createPushResponse`, and the `'push'` event are refused.
+  A client says so in its settings (`ENABLE_PUSH = 0`), so its `localSettings.enablePush` and the server's `remoteSettings.enablePush` for it are `false` where Node reports `true`.
+  On the compatibility response, `'finish'` listeners run when `end()` returns rather than when the stream closes, so they run before the request's `'close'` and before an `end()` callback, and a response that never ended emits no `'finish'`.
+  Trailers, `goaway()`, timeouts, `respondWithFile`, and the stream and session `state` records are refused; on a session or stream that reached untyped code they throw instead of being ignored.
+  A `ping()` callback declares its duration and payload optional, because a cancelled ping calls back with the error alone, as in Node.
+  A settings record with `customSettings` is refused, in `session.settings()` and in `getPackedSettings()` (where Node 24 answers `undefined`).

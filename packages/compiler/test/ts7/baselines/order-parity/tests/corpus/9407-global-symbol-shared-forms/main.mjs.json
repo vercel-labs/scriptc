@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9407-global-symbol-shared-forms/listed.mjs",
+  "<repo>/tests/corpus/9407-global-symbol-shared-forms/renamed.mjs",
+  "<repo>/tests/corpus/9407-global-symbol-shared-forms/default.mjs",
+  "<repo>/tests/corpus/9407-global-symbol-shared-forms/main.mjs"
+ ],
+ "diags": []
+}

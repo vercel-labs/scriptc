@@ -1,0 +1,10 @@
+{
+  "plain": {
+    "esm-entries": 2306,
+    "zod4-boundary": 24036
+  },
+  "san": {
+    "esm-entries": 2913,
+    "zod4-boundary": 37101
+  }
+}

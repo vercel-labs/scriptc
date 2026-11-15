@@ -19,20 +19,27 @@
  * The helpers here decide WHEN a receiver is such a callable ("call
  * signatures, no construct signature, not a class, lowered as a func") and
  * which member names address its table (`length`, `name`, `caller`,
- * `arguments`, `prototype`, the runtime's fenced prototype members and
- * `__proto__` belong to the function protocol, not to the table's user
- * data; `toString` is table data when the value's type declares it). They
- * never change a call to a plain function: a call whose callee is a table
- * member reads it through the table and calls the closure it finds.
+ * `arguments`, `prototype` and `__proto__` belong to the function
+ * protocol, not to the table's user data; the members a function inherits —
+ * `toString` and the call/apply/bind and Object.prototype names — are table
+ * data when the value's type declares them in user code). They never change
+ * a call to a plain function: a call whose callee is a table member reads it
+ * through the table and calls the closure it finds.
  *
- * Two families stay off the table. A member the runtime's function-table
- * property fence refuses (call/apply/bind and the Object.prototype
- * members) keeps its existing refusal rather than becoming a table entry.
+ * An inherited name is shadowable in JS, and a WRITE always makes it table
+ * data: `fn.call = f` creates an own data property that the runtime's table
+ * read and its call/apply/bind dispatch both see first (scr_json.c,
+ * scr_dyn_invoke.c). The write target therefore admits the inherited names
+ * unconditionally, while the read target asks for a user declaration (an
+ * inherited `fn.call` on a plain function still answers through the
+ * protocol lowering it has always had).
+ *
  * The members a function carries because a NAMESPACE of the same name is
- * merged into it are still stored elsewhere: the namespace
- * lowering's flattened module globals own those names, so their reads,
- * writes and calls resolve by member symbol as before and only
- * `Object.keys`/inspect of such a function do not list them. */
+ * merged into it are table entries too: the merged block writes each
+ * exported member onto the function object at the member's source position,
+ * and reads, writes, `in` and `delete` go through the same keyed operations
+ * (lower-fundule.ts). A namespace that does NOT merge with a function keeps
+ * its flattened module globals — those are a different value. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { DYN, type IrExpr, type IrType } from "../../ir/ir.js";
@@ -46,14 +53,13 @@ import { stdlibGlobalNameOf } from "./surfaces.js";
  * enumeration. */
 const FUNCTION_FIXED_SLOTS = new Set(["length", "name", "prototype", "caller", "arguments"]);
 
-/** The members a function inherits from the native call/apply/bind and
- * Object.prototype lowerings. The runtime's function-table property fence
- * (`scr_dyn_fn_property_fence`, scr_json.c) refuses every write to them,
- * because a typed call site that does not declare the name answers through
- * that builtin rather than the table; a callable interface that declares one
- * therefore keeps its existing refusal instead of becoming a table entry.
- * `__proto__` is the prototype accessor, never table data either. */
-const FUNCTION_RESERVED_MEMBERS = new Set([
+/** The members a function inherits from Function.prototype and
+ * Object.prototype. JS lets an own data property shadow every one of them
+ * (`fn.toString = ...`, `fn.call = ...`), so a typed callable that declares
+ * one keeps its value in the table. `__proto__` is the prototype accessor,
+ * never table data. */
+const FUNCTION_INHERITED_MEMBERS = new Set([
+  "toString",
   "apply",
   "bind",
   "call",
@@ -65,22 +71,11 @@ const FUNCTION_RESERVED_MEMBERS = new Set([
   "constructor",
 ]);
 
-/** The one inherited member a function may shadow with an own data property
- * the table accepts: `Function.prototype.toString` is not in the fence, so
- * `fn.toString = () => "x"` is an ordinary own property in Node and here.
- * It is table data only when the value's TYPE declares it in user code;
- * otherwise the name answers through the protocol. */
-const FUNCTION_SHADOWABLE_MEMBERS = new Set(["toString"]);
-
-/** Whether `name` is a member a typed callable keeps in its own-property
- * table rather than answering through the function protocol. */
+/** Whether `name` may name an own property of a typed callable. The fixed
+ * slots and the `__proto__` accessor never can; every other name, an
+ * inherited protocol member included, can. */
 export function isCallableOwnMemberName(name: string): boolean {
-  return (
-    !FUNCTION_FIXED_SLOTS.has(name) &&
-    !FUNCTION_RESERVED_MEMBERS.has(name) &&
-    !FUNCTION_SHADOWABLE_MEMBERS.has(name) &&
-    name !== "__proto__"
-  );
+  return !FUNCTION_FIXED_SLOTS.has(name) && name !== "__proto__";
 }
 
 /** Whether the value's type declares `property` itself (a user interface or
@@ -108,6 +103,22 @@ export function isCallableValue(lowerer: Lowerer, receiver: ts.Expression): bool
   return stdlibGlobalNameOf(lowerer, receiver) === null;
 }
 
+/** Whether the value's own type declares `name` as a user member, so a read
+ * of it is table data rather than the function protocol. The statically
+ * resolved protocol forms (`f.apply(thisArg, tuple)`, which a wrapper lowers
+ * to a direct call of the function body) must ask this before they take their
+ * shortcut: for such a value the own table entry is the callee, and the
+ * general member-call path is the one that reads it. */
+export function callableDeclaresMember(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  name: string,
+): boolean {
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
+  const property = lowerer.checker.getPropertyOfType(type, name);
+  return property !== undefined && isUserDeclaredMember(lowerer, property);
+}
+
 /** The identity-preserving box of a callable value: `dynFrom` shares the
  * closure's property table, so a write through the box and a read through
  * the closure (or the reverse) observe one object. Null when the func cannot
@@ -128,10 +139,31 @@ export function callableMemberFieldTarget(
   access: ts.PropertyAccessExpression,
   receiverIr: IrType,
 ): FieldTarget | null {
+  return callableTarget(lowerer, access, receiverIr, false);
+}
+
+/** The WRITE target for `receiver.name = value` on a typed callable. It
+ * differs from the read target in one way: an inherited protocol name
+ * (`fn.call = f`) is admitted without a user declaration, because the write
+ * IS the own property JS creates — the shadow the runtime then reads and
+ * dispatches first. */
+export function callableMemberWriteTarget(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  receiverIr: IrType,
+): FieldTarget | null {
+  return callableTarget(lowerer, access, receiverIr, true);
+}
+
+function callableTarget(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  receiverIr: IrType,
+  forWrite: boolean,
+): FieldTarget | null {
   if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
   const name = access.name.text;
-  if (FUNCTION_FIXED_SLOTS.has(name) || FUNCTION_RESERVED_MEMBERS.has(name) || name === "__proto__")
-    return null;
+  if (FUNCTION_FIXED_SLOTS.has(name) || name === "__proto__") return null;
   if (receiverIr.kind !== "func") return null;
   // The value must be a typed callable by the same test every other table
   // form uses. A stdlib function object (`Number.MAX_SAFE_INTEGER`,
@@ -142,11 +174,14 @@ export function callableMemberFieldTarget(
   if (!isCallableValue(lowerer, access.expression)) return null;
   const type = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
   const property = lowerer.checker.getPropertyOfType(type, name);
-  // An inherited name is a table key only when the value's own type declares
-  // it: `fn.toString = () => "x"` shadows the prototype member with an own
-  // data property, while a plain read of `fn.toString` is still the protocol.
+  // A READ of an inherited name is a table key only when the value's own
+  // type declares it: `fn.toString = () => "x"` shadows the prototype
+  // member with an own data property, while a plain read of `fn.toString`
+  // is still the protocol. A write creates that own property, so it is
+  // admitted either way.
   if (
-    FUNCTION_SHADOWABLE_MEMBERS.has(name) &&
+    !forWrite &&
+    FUNCTION_INHERITED_MEMBERS.has(name) &&
     (property === undefined || !isUserDeclaredMember(lowerer, property))
   )
     return null;
@@ -207,13 +242,33 @@ export function lowerCallableAssign(lowerer: Lowerer, call: ts.CallExpression): 
   };
 }
 
-/** `delete fn.k` / `delete fn[k]`: the table entry's removal. */
+/** `delete fn.k` / `delete fn[k]`: the table entry's removal. A delete
+ * through a checked-dynamic assertion (`delete (fn as any).k`) counts too:
+ * the assertion lowers to the operand itself, so the statement deletes from
+ * the same closure the operand names. */
 export function callableDeleteKey(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): boolean {
-  if (ts.isPropertyAccessExpression(access)) {
-    return isCallableOwnMemberName(access.name.text) && isCallableValue(lowerer, access.expression);
-  }
-  return isCallableValue(lowerer, access.expression);
+  if (ts.isPropertyAccessExpression(access) && !isCallableOwnMemberName(access.name.text))
+    return false;
+  return (
+    isCallableValue(lowerer, access.expression) || isCallableDynView(lowerer, access.expression)
+  );
+}
+
+/** An assertion of the operand to a checked-dynamic view (`fn as any`,
+ * `fn as unknown`) whose operand is a typed callable. The assertion is
+ * identity-preserving for a native value, so the delete addresses the
+ * closure's table — the same receiver the unasserted form does. */
+function isCallableDynView(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  let e = receiver;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isAsExpression(e) && !ts.isTypeAssertion(e)) return false;
+  const assertedType = lowerer.checker.getTypeFromTypeNode(e.type);
+  const dyn =
+    (assertedType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+    lowerer.mapTypeOf(assertedType)?.kind === "dyn";
+  if (!dyn) return false;
+  return isCallableValue(lowerer, e.expression) || isCallableDynView(lowerer, e.expression);
 }

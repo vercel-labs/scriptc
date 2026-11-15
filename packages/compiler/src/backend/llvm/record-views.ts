@@ -26,7 +26,27 @@
  * A write to such a field lands in that store (scr_record_view_extra_set),
  * and a read converts it back to the field type, so a view grows the
  * properties a program writes; the frontend's checked read of a field
- * nothing wrote throws its TypeError first. */
+ * nothing wrote throws its TypeError first.
+ *
+ * A partial assertion may name a type whose values the program also
+ * freezes. The frozen bit of such a type's values is then shared: a MARKED
+ * value (the bit, a count, no program-lifetime bit) is a view or a frozen
+ * record, and the record-source table tells which
+ * (scr_record_view_frozen.c). The inline test is the same; a marked value
+ * asks the table out of line, so an unfrozen record that is no view pays
+ * what any view target's value pays. A view has no frozen state of its
+ * own: freezing it freezes the record it views, and its frozen answer is
+ * that record's (`marked` below).
+ *
+ * A view belongs to the thread that made it. Its record-source entry lives
+ * in that thread's table (scr_json.c keeps the table per script thread in
+ * worker executables), so only that thread can tell that the object is a
+ * view and find the record behind it. Nothing hands a view to another
+ * thread by reference: a message encodes a copy of the viewed record
+ * (scr_message.c shares only published objects), and a type whose values
+ * can be published is never a view target (`excluded`). A program that
+ * starts workers may therefore keep its partial views; ordinary views stay
+ * off there (`workers`), as they were, until they are measured. */
 import {
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -36,6 +56,8 @@ import {
   type IrModule,
   type IrRecordShape,
   type IrType,
+  type IrUnionDef,
+  type SrcLoc,
 } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { BlockBuilder } from "./blocks.js";
@@ -53,7 +75,39 @@ export interface RecordViews {
   readonly partialTargets: ReadonlySet<string>;
   /** Whether some partial source of view target `target` lacks `field`. */
   partialMissing(target: string, field: string): boolean;
+  /** The record shapes partial views view: a viewed record keeps the
+   * properties its views add beside itself (scr_record_view_extra_set), so
+   * its free reports to the record-source table whatever its layout. */
+  readonly partialSources: ReadonlySet<string>;
+  /** View targets whose values may also be frozen records: a marked value
+   * of one asks the record-source table whether it is a view. */
+  readonly marked: ReadonlySet<string>;
+  /** The partial record assertions that get no view and whose checked
+   * conversion therefore cannot succeed: the literal leaves a field
+   * unwritten that cannot hold `undefined`. In source order. */
+  readonly declinedPartials: readonly DeclinedPartial[];
 }
+
+/** Why a partial record assertion's target cannot be a view of its literal. */
+export type PartialDeclineReason = "layout" | "frozen" | "cyclic" | "shared" | "holds";
+
+export interface DeclinedPartial {
+  readonly loc: SrcLoc;
+  readonly reason: PartialDeclineReason;
+}
+
+/** What each reason says about the asserted type, for the refusal's hint. */
+export const PARTIAL_DECLINE_TEXT: Record<PartialDeclineReason, string> = {
+  layout:
+    "the asserted type is a tuple, has an index signature or accessors, or its values keep more than one property order",
+  frozen:
+    "values of only one of the asserted type and the literal's own type may be frozen in this program",
+  cyclic: "values of the asserted type may be part of a reference cycle",
+  shared:
+    "the asserted type is one arm of a union of object types or its values can be published to other threads",
+  holds:
+    "the literal holds a value that may reference the asserted type (a function, a class instance, an untyped value or the type itself)",
+};
 
 /** The trap of an internal reader of a field a partial view's viewed record
  * lacks (a width copy, say): a source-level read of the field threw first. */
@@ -66,11 +120,18 @@ export const NO_RECORD_VIEWS: RecordViews = {
   partial: () => false,
   partialTargets: new Set(),
   partialMissing: () => false,
+  partialSources: new Set(),
+  marked: new Set(),
+  declinedPartials: [],
 };
 
 interface ViewOptions {
   readonly traced: (shapeId: string) => boolean;
+  /** Shapes that can be no view target at all: an arm of a shape union,
+   * and a type whose values can be published to other threads. */
   readonly excluded: (shapeId: string) => boolean;
+  /** The program starts worker threads: it plans partial views only. */
+  readonly workers?: boolean;
 }
 
 /** Value kinds that hold no reference to a record. */
@@ -187,7 +248,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   const checked: IrType[] = [];
   const boxed: IrType[] = [];
   // (target B, source A) of a partial record assertion's checked cast.
-  const partialPairs: { target: string; source: string }[] = [];
+  const partialPairs: { target: string; source: string; loc: SrcLoc }[] = [];
   for (const fn of mod.functions)
     everyStmtList(fn.body, {
       stmt: () => true,
@@ -203,6 +264,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
             partialPairs.push({
               target: e.type.shapeId,
               source: e.value.value.type.shapeId,
+              loc: e.loc,
             });
         } else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
         else if (e.kind === "libCall" && /^(transform|passthrough)\.(new|init)$/.test(e.fn)) {
@@ -227,7 +289,7 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   for (const id of reachable) {
     const target = shapes.get(id);
     if (!target || !plainShape(target) || target.freezable === true) continue;
-    if (options.traced(id) || options.excluded(id)) continue;
+    if (options.traced(id) || options.excluded(id) || options.workers === true) continue;
     const found: string[] = [];
     for (const source of shapes.values()) {
       if (source.id === id || !live.has(source.id) || !plainShape(source)) continue;
@@ -242,16 +304,40 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
   // view's capsule reference like any other. A pair whose source has every
   // target field is an ordinary full view and is already planned above.
   const partials = new Map<string, Set<string>>();
+  // Why a pair got no view (the first reason found).
+  const declined = new Map<string, PartialDeclineReason>();
+  const pairKey = (pair: { target: string; source: string }): string =>
+    `${pair.target}<${pair.source}`;
   for (const pair of partialPairs) {
     const target = shapes.get(pair.target);
     const source = shapes.get(pair.source);
+    if (!target || !source) continue;
+    if (covers(source, target)) continue;
+    const decline = (reason: PartialDeclineReason): void => {
+      if (!declined.has(pairKey(pair))) declined.set(pairKey(pair), reason);
+    };
     // The source of a partial pair may declare no field at all (an empty
     // literal asserted to a wider type): every target field is then the
     // view's to keep.
-    if (!target || !source || !plainShape(target) || !plainShape(source, true)) continue;
-    if (target.freezable === true || source.freezable === true) continue;
-    if (options.traced(pair.target) || options.excluded(pair.target)) continue;
-    if (covers(source, target)) continue;
+    if (!plainShape(target) || !plainShape(source, true)) {
+      decline("layout");
+      continue;
+    }
+    // A view writes its record's slots through the target type and is frozen
+    // through either name, so both types guard their writes or neither does
+    // (frozen-records.ts keeps the two in step).
+    if ((target.freezable === true) !== (source.freezable === true)) {
+      decline("frozen");
+      continue;
+    }
+    if (options.traced(pair.target)) {
+      decline("cyclic");
+      continue;
+    }
+    if (options.excluded(pair.target)) {
+      decline("shared");
+      continue;
+    }
     const list = sources.get(pair.target) ?? [];
     if (!list.includes(pair.source)) list.push(pair.source);
     sources.set(pair.target, list);
@@ -278,11 +364,37 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
       else sources.delete(id);
       const partial = partials.get(id);
       if (!partial) continue;
-      for (const source of [...partial]) if (!kept.includes(source)) partial.delete(source);
+      for (const source of [...partial]) {
+        if (kept.includes(source)) continue;
+        partial.delete(source);
+        declined.set(pairKey({ target: id, source }), "holds");
+      }
       if (partial.size === 0) partials.delete(id);
     }
   }
-  if (sources.size === 0) return NO_RECORD_VIEWS;
+  // A declined pair's conversion is the ordinary checked one, which reads
+  // every target field from the literal's capsule: it throws whenever the
+  // literal leaves out a field that cannot hold `undefined`.
+  const declinedPartials: DeclinedPartial[] = [];
+  // One report per assertion: a function lowered more than once repeats it.
+  const reported = new Set<string>();
+  for (const pair of partialPairs) {
+    const reason = declined.get(pairKey(pair));
+    if (reason === undefined) continue;
+    const at = `${pair.loc.file}:${pair.loc.start}:${pair.loc.end}`;
+    if (reported.has(at)) continue;
+    const written = new Set((shapes.get(pair.source)?.fields ?? []).map((field) => field.name));
+    const fails = (shapes.get(pair.target)?.fields ?? []).some(
+      (field) => !written.has(field.name) && !admitsUndefined(field.type, unions),
+    );
+    if (!fails) continue;
+    reported.add(at);
+    declinedPartials.push({ loc: pair.loc, reason });
+  }
+  if (sources.size === 0)
+    return declinedPartials.length === 0
+      ? NO_RECORD_VIEWS
+      : { ...NO_RECORD_VIEWS, declinedPartials };
   const targets = new Set(sources.keys());
   // The target fields some partial source lacks: their presence test is a
   // runtime view probe, and their slot lookup traps.
@@ -297,22 +409,43 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
     }
     missing.set(id, absent);
   }
+  const marked = new Set<string>();
+  for (const id of targets) if (shapes.get(id)?.freezable === true) marked.add(id);
+  const partialSources = new Set<string>();
+  for (const list of partials.values()) for (const source of list) partialSources.add(source);
   return {
     targets,
     sources: (target) => sources.get(target) ?? [],
     partial: (target, source) => partials.get(target)?.has(source) === true,
     partialTargets: new Set(partials.keys()),
     partialMissing: (target, field) => missing.get(target)?.has(field) === true,
+    partialSources,
+    marked,
+    declinedPartials,
   };
 }
 
+/** Whether a checked conversion into `type` accepts `undefined`. */
+function admitsUndefined(type: IrType, unions: ReadonlyMap<string, IrUnionDef>): boolean {
+  switch (type.kind) {
+    case "dyn":
+    case "jsval":
+    case "undefinedT":
+    case "void":
+      return true;
+    case "union":
+      return (unions.get(type.unionId)?.arms ?? []).some((arm) => admitsUndefined(arm, unions));
+    default:
+      return false;
+  }
+}
+
 /** Lines setting `dest` (i1) to whether the record `obj` of a view target
- * type is a view. A view's rc word carries the frozen bit (scr_rc.h
- * SCR_RC_FROZEN), which no other value of such a type has: view targets
- * are never freezable, and a word with the program-lifetime bit (an
- * immortal one included) is no view, so a view's word is the frozen bit
- * plus a count. The
- */
+ * type is MARKED: its rc word carries the frozen bit (scr_rc.h
+ * SCR_RC_FROZEN) beside a count, with no program-lifetime bit (an immortal
+ * word included). Every view is marked. Where no value of the type can be
+ * frozen, a marked value is a view; where one can (RecordViews.marked), it
+ * is a view or a frozen record, and recordViewTest asks which. */
 export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: string): string[] {
   // The frozen bit with a count and no program-lifetime bit: one range.
   const [bit, span] =
@@ -324,6 +457,34 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
   ];
 }
 
+/** Whether the record `obj` of view target shape is a view (an i1). A type
+ * whose values may be frozen (`marked`) asks the record-source table about
+ * a marked value (scr_record_marked_is_view), out of line. */
+export function recordViewTest(
+  B: BlockBuilder,
+  sizeType: "i32" | "i64",
+  obj: string,
+  declare: (decl: string) => void,
+  marked: boolean,
+): string {
+  const bit = B.tmp();
+  for (const line of recordViewTestLines(sizeType, obj, bit)) B.line(line.trimStart());
+  if (!marked) return bit;
+  declare(`declare zeroext i1 @scr_record_marked_is_view(ptr)`);
+  const from = B.currentLabel();
+  const ask = B.newLabel("rv.marked");
+  const join = B.newLabel("rv.tested");
+  B.condBr(bit, ask, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+  B.startBlock(ask);
+  const view = B.tmp();
+  B.line(`${view} = call zeroext i1 @scr_record_marked_is_view(ptr ${obj})`);
+  B.br(join);
+  B.startBlock(join);
+  const answer = B.tmp();
+  B.line(`${answer} = phi i1 [ false, %${from} ], [ ${view}, %${ask} ]`);
+  return answer;
+}
+
 /** The address of field `position` (declaration index) of the record
  * `obj` of view-target shape `struct`: the slot itself, or the viewed
  * record's slot when `obj` is a view. Optimized builds test the mark
@@ -333,7 +494,11 @@ export function recordViewTestLines(sizeType: "i32" | "i64", obj: string, dest: 
  * `partial` names a shape a PARTIAL view may present: its viewed record can
  * lack the field, and the slot lookup answers NULL there (scr_record_view_slot),
  * so the address stops with `scr_trap` and `cstr(PARTIAL_VIEW_ABSENT)`. The
- * message is the program's own constant; the runtime carries none. */
+ * message is the program's own constant; the runtime carries none.
+ *
+ * `marked` names a shape whose values may also be frozen: a marked value's
+ * lookup answers the viewed record's slot for a view and the value's own
+ * slot for a frozen record (scr_record_marked_slot). */
 export function recordViewFieldPtr(
   B: BlockBuilder,
   sizeType: "i32" | "i64",
@@ -345,9 +510,10 @@ export function recordViewFieldPtr(
   outOfLine: boolean,
   cstr: (text: string) => string,
   partial = false,
+  marked = false,
 ): string {
   if (outOfLine) {
-    const field = "scr_record_view_field";
+    const field = marked ? "scr_record_marked_field" : "scr_record_view_field";
     declare(`declare ptr @${field}(ptr, ${sizeType}, ${sizeType})`);
     const ptr = B.tmp();
     B.line(
@@ -374,9 +540,16 @@ export function recordViewFieldPtr(
   // Views are rare: the slot lookup stays out of line.
   B.condBr(isView, view, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
   B.startBlock(view);
-  declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
   const viewed = B.tmp();
-  B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
+  if (marked) {
+    declare(`declare ptr @scr_record_marked_slot(ptr, ${sizeType}, ptr)`);
+    B.line(
+      `${viewed} = call ptr @scr_record_marked_slot(ptr ${obj}, ${sizeType} ${position}, ptr ${own})`,
+    );
+  } else {
+    declare(`declare ptr @scr_record_view_slot(ptr, ${sizeType})`);
+    B.line(`${viewed} = call ptr @scr_record_view_slot(ptr ${obj}, ${sizeType} ${position})`);
+  }
   let viewFrom = view;
   if (partial) {
     const absent = B.tmp();

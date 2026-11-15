@@ -12,6 +12,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { numLit, strLit, varRef } from "./build.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren, transformStmtList } from "./traverse.js";
 import { reparseExpr, reparseStmt } from "./serialize.js";
@@ -46,10 +47,10 @@ interface PropertyOp {
 /** The dynamic operations that read a value's properties without retaining
  * it or observing its identity, so a capsule built for them is
  * interchangeable with the one the caller passed. */
-const PROPERTY_OBSERVERS: ReadonlySet<string> = new Set(["dyn.in", "dyn.hasKeyComputed"]);
+const PROPERTY_OBSERVERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["dyn.in", "dyn.hasKeyComputed"]);
 
 /** The conversion calls that wrap a static value before a dynamic store. */
-const STORE_CONVERSIONS: ReadonlySet<string> = new Set([
+const STORE_CONVERSIONS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.fromF64",
   "js.fromStr",
   "js.fromBool",
@@ -610,6 +611,117 @@ function buildClone(
     );
   }
 
+  /** How often the origin names each local outside a declaration of it:
+   * reads, writes and captures. */
+  let mentions: Map<string, number> | null = null;
+  function mentionsOf(id: string): number {
+    if (mentions === null) {
+      const counts = new Map<string, number>();
+      const note = (name: string): void => {
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      };
+      const scanExpr = (node: IrExpr): void => {
+        if (node.kind === "varRef" || node.kind === "assignExpr" || node.kind === "incDec")
+          note(node.localId);
+        else if (node.kind === "closure") for (const captured of node.captures) note(captured);
+        mapExprChildren(
+          node,
+          (child) => {
+            scanExpr(child);
+            return child;
+          },
+          (child) => {
+            scan(child);
+            return child;
+          },
+        );
+      };
+      const scan = (statement: IrStmt): void => {
+        if (statement.kind === "assign" || statement.kind === "forOf") note(statement.localId);
+        else if (statement.kind === "tryCatch" && statement.catchLocalId !== null)
+          note(statement.catchLocalId);
+        mapStmtChildren(
+          statement,
+          (child) => {
+            scanExpr(child);
+            return child;
+          },
+          (child) => {
+            scan(child);
+            return child;
+          },
+        );
+      };
+      for (const statement of origin.body) scan(statement);
+      mentions = counts;
+    }
+    return mentions.get(id) ?? 0;
+  }
+
+  /** The operand a store's argument converts, or the argument itself. */
+  function converted(arg: IrExpr): IrExpr {
+    if (arg.kind === "dynFrom") return arg.value;
+    if (arg.kind === "libCall" && STORE_CONVERSIONS.has(arg.fn) && arg.args.length === 1)
+      return arg.args[0]!;
+    return arg;
+  }
+
+  function isLiteral(expr: IrExpr): boolean {
+    return (
+      expr.kind === "numLit" ||
+      expr.kind === "strLit" ||
+      expr.kind === "boolLit" ||
+      expr.kind === "unitLit"
+    );
+  }
+
+  /** The hoisted operands of a store sequence, when putting each back in
+   * place of its one use evaluates exactly what the sequence evaluates, in
+   * the same order: every statement before the call declares one operand,
+   * no operand names another (a compound assignment's result names the old
+   * value and the right-hand side, which would be left without a
+   * definition), the call's leading arguments use the operands once each in
+   * the order they were declared, nothing else in the function names one,
+   * and the sequence's own value is a local or a constant. Null for any
+   * other sequence, which keeps its statements. */
+  function hoistedOperands(
+    sequence: Extract<IrExpr, { kind: "seqExpr" }>,
+    call: CallExpr,
+  ): Map<string, IrExpr> | null {
+    const hoists = new Map<string, IrExpr>();
+    for (const hoisted of sequence.stmts.slice(0, -1)) {
+      if (hoisted.kind !== "varDecl" || hoisted.init === null) return null;
+      if (hoists.has(hoisted.localId)) return null;
+      hoists.set(hoisted.localId, hoisted.init);
+    }
+    for (const init of hoists.values()) {
+      let names = false;
+      walkExpr(init, (node) => {
+        if (
+          (node.kind === "varRef" || node.kind === "assignExpr" || node.kind === "incDec") &&
+          hoists.has(node.localId)
+        )
+          names = true;
+      });
+      if (names) return null;
+    }
+    const order = [...hoists.keys()];
+    let used = 0;
+    for (const arg of call.args) {
+      const operand = converted(arg);
+      if (operand.kind === "varRef" && operand.localId === order[used]) used++;
+      else if (used < order.length && !isLiteral(operand)) return null;
+    }
+    if (used !== order.length) return null;
+    const result = sequence.result;
+    if (result.kind !== "varRef" && !isLiteral(result)) return null;
+    for (const id of order) {
+      const expected = result.kind === "varRef" && result.localId === id ? 2 : 1;
+      if (mentionsOf(id) !== expected) return null;
+    }
+    return hoists;
+  }
+
   /** A keyed write lowered as a sequence of hoisted operands followed by the
    * dynamic set call, rewritten with those operands put back in place. */
   function storeStatement(statement: IrStmt): IrStmt | null {
@@ -621,10 +733,8 @@ function buildClone(
     const call = last.expr;
     const op = context.helpers.get(call.callee);
     if (!op || op.kind !== "set") return null;
-    const hoists = new Map<string, IrExpr>();
-    for (const hoisted of sequence.stmts.slice(0, -1))
-      if (hoisted.kind === "varDecl" && hoisted.init !== null)
-        hoists.set(hoisted.localId, hoisted.init);
+    const hoists = hoistedOperands(sequence, call);
+    if (hoists === null) return null;
     const resolved: CallExpr = {
       ...call,
       args: call.args.map((arg) => substitute(arg, hoists)),

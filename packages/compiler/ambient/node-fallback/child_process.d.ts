@@ -2,68 +2,103 @@
 
 /* node:child_process — the synchronous slice: spawnSync(command, args?)
  * runs the child to completion (posix_spawn + waitpid) with stdout/stderr
- * captured as utf8 strings. `status` is the exit code, or null when the
- * child died to a signal OR could not be spawned at all (nonexistent
- * binary, permission denied). A spawn failure is DATA on the result, never
- * a throw: `error` is the Error Node builds ("spawnSync <file> ENOENT",
- * `code` stamped, or ETIMEDOUT after a timeout kill) and both outputs are
- * "" where Node types them null (SEMANTICS.md). */
+ * captured as UTF-8 bytes. The capture's TYPE is Node's: a string when the
+ * options carry a string encoding, a Buffer without one
+ * (`SpawnSyncReturns<Buffer>` in @types/node); reading the Buffer form is
+ * the bytes<u8> Buffer reads fs uses. `status` is the exit code, or null
+ * when the child died to a signal OR could not be spawned at all
+ * (nonexistent binary, permission denied). A spawn failure is DATA on the
+ * result, never a throw: `error` is the Error Node builds ("spawnSync
+ * <file> ENOENT", `code` stamped, or ETIMEDOUT after a timeout kill) and
+ * both outputs are "" (or an empty Buffer) where Node types them null
+ * (SEMANTICS.md). */
 declare module "child_process" {
   import type { Readable, Writable } from "stream";
 
-  export interface SpawnSyncReturns {
+  /* T is the capture type the options select. The default keeps a bare
+   * `SpawnSyncReturns` annotation meaning the string form, as before. */
+  export interface SpawnSyncReturns<T = string> {
     readonly status: number | null;
-    readonly stdout: string;
-    readonly stderr: string;
+    readonly stdout: T;
+    readonly stderr: T;
     /* The termination signal's name ("SIGTERM", ...) when a signal
      * killed the child (a timeout's killSignal included), null otherwise
      * — Node's shape. */
     readonly signal: string | null;
     /* Node's spawn-failure carrier: a real Error ("spawnSync <file>
      * ENOENT", `code` stamped) when the spawn itself failed — status is
-     * null and both outputs "" then — or ETIMEDOUT after a timeout kill;
-     * undefined otherwise. */
+     * null and both outputs "" (or an empty Buffer) then — or ETIMEDOUT
+     * after a timeout kill; undefined otherwise. */
     readonly error?: Error;
   }
-  /* scriptc always captures utf8 strings; pass { encoding: "utf8" }
-   * whenever stdout/stderr is READ so plain Node agrees (without it Node
-   * hands Buffers). The other supported options: timeout (ms — sends
+  /* The supported options: encoding ("utf8"/"utf-8" — the only form that
+   * makes stdout/stderr strings, exactly Node), timeout (ms — sends
    * killSignal at the deadline and the result carries error: ETIMEDOUT +
    * the signal, never a throw), killSignal (a signal NAME literal),
    * stdio ("ignore"/"inherit"/"pipe" or a 3-tuple of those — captures
-   * read "" for non-piped streams), env (replaces the child's
-   * environment), cwd (the child's directory), input (the string piped
-   * to its stdin — `| undefined` means the option is absent, "" pipes an
-   * empty stdin), shell (the complete command line in `command`, with a
-   * statically empty args list, run by /bin/sh -c), and windowsHide (a
-   * POSIX no-op).
+   * read "" / an empty Buffer for non-piped streams), env (replaces the
+   * child's environment), cwd (the child's directory), input (the string
+   * piped to its stdin — `| undefined` means the option is absent, ""
+   * pipes an empty stdin), shell (the complete command line in
+   * `command`, with a statically empty args list, run by /bin/sh -c),
+   * and windowsHide (a POSIX no-op).
    * The shell form takes no separate args: Node warns DEP0190 because it
    * concatenates them unescaped, and a native build has no warning
    * channel, so the compiler REFUSES `shell: true` with a non-empty args
    * list. */
+  export interface SpawnSyncOptions {
+    /* The capture's decoding. A Buffer encoding name makes stdout/stderr
+     * the decoded strings; "buffer", null and an absent option keep
+     * Node's Buffer capture. Any BufferEncoding spelling is accepted
+     * (Node's own tables), and a value typed BufferEncoding is read at
+     * the call. */
+    encoding?: BufferEncoding | "buffer" | null;
+    timeout?: number;
+    killSignal?: string;
+    /* Node's 1 MiB default bounds the combined stdout+stderr capture:
+     * past it the child is killed and `error.code` is ENOBUFS, with a
+     * null status (Node's spawnSync reading). The typed options record
+     * does not carry maxBuffer — pass the options inline to set it. */
+    maxBuffer?: number;
+    /* null is Node's default (every slot piped); a null/undefined tuple
+     * entry is the default "pipe" for that slot. */
+    stdio?:
+      | "pipe"
+      | "ignore"
+      | "inherit"
+      | null
+      | ("pipe" | "ignore" | "inherit" | null | undefined)[];
+    env?: { [k: string]: string | undefined };
+    cwd?: string;
+    /* Piped to the child's stdin. undefined is an ABSENT option (no
+     * pipe, fd 0 is /dev/null or inherited per stdio); "" is an EMPTY
+     * stdin, which the child reads as immediate EOF — Node's reading. */
+    input?: string | undefined;
+    windowsHide?: boolean;
+    /* Node's shell form: the complete command line in `command`, with
+     * an empty args list, runs through /bin/sh -c, so quoting and
+     * operators follow the shell's rules. A non-empty args list with
+     * shell: true is a compile error (Node warns DEP0190 for unescaped
+     * shell arguments). */
+    shell?: boolean;
+  }
+  /* The Buffer form's named options type (@types/node's
+   * SpawnSyncOptionsWithBufferEncoding): "buffer" and null both ask for
+   * the unencoded capture. A TYPED value of this type is not a lowered
+   * options record — pass the options inline. */
+  export type SpawnSyncOptionsWithBufferEncoding = Omit<SpawnSyncOptions, "encoding"> & {
+    encoding?: "buffer" | null;
+  };
+  export function spawnSync(
+    command: string,
+    args: string[] | undefined,
+    options: SpawnSyncOptions & { encoding: BufferEncoding },
+  ): SpawnSyncReturns<string>;
   export function spawnSync(
     command: string,
     args?: string[],
-    options?: {
-      encoding?: "utf8" | "utf-8";
-      timeout?: number;
-      killSignal?: string;
-      stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
-      env?: { [k: string]: string | undefined };
-      cwd?: string;
-      /* Piped to the child's stdin. undefined is an ABSENT option (no
-       * pipe, fd 0 is /dev/null or inherited per stdio); "" is an EMPTY
-       * stdin, which the child reads as immediate EOF — Node's reading. */
-      input?: string | undefined;
-      windowsHide?: boolean;
-      /* Node's shell form: the complete command line in `command`, with
-       * an empty args list, runs through /bin/sh -c, so quoting and
-       * operators follow the shell's rules. A non-empty args list with
-       * shell: true is a compile error (Node warns DEP0190 for unescaped
-       * shell arguments). */
-      shell?: boolean;
-    },
-  ): SpawnSyncReturns;
+    options?: SpawnSyncOptions,
+  ): SpawnSyncReturns<Buffer>;
 
   /* The named options interface for the string-encoding spawnSync form —
    * @types/node's SpawnSyncOptionsWithStringEncoding, narrowed to the
@@ -73,12 +108,17 @@ declare module "child_process" {
    * parameter flows to spawnSync at runtime with its members read at the
    * call. */
   export interface SpawnSyncOptionsWithStringEncoding {
-    encoding: "utf8" | "utf-8";
+    encoding: BufferEncoding;
     cwd?: string;
     /* A REPLACEMENT environment; an absent member inherits ours. */
     env?: { [key: string]: string | undefined };
     input?: string;
-    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    stdio?:
+      | "pipe"
+      | "ignore"
+      | "inherit"
+      | null
+      | ("pipe" | "ignore" | "inherit" | null | undefined)[];
     timeout?: number;
     windowsHide?: boolean;
     /* Read at the call. The call then takes the command-line form only:
@@ -115,6 +155,13 @@ declare module "child_process" {
    * lower. */
   export interface ChildStdout extends Readable {}
 
+  /* Node's IPC Control object: the channel's own keep-alive switch,
+   * independent of the ChildProcess ref()/unref() pair above. */
+  export interface Control {
+    ref(): void;
+    unref(): void;
+  }
+
   export interface ChildProcess extends Disposable {
     ref(): void;
     on(event: "spawn", listener: () => void): this;
@@ -127,9 +174,12 @@ declare module "child_process" {
     once(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
     once(event: "close", listener: (code: number | null, signal: string | null) => void): this;
     once(event: "error", listener: (err: Error) => void): this;
-    on(event: "message", listener: (message: any) => void): this;
+    /* The message listener takes Node's second parameter, the handle sent
+     * with the message: always undefined here, because handle transfer has
+     * no lowering. */
+    on(event: "message", listener: (message: any, sendHandle?: any) => void): this;
     on(event: "disconnect", listener: () => void): this;
-    once(event: "message", listener: (message: any) => void): this;
+    once(event: "message", listener: (message: any, sendHandle?: any) => void): this;
     once(event: "disconnect", listener: () => void): this;
     /* off/removeListener remove by FUNCTION IDENTITY — pass the same
      * function value (a const binding) that was registered. */
@@ -170,8 +220,24 @@ declare module "child_process" {
     readonly spawnargs: string[];
     kill(signal?: string | number): boolean;
     unref(): void;
+    /* The IPC channel: undefined when the child has none (every spawn),
+     * the Control object with a fork, and null once it disconnects. */
+    readonly channel?: Control | null;
     readonly connected: boolean;
-    send(message: object, callback?: (error: Error | null) => void): boolean;
+    /* send(message[, sendHandle[, options]][, callback]). A sendHandle
+     * (a net.Socket, net.Server or dgram.Socket transferred over the
+     * channel) has no lowering, so the sendHandle slot takes only null
+     * (Node treats null and undefined alike); a non-nullish one is refused
+     * where it is written. A function in the sendHandle or options slot is
+     * the callback, as Node's own argument shuffling decides. The options
+     * slot takes a record; keepOpen only matters with a transferred handle,
+     * so the record is accepted and has no effect. */
+    send(
+      message: object,
+      sendHandleOrCallback?: null | ((error: Error | null) => void),
+      optionsOrCallback?: object | null | ((error: Error | null) => void),
+      callback?: (error: Error | null) => void,
+    ): boolean;
     disconnect(): void;
     [Symbol.dispose](): void;
     /* The piped streams — non-null exactly when the matching stdio slot
@@ -180,6 +246,13 @@ declare module "child_process" {
     readonly stdin: ChildStdin | null;
     readonly stdout: ChildStdout | null;
     readonly stderr: ChildStdout | null;
+    /* Node's stdio array: the piped handles at their slots — the same
+     * objects as stdin/stdout/stderr, so `child.stdio[1] === child.stdout`
+     * — and null for every slot that is not a pipe. A forked child has a
+     * fourth, IPC slot, which Node reports as null too, so the array's
+     * length is the child's stdio slot count: 3 for spawn and the
+     * exec/execFile children, 4 for a fork. */
+    readonly stdio: (ChildStdin | ChildStdout | null)[];
   }
   export interface SpawnOptions {
     /* The 3-tuple form admits number fds in the stdout/stderr slots —
@@ -187,7 +260,12 @@ declare module "child_process" {
      * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
      * child.stderr streams); "pipe" in the stdin slot exposes
      * child.stdin. */
-    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | number)[];
+    stdio?:
+      | "ignore"
+      | "inherit"
+      | "pipe"
+      | null
+      | ("ignore" | "inherit" | "pipe" | number | null | undefined)[];
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
@@ -199,6 +277,15 @@ declare module "child_process" {
     cwd?: string;
     windowsHide?: boolean;
     shell?: boolean;
+    /* spawn's deadline and cancellation. timeout kills the child with
+     * killSignal (SIGTERM without one) that many milliseconds after the
+     * launch; an absent, nullish or non-positive timeout arms no timer.
+     * killSignal is a signal name in any case (or a signal number).
+     * signal's abort kills the child the same way and emits an AbortError
+     * (code ABORT_ERR) with the signal's reason as its cause. */
+    timeout?: number;
+    killSignal?: string | number;
+    signal?: AbortSignal;
   }
   export function spawn(command: string, args?: string[], options?: SpawnOptions): ChildProcess;
   export function spawn(command: string, options?: SpawnOptions): ChildProcess;
@@ -211,7 +298,12 @@ declare module "child_process" {
       env?: { [k: string]: string | undefined };
       execArgv?: string[];
       silent?: boolean;
-      stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit" | "ipc")[];
+      stdio?:
+        | "pipe"
+        | "ignore"
+        | "inherit"
+        | null
+        | ("pipe" | "ignore" | "inherit" | "ipc" | null | undefined)[];
       serialization?: "json" | "advanced";
       windowsHide?: boolean;
     },
@@ -219,18 +311,19 @@ declare module "child_process" {
 
   /* The synchronous exec pair: execFileSync runs a file directly (no
    * shell), execSync runs a command through /bin/sh -c. Both capture
-   * stdout as a utf8 string (pass { encoding: "utf8" } so plain Node
-   * agrees — without it Node returns a Buffer) and THROW on a non-zero
-   * exit / signal death — the Error's message is Node's "Command failed:
-   * <cmd>" (with the captured stderr appended). Supported options:
-   * encoding ("utf8"), cwd, env (REPLACES the child environment), input
-   * (fed to stdin), timeout (ms — SIGTERMs the child, then throws
-   * ETIMEDOUT), stdio ("pipe"/"ignore" or a 3-tuple of those — the
-   * default captures stderr AND echoes it to the parent, like Node), and
-   * maxBuffer (accepted, not enforced). Node's status/stdout/stderr error
+   * stdout and THROW on a non-zero exit / signal death — the Error's
+   * message is Node's "Command failed: <cmd>" (with the captured stderr
+   * appended). The result is Node's: a Buffer without an encoding option
+   * ("buffer"/null included) and the decoded string with a Buffer
+   * encoding name. Supported options: encoding (any BufferEncoding
+   * spelling, or a value typed BufferEncoding read at the call), cwd, env
+   * (REPLACES the child environment), input (fed to stdin), timeout (ms —
+   * SIGTERMs the child, then throws ETIMEDOUT), stdio ("pipe"/"ignore" or
+   * a 3-tuple of those — the default captures stderr AND echoes it to the
+   * parent, like Node), and maxBuffer. Node's status/stdout/stderr error
    * properties are not carried (SEMANTICS.md). */
   interface ExecSyncOptions {
-    encoding?: "utf8" | "utf-8";
+    encoding?: BufferEncoding | "buffer" | null;
     cwd?: string;
     env?: { [k: string]: string | undefined };
     input?: string;
@@ -250,7 +343,7 @@ declare module "child_process" {
    * options parameter flows to execFileSync at runtime — the windows-ca
    * command-runner idiom. */
   export interface ExecFileSyncOptionsWithStringEncoding {
-    encoding: "utf8" | "utf-8";
+    encoding: BufferEncoding;
     cwd?: string;
     input?: string;
     timeout?: number;
@@ -258,8 +351,34 @@ declare module "child_process" {
     maxBuffer?: number;
     windowsHide?: boolean;
   }
-  export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): string;
-  export function execSync(command: string, options?: ExecSyncOptions): string;
+  /* The Buffer form's named options type (@types/node's
+   * ExecSyncOptionsWithBufferEncoding): "buffer" and null ask for the
+   * unencoded capture. A TYPED value of this type is not a lowered
+   * options record — pass the options inline. */
+  export type ExecSyncOptionsWithBufferEncoding = Omit<ExecSyncOptions, "encoding"> & {
+    encoding?: "buffer" | null;
+  };
+  export function execFileSync(
+    file: string,
+    args: string[] | undefined,
+    options: ExecSyncOptions & { encoding: BufferEncoding },
+  ): string;
+  export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): Buffer;
+  export function execSync(command: string): Buffer;
+  export function execSync(
+    command: string,
+    options: ExecSyncOptions & { encoding: BufferEncoding },
+  ): string;
+  export function execSync(command: string, options?: ExecSyncOptions): Buffer;
+  /* The async pair's options: both captures are decoded as utf8, so the
+   * encoding member keeps the utf8-only type (a non-utf8 name fences).
+   * `env` REPLACES the child environment, `timeout` is an unsigned-integer
+   * deadline in milliseconds that destroys the capture streams and sends
+   * `killSignal` (a signal name from Node's table, matched without case;
+   * SIGTERM when absent), and `maxBuffer` bounds the capture. */
+  export interface ExecAsyncOptions extends Omit<ExecSyncOptions, "encoding"> {
+    encoding?: "utf8" | "utf-8";
+  }
   export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
   /* The callback form starts an asynchronous child and captures utf8
    * stdout/stderr. The no-callback overload remains for util.promisify's
@@ -273,13 +392,13 @@ declare module "child_process" {
   export function execFile(
     file: string,
     args: string[] | null,
-    options: ExecSyncOptions,
+    options: ExecAsyncOptions,
     callback: ExecFileCallback,
   ): ChildProcess;
   export function execFile(
     file: string,
     args?: string[] | null,
-    options?: ExecSyncOptions,
+    options?: ExecAsyncOptions,
   ): unknown;
   /* The async shell form. The callback forms lower like execFile's, with
    * the command line run by /bin/sh -c, and util.promisify recognizes it
@@ -287,7 +406,7 @@ declare module "child_process" {
    * fence at their site. */
   export function exec(
     command: string,
-    options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
+    options?: ExecAsyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
     callback?: (error: Error | null, stdout: string, stderr: string) => void,
   ): ChildProcess;
 }

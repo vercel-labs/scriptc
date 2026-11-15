@@ -757,6 +757,11 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ]),
     ),
   ],
+  // TS2810 is the JavaScript spelling of TS2554 for the executor's resolve
+  // parameter: a file Node runs may call resolve with no argument, which
+  // settles the promise with undefined, and the lowering passes the missing
+  // argument as undefined.
+  [2810, inCheckedJs(CHECKER(DYNAMIC_SHAPE, ["tests/corpus/promise-resolve-without-value.js"]))],
   [
     2555,
     inCheckedJs(

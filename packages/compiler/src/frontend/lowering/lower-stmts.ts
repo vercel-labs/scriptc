@@ -10597,6 +10597,9 @@ function lowerCjsConditionalWholeExportStatement(
   const init = lowerer.requireInitStmt(target.req.spec, target.req.call);
   if (init !== null) body.push(init);
   for (const name of target.names) {
+    // A member this arm's table does not export keeps the undefined the
+    // module entry stored: Node's exports object has no such property.
+    if (!target.ownNames.includes(name)) continue;
     const g = lowerer.cjsConditionalWholeExportSlotOf(sf, name) ?? undefined;
     const value = cjsExportValueByName(lowerer, target.req.dep, name, expr);
     if (!g || value === null) return null;

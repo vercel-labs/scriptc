@@ -726,6 +726,30 @@ export function lowerDynTypeofTest(
     // Non-literal comparisons use the ordinary typeof string value,
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
+    // A Node value whose kind the pinned-Node census fixes (`typeof
+    // performance === "object"`, `typeof crypto`, `typeof
+    // performance.now === "function"`): typeof needs no value, and the
+    // dyn test below would read the operand — the held object a program
+    // that only tests the name never needs, whose members native code
+    // answers as placeholders (an environment-dependent export test like
+    // scheduler's reads only the name). Node's answer is the census's,
+    // unless the program replaces the global object's member
+    // (`globalThis.performance = …`), where a read follows the write.
+    if (isJsSourceFile(ts.getSourceFileOfNode(a))) {
+      let operand = a.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      const direct = stdlibGlobalNameOf(lowerer, operand);
+      const receiver =
+        ts.isPropertyAccessExpression(operand) && !operand.questionDotToken
+          ? stdlibGlobalNameOf(lowerer, operand.expression)
+          : null;
+      const globalName = direct !== null && direct !== "globalThis" ? direct : receiver;
+      if (globalName === null || !programMayWriteGlobalName(lowerer, globalName, operand)) {
+        const answer = nodeValueTypeof(lowerer, a.expression);
+        if (answer !== null)
+          return { kind: "boolLit", value: (answer === b.text) !== negated, type: BOOL, loc };
+      }
+    }
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
     // `typeof undeclared === "..."` in a JavaScript source is a runtime
     // question only when the program can have created the global object's

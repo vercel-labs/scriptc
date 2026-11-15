@@ -18885,17 +18885,15 @@ static inline __attribute__((always_inline)) bool scr_jb_try_pure_member(
  * buffer's stack. The container is the top of that stack, or `rec` is
  * pushed for the walk when it is not; the key becomes the container's
  * edge. Answers false with an exception pending. */
-static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
-                                   bool *first, void *rec) {
-  ScrDyn *child = scr_json_to_json(value, key);
-  if (!child) return false;
-  if (scr_json_omitted(child)) {
-    scr_dyn_release(child);
+static bool scr_jb_put_resolved_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
+                                       bool *first, void *rec) {
+  if (scr_json_omitted(value)) {
+    scr_dyn_release(value);
     return true;
   }
   bool entered = rec && !(b->seen_len && b->seen[b->seen_len - 1].ptr == rec);
   if (entered && !scr_jb_enter(b, rec, false)) {
-    scr_dyn_release(child);
+    scr_dyn_release(value);
     return false;
   }
   if (!*first) scr_jb_putc(b, ',');
@@ -18903,11 +18901,70 @@ static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *val
   scr_jb_put_json_str(b, key);
   scr_jb_putc(b, ':');
   scr_jb_edge_key(b, key);
-  bool ok = scr_json_replaced_write(b, child, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
+  bool ok = scr_json_replaced_write(b, value, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
                                     b->seen_len);
   if (entered) scr_jb_leave(b);
-  scr_dyn_release(child);
+  scr_dyn_release(value);
   return ok;
+}
+
+static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
+                                   bool *first, void *rec) {
+  ScrDyn *child = scr_json_to_json(value, key);
+  if (!child) return false;
+  return scr_jb_put_resolved_member(b, key, child, first, rec);
+}
+
+/* The callable `toJSON` an unknown index signature holds, called the way
+ * JSON.stringify calls one: with the member's key as its argument. The hook
+ * answers for the whole value, so the record's own fields are not written.
+ * Answers false (writes nothing) when the entry is absent or not callable,
+ * leaving the member to the type-directed writer, and true once it wrote or
+ * dropped the member (an exception may be pending). */
+bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const ScrStr *key,
+                                   bool *first) {
+  ScrStr *name = scr_str_new("toJSON", 6);
+  ScrDyn *hook = scr_map_get_str_ref(map, name);
+  scr_str_release(name);
+  if (!hook) return false;
+  if (!scr_json_callable(hook)) {
+    scr_dyn_release(hook);
+    return false;
+  }
+  ScrDyn *keyArg = scr_json_key_arg(key, 0);
+  ScrDyn *args[] = {keyArg};
+  ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  scr_dyn_release(keyArg);
+  scr_dyn_release(hook);
+  if (!value) return true; /* exception pending: the member is not written */
+  scr_jb_put_resolved_member(b, key, value, first, rec);
+  return true;
+}
+
+/* scr_jb_put_record_hook_member for an array slot: the hook's key is the
+ * index as a string, and an undefined, function or symbol answer is the
+ * slot's null. */
+bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index) {
+  ScrStr *name = scr_str_new("toJSON", 6);
+  ScrDyn *hook = scr_map_get_str_ref(map, name);
+  scr_str_release(name);
+  if (!hook) return false;
+  if (!scr_json_callable(hook)) {
+    scr_dyn_release(hook);
+    return false;
+  }
+  ScrDyn *keyArg = scr_json_key_arg(NULL, (size_t)index);
+  ScrDyn *args[] = {keyArg};
+  ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  scr_dyn_release(keyArg);
+  scr_dyn_release(hook);
+  if (!value) return true;
+  if (scr_json_omitted(value)) scr_jb_puts(b, "null");
+  else
+    scr_json_replaced_write(b, value, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
+                            b->seen_len);
+  scr_dyn_release(value);
+  return true;
 }
 
 /* scr_jb_put_member_walk, writing the member directly when scr_jb_put_pure

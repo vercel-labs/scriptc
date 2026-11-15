@@ -215,6 +215,18 @@ void scr_jb_put_dyn_element(ScrJsonBuf *b, const ScrDyn *d, double index);
  * circular-structure stack. May leave an exception pending. */
 void scr_jb_put_dyn_member(ScrJsonBuf *b, void *rec, const ScrStr *key, const ScrDyn *value,
                            bool *first);
+/* The callable `toJSON` a record's unknown index signature (`map`) holds,
+ * at an OBJECT member position: JSON.stringify calls it with `key` before
+ * writing anything, and drops the member when it answers an omitted value.
+ * The hook answers for the whole record, whose fields are then not written.
+ * Answers false and writes nothing when the entry is absent or not
+ * callable, so the caller writes the member from the type-directed writer.
+ * May leave an exception pending. */
+bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const ScrStr *key,
+                                   bool *first);
+/* scr_jb_put_record_hook_member for an ARRAY slot: the hook's key is the
+ * index as a string, and an omitted answer is the slot's null. */
+bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index);
 /* scr_jb_put_dyn for the ROOT value: its toJSON runs with the empty key,
  * then the result is written. An omitted result (JSON.stringify returns the
  * undefined value) is appended as the text `undefined`, the spelling

@@ -244,7 +244,7 @@ function isPlainLiteral(e: ts.Expression): boolean {
  * literal of such values under plain names. Anything else in it (a call, a
  * read of a binding, a spread, a computed key, `new X(…)`) is evaluated for
  * what it does. */
-function spellsInertValue(value: ts.Expression, depth = 0): boolean {
+export function spellsInertValue(value: ts.Expression, depth = 0): boolean {
   const v = withoutParenthesesTypeWrappers(value);
   if (
     isPlainLiteral(v) ||

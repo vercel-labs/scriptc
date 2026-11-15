@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-void-call-truthiness.js"
+ ],
+ "diags": []
+}

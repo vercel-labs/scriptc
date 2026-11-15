@@ -427,25 +427,38 @@ export function protocolArm(
     else return null;
   }
   const owner = found.declarer;
-  const virtual = lowerer.overrideBelow(owner, method) || found.sig.abstract === true;
+  // A user Error subclass inherits toString from the runtime root, which has
+  // no IR function: the arm calls the runtime's implementation, as a direct
+  // call on such an instance does. The arm tests the exact class, whose chain
+  // overrides nothing below the root.
+  const builtin = owner.builtinError === true;
+  const virtual = !builtin && (lowerer.overrideBelow(owner, method) || found.sig.abstract === true);
   const callee = `%${owner.def.name}.${method}`;
   const ret = found.sig.ret;
-  const invoke: IrExpr = virtual
+  const invoke: IrExpr = builtin
     ? {
-        kind: "virtualCall",
-        className: owner.def.name,
-        method,
-        args: [upcastTo(lowerer, receiver, owner.def.name), ...args],
+        kind: "libCall",
+        fn: "error.toString",
+        args: [upcastTo(lowerer, receiver, owner.def.name)],
         type: ret,
         loc,
       }
-    : {
-        kind: "call",
-        callee,
-        args: [upcastTo(lowerer, receiver, owner.def.name), ...args],
-        type: ret,
-        loc,
-      };
+    : virtual
+      ? {
+          kind: "virtualCall",
+          className: owner.def.name,
+          method,
+          args: [upcastTo(lowerer, receiver, owner.def.name), ...args],
+          type: ret,
+          loc,
+        }
+      : {
+          kind: "call",
+          callee,
+          args: [upcastTo(lowerer, receiver, owner.def.name), ...args],
+          type: ret,
+          loc,
+        };
   let body: IrStmt[];
   if (ret.kind === "void") {
     if (!dispatch.returnsVoid) return null;
@@ -459,7 +472,7 @@ export function protocolArm(
     body = [{ kind: "return", value: lowerer.coerceToExpected(invoke, DYN), loc }];
   } else return null;
   if (virtual) lowerer.noteVirtualEdge(owner, method);
-  else lowerer.noteEdge(callee);
+  else if (!builtin) lowerer.noteEdge(callee);
   return body;
 }
 

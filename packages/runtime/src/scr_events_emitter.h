@@ -86,6 +86,15 @@ ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *box
                                    ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
                                    ScrEeInvoke err_inv, ScrDyn *options);
 void scr_events_once_signal_fire(ScrClosure *cb, ScrArr *args);
+/* events.once over a name the program does not resolve statically — a
+ * computed name, a symbol, a meta event, or a stream's chunk event
+ * (scr_events_once_signal.c). The listeners are checked-dynamic function
+ * values, so the event's arguments reach the promise as the emit provides
+ * them; the name crosses as the value the receiver's once() receives (a
+ * symbol keeps its identity). Never throws: invalid options, a name that
+ * cannot key the registry, an aborted signal, a throwing 'newListener'
+ * listener and every event failure reject the +1 result. */
+ScrPromise *scr_events_once_any(ScrEmitter *em, ScrDyn *name_value, ScrDyn *options);
 /* Removes the listener entry whose closure is `cb` (borrowed) without a
  * 'removeListener' event: the undo of an add whose 'newListener'
  * announcement threw. */

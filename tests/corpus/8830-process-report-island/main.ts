@@ -4,6 +4,7 @@
 // libraries the running binary really has loaded. The program needs an
 // island for the report to be available at all; a build without one keeps
 // the process.report refusal.
+import { unlinkSync } from "node:fs";
 import { label, ping } from "reportsupport";
 
 console.log("island", label, ping());
@@ -20,11 +21,22 @@ console.log("heap", typeof report.javascriptHeap === "object" && report.javascri
 console.log("directory", typeof process.report.directory);
 console.log("filename", typeof process.report.filename);
 console.log("compact", typeof process.report.compact);
+console.log("excludeEnv", typeof process.report.excludeEnv);
+// writeReport writes the report to the named file and answers that name;
+// the report content is machine-specific, so only the round trip is shown.
+const written = process.report.writeReport("report-out.json");
+// unlinkSync answers undefined; it cannot be compared (SC1043), so its
+// result is shown through typeof instead.
+const removed = unlinkSync(written);
+console.log("written", written === "report-out.json", typeof removed);
+const prelude = process.report.getReport() as { header?: unknown };
+console.log("prelude", typeof prelude.header === "object");
+const hadEnv = process.report.excludeEnv;
+process.report.excludeEnv = !hadEnv;
+console.log("envSkipped", "environmentVariables" in process.report.getReport());
+process.report.excludeEnv = hadEnv;
 // Every member the fallback declarations carry, so the ledger's
-// island-served rows name evidence that reads them. writeReport and
-// excludeEnv are omitted: the fallback @types surface does not declare them
-// (a project with @types/node gets them from Node's own declarations), and
-// the ledger leaves those two rows unclaimed.
+// island-served rows name evidence that reads them.
 console.log("reportOnFatalError", typeof process.report.reportOnFatalError);
 console.log("reportOnSignal", typeof process.report.reportOnSignal);
 console.log("reportOnUncaughtException", typeof process.report.reportOnUncaughtException);

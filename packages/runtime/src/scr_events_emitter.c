@@ -1210,7 +1210,10 @@ static void scr_ee_unadd(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (!b) return;
   for (size_t i = b->n; i-- > 0;) {
-    if (b->ls[i]->cb == cb) {
+    /* The entry's IDENTITY: a registration made with a checked-dynamic
+     * listener holds it as flex_cb (its cb is NULL), one behind an adapter
+     * as orig. */
+    if (scr_ee_entry_fn(b->ls[i]) == cb) {
       scr_ee_remove_at_quiet(em, b, i);
       return;
     }

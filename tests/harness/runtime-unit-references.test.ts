@@ -78,20 +78,30 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // symbol keys are scr_symbol.c's, which every feature selecting the unit
   // requires (LINK_FEATURE_REQUIREMENTS).
   "scr_event_target.c -> scr_dyn_invoke.c": ["scr_dyn_invoke"],
+  // process.finalization's one-per-feature ExperimentalWarning asks the
+  // deferred warning queue, and every call that reaches the finalization
+  // registration selects dynAsync (runtime-features.ts). An events program
+  // without the registration (a held procStream type) links neither.
+  "scr_events.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
   // The checked-data writes with a mode, a flag or an options record
   // (scr_fs_write_file_flags_data, scr_fs_write_file_data_options,
-  // scr_fs_append_file_data_options) call the string and byte writers of
-  // scr_fs_flags.c: every call that reaches them (fs.writeFileSyncDataFlags,
-  // fsp.writeFileDataFlags, fs.writeFileDataOptionsSync,
-  // fs.appendFileDataOptionsSync) selects fsFlags as well as fsBytesWrites.
+  // scr_fs_append_file_data_options, and their dynamic-mode twins) call the
+  // string and byte writers of scr_fs_flags.c: every call that reaches them
+  // (fs.writeFileSyncDataFlags, fsp.writeFileDataFlags,
+  // fs.writeFileDataOptionsSync, fs.appendFileDataOptionsSync, and the
+  // DynMode forms) selects fsFlags as well as fsBytesWrites.
   "scr_fs_bytes_write.c -> scr_fs_flags.c": [
     "scr_fs_append_file_bytes_options",
+    "scr_fs_append_file_bytes_options_dyn_mode",
     "scr_fs_append_file_options",
+    "scr_fs_append_file_options_dyn_mode",
     "scr_fs_write_file_bytes_options",
+    "scr_fs_write_file_bytes_options_dyn_mode",
     "scr_fs_write_file_flags",
     "scr_fs_write_file_options",
+    "scr_fs_write_file_options_dyn_mode",
   ],
   "scr_http2.c -> scr_tls.c": [
     "scr_https_create_server",
@@ -101,7 +111,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
-  "scr_pki.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
+  // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
+  // that reaches it (the deprecated crypto.fips read) selects the
+  // dyn-async unit as well.
+  "scr_pki.c -> scr_async_dyn.c": [
+    "scr_emit_warning",
+    "scr_warning_emit_deferred",
+    "scr_warning_new",
+  ],
   // readline reading from a stream: creating the interface (rl.create)
   // selects the events units.
   "scr_stream.c -> scr_readline.c": [

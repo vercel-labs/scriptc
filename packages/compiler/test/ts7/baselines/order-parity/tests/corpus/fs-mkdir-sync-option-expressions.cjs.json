@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-mkdir-sync-option-expressions.cjs"
+ ],
+ "diags": []
+}

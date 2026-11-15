@@ -14,8 +14,19 @@
  * fd-stdio form. The two-argument form is what program objects built
  * before the mode argument call; it passes Node's 0o666 default. */
 double scr_fs_open(ScrStr *path, ScrStr *flags);
+/* stringToFlags' string arm (the documented flag grammar; anything else
+ * throws Node's ERR_INVALID_ARG_VALUE) and open(2) itself over the parsed
+ * flags. */
+bool scr_fs_flag_string(const ScrStr *flags, int *out);
+double scr_fs_open_flags(ScrStr *path, int of, double mode);
 double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode);
+/* The octal-string creation mode: parseFileMode's string arm, then the
+ * same open(2). */
+double scr_fs_open_str_mode(ScrStr *path, ScrStr *flags, ScrStr *mode);
 double scr_fs_open_numeric(ScrStr *path, double flags, double mode);
+/* The same flags as the frontend's platform-independent mask, mapped to the
+ * target's own open(2) bits here; the creation mode is already parsed. */
+double scr_fs_open_mask(ScrStr *path, double flags, double mode);
 /* Engine callers supply the target OS's flags, rather than the frontend's
  * portable constant mask. Argument validation happens before this seam. */
 double scr_fs_open_native(ScrStr *path, double flags, double mode);
@@ -63,6 +74,10 @@ ScrStats *scr_file_handle_stat(ScrFileHandle *h);
  * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */
 double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                         double position);
+/* getValidatedFd: an integer in [0, 2147483647]; false with Node's
+ * ERR_OUT_OF_RANGE pending otherwise. The checked-dynamic fd ladders reuse
+ * it for the descriptor they read out of a dyn value. */
+bool scr_fs_fd_valid(double fd);
 /* fs.readSync's offset check; false with ERR_OUT_OF_RANGE pending. */
 bool scr_fs_read_offset_chk(double offset);
 /* scr_fs_read_sync after its offset and position checks, with an exact
@@ -76,6 +91,9 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
                          double position);
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding);
+/* writeSync's string arm validation before the descriptor: validateEncoding's
+ * hex parity check. False with ERR_INVALID_ARG_VALUE pending. */
+bool scr_fs_write_str_encoding_ok(ScrStr *data, ScrStr *encoding);
 double scr_fs_readv_sync(double fd, ScrArr *buffers, double position);
 double scr_fs_writev_sync(double fd, ScrArr *buffers, double position);
 /* Unlike scalar readSync's zero-length fast path, a nonempty vector of

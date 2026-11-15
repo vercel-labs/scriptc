@@ -3303,10 +3303,30 @@ static ScrDyn *scr_native_regex_invoke(void *ptr, ScrDyn *self, const char *meth
   return NULL;
 }
 
+/* structuredClone: a new RegExp over the same source and flags. The
+ * serialization drops lastIndex, so the copy starts at 0 as Node's does. */
+static ScrDyn *scr_native_regex_clone(void *ptr) {
+  ScrRegex *re = ptr;
+  ScrStr *source = scr_regex_source(re);
+  ScrStr *flags = scr_regex_flags(re);
+  ScrRegex *copy = scr_regex_new(source, flags);
+  scr_str_release(source);
+  scr_str_release(flags);
+  if (!copy) return NULL;
+  ScrDyn *out = scr_dyn_native_regex(copy);
+  scr_regex_release(copy);
+  return out;
+}
+
 ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
   static const ScrDynHandleOps ops = {
-    "RegExp", &scr_regex_retain_v, &scr_regex_release_v, &scr_native_regex_invoke,
-    &scr_native_regex_get, &scr_native_regex_set, NULL, NULL,
+    .cls = "RegExp",
+    .retain = &scr_regex_retain_v,
+    .release = &scr_regex_release_v,
+    .invoke = &scr_native_regex_invoke,
+    .get = &scr_native_regex_get,
+    .set = &scr_native_regex_set,
+    .clone = &scr_native_regex_clone,
   };
   scr_dyn_handle_install(SCR_DYNH_REGEXP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_REGEXP);

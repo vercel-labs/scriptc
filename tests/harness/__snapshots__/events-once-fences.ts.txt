@@ -1,17 +1,26 @@
-events-once-fences.ts:10:18 - error SC2020: 'events.once with a computed or meta event name' is part of the standard library types but has no scriptc lowering yet
+events-once-fences.ts:12:33 - error SC2020: 'events.once with a computed event name on a stream' is part of the standard library types but has no scriptc lowering yet
 
-   9 | async function main(): Promise<void> {
-  10 |   await once(ee, name); // computed event name
-     |                  ^~~~
-  11 |   await once(new PassThrough(), "data"); // a stream's 'data' event
+  11 | async function main(): Promise<void> {
+  12 |   await once(new PassThrough(), name); // a computed name on a stream
+     |                                 ^~~~
+  13 |   await once(ee, errorMonitor); // the errorMonitor symbol
 
-  hint: name the awaited event with a string literal
+  hint: a stream's runtime events carry fixed argument ABIs; name the awaited event with a string literal
 
-events-once-fences.ts:11:33 - error SC2020: 'events.once of a stream's 'data' event' is part of the standard library types but has no scriptc lowering yet
+events-once-fences.ts:13:18 - error SC2020: 'events.once of the errorMonitor event' is part of the standard library types but has no scriptc lowering yet
 
-  10 |   await once(ee, name); // computed event name
-  11 |   await once(new PassThrough(), "data"); // a stream's 'data' event
-     |                                 ^~~~~~
-  12 | }
+  12 |   await once(new PassThrough(), name); // a computed name on a stream
+  13 |   await once(ee, errorMonitor); // the errorMonitor symbol
+     |                  ^~~~~~~~~~~~
+  14 |   const iterator = on(new PassThrough(), name); // events.on, same rule
 
-  hint: the chunk has no checked-dynamic boxing here; register stream.once('data', listener) instead
+  hint: name the awaited event with a string or a value of a checked-dynamic type
+
+events-once-fences.ts:14:42 - error SC2020: 'events.on with a computed event name on a stream' is part of the standard library types but has no scriptc lowering yet
+
+  13 |   await once(ee, errorMonitor); // the errorMonitor symbol
+  14 |   const iterator = on(new PassThrough(), name); // events.on, same rule
+     |                                          ^~~~
+  15 |   void iterator;
+
+  hint: a stream's runtime events carry fixed argument ABIs; name the awaited event with a string literal

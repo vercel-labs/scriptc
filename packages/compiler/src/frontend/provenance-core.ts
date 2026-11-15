@@ -22,7 +22,10 @@ import type { ProvenancePackageSource, ProvenanceSources } from "./provenance-re
 
 export type ProvenanceParser = (path: string, source: string, kind: Ts7SourceKind) => SourceFile;
 
-const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+// The scriptc condition is part of the import world: the published file
+// scriptc compiles is the one its own condition selects, so the source map
+// follows that branch.
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default", "scriptc"]);
 
 const NODE_BUILTINS = new Set(builtinModules);
 

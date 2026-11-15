@@ -2158,7 +2158,9 @@ export class ClassProtocols {
    * counts when it is an existing object (a binding, member, element or
    * `this`, not a fresh literal or call result) whose type is a program
    * class instance or a record with declared properties, or a constant
-   * `{}`, `object` or `unknown` binding initialized with one. */
+   * `{}`, `object` or `unknown` binding initialized with one. A native
+   * `new Proxy(...)` counts as well, and keeps identity unconditionally:
+   * its traps are the value, so no copy could stand in for it. */
   private markDictionaryViews(
     sites: readonly {
       source: ts.Expression;
@@ -2193,13 +2195,21 @@ export class ClassProtocols {
       }
       return calls.get(name) ?? [];
     };
-    const candidates: { index: number; sourceType: ts.Type }[] = [];
+    const candidates: { index: number; sourceType: ts.Type | undefined; proxy: boolean }[] = [];
     for (let i = 0; i < sites.length; i++) {
       const source = sourceNodes[i]!;
-      if (!isExistingObject(source)) continue;
+      // A native Proxy never converts by value: its traps are the object,
+      // so a dictionary slot that receives one has to keep identity. No
+      // `seen` gate follows either: a program that only reads through the
+      // proxy would otherwise keep the by-value layout that cannot hold it.
+      const proxy = this.nativeProxyConstruction(source);
+      if (!proxy && !isExistingObject(source)) continue;
       const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
-      if (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
-        candidates.push({ index: i, sourceType });
+      if (
+        proxy ||
+        (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
+      )
+        candidates.push({ index: i, sourceType, proxy });
     }
     if (candidates.length === 0) return;
     // One batch for the contextual targets of the candidate sites.
@@ -2212,22 +2222,22 @@ export class ClassProtocols {
       ),
     );
     const received = new Set<ts.Type>();
-    for (const { index, sourceType } of candidates) {
+    const proxied = new Set<ts.Type>();
+    for (const { index, sourceType, proxy } of candidates) {
       const target = attempt(sites[index]!.target);
       const parts =
         target === undefined ? [] : target.isUnionType() ? ts.constituentTypes(target) : [target];
       for (const part of parts) {
         const value = this.dictionaryValueType(part);
         // A dictionary of `unknown` or `any` values is checked-dynamic already.
-        if (
-          value !== undefined &&
-          (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0 &&
-          this.dictionaryValueType(sourceType) !== value
-        )
+        if (value === undefined || (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0)
+          continue;
+        if (proxy) proxied.add(value);
+        else if (sourceType === undefined || this.dictionaryValueType(sourceType) !== value)
           received.add(value);
       }
     }
-    if (received.size === 0) return;
+    if (received.size === 0 && proxied.size === 0) return;
     // The dictionary values the program writes through or observes.
     const seen = new Set<ts.Type>();
     for (const node of [...writeNodes, ...observedNodes]) {
@@ -2240,6 +2250,24 @@ export class ClassProtocols {
       }
     }
     for (const value of received) if (seen.has(value)) this.dictionaryViews.add(value);
+    for (const value of proxied) this.dictionaryViews.add(value);
+  }
+
+  /** `new Proxy(target, handler)` over the standard library's Proxy
+   * constructor: the one construction the compiler lowers to a live native
+   * proxy (expressions/native-proxy.ts), a value a dictionary cannot copy. */
+  private nativeProxyConstruction(expr: ts.Expression): boolean {
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!ts.isNewExpression(expr) || !ts.isIdentifier(expr.expression)) return false;
+    if (expr.expression.text !== "Proxy") return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(expr.expression));
+    if (symbol === undefined || symbol.declarations === undefined) return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((declaration) =>
+        this.isStdlibFile(ts.getSourceFileOfNode(declaration)),
+      )
+    );
   }
 
   /** Whether `source` holds an existing object that a dictionary

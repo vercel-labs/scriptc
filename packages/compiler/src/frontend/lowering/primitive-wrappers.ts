@@ -166,6 +166,7 @@ export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   "insp.dynS",
   "insp.dynFormatS",
 ]);

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #if !defined(_WIN32) && !defined(__wasi__)
+#include <pthread.h>
 #include <signal.h>
 #endif
 #ifdef _WIN32
@@ -222,7 +223,20 @@ void scr_init(void) {
    * to a closed pipe or past RLIMIT_FSIZE fails with EPIPE or EFBIG, on any
    * thread, instead of ending the process. A process.on listener replaces
    * the disposition while it is registered (scr_events.c), and spawned
-   * children start with both at their default actions (scr_spawn_command). */
+   * children start with both at their default actions (scr_spawn_command).
+   *
+   * The mask the launcher left behind goes first, as in Node: a blocked set
+   * survives exec and follows the thread that called fork, so a program
+   * started by a parent that blocked SIGTSTP never suspends on Ctrl+Z —
+   * kill(getpid(), SIGTSTP) leaves the stop pending and the process keeps
+   * running, which looks like a hung program to whoever waits for the stop.
+   * Node replaces the set with an empty one and then blocks SIGUSR1, the
+   * signal its inspector thread waits on (src/node.cc, PlatformInit, built
+   * with the inspector); scriptc has no such thread, so the inherited set is
+   * cleared and a program that wants a mask sets one itself. */
+  sigset_t inherited_mask;
+  sigemptyset(&inherited_mask);
+  (void)pthread_sigmask(SIG_SETMASK, &inherited_mask, NULL);
   for (unsigned nr = 1; nr < 32; nr++) {
     if (nr == SIGKILL || nr == SIGSTOP) continue;
     struct sigaction act;
@@ -241,10 +255,16 @@ void scr_init(void) {
   }
 #endif
   /* atexit is LIFO; registration order makes exit run: library cleanup
-   * (registered later, in scr_lib_init) → cycle collection → RC audit →
-   * flush → Windows console-code-page restore. The final collection frees
-   * cycles the program dropped, so the audit (and ASan's leak check) see
-   * them as freed, not leaked. */
+   * (registered later, in scr_lib_init) → 'exit' listeners and their cleanup
+   * (registered by scr_events_install) → cycle collection → RC audit → flush
+   * → the stdin terminal-mode restore → Windows console-code-page restore.
+   * The final collection frees cycles the program dropped, so the audit (and
+   * ASan's leak check) see them as freed, not leaked. The mode restore runs
+   * after the 'exit' listeners and the flush, matching Node, where
+   * atexit(ResetStdio) runs at libc exit after the listeners, so output a
+   * listener writes still goes to the terminal in the mode the program left
+   * it in. */
+  scr_atexit(scr_process_stdin_restore_mode);
   scr_atexit(scr_flush_at_exit);
 #ifdef SCR_RC_AUDIT
   scr_atexit(scr_rc_audit_at_exit);

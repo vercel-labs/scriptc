@@ -39,27 +39,27 @@ stdlib-fence.ts:23:11 - error SC2020: 'new Date with spread arguments' is part o
   22 | // Constructors.
   23 | const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
      |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | const wr = new WeakRef({});
+  24 | const wr = new BigInt64Array(8);
 
   hint: new Date(), new Date(milliseconds), new Date(dateString), and new Date(year, monthIndex, ...) with listed arguments are supported
 
-stdlib-fence.ts:24:7 - error SC2020: 'WeakRef<{}>' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:24:7 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
   23 | const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
-  24 | const wr = new WeakRef({});
+  24 | const wr = new BigInt64Array(8);
      |       ^~
   25 | const px = new Proxy({ a: 1 }, {});
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-stdlib-fence.ts:24:12 - error SC2020: 'new WeakRef' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:24:12 - error SC2020: 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet
 
   23 | const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
-  24 | const wr = new WeakRef({});
-     |            ^~~~~~~~~~~~~~~
+  24 | const wr = new BigInt64Array(8);
+     |            ^~~~~~~~~~~~~~~~~~~~
   25 | const px = new Proxy({ a: 1 }, {});
 
-  hint: deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 stdlib-fence.ts:39:31 - error SC1090: '.split()' on a 'RegExp | string' separator (pass a string, or a regex literal) is not supported yet
 

@@ -176,39 +176,50 @@ describe.skipIf(skip)("Node islands in-process", () => {
     };
     delete env["SCRIPTC_LIBNODE"];
     const expected = `${before}\n42\n${after}\ndone\n`;
-    // The build wrote the tree's name next to the modules: a start compares
-    // it and does not hash the tree.
-    const name = readFileSync(`${modules}.tree`, "utf8");
-    expect(name).toMatch(/^[0-9a-f]{64}\n$/);
-    const result = await run(beside, [], env);
-    expect(result.stdout).toBe(expected);
-    expect(result.code).toBe(0);
-    expect(treeHashes(result)).toBe(0);
-    // Modules without that name (a directory left from another build, a
-    // deployment that dropped the file): the content decides, on every
-    // start, and the program writes nothing beside itself.
-    for (const other of [null, `${"0".repeat(64)}\n`]) {
-      if (other === null) rmSync(`${modules}.tree`);
-      else writeFileSync(`${modules}.tree`, other);
-      for (let i = 0; i < 2; i++) {
-        const hashed = await run(beside, [], env);
-        expect(hashed.stdout).toBe(expected);
-        expect(treeHashes(hashed)).toBe(1);
-      }
+    // Every start hashes the modules against the executable's manifest, and
+    // the build writes nothing beside them for a start to trust instead.
+    expect(existsSync(`${modules}.tree`)).toBe(false);
+    for (let i = 0; i < 2; i++) {
+      const result = await run(beside, [], env);
+      expect(result.stdout).toBe(expected);
+      expect(result.code).toBe(0);
+      expect(treeHashes(result)).toBe(1);
     }
-    // ... and modules that do not match the executable are refused.
+    // Modules that do not match the executable are refused.
     writeFileSync(helper, `${original}\n// edited\n`);
     const edited = await run(beside, [], env);
     expect(edited.code).toBe(1);
     expect(edited.stderr).toContain(
       `scriptc: the Node island modules at ${modules} do not match this program\n`,
     );
-    // Under the build's name the tree is used as it is, like any file the
-    // program was installed with.
-    writeFileSync(`${modules}.tree`, name);
-    const trusted = await run(beside, [], env);
-    expect(trusted.stdout).toBe(expected);
-    expect(treeHashes(trusted)).toBe(0);
+  }, 300_000);
+
+  test("a beside tree that differs is refused whatever lies next to it", async () => {
+    const beside = await build("beside-edited", "beside");
+    const modules = join(outDir, "beside-edited/lifecycle.libnode/modules");
+    const helper = join(modules, "helper.cjs");
+    writeFileSync(helper, `${readFileSync(helper, "utf8")}\n// edited\n`);
+    // The tree's name, as earlier builds wrote it next to the modules: it
+    // vouches for nothing, and the edited file is refused on every start
+    // before Node loads.
+    const name = /\{"tree":"([0-9a-f]{64})"/.exec(readFileSync(beside, "latin1"))?.[1];
+    expect(name).toMatch(/^[0-9a-f]{64}$/);
+    writeFileSync(`${modules}.tree`, `${name}\n`);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      XDG_CACHE_HOME: cacheHome,
+      SCRIPTC_NODE_ISLANDS_TRACE: "boot",
+    };
+    delete env["SCRIPTC_LIBNODE"];
+    for (let i = 0; i < 2; i++) {
+      const refused = await run(beside, [], env);
+      expect(refused.code).toBe(1);
+      expect(treeHashes(refused)).toBe(1);
+      expect(refused.stdout).toBe(`${before}\n`);
+      expect(refused.stderr).toContain(
+        `scriptc: the Node island modules at ${modules} do not match this program\n`,
+      );
+    }
   }, 300_000);
 
   test("an installed tree is used without a check, and lost files are put back", async () => {
@@ -1647,13 +1658,23 @@ test("a host-global fence inside a function body keeps its package native", asyn
 // the statement it holds is the module's export (`module.exports = factory()`),
 // which a build reads from top-level statements only: the package runs in a
 // Node island, and a default import of it is the function it exports. A
-// generator's body does not run at the call, so the same refusal there keeps
-// its package native. Needs no libnode pack for the decision: the island
+// generator's body does not run at the call, and an async body runs no
+// further than its first await, so the same refusal there keeps its package
+// native, as does one in a callback a promise runs later. An array iteration
+// method calls its callback before returning, so a refusal inside one counts
+// as module-init code. Needs no libnode pack for the decision: the island
 // build stops before linking without one.
 test("a refusal in a function called where it is written makes its package a Node island", async () => {
   const dir = join(outDir, "called-where-written");
   rmSync(dir, { recursive: true, force: true });
-  const writePackage = (name: string, type: "module" | "commonjs", body: string[]): void => {
+  const writePackage = (
+    name: string,
+    type: "module" | "commonjs",
+    body: string[],
+    types = type === "commonjs"
+      ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
+      : "export declare function answer(): string;\n",
+  ): void => {
     const at = join(dir, "node_modules", name);
     mkdirSync(at, { recursive: true });
     writeFileSync(
@@ -1661,12 +1682,7 @@ test("a refusal in a function called where it is written makes its package a Nod
       JSON.stringify({ name, version: "1.0.0", type, main: "./index.js", types: "./index.d.ts" }),
     );
     writeFileSync(join(at, "index.js"), [...body, ""].join("\n"));
-    writeFileSync(
-      join(at, "index.d.ts"),
-      type === "commonjs"
-        ? "declare function plural(word: string, count: number): string;\nexport = plural;\n"
-        : "export declare function answer(): string;\n",
-    );
+    writeFileSync(join(at, "index.d.ts"), types);
   };
   const entry = (name: string, body: string): string => {
     const file = join(dir, `${name}.mjs`);
@@ -1747,6 +1763,74 @@ test("a refusal in a function called where it is written makes its package a Nod
   // exit status are what this checks.
   const ran = await run(generator.binaryPath, []);
   expect({ stdout: ran.stdout, code: ran.code }).toEqual({ stdout: "native\n", code: 0 });
+
+  // An async body starts at its call but a refusal there follows its first
+  // await, so it rejects a promise instead of throwing where the module
+  // evaluates. The awaited promise never settles, which keeps the refusal
+  // off the path this program takes. Its fiber is never resumed either, so a
+  // sanitized build reports a skipped audit on stderr, as for the generator.
+  writePackage("async-body", "module", [
+    "const pending = (async () => {",
+    "  await new Promise(() => {});",
+    "  new FormData();",
+    "})();",
+    'export function answer() { return typeof pending === "object" ? "native" : "none"; }',
+  ]);
+  const asyncBody = await build(
+    "async-body",
+    'import { answer } from "async-body";\nconsole.log(answer());\n',
+  );
+  if (!asyncBody.ok)
+    expect.unreachable(asyncBody.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  expect(islandNotes(asyncBody)).toEqual([]);
+  const asyncRan = await run(asyncBody.binaryPath, []);
+  expect({ stdout: asyncRan.stdout, code: asyncRan.code }).toEqual({ stdout: "native\n", code: 0 });
+
+  // An array iteration method calls its callback before returning, so a
+  // refusal in that callback throws while the module evaluates too. This is
+  // the loader shape packages use for a computed require (`["./part"].map(
+  // (p) => load(p))`). A callback a promise runs on a later microtask does
+  // not run at the module's evaluation, so its refusal keeps the package
+  // native.
+  writePackage(
+    "map-loader",
+    "commonjs",
+    [
+      'const { createRequire } = require("node:module");',
+      "const load = createRequire(__filename);",
+      'const [part] = ["./part"].map((p) => load(p));',
+      "exports.answer = function () { return part.value; };",
+    ],
+    "declare const api: { answer(): string };\nexport = api;\n",
+  );
+  writeFileSync(join(dir, "node_modules/map-loader/part.js"), 'exports.value = "island";\n');
+  const mapped = await build(
+    "map-loader",
+    'import api from "map-loader";\nconsole.log(api.answer());\n',
+  );
+  if (mapped.ok) {
+    expect(islandNotes(mapped)).toEqual([
+      expect.stringContaining("'map-loader@1.0.0' runs in a Node island"),
+    ]);
+    if (!skip)
+      expect(await run(mapped.binaryPath, [])).toEqual({
+        stdout: "island\n",
+        stderr: "",
+        code: 0,
+      });
+  } else expect(mapped.diagnostics.map((d) => d.code)).toContain("SC8005");
+
+  writePackage("later-callback", "module", [
+    "const later = Promise.resolve().then(() => new FormData());",
+    'export function answer() { return typeof later === "object" ? "native" : "none"; }',
+  ]);
+  const later = await build(
+    "later-callback",
+    'import { answer } from "later-callback";\nconsole.log(answer());\n',
+  );
+  if (!later.ok)
+    expect.unreachable(later.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  expect(islandNotes(later)).toEqual([]);
 }, 300_000);
 
 // Compiling a package natively leaves every other package typed as it is

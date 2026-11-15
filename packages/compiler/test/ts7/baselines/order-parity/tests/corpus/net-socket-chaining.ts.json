@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/net-socket-chaining.ts"],
+  "diags": []
+}

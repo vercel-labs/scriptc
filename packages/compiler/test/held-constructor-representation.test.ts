@@ -97,10 +97,9 @@ if (process.argv.length > 9) seldom();
 console.log(held("7"), shelf.pages === Number, format("%s", held.name));
 `);
   expect(result.errors).toEqual([]);
-  expect(result.throwing).toHaveLength(3);
+  expect(result.throwing).toHaveLength(2);
   expect(result.throwing[0]).toContain("SC1090: 'new' through a held String, Number, Boolean");
-  expect(result.throwing[1]).toContain("util.format %o of function values");
-  expect(result.throwing[2]).toContain("Object.getPrototypeOf of a held built-in constructor");
+  expect(result.throwing[1]).toContain("Object.getPrototypeOf of a held built-in constructor");
 });
 
 // The prototype of a held constructor is refused by name, whether the value

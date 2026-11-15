@@ -5,76 +5,60 @@ accessors.ts:14:3 - error SC1090: auto-accessor fields ('accessor x') are not su
      |   ^~~~~~~~~~~~~~~~~~~~~~~
   15 | }
 
-accessors.ts:23:7 - error SC1090: getter/setter pairs with different types (the property 'm' must have one type) are not supported yet
+accessors.ts:26:7 - error SC1090: overriding an accessor with a different type (a getter may narrow its base getter's type; a setter's parameter must match the base declaration exactly) is not supported yet
 
-  22 |   }
-  23 |   set m(v: string) {
-     |       ^
-  24 |     console.log(v);
-
-accessors.ts:43:7 - error SC1090: overriding an accessor with a different type (the property type must match the base declaration exactly) is not supported yet
-
-  42 | class DogKennel extends Kennel {
-  43 |   get pet(): Dog {
+  25 | class Marker extends Pen {
+  26 |   set ink(v: string) {
      |       ^~~
-  44 |     return new Dog();
+  27 |     console.log(v);
 
-accessors.ts:56:13 - error SC1090: reading a property that has only a setter ('w' — Node would yield undefined) is not supported yet
+accessors.ts:30:14 - error SC2004: uses of 'Marker.ink' inherit the blocker on its declaration
 
-  55 | const sink = new Sink();
-  56 | console.log(sink.w);
+  29 | }
+  30 | new Marker().ink = "blue";
+     |              ^~~
+  31 | 
+
+  hint: the declaration of 'Marker.ink' did not compile — fix the diagnostic reported there and these sites clear with it
+
+accessors.ts:40:13 - error SC1090: reading a property that has only a setter ('w' — Node would yield undefined) is not supported yet
+
+  39 | const sink = new Sink();
+  40 | console.log(sink.w);
      |             ^~~~~~
-  57 | 
+  41 | 
 
-accessors.ts:70:7 - error SC1090: overriding only the setter of an inherited accessor pair (JS shadows the inherited getter — reads of 'v' would yield undefined; declare the getter too) is not supported yet
+accessors.ts:54:7 - error SC1090: overriding only the setter of an inherited accessor pair (JS shadows the inherited getter — reads of 'v' would yield undefined; declare the getter too) is not supported yet
 
-  69 | class WriteOnlyCell extends Cell {
-  70 |   set v(x: number) {
+  53 | class WriteOnlyCell extends Cell {
+  54 |   set v(x: number) {
      |       ^
-  71 |     this._v = x * 2;
+  55 |     this._v = x * 2;
 
-accessors.ts:87:5 - error SC1090: compound assignment through 'super' (read and write separately) is not supported yet
+accessors.ts:71:5 - error SC1090: compound assignment through 'super' (read and write separately) is not supported yet
 
-  86 |   bump(): void {
-  87 |     super.scale += 1;
+  70 |   bump(): void {
+  71 |     super.scale += 1;
      |     ^~~~~~~~~~~
-  88 |   }
+  72 |   }
 
-accessors.ts:107:15 - error SC1090: bound method references through 'super' (call 'super.m(...)' directly) is not supported yet
+accessors.ts:91:15 - error SC1090: bound method references through 'super' (call 'super.m(...)' directly) is not supported yet
 
-  106 |   probe(): number {
-  107 |     const f = super.m;
-      |               ^~~~~~~
-  108 |     return f();
+  90 |   probe(): number {
+  91 |     const f = super.m;
+     |               ^~~~~~~
+  92 |     return f();
 
-accessors.ts:120:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+accessors.ts:104:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  119 | new Config();
-  120 | new Auto();
+  103 | new Config();
+  104 | new Auto();
       | ^~~~~~~~~~
-  121 | // A refused accessor half does not reject its class: the construction
+  105 | // A refused accessor half does not reject its class: the construction
 
-accessors.ts:123:13 - error SC2004: uses of 'Mixed.m' inherit the blocker on its declaration
+accessors.ts:107:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
-  122 | // compiles, and the use of the half is what reports it.
-  123 | new Mixed().m = "x";
-      |             ^
-  124 | console.log(new DogKennel().pet.breed);
-
-  hint: the declaration of 'Mixed.m' did not compile — fix the diagnostic reported there and these sites clear with it
-
-accessors.ts:124:13 - error SC2004: uses of 'DogKennel.pet' inherit the blocker on its declaration
-
-  123 | new Mixed().m = "x";
-  124 | console.log(new DogKennel().pet.breed);
-      |             ^~~~~~~~~~~~~~~~~~~
-  125 | new WriteOnlyCell();
-
-  hint: the declaration of 'DogKennel.pet' did not compile — fix the diagnostic reported there and these sites clear with it
-
-accessors.ts:125:1 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
-
-  124 | console.log(new DogKennel().pet.breed);
-  125 | new WriteOnlyCell();
+  106 | // compiles, and the use of the half is what reports it.
+  107 | new WriteOnlyCell();
       | ^~~~~~~~~~~~~~~~~~~
-  126 | new Computed();
+  108 | new Computed();

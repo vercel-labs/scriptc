@@ -6029,6 +6029,47 @@ static bool ws_set_noop(void *h, const char *key, size_t len, const ScrDyn *valu
   return false;
 }
 
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * over the web stream classes: Node's kIs* symbol getters. A
+ * ReadableStream answers kIsDisturbed, kIsErrored and kIsReadable (its
+ * state is "readable" until the close is processed or an error occurs), a
+ * WritableStream kIsErrored and kIsWritable, and a TransformStream — or a
+ * TextEncoderStream/TextDecoderStream, which are one — none of them: its
+ * readable and writable sides are separate streams, so the pair answers as
+ * an object that carries no booleans. Every web stream is a non-Node
+ * stream, so isDestroyed answers null, and the side a class does not have
+ * answers null too. The readers, controllers and strategies also answer
+ * the pair's values, as Node's property reads do for them. */
+static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
+  int w = (int)which;
+  if (tag == SCR_DYNH_WS_READABLE) {
+    WsReadable *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->state == WS_STATE_ERRORED);
+      case 2: return scr_dyn_new_bool(s->disturbed);
+      case 3: return scr_dyn_new_bool(s->state == WS_STATE_READABLE);
+      default: return scr_dyn_new_null();
+    }
+  }
+  if (tag == SCR_DYNH_WS_WRITABLE) {
+    WsWritable *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->state == WS_W_ERRORED);
+      case 2: return scr_dyn_new_bool(false);
+      case 3: return scr_dyn_new_null();
+      default: return scr_dyn_new_bool(s->state == WS_W_WRITABLE);
+    }
+  }
+  switch (w) {
+    case 0:
+    case 3:
+    case 4: return scr_dyn_new_null();
+    default: return scr_dyn_new_bool(false);
+  }
+}
+
 #define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID) \
   static const ScrDynHandleOps NAME = {                                           \
       .cls = CLS,                                                                 \
@@ -6042,6 +6083,7 @@ static bool ws_set_noop(void *h, const char *key, size_t len, const ScrDyn *valu
       .methods = METHODS,                                                         \
       .invalid_this = INVALID,                                                    \
       .rejected = ws_rejected_value,                                              \
+      .stream_predicate = ws_stream_predicate,                                    \
   }
 
 static const ScrDynHandleOps ws_readable_ops = {
@@ -6057,6 +6099,7 @@ static const ScrDynHandleOps ws_readable_ops = {
     .methods = ws_readable_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 
 WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_reader_invoke, ws_reader_get, ws_own_set, ws_reader_methods,
@@ -6088,6 +6131,7 @@ static const ScrDynHandleOps ws_text_encoder_ops = {
     .json_empty_object = true,
     .invalid_this = "Value of \"this\" must be of type TextEncoderStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 static const ScrDynHandleOps ws_text_decoder_ops = {
     .cls = "TextDecoderStream",
@@ -6099,6 +6143,7 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .json_empty_object = true,
     .invalid_this = "Value of \"this\" must be of type TextDecoderStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy");
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,

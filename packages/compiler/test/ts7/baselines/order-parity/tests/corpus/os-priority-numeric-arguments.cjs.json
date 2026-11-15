@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/os-priority-numeric-arguments.cjs"
+ ],
+ "diags": []
+}

@@ -13,7 +13,12 @@ import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
-import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
+import {
+  findStaticOn,
+  findGenericStaticOn,
+  findStaticAccessorOn,
+  staticMethodFunctionFor,
+} from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
 import { builtinMethodRecord } from "./builtin-method-records.js";
 import type { Lowerer } from "../lowerer.js";
@@ -1047,6 +1052,21 @@ export function classStaticsProjection(
     if (findGenericStaticOn(lowerer, info, tf.name)) return null;
     const found = findStaticOn(lowerer, info, tf.name);
     if (!found) {
+      // A static accessor projects as the value its getter answers at the
+      // conversion, which is what a read off the class object would see.
+      // A getter that reads `this` needs a receiver this projection does
+      // not carry, so it keeps the shape refusal.
+      const getter = findStaticAccessorOn(info, tf.name)?.get
+        ? staticMethodFunctionFor(lowerer, info.decl, info, `get:${tf.name}`)
+        : null;
+      if (getter && !getter.receiverDependent) {
+        lowerer.noteEdge(getter.fn);
+        const lift = lowerer.widthLiftPlan(getter.ret, tf.type);
+        if (!lift) return null;
+        const read: IrExpr = { kind: "call", callee: getter.fn, args: [], type: getter.ret, loc };
+        fields.push({ name: tf.name, value: lowerer.applyWidthLift(lift, read, tf.type, loc) });
+        continue;
+      }
       if (tf.type.kind !== "union") return null;
       const u = lowerer.absentFieldValue(tf, loc);
       if (!u) return null;

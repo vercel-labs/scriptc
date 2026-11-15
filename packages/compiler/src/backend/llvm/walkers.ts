@@ -1197,8 +1197,7 @@ export class LlWalkers {
           B.condBr(handled, done, plain);
           B.startBlock(plain);
         }
-        const w = this.jsonWriteHelper(arm);
-        B.line(`call void @${w}(ptr %b, ptr ${p}${this.jsonWriteDepthArg(arm, depth)})`);
+        this.writeField(B, p, arm, "record element", depth);
       } else if (this.armNeedsBox(arm)) {
         const conv = host.toDynHelper(t);
         const box = B.tmp();
@@ -1208,8 +1207,7 @@ export class LlWalkers {
         host.declare(`declare void @scr_dyn_release(ptr)`);
         B.line(`call void @scr_dyn_release(ptr ${box})`);
       } else {
-        const w = this.jsonWriteHelper(t);
-        B.line(`call void @${w}(ptr %b, ptr ${v}${this.jsonWriteDepthArg(t, depth)})`);
+        this.writeField(B, v, t, "union element", depth);
       }
       B.br(done);
     });
@@ -1306,8 +1304,9 @@ export class LlWalkers {
       B.startBlock(plain);
     }
     if (t.kind === "record" || map !== null) {
-      const w = this.jsonWriteHelper(t);
-      B.line(`call void @${w}(ptr %b, ptr ${v}${this.jsonWriteDepthArg(t, depth)})`);
+      // The slot is borrowed and a callback inside the record may replace
+      // it; writeField holds the value across its own traversal.
+      this.writeField(B, v, t, "record element", depth);
     } else {
       const conv = host.toDynHelper(t);
       const box = B.tmp();

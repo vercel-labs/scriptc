@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9816-node-island-load-imports-process-names/main.mjs"
+ ],
+ "diags": []
+}

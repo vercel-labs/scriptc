@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/let-temporal-dead-zone-reads.ts"
+ ],
+ "diags": []
+}

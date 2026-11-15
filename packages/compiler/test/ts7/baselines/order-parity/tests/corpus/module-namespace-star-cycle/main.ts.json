@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-namespace-star-cycle/cycle-b.ts",
+  "<repo>/tests/corpus/module-namespace-star-cycle/cycle-c.ts",
+  "<repo>/tests/corpus/module-namespace-star-cycle/cycle-a.ts",
+  "<repo>/tests/corpus/module-namespace-star-cycle/main.ts"
+ ],
+ "diags": []
+}

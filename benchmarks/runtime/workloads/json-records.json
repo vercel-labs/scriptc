@@ -2,5 +2,6 @@
   "entry": "workloads/json-records.ts",
   "args": [
     "4"
-  ]
+  ],
+  "scaleArg": 0
 }

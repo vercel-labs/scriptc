@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "typeRoots": [
+      "typings"
+    ],
+    "types": [
+      "pantry-units"
+    ]
+  },
+  "include": [
+    "main.ts"
+  ]
+}

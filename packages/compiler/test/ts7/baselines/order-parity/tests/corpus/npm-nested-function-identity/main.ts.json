@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/npm-nested-function-identity/main.ts"
+ ],
+ "diags": []
+}

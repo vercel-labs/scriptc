@@ -1,0 +1,6 @@
+{
+  "name": "node-island-record-view",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "island-pkg": "node" } }
+}

@@ -1,0 +1,15 @@
+generic-class-field-any.ts:13:15 - error SC2001: values of type 'Box<any>' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  12 | const known = new Box<unknown>("u");
+  13 | const loose = new Box<any>(1);
+     |               ^~~~~~~~~~~~~~~
+  14 | console.log(known.value, loose.value);
+
+generic-class-field-any.ts:14:26 - error SC2004: uses of 'loose' inherit the blocker on its declaration
+
+  13 | const loose = new Box<any>(1);
+  14 | console.log(known.value, loose.value);
+     |                          ^~~~~~~~~~~
+  15 | export const marker: number = 1;
+
+  hint: the declaration of 'loose' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -183,6 +183,8 @@ export function dynDesc(
       return "RegExp";
     case "url":
       return "URL";
+    case "searchParams":
+      return "URLSearchParams";
     case "date":
       return "Date";
     default: {

@@ -24,6 +24,8 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_array.c"),
     join(testDir, "../src/scr_array.c"),
+    // The typed join of an array of strings, an optional unit.
+    join(testDir, "../src/scr_arr_join_str.c"),
     join(testDir, "../src/scr_arena.c"),
     // Checked-value collection equality shares the native JSON value runtime.
     join(testDir, "../src/scr_json.c"),

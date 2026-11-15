@@ -2,7 +2,9 @@
 // Verifies a built libnode pack before it is packed or published: the
 // manifest matches the package, the pin and the bridge ABI; every library
 // it lists exists with the recorded size and SHA-256; the license files are
-// present.
+// present; a Linux pack records that it links the C++ runtime statically
+// (the build proves it on the library, build.mjs, and the floor check loads
+// the pack on the oldest supported runtime, floor.mjs).
 //
 //   node packages/libnode-common/scripts/verify.mjs <package directory>
 import { createHash } from "node:crypto";
@@ -32,6 +34,9 @@ export function verifyPack(root) {
   expect("nodeVersion", manifest.nodeVersion, pin.nodeVersion);
   expect("moduleVersion", manifest.moduleVersion, pin.moduleVersion);
   expect("bridgeAbi", manifest.bridgeAbi, bridgeAbi());
+  if (platformInfo(platform).os === "linux") {
+    expect("build.libstdcxx", manifest.build?.libstdcxx, "static");
+  }
   const names = packFileNames(platform, pin.moduleVersion);
   expect("libnode", manifest.libnode, names.libnode);
   expect("bridge", manifest.bridge, names.bridge);

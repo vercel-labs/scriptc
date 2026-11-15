@@ -1,0 +1,29 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-properties-maps/data-attributes.ts",
+  "<repo>/tests/corpus/define-properties-maps/accessors.ts",
+  "<repo>/tests/corpus/define-properties-maps/symbol-keys.ts",
+  "<repo>/tests/corpus/define-properties-maps/computed-keys.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-variable.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-getter.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-getter-variable.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-function.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-skips-non-enumerable-and-inherited.ts",
+  "<repo>/tests/corpus/define-properties-maps/invalid-mixed-descriptor.ts",
+  "<repo>/tests/corpus/define-properties-maps/descriptor-not-object.ts",
+  "<repo>/tests/corpus/define-properties-maps/getter-not-function.ts",
+  "<repo>/tests/corpus/define-properties-maps/key-order.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-null-undefined-primitive.ts",
+  "<repo>/tests/corpus/define-properties-maps/descriptor-class-instance.ts",
+  "<repo>/tests/corpus/define-properties-maps/descriptor-variables-and-identity.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-dynamic-sources.ts",
+  "<repo>/tests/corpus/define-properties-maps/redefine-existing.ts",
+  "<repo>/tests/corpus/define-properties-maps/view-receiver-map-forms.ts",
+  "<repo>/tests/corpus/define-properties-maps/reflect-and-statics-on-result.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-variable-declared-type.ts",
+  "<repo>/tests/corpus/define-properties-maps/map-variable-record-of-descriptors.ts",
+  "<repo>/tests/corpus/define-properties-maps/object-create-with-map.ts",
+  "<repo>/tests/corpus/define-properties-maps/main.ts"
+ ],
+ "diags": []
+}

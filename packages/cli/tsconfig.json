@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
+    "types": ["node"],
     "tsBuildInfoFile": "../../node_modules/.cache/scriptc-tsc/cli.tsbuildinfo"
   },
   "include": [

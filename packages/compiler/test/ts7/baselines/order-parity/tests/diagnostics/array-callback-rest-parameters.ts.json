@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/array-callback-rest-parameters.ts"
+ ],
+ "diags": []
+}

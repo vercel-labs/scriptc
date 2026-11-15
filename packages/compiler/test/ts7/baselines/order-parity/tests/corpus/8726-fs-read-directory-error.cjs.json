@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8726-fs-read-directory-error.cjs"
+ ],
+ "diags": []
+}

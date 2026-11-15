@@ -129,7 +129,7 @@ export function extendAssertedRecordMembers(
   for (const sf of files) {
     if (sf.isDeclarationFile) continue;
     // Cheap text gate: the form needs an intersection with a type literal.
-    if (!/&\s*\{/.test(sf.text)) continue;
+    if (!ts.sourceTextMatches(sf, /&\s*\{/)) continue;
     visit(sf);
   }
   for (const [shapeId, added] of additions) {

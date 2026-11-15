@@ -1,0 +1,6 @@
+asserted-optional-nonnull-member-read.ts:13:10 - error SC1090: reading 'icons' through a non-null assertion over a type assertion to a member the value's own layout does not hold (rule the absent value out first, then assert the type) is not supported yet
+
+  12 | function icons(item: Base | undefined): string | undefined {
+  13 |   return (item as Wider | undefined)!.icons;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | }

@@ -354,6 +354,15 @@ ScrStr *scr_error_stack(ScrError *e) {
   return scr_str_retain(e->stack);
 }
 
+/* The frames `e` captured at creation, one "\n    at ..." line each, for
+ * the uncaught and unhandled-rejection reports, which print them under the
+ * "name: message" heading as Node prints its stack trace. Nothing for an
+ * error created where no source frame was kept. */
+void scr_error_report_frames(const ScrError *e) {
+  const ScrStr *frames = e->stack_frames;
+  if (frames != NULL) fwrite(frames->data, 1, frames->len, stderr);
+}
+
 void scr_error_set_stack(ScrError *e, ScrStr *stack) {
   ScrStr *replacement = scr_str_retain(stack);
   scr_str_release(e->stack);
@@ -602,4 +611,14 @@ void scr_throw_error_named(ScrStr *name, ScrStr *message) {
   e->message_present = true;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v,
                  scr_error_traced ? &scr_error_trace : NULL);
+}
+
+/* The `name` a read of the error gives when it has no own one: what its
+ * class answers (a `name` getter, through the installed reader), else the
+ * name it inherits, which the slot holds. An own name is the slot. +1, or
+ * NULL with the getter's exception pending. Last in the unit: only
+ * structuredClone of an error links it. */
+ScrStr *scr_error_read_name(ScrError *e) {
+  return !e->name_present && scr_error_name_reader ? scr_error_name_reader(scr_error_retain(e))
+                                                   : scr_str_retain(e->name);
 }

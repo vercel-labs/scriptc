@@ -1,0 +1,5 @@
+{
+  "name": "wsshipped",
+  "type": "module",
+  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } }
+}

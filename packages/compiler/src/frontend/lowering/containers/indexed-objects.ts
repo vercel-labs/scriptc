@@ -1,5 +1,6 @@
 import { lowerWrapperToObject, programCreatesWrappers } from "../primitive-wrappers.js";
 import { keyedHelperName } from "../stable-names.js";
+import { COPY_HELPERS } from "../width-lift.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
@@ -390,6 +391,17 @@ export function objectIterOverIndexShape(
             loc,
           };
         }
+        fieldStmt = {
+          kind: "if",
+          cond: lowerer.recordFieldPresent(rRef, argIr.shapeId, f.name, loc),
+          then: [fieldStmt],
+          else_: null,
+          loc,
+        };
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An OPTIONAL checked-dynamic field has an ABSENT state, and an
+        // absent property is not a key (the fixed-shape keys helper's rule
+        // exactly): push only while the slot is present.
         fieldStmt = {
           kind: "if",
           cond: lowerer.recordFieldPresent(rRef, argIr.shapeId, f.name, loc),
@@ -880,10 +892,10 @@ function lowerFromEntriesStringRows(
 }
 
 /** One destination-field initializer of the overflow capture reshape: a
- * directly-lifted source field, or the target field's undefined arm (left
- * absent for a runtime keyed write). */
+ * directly-lifted source field, or the target field's own absent state
+ * (left absent for a runtime keyed write). */
 export type RecordOvfFieldInit =
-  | { name: string; kind: "undef"; unionId: string; utag: number }
+  | { name: string; kind: "absent" }
   | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
 
 /** The planning half of lowerRecordOvfCaptureHelper (its doc is the
@@ -943,7 +955,7 @@ export function recordOvfCapturePlan(
     // signature alone never satisfies a required member), and an
     // index-signature source's OVERFLOW can never collide with them (its
     // own declared name owns the key). Every other target field defaults
-    // to its undefined arm (fresh record), so it must be optional-flavored
+    // to its ABSENT state (fresh record), so it must be optional-flavored
     // and must accept a runtime collision (dyn slots validate via dynCheck
     // — fields must be dyn-convertible; typed slots write through
     // directly).
@@ -957,12 +969,21 @@ export function recordOvfCapturePlan(
         consumed.add(tf.name);
         continue;
       }
+      // An OPTIONAL checked-dynamic target field (`f?: unknown`) has a
+      // fresh-record default that is neither a copy nor an undefined arm:
+      // the ABSENT marker, the state a missing property reads, answers to
+      // `in`/`Object.keys` and serializes as. The keyed writes below still
+      // supply it when the source's overflow really holds the key.
+      if (tf.optional === true) {
+        inits.push({ name: tf.name, kind: "absent" });
+        continue;
+      }
       if (tf.type.kind !== "union") return null;
       const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
       if (utag < 0) return null;
       if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
         return null;
-      inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
+      inits.push({ name: tf.name, kind: "absent" });
     }
     // Every source declared field must flow into the keyed-write slot —
     // in DECLARATION order (insertion order below; declaredOrder omits
@@ -1037,8 +1058,9 @@ export function recordOvfCapturePlan(
  * width lift — arm wrap/re-tag/nested reshape, or JSON-safe into a dyn
  * slot), and every target field must either be initialized directly by
  * a same-named source declared field (the rule that admits REQUIRED
- * declared members) or be optional-flavored (the fresh record's
- * default) and writable at runtime.
+ * declared members) or be optional-flavored — an undefined-armed union or
+ * an absentable `f?: unknown` slot (the fresh record's default) — and
+ * writable at runtime.
  *
  * The width relation's `{ how: "ovf" }` lift (a record into an
  * index-signature record arm) builds this same helper through
@@ -1051,7 +1073,7 @@ export function lowerRecordOvfCaptureHelper(
 ): string | null {
   return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
     key: `ovf:${fromId}:${toId}`,
-    namePrefix: "%rec.capture",
+    namePrefix: COPY_HELPERS.ovf,
     excluded: EMPTY_CAPTURE_EXCLUSION,
     propagateNullProto: true,
     keepSourceTail: true,
@@ -1182,14 +1204,14 @@ function buildRecordCaptureHelper(
               loc,
               to.fields.find((f) => f.name === d.name)!,
             )
-          : ({
-              // No source property of this name: the field starts
-              // absent (an overflow write below can supply it).
-              kind: "fieldAbsent",
-              unionId: d.unionId,
-              type: to.fields.find((f) => f.name === d.name)!.type,
+          : // No source property of this name: the field starts at its own
+            // absent state (an overflow write below can supply it) — the
+            // undefined arm of a union slot, the ABSENT marker of an
+            // optional checked-dynamic one.
+            lowerer.absentFieldValue(
+              to.fields.find((f) => f.name === d.name)!,
               loc,
-            } satisfies IrExpr),
+            )!,
     })),
     type: toT,
     loc,
@@ -2045,8 +2067,127 @@ export function lowerIndexMergeHelper(
           return stmt ? [stmt] : [];
         });
       const group: IrStmt & { kind: "block" } = { kind: "block", body: ordered(from), loc };
+      // A closed source built by a checked conversion keeps the own keys its
+      // shape does not declare, and their order, beside it (the
+      // record-sources.ts view), and a spread copies every own key in that
+      // order. When the source kept such a view the keys come from the view,
+      // converted into the target's shape by the checked record builder as
+      // the capture helper's tail does. Whether any record of the program
+      // can keep one is settled when the finalizers run, so a program
+      // without them keeps the field writes alone. A field that only holds
+      // its key's place for a later property has no value the view could
+      // convert, so such a literal keeps the field writes too.
+      const sourcedFromView =
+        ![...plan.fields.values()].some((lift) => lift === "placeholder") &&
+        recordMayKeepSource(lowerer, fromT) &&
+        canDynCheckTo(
+          toT,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        );
       lowerer.shapeOrderHelperFinalizers.push(() => {
-        group.body = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+        const fields = ordered(lowerer.shapes.get(plan.shapeId) ?? from);
+        if (!sourcedFromView || !lowerer.recordSourcesPossible) {
+          group.body = fields;
+          return;
+        }
+        const view = `vw.${ci}`;
+        const ks = `ks.${ci}`;
+        const iv = `i.${ci}`;
+        const kv = `k.${ci}`;
+        locals.push(
+          { id: view, name: `vw${n}`, type: toT, mutable: false },
+          { id: ks, name: `ks${n}`, type: ksT, mutable: false },
+          { id: iv, name: `i${n}`, type: F64, mutable: true },
+          { id: kv, name: `k${n}`, type: STRING, mutable: false },
+        );
+        const viewRef = varRef(view, toT, loc);
+        const fromView: IrStmt[] = [
+          {
+            kind: "varDecl",
+            localId: view,
+            init: {
+              kind: "dynCheck",
+              value: { kind: "dynFrom", value: sRef, type: DYN, loc },
+              type: toT,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "varDecl",
+            localId: ks,
+            init: { kind: "recordOvfKeys", obj: viewRef, shapeId: toId, type: ksT, loc },
+            loc,
+          },
+          {
+            kind: "for",
+            init: { kind: "varDecl", localId: iv, init: numLit(0, loc), loc },
+            cond: {
+              kind: "bin",
+              op: "<",
+              left: varRef(iv, F64, loc),
+              right: {
+                kind: "arrIntrinsic",
+                method: "length",
+                receiver: varRef(ks, ksT, loc),
+                args: [],
+                type: F64,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            },
+            update: {
+              kind: "assign",
+              localId: iv,
+              value: {
+                kind: "bin",
+                op: "+",
+                left: varRef(iv, F64, loc),
+                right: numLit(1, loc),
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            body: [
+              {
+                kind: "varDecl",
+                localId: kv,
+                init: {
+                  kind: "arrayGet",
+                  arr: varRef(ks, ksT, loc),
+                  index: varRef(iv, F64, loc),
+                  type: STRING,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "recordKeySet",
+                obj: outRef,
+                shapeId: toId,
+                key: varRef(kv, STRING, loc),
+                value: {
+                  kind: "recordKeyGet",
+                  obj: viewRef,
+                  shapeId: toId,
+                  key: varRef(kv, STRING, loc),
+                  overflowOnly: true,
+                  type: tIv,
+                  loc,
+                },
+                overflowOnly: true,
+                loc,
+              },
+            ],
+            loc,
+          },
+        ];
+        group.body = [
+          { kind: "if", cond: recordSourceTest(sRef, loc), then: fromView, else_: fields, loc },
+        ];
       });
       body.push(group);
       return;

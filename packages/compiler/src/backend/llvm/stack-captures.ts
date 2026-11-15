@@ -10,6 +10,7 @@ import type { CallLifetimes } from "./call-lifetimes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { vAdapters } from "./shapes.js";
 import type { StackCallbacks } from "./stack-callbacks.js";
+import type { ValueCaptures } from "./value-captures.js";
 
 /** A captured binding can stay in its declaring frame only when every
  * environment that contains it finishes within that binding's scope.
@@ -26,13 +27,23 @@ export class StackCaptures {
   ) {}
 
   /** `parameters` are unchanged captured parameters (LazyCaptures). Their
-   * scope is the whole call, so they need no single declaration. */
-  reset(fn: IrFunction, enabled: boolean, parameters: ReadonlySet<string> = new Set()): void {
+   * scope is the whole call, so they need no single declaration. `plain`
+   * bindings have no box, and an environment that copies a binding's value
+   * (`values`) does not hold its box. */
+  reset(
+    fn: IrFunction,
+    enabled: boolean,
+    parameters: ReadonlySet<string> = new Set(),
+    plain: ReadonlySet<string> = new Set(),
+    values: ValueCaptures | null = null,
+  ): void {
     this.locals = new Set();
     this.remaining = enabled ? 2048 : 0;
     if (!enabled) return;
     const possible = new Set(
-      fn.locals.filter((local) => local.boxed && !local.tdz).map((local) => local.id),
+      fn.locals
+        .filter((local) => local.boxed && !local.tdz && !plain.has(local.id))
+        .map((local) => local.id),
     );
     if (possible.size === 0) return;
     const invalid = new Set([
@@ -48,7 +59,9 @@ export class StackCaptures {
         const target = this.functions.get(node.fnName);
         const safe = immediate && this.callbacks.eligible(node.fnName);
         const nested = safe ? this.nestedCaptures(target!) : null;
+        const copied = node.adapts === true ? null : values?.slots(node.fnName);
         node.captures.forEach((id, index) => {
+          if (copied?.has(index) === true) return;
           const capture = target?.captures?.[index];
           if (!safe || !capture || nested!.has(capture.localId)) invalid.add(id);
         });

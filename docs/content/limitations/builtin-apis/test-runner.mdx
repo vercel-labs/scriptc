@@ -6,6 +6,10 @@
   Running the binary with Node's flag `--test-update-snapshots` as its first argument writes the snapshot files instead; as in Node, the flag is kept out of `process.argv` and appears in `process.execArgv`.
   Snapshot files are read in the form Node writes them, `` exports[`key`] = `value`; `` statements.
   The `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` module functions throw `SC2020`.
+- **Reporters:** the binary writes the spec report, so `--test-reporter=spec` is the only reporter it takes, and any other name ends the run before the tests start with `scriptc: unknown test reporter '<name>': only the spec reporter is supported`.
+  `--test-reporter-destination=stdout`, its default, sends the report to stdout, `stderr` sends it to stderr, and any other value names the file the binary writes the report to; the program's own output stays on stdout in every case.
+  As in Node, both options are leading arguments, in any order, kept out of `process.argv` and listed in `process.execArgv`.
+  A file destination that cannot be opened ends the run the same way, with `scriptc: cannot open test reporter destination '<path>': <reason>`.
 - **TestContext values:** `t.filePath` is the entry file's path when the program was compiled.
   `t.attempt` is `0`, since a test runs once.
   `t.passed` is `false` while the body runs and the test's outcome in its `afterEach` and `t.after` hooks.

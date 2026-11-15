@@ -1,0 +1,17 @@
+{
+  "name": "node-island-marked-type-binding",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "nodeIslands": {
+      "modules": [
+        "default-import.ts",
+        "default-beside-named.ts",
+        "reexport.ts",
+        "export-local.ts",
+        "export-default.ts",
+        "written-as-types.ts"
+      ]
+    }
+  }
+}

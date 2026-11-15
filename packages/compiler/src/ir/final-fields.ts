@@ -1,5 +1,9 @@
 import { isRefCounted, type IrClassDef, type IrExpr, type IrModule, type IrStmt } from "./ir.js";
-import { dynamicFieldStores, type DynamicFieldStores } from "./int32-slots.js";
+import {
+  dynamicallyExposedClasses,
+  dynamicFieldStores,
+  type DynamicFieldStores,
+} from "./int32-slots.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
 
@@ -92,7 +96,11 @@ export function analyzeFinalFields(
   const finals = new FinalFields(classes);
   if (mod.lib) return finals;
   const dynamic = stores ?? dynamicFieldStores(mod, undefined, undefined, nodes);
-  if (dynamic.all) return finals;
+  // A store whose key is not a literal can name every field, but only of an
+  // instance that has a live dynamic view: one whose class reaches
+  // checked-dynamic code. The fields of every other class stay final.
+  const exposed = dynamic.all ? dynamicallyExposedClasses(mod) : null;
+  if (exposed?.all) return finals;
 
   const genericFamilies = new Set<string>();
   for (const cls of classes.values())
@@ -114,6 +122,11 @@ export function analyzeFinalFields(
     return false;
   };
 
+  if (exposed)
+    for (const cls of classes.values())
+      if (exposed.classes.has(cls.name))
+        for (const field of cls.fields)
+          finals.drop(finals.family(cls.name, field.name)!, "dynamic stores can reach the class");
   for (const cls of classes.values())
     for (const field of cls.fields) {
       if ((!scalars && !isRefCounted(field.type)) || field.name.startsWith("%")) continue;

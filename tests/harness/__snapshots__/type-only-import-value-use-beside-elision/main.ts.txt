@@ -1,0 +1,6 @@
+type-only-import-value-use-beside-elision/main.ts:8:17 - error SC0001: 'Box' cannot be used as a value because it was imported using 'import type'.
+
+  7 | const shape: Shape = { sides: 3 };
+  8 | const box = new Box();
+    |                 ^~~
+  9 | console.log(shape.sides, box.size);

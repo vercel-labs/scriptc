@@ -55,7 +55,6 @@ function fixture(windows = true) {
     runtime_pack: asset("../lib/runtime"),
     runtime_sources: asset("../lib/runtime-sources"),
     declarations: asset("../lib/declarations"),
-    comptime: asset(`../lib/scriptc-comptime${windows ? ".exe" : ""}`),
     wasi_node_runner: asset("../lib/wasi/wasi-runner.js"),
     runtime_packs: [{ target, path: asset("../lib/runtime") }],
   };
@@ -63,22 +62,11 @@ function fixture(windows = true) {
   write(join(distribution, "bin", executable), Buffer.alloc(2048, 1));
   chmodSync(join(distribution, "bin", executable), 0o755);
   write(manifestPath, JSON.stringify(manifest));
-  for (const path of [
-    manifest.ts7,
-    manifest.tsc_ts,
-    manifest.comptime,
-    manifest.wasi_node_runner,
-  ]) {
+  for (const path of [manifest.ts7, manifest.tsc_ts, manifest.wasi_node_runner]) {
     write(join(distribution, "bin", path.replaceAll("\\", "/")), "fixture");
   }
-  write(
-    join(
-      distribution,
-      "lib/llvm/bin",
-      windows ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
-    ),
-    "fixture",
-  );
+  for (const tool of ["scriptc-llvm-codegen", "scriptc-comptime"])
+    write(join(distribution, "lib/llvm/bin", windows ? `${tool}.exe` : tool), "fixture");
   write(
     join(distribution, "lib/llvm/package.json"),
     JSON.stringify({ name: `@scriptc/llvm-${platform}`, version: identity.version }),
@@ -176,6 +164,10 @@ test.each([true, false])(
       symlinkSync(directory, join(f.cli, "node_modules", name), "junction");
     }
     writeFileSync(join(helperPackage, "bin", codegen), "helper");
+    writeFileSync(
+      join(helperPackage, "bin", windows ? "scriptc-comptime.exe" : "scriptc-comptime"),
+      "evaluator",
+    );
     const identity = { name: `@scriptc/cli-${f.platform}`, version: "1.2.3" };
     writeFileSync(join(f.cli, "package.json"), JSON.stringify(identity));
     const missing = run("verify-native-cli.mjs", f.cli);

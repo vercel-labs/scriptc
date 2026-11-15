@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-property-define-aliased/tag.cjs",
+  "<repo>/tests/corpus/child-property-define-aliased/main.cjs"
+ ],
+ "diags": []
+}

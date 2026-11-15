@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/immutable-array-foreign-elements/app.js",
+  "<repo>/tests/corpus/immutable-array-foreign-elements/main.ts"
+ ],
+ "diags": []
+}

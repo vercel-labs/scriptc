@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/concise-arrow-undefined-void-bodies.ts"
+ ],
+ "diags": []
+}

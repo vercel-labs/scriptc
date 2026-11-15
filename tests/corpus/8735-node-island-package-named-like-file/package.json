@@ -1,0 +1,12 @@
+{
+  "name": "node-island-package-named-like-file",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "widget.js": "node",
+      "@acme/table.json": "node",
+      "relay.io": "node"
+    }
+  }
+}

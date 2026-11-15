@@ -1,0 +1,24 @@
+// A class with a static counter and a few instances.
+export class Shape000 {
+  static made = 0;
+  readonly width: number;
+  readonly height: number;
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+    Shape000.made++;
+  }
+  area(): number {
+    return this.width * this.height;
+  }
+  scaled(factor: number): Shape000 {
+    return new Shape000(this.width * factor, this.height * factor);
+  }
+}
+const unit = new Shape000(1, 2);
+const shapes: Shape000[] = [unit, unit.scaled(2), unit.scaled(3)];
+let area = 0;
+for (const shape of shapes) area += shape.area();
+const own = area + Shape000.made;
+
+export const value000: number = (own) % 1000003;

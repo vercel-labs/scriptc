@@ -25,12 +25,12 @@ LLVM helper -------------> assembly / object (--emit=asm|obj)
 Runtime pack and linker -> executable
 ```
 
-1. **Frontend:** TypeScript parses and checks the program against `es2025`, scriptc's ambient declarations, and available project declarations. `tsconfig.json` controls checker strictness. The compiler uses the checked types and narrowing information to lower supported operations; unsupported operations produce diagnostics. JavaScript files that TypeScript checks (a `// @ts-check` comment, or `checkJs` in `tsconfig.json`) report values that do not match their JSDoc types as errors, and their classes use those types the way TypeScript classes use annotations.
+1. **Frontend:** TypeScript parses and checks the program against `es2025`, scriptc's ambient declarations, and available project declarations. `tsconfig.json` controls checker strictness and, through `verbatimModuleSyntax`, whether [imports used only as types are dropped](/docs/dependencies#package-resolution). [Type checking](/docs/limitations#type-checking) lists the settings scriptc takes from it. The compiler uses the checked types and narrowing information to lower supported operations; unsupported operations produce diagnostics. JavaScript files that TypeScript checks (a `// @ts-check` comment, or `checkJs` in `tsconfig.json`) report values that do not match their JSDoc types as errors, and their classes use those types the way TypeScript classes use annotations.
 2. **Typed IR:** A validated, serializable intermediate representation connects the frontend and backend. Types are concrete: generic functions are specialized, unions use tags, and closures have explicit captures. `--emit=ir` writes this representation as JSON.
 3. **LLVM backend:** `--emit=llvm` writes textual LLVM IR. The matching LLVM 22 helper generates assembly or objects on supported macOS, Linux, and Windows hosts, including output targeting WASI. Executable and library builds use this backend. Large executables, native and WASI alike, are divided into partitions that are optimized and compiled in parallel; see [Build parallelism](#build-parallelism).
 4. **Linking:** Runtime packs contain the precompiled C runtime and vendored libraries. A hashed manifest selects the artifacts the program needs for its features, optimization mode, and (for libraries) state model. The target linker and SDK or sysroot produce the executable. Sanitizer builds use an instrumented C runtime.
 
-`comptime` calls run during the frontend stage in an isolated evaluator inside the compiler, based on QuickJS. Their results are embedded in the program as constants.
+`comptime` calls run during the frontend stage in a separate evaluator process based on QuickJS. A callback sees the ECMAScript built-ins and no object of the compiler or the host, and each call has a time limit and a memory limit. Their results are embedded in the program as constants. See [build-time evaluation](/docs/limitations#build-time-evaluation) for the rules and limits.
 
 ## Build parallelism
 
@@ -134,6 +134,45 @@ fib.s
 
 Without `-o`, artifacts are written to `.scriptc/` next to the input. Different output kinds accumulate in that directory; rebuilding a kind updates its file.
 
+### Lowered programs
+
+Work on the phases behind the frontend (IR validation, LLVM emission, native code generation, the link) does not need the frontend to run again for each attempt. `--emit-lowered` makes a build also write its lowered program to a file, and `--from-lowered` starts a build from that file:
+
+```console
+$ scriptc build fib.ts -o fib --emit-lowered fib.lowered >/dev/null
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered >/dev/null
+$ ./fib
+832040
+```
+
+The second build runs no type checker and no lowering, and writes the same executable byte for byte. The file holds the validated IR, the source texts that code frames and debug information read, the warnings the build reported, and the program's Node islands. The build caches cannot do this, because the compiler is one of their keys and a changed compiler is the reason to build again.
+
+The file also records what the program was lowered from, and a build from it checks each kind and names the one that differs:
+
+- **compiler:** the build of the compiler that lowered the program.
+- **options:** the entry file, the target platform, the FFI manifest, every option except the output paths, and the `SCRIPTC_*` environment variables the frontend reads.
+- **inputs:** every file, directory listing, and path the frontend read, including `tsconfig.json`, `package.json`, and the declaration files of dependencies.
+
+```console
+$ echo "// a comment" >> fib.ts
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered
+/tmp/demo/fib.ts:1:1 - error SC3002: --from-lowered: /tmp/demo/fib.lowered does not match this build's inputs: /tmp/demo/fib.ts changed since it was lowered
+
+  hint: lower the program again with --emit-lowered, or pass --from-lowered-accept=inputs to build from the file anyway
+
+1 error.
+```
+
+`--from-lowered-accept` builds from the file anyway and reports the difference on stderr. After a change to the compiler's backend, pass `--from-lowered-accept=compiler`: the sources and options are still checked, and the build uses the program as the earlier compiler lowered it, so a change to the frontend has no effect until the program is lowered again.
+
+```console
+$ scriptc build fib.ts -o fib --from-lowered fib.lowered --from-lowered-accept=inputs
+scriptc: warning: --from-lowered: building from /tmp/demo/fib.lowered although its inputs differ: /tmp/demo/fib.ts changed since it was lowered
+/tmp/demo/fib
+```
+
+A build from a file validates the IR again before it emits. An IR artifact written by `--emit=ir` is also accepted as the file; it records none of the three kinds, so the build needs all of them accepted.
+
 ### External linking
 
 Program objects define `main` and leave selected `scr_*` runtime functions undefined. A strong reference to `scr_runtime_abi_v21` checks runtime compatibility at link time.
@@ -145,6 +184,7 @@ Program objects define `main` and leave selected `scr_*` runtime functions undef
 - **Memory:** Values use reference counting. Acyclic values are freed when their last reference is released, and a cycle collector runs at defined collection points. When the compiler proves that a group of objects is released together, such as a tree that a recursive function builds and its caller only reads, the group is allocated in an arena and released at once, without freeing each object or collecting its cycles. Some cycles involving opaque native values can remain allocated. When the main thread's script ends, the process exits without freeing what the program still holds, and the operating system reclaims it; worker threads free their heaps when they exit. Builds with `--sanitize`, and processes run with `SCRIPTC_EXIT_FREE=1` (for external leak checkers), free everything at exit.
 - **Concurrency:** An `async` function or async generator that suspends only at its own `await` and `yield` expressions compiles to a stackless coroutine whose heap frame holds the values live across them; other suspending `async` functions and async generators use stackful fibers, as do debug builds, libraries, worker programs and Windows executables. The native event loop schedules microtasks, timers, and I/O, using kqueue on macOS and epoll on Linux.
 - **Networking:** Supported `net`, `http`, `https`, `tls`, `dgram`, and `dns` APIs use native implementations. TLS uses vendored mbedTLS.
+- **Node islands:** A package that runs in a Node island is loaded by Node.js inside the program's process, the first time the program uses it. The package's JavaScript travels in the executable and is extracted once into the user's cache directory, `$XDG_CACHE_HOME/scriptc/node-islands/<digest>/` or `~/.cache/scriptc/node-islands/<digest>/`, where the digest names the set of files. Beside it, in `<digest>.compile-cache/`, the program keeps Node.js's [module compile cache](https://nodejs.org/docs/latest-v24.x/api/module.html#module-compile-cache) for those files, so a later start loads the compiled code instead of compiling the source again. A program that runs the `typescript` package in an island started in 205 ms without the cache and in 102 ms with it; its first start, which installs the files and fills the cache, took 244 ms instead of 218 ms. A file that changed is compiled again, and a rebuilt program has directories of its own. `NODE_DISABLE_COMPILE_CACHE=1` runs a program without the cache, and `NODE_COMPILE_CACHE=<directory>` makes Node.js use a directory of your choice instead. A program that never starts its island creates neither directory.
 - **Numbers:** Values use JavaScript's double-precision representation. Number-to-string formatting uses shortest-roundtrip output and is tested against Node.js.
 - **Regular expressions and Unicode:** The runtime uses QuickJS's regular-expression and Unicode libraries, linked into programs that use them.
 

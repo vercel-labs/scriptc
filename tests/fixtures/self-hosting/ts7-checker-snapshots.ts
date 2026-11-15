@@ -30,6 +30,7 @@ export function checkCheckerSnapshots(session: Ts7Session, client: Ts7RpcClient,
     compilerOptions: { strict: true, target: "esnext", types: [] as string[] },
     files: [main],
   });
+  // The harness starts the pinned server, which speaks 7.1's callback replies.
   registerTs7FileSystem(client, {
     readFile: (path) => {
       if (path === config || path === otherConfig) return configText;
@@ -41,7 +42,7 @@ export function checkCheckerSnapshots(session: Ts7Session, client: Ts7RpcClient,
     directoryExists: () => undefined,
     realpath: () => undefined,
     getAccessibleEntries: () => undefined,
-  });
+  }, () => true);
   const first = session.updateSnapshot({ openProjects: [config, otherConfig] });
   const project = first.getProject(config)!;
   const other = first.getProject(otherConfig)!;

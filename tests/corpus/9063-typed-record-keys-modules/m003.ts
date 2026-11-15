@@ -1,0 +1,14 @@
+// Strings and patterns built from shared parts.
+import { MARKS, PREFIX } from "./shared.ts";
+import { value001 } from "./m001.ts";
+import { value002 } from "./m002.ts";
+
+const title = PREFIX + "-" + "bravo" + "-" + String(3);
+const line = `${title}: ${"india".toUpperCase()} (${title.length})`;
+const digits = /[0-9]+/;
+const words = /^[a-z]+-[a-z]+-/;
+const marks = new RegExp(`^[${MARKS}]+${"india".length}`, "u");
+const marked = marks.test("、!5") ? 5 : 1;
+const own = line.length + (digits.test(line) ? 3 : 0) + (words.test(title) ? 7 : 0) + marked;
+
+export const value003: number = (own + value001 + value002) % 1000003;

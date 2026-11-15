@@ -2,5 +2,6 @@
   "entry": "workloads/throw-chains.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

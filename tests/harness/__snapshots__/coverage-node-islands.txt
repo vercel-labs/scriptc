@@ -34,3 +34,8 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
       ×1  SC2013  cannot compile npm package 'ni-bundled' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
           at tests/coverage-fixtures/node-islands/main.ts:8:1
           hint: to compile it anyway, name it with --npm-static=ni-bundled (or --npm-static=ni-bundled... to include its dependencies)
+
+  trusts unverified types   1 checked conversion on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  ni-bundled@1.0.0 declares shout() as string (index.d.ts:1): a Node island value
+          at tests/coverage-fixtures/node-islands/main.ts:16:13
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-bundled 'shout()' '<type>' (a type that starts with | widens the declared one, as in '| undefined')

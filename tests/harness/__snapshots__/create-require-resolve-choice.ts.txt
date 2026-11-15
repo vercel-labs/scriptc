@@ -1,0 +1,44 @@
+create-require-resolve-choice.ts:15:16 - error SC2007: values of type 'ScriptcRequireResolve | ((specifier: string) => string)' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+
+  14 | function stored(options: Options): string {
+  15 |   const pick = options.resolve ?? loader.resolve;
+     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 |   return pick("node:path");
+
+  hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
+
+create-require-resolve-choice.ts:16:10 - error SC2004: uses of 'pick' inherit the blocker on its declaration
+
+  15 |   const pick = options.resolve ?? loader.resolve;
+  16 |   return pick("node:path");
+     |          ^~~~
+  17 | }
+
+  hint: the declaration of 'pick' did not compile — fix the diagnostic reported there and these sites clear with it
+
+create-require-resolve-choice.ts:21:46 - error SC2020: 'require.resolve with a runtime-computed request' is part of the standard library types but has no scriptc lowering yet
+
+  20 | function computed(options: Options, request: string): string {
+  21 |   return (options.resolve ?? loader.resolve)(request);
+     |                                              ^~~~~~~
+  22 | }
+
+  hint: a compiled binary has a fixed module graph — pass a string literal
+
+create-require-resolve-choice.ts:26:47 - error SC2020: 'createRequire's require.resolve as a value' is part of the standard library types but has no scriptc lowering yet
+
+  25 | function conditional(options: Options): string {
+  26 |   return (options.resolve ? options.resolve : loader.resolve)("node:path");
+     |                                               ^~~~~~~~~~~~~~
+  27 | }
+
+  hint: call it with a string literal (require.resolve("<specifier>")), which resolves at build time
+
+create-require-resolve-choice.ts:31:50 - error SC2020: 'createRequire's require.resolve as a value' is part of the standard library types but has no scriptc lowering yet
+
+  30 | function typed(): string {
+  31 |   const resolve: (specifier: string) => string = loader.resolve;
+     |                                                  ^~~~~~~~~~~~~~
+  32 |   return resolve("node:path");
+
+  hint: call it with a string literal (require.resolve("<specifier>")), which resolves at build time

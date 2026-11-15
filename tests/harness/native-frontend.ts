@@ -299,8 +299,8 @@ export function checkDiagnostics(frontend: NativeFrontend): void {
   writeFileSync(
     source,
     `
-        const values: (string | number)[] = ["wrong"];
-        console.log(values.find((value): value is number => true));
+        const rows: { label: string }[] = [{ label: "kept" }];
+        console.log(rows.find((row): row is { label: string; grams: number } => "grams" in row));
       `,
   );
   const refusal = frontend.lowerRequest("static refusal", { entry: source });

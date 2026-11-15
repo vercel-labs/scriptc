@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8872-asserted-method-callee.ts"
+ ],
+ "diags": []
+}

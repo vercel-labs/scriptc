@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9413-function-inherited-constructor-setter.mjs"
+ ],
+ "diags": []
+}

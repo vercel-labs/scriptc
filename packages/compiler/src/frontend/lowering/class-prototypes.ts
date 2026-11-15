@@ -13,7 +13,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { locOf } from "../program.js";
 import {
   classMemberNameOf,
   classValueRef,
@@ -123,6 +123,7 @@ export function classPrototypeData(
           )
         : null;
     if (info.base && !info.base.builtinError && base === null) return null;
+    const selected = selectedArmPrototype(lowerer, info, loc, metadataOnly);
     const name = `%prototype.data.${info.def.name}`;
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
@@ -158,7 +159,7 @@ export function classPrototypeData(
               kind: "assign",
               localId: globalId,
               value: base
-                ? { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc }
+                ? { kind: "libCall", fn: "dyn.objCreate", args: [selected ?? base], type: DYN, loc }
                 : { kind: "dynObjLit", fields: [], type: DYN, loc },
               loc,
             },
@@ -333,7 +334,7 @@ export function reflectClassPrototype(
   if (!prototype || !info.decl) return prototype;
   const refuse = (message: string): IrExpr => {
     const name = `%prototype.refusal:${info.def.name}`;
-    if (!lowerer.liftedFns.some((fn) => fn.name === name))
+    if (lowerer.liftedFnNamed(name) === undefined)
       lowerer.liftedFns.push({
         name,
         params: [],
@@ -537,8 +538,8 @@ export function isErrorPrototypeValue(
 /** Whether a bare `C.prototype` read becomes the prototype of another object
  * or is only compared or inspected: the argument of `Object.create` or
  * `Object.getPrototypeOf` / `Reflect.getPrototypeOf`, the prototype argument
- * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, or an operand of
- * `===` / `!==`. In these positions the complete view of the
+ * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, an operand of
+ * `===` / `!==`, or the object `in` asks about. In these positions the complete view of the
  * prototype (reflectClassPrototype) answers. Objects that inherit from it
  * run the class's methods with themselves as the receiver, which the
  * methods' receiver-independent lowering (reflectedClassMethodValue)
@@ -569,18 +570,40 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   return (
     ts.isBinaryExpression(parent) &&
     (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+      (parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === node))
   );
 }
 
-/** A module-level JavaScript class named directly (not a class value that
- * may hold a subclass at run time): its prototype has a complete view whose
- * methods accept any receiver. */
+/** Whether a bare `C.prototype` read is asserted to `any` or `unknown`
+ * (`(C.prototype as any)`): the cast asks for the value's dynamic form —
+ * the prototype object itself — so a member written through it is an own
+ * property of the prototype, which the instances' checked-dynamic view then
+ * reads. */
+function erasedCastPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Node = expr;
+  while (
+    ts.isParenthesizedExpression(node.parent) ||
+    ts.isNonNullExpression(node.parent) ||
+    ts.isSatisfiesExpression(node.parent)
+  )
+    node = node.parent;
+  const parent = node.parent;
+  return (
+    (ts.isAsExpression(parent) || ts.isTypeAssertion(parent)) &&
+    parent.expression === node &&
+    (lowerer.typeOf(parent).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
+}
+
+/** A module-level class named directly (not a class value that may hold a
+ * subclass at run time): its prototype has a complete view. A JavaScript
+ * class's methods there accept any receiver; a TypeScript class's check that
+ * the receiver is an instance of the class, as their direct calls do. */
 function viewableClass(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
   return (
     info.decl !== null &&
     info.localClass === undefined &&
-    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
     exactClassOfReceiver(lowerer, receiver) === info
   );
 }
@@ -666,6 +689,23 @@ export function lowerClassPrototypeData(
     viewableClass(lowerer, info, expr.expression)
   )
     return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
+  // `(C.prototype as any)`: the prototype object as a dynamic value, the
+  // same one a named prototype write reaches, so a member written through
+  // the cast is what the instances' checked-dynamic view reads.
+  if (name === null && erasedCastPosition(lowerer, expr)) {
+    const value = classPrototypeData(
+      lowerer,
+      info,
+      locOf(expr),
+      info.localClass
+        ? lowerer.lowerExprExpecting(expr.expression, {
+            kind: "classval",
+            className: info.def.name,
+          })
+        : undefined,
+    );
+    if (value !== null) return value;
+  }
   if (name === null || (isCompiledPrototypeMember(lowerer, info, name) && !method)) {
     lowerer.unsupported(
       "SC1090",
@@ -949,6 +989,35 @@ export function lowerClassPrototypeDescriptors(
       lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
       prototypeProtectedKeys(lowerer, info, target, loc),
     ],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The prototype a class whose heritage was a conditional inherits from: the
+ * prototype of the arm the class statement selected (`%g.<C>.heritageArm`),
+ * so the prototype chain a dynamic `instanceof` walks runs through that arm,
+ * as Node's does. Null when the class extends one fixed class, or when an
+ * arm has no prototype object of its own (the typed base's then stands). */
+function selectedArmPrototype(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  loc: SrcLoc,
+  metadataOnly: boolean,
+): IrExpr | null {
+  const recorded = lowerer.computedHeritageArms.get(info.def.name);
+  if (recorded?.condGlobal === undefined) return null;
+  const prototypes = recorded.arms.map((arm) => {
+    const armInfo = lowerer.classes.get(arm);
+    return armInfo ? classPrototypeData(lowerer, armInfo, loc, undefined, metadataOnly) : null;
+  });
+  const [whenTrue, whenFalse] = prototypes;
+  if (!whenTrue || !whenFalse) return null;
+  return {
+    kind: "ternary",
+    cond: varRef(recorded.condGlobal, BOOL, loc),
+    then: whenTrue,
+    else_: whenFalse,
     type: DYN,
     loc,
   };

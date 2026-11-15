@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-binding-receiver-proof-kept/inner.mjs",
+  "<repo>/tests/corpus/module-binding-receiver-proof-kept/lib.mjs",
+  "<repo>/tests/corpus/module-binding-receiver-proof-kept/main.mjs"
+ ],
+ "diags": []
+}

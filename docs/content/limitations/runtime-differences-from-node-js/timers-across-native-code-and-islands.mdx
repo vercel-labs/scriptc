@@ -1,0 +1,4 @@
+- **Timers across native code and islands:** A timer or immediate the program creates is a number in JavaScript that runs in a Node island, as it is in compiled code.
+  The island's `clearTimeout`, `clearInterval` and `clearImmediate` accept that number and clear the program's timer of that kind (`clearTimeout` of an immediate's number clears nothing, as in Node), but `typeof` answers `"number"` there and the value has no `ref`, `unref`, `hasRef`, `refresh` or `close` method.
+  A timer the island creates stays the island's `Timeout` or `Immediate` object: the program clears it with the clear functions, calls its methods and passes it back to the island.
+  In TypeScript, keep such a timer in a `const`; a variable or field typed as a timer holds only the program's own timers, and storing an island's timer in one is a compile-time error.

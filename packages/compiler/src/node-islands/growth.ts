@@ -99,6 +99,7 @@ export function growIslandSet(
   // run even when the lowering saw nothing (the closure grows an importer of
   // an island the set already holds).
   if (growth.diagnostics !== undefined) growFromLowering(ctx, grown, growth.diagnostics);
+  if (growth.fences !== undefined) growFromUncompiledRequires(ctx, grown, growth.fences);
   if (growth.fences !== undefined)
     growFromFences(
       ctx,
@@ -208,6 +209,46 @@ function growFromLowering(
     });
   }
   growEsmImporters(ctx.policy, compiled, ctx.scan.edges, grown);
+}
+
+/** The refusal of a `require("<package>")` that a compiled package's code
+ * reaches only when it runs (a call inside a function: `if (convert ===
+ * undefined) convert = require("color-convert")`) and that names a package
+ * the program does not compile (cjs-inline-require.ts,
+ * lowerUncompiledRequireCall). */
+const UNCOMPILED_REQUIRE =
+  /^require\(\) of the package '([^']+)' in an expression \(the package is not compiled into this program\)/;
+
+/** A compiled package requires, where its code runs, a package the program
+ * does not compile: that package runs in a Node island, which the call
+ * loads when it is reached (the requiring package stays native). The
+ * frontend sees such a package only through the refusal, because a
+ * `require()` inside a function loads nothing when its module evaluates. */
+function growFromUncompiledRequires(
+  ctx: IslandGrowthContext,
+  grown: Map<string, IslandPackage>,
+  fences: readonly ScrDiagnostic[],
+): void {
+  for (const d of fences) {
+    const named = UNCOMPILED_REQUIRE.exec(d.message);
+    if (named === null) continue;
+    const spec = named[1]!;
+    const name = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0]!;
+    if (grown.has(name) || ctx.policy.forcedNative.has(name) || ctx.policy.unloaded.has(name))
+      continue;
+    const js =
+      resolveBareModule(d.loc.file, spec, "js-only", "require") ??
+      resolveBareModule(d.loc.file, spec, "js-only");
+    const at = js === null ? null : packageDirOf(js.typesFile);
+    if (at === null || at.name !== name) continue;
+    grown.set(name, {
+      name,
+      version: packageVersionOf(at.dir),
+      dir: at.dir,
+      class: "packaging",
+      reason: `required where '${packageDirOf(d.loc.file)?.name ?? "the program"}' runs, and not compiled into the program`,
+    });
+  }
 }
 
 /** The packages compiled natively whose runtime fences should make them

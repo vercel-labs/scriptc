@@ -236,11 +236,18 @@ export function linkedCopyBranches(
  * to their plain form. Helpers this registers are completed too, and
  * method calls a link source shadows are refused. */
 export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (lowerer.linkedHelpers.length === 0 && lowerer.recordLinks.size === 0) return;
+  // A finalizer may be the only work (a width copy that can read a target
+  // field off its source's kept view, record-sources.ts).
+  if (
+    lowerer.linkedHelpers.length === 0 &&
+    lowerer.recordLinks.size === 0 &&
+    lowerer.linkedHelperFinalizers.length === 0
+  )
+    return;
   const lifted = lowerer.liftedFns.length;
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;
-  keepObservedLinks(lowerer, scan.exposed);
+  keepObservedLinks(lowerer, scan.exposed, [...functions, ...lowerer.liftedFns]);
   for (const site of lowerer.recordLinkSites)
     if (lowerer.recordLinks.has(`${site.link.from}:${site.link.to}`))
       linkCopies(site.projection, site.link);
@@ -349,13 +356,18 @@ function linkCopies(projection: IrFunction, link: IrRecordLink): void {
 /** Keeps the links whose copies a reflective surface can observe: the
  * record types of the registered helpers (keys, own-key tests, string
  * conversion, inspect, values and entries) and of Object.prototype method
- * calls by name, and every record type that values of the `exposed` types
- * can hold (JSON.stringify, checked views and the serializing library
- * calls convert those through per-type helpers; the fields of a class
- * instance's view are not followed). A kept link observes its
- * source type too, through the composed record. The other links are
- * dropped, so their conversions build plain copies. */
-function keepObservedLinks(lowerer: Lowerer, exposed: readonly IrType[]): void {
+ * calls by name, the record types a `record.sourceDelete` addresses, and
+ * every record type that values of the `exposed` types can hold
+ * (JSON.stringify, checked views and the serializing library calls convert
+ * those through per-type helpers; the fields of a class instance's view are
+ * not followed). A kept link observes its source type too, through the
+ * composed record. The other links are dropped, so their conversions build
+ * plain copies. */
+function keepObservedLinks(
+  lowerer: Lowerer,
+  exposed: readonly IrType[],
+  functions: readonly IrFunction[],
+): void {
   if (lowerer.recordLinks.size === 0) return;
   // A call of an Object.prototype method by name observes the type too
   // (refuseShadowedMethodCalls).
@@ -363,6 +375,19 @@ function keepObservedLinks(lowerer: Lowerer, exposed: readonly IrType[]): void {
     ...lowerer.linkedHelpers.map((helper) => helper.shapeId),
     ...lowerer.recordMethodCalls.map((call) => call.shapeId),
   ]);
+  // A delete of an undeclared key observes the operand's type: the key
+  // lives in the record the copy links to, so the link has to stay for the
+  // delete to remove it there (scr_record_source_delete, erased-delete.ts).
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (e) => {
+        if (e.kind !== "libCall" || e.fn !== "record.sourceDelete") return true;
+        const operand = e.args[0]?.type;
+        if (operand?.kind === "record") observed.add(operand.shapeId);
+        return true;
+      },
+    });
   const reached = new Set<string>();
   const visit = (t: IrType): void => {
     const key = typeKey(t);
@@ -509,7 +534,7 @@ function addComposer(lowerer: Lowerer, link: IrRecordLink, sourced: ReadonlySet<
 }
 
 /** The library calls that serialize, inspect or box their arguments. */
-const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$/;
+export const EXPOSING_LIB_CALLS = /^(json|insp|dyn|js)\.|^(child|process)\.send$/;
 
 /** One walk over the module: the record types whose values can keep a
  * checked source (keptSourceTypes), and the types of the values it boxes

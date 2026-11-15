@@ -1,0 +1,1 @@
+{ "name": "deferral-shared-secret", "private": true, "type": "module", "scriptc": { "packages": { "first-pkg": "node", "second-pkg": "node", "token-cache": "node" } } }

@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-late-write/one.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-late-write/two.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-late-write/pick.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-late-write/main.js"
+ ],
+ "diags": []
+}

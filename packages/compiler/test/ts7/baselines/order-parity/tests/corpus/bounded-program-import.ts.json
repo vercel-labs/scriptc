@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bounded-program-import/state.ts",
+  "<repo>/tests/corpus/bounded-program-import.ts"
+ ],
+ "diags": []
+}

@@ -274,26 +274,54 @@ export function emitterInputCases(): EmitterInputCase[] {
   closure.functions[0]!.locals = [
     { id: "message", name: "message", type: STRING, mutable: true, boxed: true },
   ];
-  closure.functions[0]!.body = [
-    { kind: "varDecl", localId: "message", init: strLit("capture", loc), loc },
-    effect({ kind: "closure", fnName: "reader", captures: ["message"], type: closureType, loc }),
-  ];
+  // A binding that is rebound keeps its box; one that is not is copied
+  // into the environment (the "values" cases).
+  const declared: IrStmt = {
+    kind: "varDecl",
+    localId: "message",
+    init: strLit("capture", loc),
+    loc,
+  };
+  const rebound: IrStmt = {
+    kind: "assign",
+    localId: "message",
+    value: strLit("rebound", loc),
+    loc,
+  };
+  const created = effect({
+    kind: "closure",
+    fnName: "reader",
+    captures: ["message"],
+    type: closureType,
+    loc,
+  });
+  const invoked = effect({
+    kind: "callValue",
+    callee: { kind: "closure", fnName: "reader", captures: ["message"], type: closureType, loc },
+    args: [],
+    type: STRING,
+    loc,
+  });
+  closure.functions[0]!.body = [declared, rebound, created];
   add("closure capture boxes", closure);
 
   const invocation = module();
   invocation.functions.push(closure.functions[1]!);
   invocation.functions[0]!.locals = closure.functions[0]!.locals;
-  invocation.functions[0]!.body = [
-    closure.functions[0]!.body[0]!,
-    effect({
-      kind: "callValue",
-      callee: { kind: "closure", fnName: "reader", captures: ["message"], type: closureType, loc },
-      args: [],
-      type: STRING,
-      loc,
-    }),
-  ];
+  invocation.functions[0]!.body = [declared, rebound, invoked];
   add("synchronous callback environment", invocation);
+
+  const values = module();
+  values.functions.push(closure.functions[1]!);
+  values.functions[0]!.locals = closure.functions[0]!.locals;
+  values.functions[0]!.body = [declared, created];
+  add("closure captured values", values);
+
+  const borrowed = module();
+  borrowed.functions.push(closure.functions[1]!);
+  borrowed.functions[0]!.locals = closure.functions[0]!.locals;
+  borrowed.functions[0]!.body = [declared, invoked];
+  add("synchronous callback values", borrowed);
 
   const unions = module();
   unions.unions = [{ id: "scalar", arms: [BOOL, F64, STRING, UNDEFINED_T] }];

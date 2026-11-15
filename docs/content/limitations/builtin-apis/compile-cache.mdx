@@ -1,0 +1,4 @@
+- **Compile cache:** `module.enableCompileCache()` answers `{ status: module.constants.compileCacheStatus.DISABLED, message }` and creates no directory, because a compiled program loads no JavaScript whose compiled form could be cached.
+  The `message` is Node.js's own when `NODE_DISABLE_COMPILE_CACHE` is set, and otherwise says that a compiled program has no compile cache.
+  `module.getCompileCacheDir()` answers `undefined` and `module.flushCompileCache()` writes nothing.
+  The calls validate their arguments as Node.js does, and they never start Node.js in a program that has a Node island.

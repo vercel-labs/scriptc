@@ -1,0 +1,6 @@
+tsconfig-target-field-order/main.ts:7:26 - error SC0001: Property 'width' is used before its initialization.
+
+  6 |   private count = this.items.length;
+  7 |   private doubled = this.width * 2;
+    |                          ^~~~~
+  8 |   private width = 3;

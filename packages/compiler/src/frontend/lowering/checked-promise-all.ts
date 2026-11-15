@@ -14,7 +14,7 @@ const COMBINATOR_LIB_CALLS = {
 export function thenReader(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%promise.thenOf";
   const type = funcOf([DYN], DYN);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -55,7 +55,7 @@ export function checkedPromiseAll(
 ): IrExpr {
   const name = `%promise.${member}.checked`;
   const type: IrType = { kind: "promise", inner: DYN };
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, type);
     lowerer.fnStack.push(context);
     try {

@@ -67,11 +67,12 @@ for (const name of readdirSync(packages)
       binary,
       resolve(bin, hostPath(manifest.ts7)),
       resolve(bin, hostPath(manifest.tsc_ts)),
-      resolve(bin, hostPath(manifest.comptime)),
-      join(
-        resolve(bin, hostPath(manifest.llvm_package)),
-        "bin",
-        name.includes("win32-") ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
+      ...["scriptc-llvm-codegen", "scriptc-comptime"].map((tool) =>
+        join(
+          resolve(bin, hostPath(manifest.llvm_package)),
+          "bin",
+          name.includes("win32-") ? `${tool}.exe` : tool,
+        ),
       ),
     ]) {
       chmodSync(path, 0o755);

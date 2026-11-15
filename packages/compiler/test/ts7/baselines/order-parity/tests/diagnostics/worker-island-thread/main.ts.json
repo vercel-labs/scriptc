@@ -1,0 +1,32 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/worker-island-thread/w.cjs",
+  "<repo>/tests/diagnostics/worker-island-thread/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'counter' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/worker-island-thread/w.cjs",
+    "start": 113,
+    "end": 120
+   },
+   "milestone": "later",
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
+  },
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'counter' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/worker-island-thread/w.cjs",
+    "start": 75,
+    "end": 82
+   },
+   "milestone": "later",
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
+  }
+ ]
+}

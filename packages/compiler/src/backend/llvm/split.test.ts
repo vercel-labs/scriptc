@@ -288,7 +288,8 @@ test("shared metadata bounds shard growth while preserving every definition", ()
   expect(splitLlvmProgram(shared, { minimumBytes: 0 })).toBeNull();
 });
 
-test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+/** SAMPLE with a compilation unit and a subprogram for each definition. */
+function debugSample(): string {
   const debug = new LlvmDebugInfo(
     "/source/main.ts",
     new Map([["/source/main.ts", "console.log(1);\n"]]),
@@ -307,7 +308,11 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
           .join("\n")}\n}`,
     );
   }
-  source += debug.render();
+  return source + debug.render();
+}
+
+test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+  const source = debugSample();
   const split = splitLlvmProgram(source, { minimumBytes: 0 });
   expect(split).not.toBeNull();
   const dir = await mkdtemp(join(tmpdir(), "scriptc-debug-split-"));
@@ -322,6 +327,42 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe("");
   }
+});
+
+test("each shard names the compilation units it carries after itself", () => {
+  const split = splitLlvmProgram(debugSample(), { minimumBytes: 0 });
+  expect(split).not.toBeNull();
+  // The copy of the unit's file that the unit names, and its node number.
+  const named = (text: string): { file: string; node: string } | null => {
+    const unit = /^!\d+ = distinct !DICompileUnit\(.*?\bfile: !(\d+),/m.exec(text);
+    if (unit === null) return null;
+    const node = new RegExp(
+      `^!${unit[1]} = !DIFile\\(filename: "([^"]+)", directory: "([^"]+)"\\)$`,
+      "m",
+    );
+    const file = node.exec(text);
+    return file === null ? null : { file: file[1]!, node: unit[1]! };
+  };
+  for (const shard of split!.shards) {
+    const text = shard.source();
+    expect(/^!llvm\.dbg\.cu = !\{!\d+\}$/m.test(text), shard.name).toBe(true);
+    const unit = named(text);
+    expect(unit, shard.name).not.toBeNull();
+    // The unit points at a copy of its file whose name ends with the shard.
+    expect(text).toContain(
+      `!${unit!.node} = !DIFile(filename: "main.ts.scriptc-${shard.name}", directory: "/source")`,
+    );
+    // The copy takes a number no other node uses, so nothing else moves.
+    const ids = text.split("\n").map((line) => /^!(\d+) = /.exec(line)?.[1]);
+    expect(ids.filter((id) => id === unit!.node)).toHaveLength(1);
+    // Definitions still name the source the program was written in.
+    if (/^!\d+ = distinct !DISubprogram\(/m.test(text))
+      expect(text, shard.name).toContain('!DIFile(filename: "main.ts", directory: "/source")');
+  }
+  // Every object of the program is told apart by its units.
+  const names = split!.shards.map((shard) => named(shard.source())?.file);
+  expect(names.every((name) => name !== undefined)).toBe(true);
+  expect(new Set(names).size).toBe(names.length);
 });
 
 test("personality routines stay on definitions when splitting LLVM modules", async () => {

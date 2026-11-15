@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8887-error-constructor-entries.ts"
+ ],
+ "diags": []
+}

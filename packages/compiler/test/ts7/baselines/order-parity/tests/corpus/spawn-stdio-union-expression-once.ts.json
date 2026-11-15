@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/spawn-stdio-union-expression-once.ts"
+ ],
+ "diags": []
+}

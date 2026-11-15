@@ -1,0 +1,6 @@
+override-wider-call-replaceable.ts:22:1 - error SC1090: a call supplying more arguments than the native parameter list (an override that declares parameters past the inherited slot arity can only be called on its own type, where the call goes straight to its body — behind a virtual slot, only the inherited arity travels) is not supported yet
+
+  21 | const row: Row = new Quiet();
+  22 | row.add("x", 2);
+     | ^~~~~~~~~~~~~~~
+  23 | 

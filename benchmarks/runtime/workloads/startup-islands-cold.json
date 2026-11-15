@@ -1,0 +1,12 @@
+{
+  "entry": "../startup/islands/main.ts",
+  "launches": 5,
+  "requires": [
+    "libnode"
+  ],
+  "cache": "cold",
+  "args": [
+    "report",
+    "7"
+  ]
+}

@@ -1,3 +1,5 @@
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
+
 /** Tests that inspect a tag or scalar payload without invoking user code or
  * refreshing a native view. Object, function, array and Error tests may
  * materialize typed references, so they must keep independent input owners.
@@ -27,7 +29,7 @@ export function preservesDynTest(test: string): boolean {
 /** JSON walkers may invoke getters, toJSON, replacers and revivers. Their
  * runtime ABI borrows every input and owns each returned value; this grants
  * stable-local borrowing only, never reference-edge preservation. */
-export function borrowsJsonInputs(fn: string): boolean {
+export function borrowsJsonInputs(fn: IrLibFn): boolean {
   switch (fn) {
     case "json.parse":
     case "json.parseReviver":
@@ -44,7 +46,7 @@ export function borrowsJsonInputs(fn: string): boolean {
 /** A consumer owns its iterator and captured next method for the whole
  * loop. Runtime steps borrow that state but may invoke indexed getters, so
  * this permits stable-local borrowing without preserving reference edges. */
-export function borrowsIteratorInputs(fn: string): boolean {
+export function borrowsIteratorInputs(fn: IrLibFn): boolean {
   return (
     fn === "dyn.iteratorCanStep" ||
     fn === "dyn.iteratorStep" ||

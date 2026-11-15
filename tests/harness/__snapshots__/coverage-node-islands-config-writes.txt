@@ -16,3 +16,14 @@ scriptc coverage tests/coverage-fixtures/node-islands-config-writes/main.ts
       ×1  SC2013  cannot compile npm package 'ni-config' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
           at tests/coverage-fixtures/node-islands-config-writes/main.ts:5:1
           hint: to compile it anyway, name it with --npm-static=ni-config (or --npm-static=ni-config... to include its dependencies)
+
+  trusts unverified types   3 checked conversions on 3 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  ni-config@1.0.0 declares Client.region() as string | undefined (index.d.ts:12): a Node island value
+          at tests/coverage-fixtures/node-islands-config-writes/main.ts:13:44
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-config 'Client.region()' '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  ni-config@1.0.0 declares ClientConfig.profile as string | undefined (index.d.ts:5): a Node island value
+          at tests/coverage-fixtures/node-islands-config-writes/main.ts:13:13
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-config ClientConfig.profile '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  ni-config@1.0.0 declares ClientConfig.region as string (index.d.ts:7): a Node island value
+          at tests/coverage-fixtures/node-islands-config-writes/main.ts:13:29
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-config ClientConfig.region '<type>' (a type that starts with | widens the declared one, as in '| undefined')

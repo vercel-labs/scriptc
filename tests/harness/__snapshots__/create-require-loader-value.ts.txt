@@ -1,6 +1,0 @@
-create-require-loader-value.ts:10:16 - error SC1090: the reference to 'require' (a binding form with no lowering) is not supported yet
-
-   9 | const require = createRequire(import.meta.url);
-  10 | const stored = require;
-     |                ^~~~~~~
-  11 | console.log(typeof stored);

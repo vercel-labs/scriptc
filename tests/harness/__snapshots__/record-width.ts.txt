@@ -1,31 +1,33 @@
-record-width.ts:12:25 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: number | undefined }', got '{ [key: string]: number }' — 'a' is not a declared field of the source, and the source's index signature could hold it at runtime (a completed undefined would drop that value)
+record-width.ts:31:18 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: boolean | undefined; [key: string]: boolean | string | undefined }', got '{ b: string }' — the expected field 'a' ('boolean | undefined') cannot take a runtime key collision from the 'boolean | string | undefined' signature slot
 
-  11 | const loose: Loose = { a: 1 };
-  12 | const picked: PickedA = loose;
-     |                         ^~~~~
-  13 | console.log(picked);
-
-  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
-
-record-width.ts:27:13 - error SC1090: console.log of '{ m: ({ a: number; b: number }) => void }' values (function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)) is not supported yet
-
-  26 | const dstM: DstM = srcM;
-  27 | console.log(dstM);
-     |             ^~~~
-  28 | 
-
-record-width.ts:40:18 - error SC2002: record shapes must match exactly or width-coerce: expected '{ a: boolean | undefined; [key: string]: boolean | string | undefined }', got '{ b: string }' — the expected field 'a' ('boolean | undefined') cannot take a runtime key collision from the 'boolean | string | undefined' signature slot
-
-  39 | const plain = { b: "hi" };
-  40 | const odd: Odd = plain;
+  30 | const plain = { b: "hi" };
+  31 | const odd: Odd = plain;
      |                  ^~~~~
-  41 | console.log(odd);
+  32 | console.log(odd);
 
   hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
 
-record-width.ts:41:13 - error SC1090: console.log of '{ a: boolean | undefined; [key: string]: boolean | string | undefined }' values (index-signature records with declared fields have no inspect lowering yet (JS interleaves integer keys across the declared and dynamic key sets)) are not supported yet
+record-width.ts:32:13 - error SC1090: console.log of '{ a: boolean | undefined; [key: string]: boolean | string | undefined }' values (index-signature records with declared fields have no inspect lowering yet (JS interleaves integer keys across the declared and dynamic key sets)) are not supported yet
 
-  40 | const odd: Odd = plain;
-  41 | console.log(odd);
+  31 | const odd: Odd = plain;
+  32 | console.log(odd);
      |             ^~~
-  42 | 
+  33 | 
+
+record-width.ts:39:22 - error SC2002: record shapes must match exactly or width-coerce: expected '{ isTTY: boolean; write: (string) => boolean }', got 'WriteStream'
+
+  38 | type TtySink = { write(text: string): boolean; isTTY: boolean };
+  39 | const tty: TtySink = process.stdout;
+     |                      ^~~~~~~~~~~~~~
+  40 | console.log(tty.isTTY);
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+record-width.ts:54:25 - error SC2002: record shapes must match exactly or width-coerce: expected '{ write: (string) => boolean }', got 'Writable'
+
+  53 | type LineSink = { write(line: string): boolean };
+  54 | const lines: LineSink = new Writable({
+     |                         ^~~~~~~~~~~~~~
+  55 |   write(_chunk, _encoding, callback) {
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

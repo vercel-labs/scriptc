@@ -41,7 +41,7 @@ const KEY_OBJECT_METHODS = new Set(["export", "equals", "toCryptoKey"]);
 const SIGNER_METHODS = new Set(["update", "sign", "verify"]);
 
 /** Whether a value's checker type is node:crypto's Sign or Verify. */
-function isSignerValue(lowerer: Lowerer, node: ts.Expression): boolean {
+export function isSignerValue(lowerer: Lowerer, node: ts.Expression): boolean {
   const type = lowerer.typeOf(node);
   const sym = type.getAliasSymbol() ?? type.getSymbol();
   return (

@@ -1,0 +1,13 @@
+tuple-union-array-write.ts:10:24 - error SC1090: '.push()' on a union of tuples and arrays read as 'string[]' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first) is not supported yet
+
+   9 | for (const [line, stops] of Object.entries(LINES)) {
+  10 |   if (line === 'hill') (stops as unknown as string[]).push('summit');
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 |   (stops as unknown as string[]).sort();
+
+tuple-union-array-write.ts:11:3 - error SC1090: '.sort()' on a union of tuples and arrays read as 'string[]' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first) is not supported yet
+
+  10 |   if (line === 'hill') (stops as unknown as string[]).push('summit');
+  11 |   (stops as unknown as string[]).sort();
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | }

@@ -106,7 +106,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
     ...(regex ? ["scr_regex.c", "scr_glob.c", "scr_path_win32_relative.c"] : []),
     ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
-    ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c"] : []),
+    // The inspect unit reads inspect.colors from the style unit's table
+    // (scr_util_style.h), so the archive carries it with inspect.
+    ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c", "scr_util_style.c"] : []),
     ...(opts.symbol ? ["scr_symbol.c"] : []),
     ...(opts.assert && opts.bigint ? ["scr_bigint_assert.c"] : []),
     ...(opts.emitter ? ["scr_events_emitter.c", "scr_dyn_handle.c"] : []),
@@ -119,6 +121,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.zlib ? ["scr_zlib.c"] : []),
     ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
+    ...(opts.recordSourceGet === true ? ["scr_record_source_get.c"] : []),
+    ...(opts.arrJoinStr === true ? ["scr_arr_join_str.c"] : []),
   ];
   const cflags = [
     "-std=c11",
@@ -139,6 +143,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.jsObjectModel || opts.bigintBytes || opts.mutableBuffers
       ? ["-DSCR_JS_OBJECT_MODEL"]
       : []),
+    // A function's own call/apply/bind and the other inherited members a
+    // data property shadows: the same build the executable lane compiles.
+    ...(opts.fnMemberProps === true ? ["-DSCR_FN_MEMBER_PROPS"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

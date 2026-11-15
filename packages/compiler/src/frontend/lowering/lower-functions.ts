@@ -7,6 +7,7 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { declareContextLocal, type FnCtx } from "./function-context.js";
 import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
+import { noteCrashSite } from "../../diagnostics/crash-site.js";
 import * as ts from "../ts7/adapter.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -26,6 +27,8 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
+import { returnsIslandValue } from "./lower-node-island.js";
 import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
@@ -36,6 +39,8 @@ import {
   resolveInferredReturn,
   appendImplicitUndefinedReturn,
   blockBodyOf,
+  checkedUndefinedResult,
+  returnsDeclaredUndefined,
 } from "./function-returns.js";
 import {
   generatorMeta,
@@ -43,9 +48,11 @@ import {
   isThisParameter,
   type ParamShape,
 } from "./call-signatures.js";
+import { slotSignatureAdoption } from "./slot-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 import { noteObjectMethodName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -384,18 +391,21 @@ export function lowerLambda(
   // fence at the reference (identifiers.ts) with that use's own target
   // (a call, or `const g = f` under an annotated slot). Fencing it here
   // refused declarations that are only ever CALLED.
-  if (
-    !ts.isFunctionDeclaration(node) &&
-    !(
-      ts.isMethodDeclaration(node) &&
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
-      canBoxFuncIntoDyn(
-        funcType,
-        (id) => lowerer.shapes.get(id),
-        (id) => lowerer.unions.get(id),
-      )
-    )
-  )
+  // A member of a class that extends an island class (its constructor
+  // included) is never a typed value either: lowerIslandSubclass boxes each
+  // one into the checked-dynamic function the JavaScript class calls, with
+  // the length Node reports for it, and that box completes omitted
+  // arguments with undefined like any other checked-dynamic function, so a
+  // boxable signature passes as it does under an 'any' slot.
+  const boxedAtBirth =
+    ((ts.isMethodDeclaration(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) ||
+      isIslandSubclassDecl(node.parent)) &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
+  if (!ts.isFunctionDeclaration(node) && !boxedAtBirth)
     lowerer.requireExactArityValue(
       node,
       ts.isArrowFunction(node) || ts.isFunctionExpression(node) ? node : null,
@@ -410,10 +420,16 @@ export function lowerLambda(
     shapes,
     lowerer.errorFirstLiterals.has(node),
   );
+  // A literal written into a slot of another signature takes that
+  // signature as its ABI, so the value needs no adapter.
+  const adoption = slotSignatureAdoption(lowerer, node, shapes, funcType);
+  if (adoption) funcType = adoption.funcType;
   const nameIdent =
     !ts.isArrowFunction(node) && node.name && ts.isIdentifier(node.name) ? node.name : null;
   const baseName = nameIdent ? nameIdent.text : "";
   const fnName = lowerer.closureName(locOf(node), baseName ? `_${baseName}` : "");
+  if (lowerer.nodeIslands !== null && returnsIslandValue(lowerer, node))
+    lowerer.islandResultLambdas.add(fnName);
   // Named function expressions/declarations can self-reference by name; an
   // object-literal method's name is a PROPERTY, not a binding — no self.
   const selfSymbol =
@@ -502,6 +518,7 @@ export function lowerLambda(
     };
   }
   const diagsBefore = lowerer.diags.length;
+  let typedRetry = false;
   lowerer.fnStack.push(fnCtx);
   try {
     const receiver =
@@ -511,7 +528,15 @@ export function lowerLambda(
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
         : null;
-    const { params, prologue } = lowerer.declareParams(node.parameters.nodes, shapes);
+    const { params, prologue } = lowerer.declareParams(
+      node.parameters.nodes,
+      adoption?.shapes ?? shapes,
+    );
+    adoption?.extras.forEach((type, i) => {
+      // The slot's remaining arguments: received and ignored.
+      const unused = lowerer.declareHiddenLocal("%slot", type);
+      params.push({ localId: unused.id, name: `%slot${i}`, type });
+    });
     if (receiver) prologue.unshift(receiver);
     if (ts.isFunctionExpression(node) && lowerer.typedArgumentsLambdas.has(node))
       declareTypedArguments(lowerer, node, shapes, params, prologue);
@@ -575,7 +600,36 @@ export function lowerLambda(
           // statement branches instead of a forbidden void-valued ternary.
           let stripped: ts.Expression = bodyExpr;
           while (ts.isParenthesizedExpression(stripped)) stripped = stripped.expression;
-          if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
+          // A body whose value the checker typed `undefined` from a
+          // narrowing a call may have undone would be dropped here.
+          lowerer.refuseDroppedStaleReturn(bodyExpr);
+          // An untyped body value where the result is declared `undefined`
+          // is checked, as `return` checks it (lowerReturnOf). The body
+          // keeps its statement lowering, so a conditional's arms stay lazy
+          // branches (a `void e` arm among them) and each untyped arm is
+          // checked where it is the result.
+          const checksUndefined =
+            !isAsync &&
+            !ts.isVoidExpression(stripped) &&
+            (lowerer.typeOf(stripped).flags & ts.TypeFlags.Any) !== 0 &&
+            returnsDeclaredUndefined(lowerer, bodyExpr);
+          if (checksUndefined) {
+            body = [
+              lowerer.lowerExprStatement(stripped, (arm) => {
+                if (ts.isVoidExpression(arm)) return null;
+                if ((lowerer.typeOf(arm).flags & ts.TypeFlags.Any) === 0) return null;
+                const value = lowerer.lowerExpr(arm);
+                const loc = locOf(arm);
+                const check = checkedUndefinedResult(lowerer, value, loc);
+                if (check !== null) return { kind: "block", body: check, loc };
+                // As an unchecked body lowers: a bare unit literal is a
+                // no-op, anything else runs for its effect.
+                return value.kind === "unitLit"
+                  ? { kind: "block", body: [], loc }
+                  : { kind: "exprStmt", expr: value, loc };
+              }),
+            ];
+          } else if (ts.isVoidExpression(stripped) || ts.isConditionalExpression(stripped)) {
             body = [lowerer.lowerExprStatement(stripped)];
           } else {
             const value = lowerer.lowerExpr(bodyExpr);
@@ -602,26 +656,36 @@ export function lowerLambda(
           // (`async () => p`): the async machinery RESOLVES the returned
           // thenable into the function's own promise — lowerReturnValue's
           // await-through, applied to the implicit return.
-          if (isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise") {
-            value = lowerer.returnedPromiseAwait(value);
-          }
+          const settles = isAsync && value.type.kind === "promise" && bodyReturn.kind !== "promise";
+          if (settles) value = lowerer.returnedPromiseAwait(value);
+          else if (isAsync && !fnCtx.inferReturn) lowerer.refuseReturnedThenable(bodyExpr, value);
           const flattened =
             isAsync && !fnCtx.inferReturn
               ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
               : null;
-          body = flattened
-            ? [flattened]
-            : value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
-              ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
-              : [
-                  {
-                    kind: "return",
-                    value: fnCtx.inferReturn
-                      ? value
-                      : lowerer.coerceInto(bodyExpr, value, bodyReturn),
-                    loc: locOf(node.body!),
-                  },
-                ];
+          // A checked-dynamic body value settles the same way a returned
+          // promise does when it holds one at run time.
+          const dynamic =
+            flattened === null && isAsync && !fnCtx.inferReturn
+              ? lowerer.dynamicReturnStmt(bodyExpr, value, bodyReturn, locOf(node.body!))
+              : null;
+          const bodyLoc = locOf(node.body!);
+          if (flattened !== null) body = [flattened];
+          else if (dynamic !== null) body = [dynamic];
+          else if (value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, bodyLoc))
+            body = [{ kind: "exprStmt", expr: value, loc: bodyLoc }];
+          else
+            body = [
+              {
+                kind: "return",
+                value: fnCtx.inferReturn
+                  ? value
+                  : settles
+                    ? lowerer.returnedPayloadInto(bodyExpr, value, bodyReturn)
+                    : lowerer.coerceInto(bodyExpr, value, bodyReturn),
+                loc: bodyLoc,
+              },
+            ];
           if (fnCtx.inferReturn && body[0]?.kind === "return")
             fnCtx.inferReturn.entries.push({ stmt: body[0], node: bodyExpr });
         }
@@ -684,7 +748,27 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
-    return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
+    // What the function prints as when the module boxes it into a checked
+    // value (function-source-text.ts).
+    noteFunctionSourceNode(lowerer, lifted, node);
+    // In TypeScript a parameter default, an object-assignment shorthand and
+    // an assignment to an identifier name an anonymous definition as in
+    // JavaScript, but its stack-frame name (sourceName) stays as it was, so
+    // typed programs lower as before: the JavaScript name is the function's
+    // displayName, set only in a module that boxes a function without a
+    // static name (function-names.ts).
+    if (lifted.sourceName === "<anonymous>") {
+      const named = jsFuncNameOf(node, undefined, { everyForm: true });
+      if (named !== null) lowerer.objectMethodNames.set(fnName, named);
+    }
+    return {
+      kind: "closure",
+      fnName,
+      captures: ctx.captureSources,
+      ...(adoption?.length !== undefined ? { length: adoption.length } : {}),
+      type: funcType,
+      loc,
+    };
   } catch (e) {
     // JS sources defer LAMBDA poisons like function declarations
     // (lowerFunction's catch, lambda form — entry the function-level
@@ -696,32 +780,70 @@ export function lowerLambda(
     // calling throws the first captured diagnostic at its source
     // position. ICEs (SC9001) stay compile errors, exactly like
     // lowerStmts; probe mode (diagSink) keeps the poison.
-    if (!(e instanceof PoisonError)) throw e;
-    if (!isJsSourceFile(ts.getSourceFileOfNode(node))) throw e;
-    const params: IrParam[] = funcType.params.map((t, i) => ({
-      localId: `%pf${i}`,
-      name: `%pf${i}`,
-      type: t,
-    }));
-    // A REST-MARKED value type hides one synthetic trailing dyn-array
-    // param in the lifted function (the boxed call thunk fills it) —
-    // the fence lambda must spell that slot too to preserve its ABI.
-    if (funcType.rest === true && funcType.restAbi === undefined) {
-      params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
+    // A lambda of an implicit-any instance body lowers once more with its
+    // reads through the bound parameters typed by what the bindings declare
+    // before it becomes that fence, as a refused statement does (lowerStmts);
+    // a second lowering that fails too, in any way, leaves the fence the
+    // first one makes.
+    const firstAttempt = typedRetryFirstAttempts.get(node);
+    if (firstAttempt !== undefined) {
+      typedRetryFirstAttempts.delete(node);
+      if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(node));
+      lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt);
+    } else {
+      if (!(e instanceof PoisonError)) throw e;
+      if (!isJsSourceFile(ts.getSourceFileOfNode(node))) throw e;
+      if (lowerer.diagSink === null && lowerer.typedRetryApplies(node)) {
+        typedRetryFirstAttempts.set(node, lowerer.diags.slice(diagsBefore));
+        lowerer.dropAttemptDiags(diagsBefore);
+        typedRetry = true;
+      }
     }
-    const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
-      kind: "closure",
-      name: fnName,
-      params,
-      returnType: bodyReturn,
-      type: funcType,
-      ...(isAsync ? { async: true as const } : {}),
-      ...(fnCtx.generator ? { generator: fnCtx.generator } : {}),
-    });
-    if (!fence) throw e;
-    return fence;
+    if (!typedRetry) {
+      const params: IrParam[] = funcType.params.map((t, i) => ({
+        localId: `%pf${i}`,
+        name: `%pf${i}`,
+        type: t,
+      }));
+      // A REST-MARKED value type hides one synthetic trailing dyn-array
+      // param in the lifted function (the boxed call thunk fills it) —
+      // the fence lambda must spell that slot too to preserve its ABI.
+      if (funcType.rest === true && funcType.restAbi === undefined) {
+        params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
+      }
+      const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {
+        kind: "closure",
+        name: fnName,
+        params,
+        returnType: bodyReturn,
+        type: funcType,
+        ...(isAsync ? { async: true as const } : {}),
+        ...(fnCtx.generator ? { generator: fnCtx.generator } : {}),
+      });
+      if (!fence) throw e;
+      return fence;
+    }
   } finally {
     lowerer.fnStack.pop();
+  }
+  return lowerLambdaTyped(lowerer, node, checkedReceiver);
+}
+
+/** The first lowering's diagnostics of a lambda that is lowering a second
+ * time (lowerLambda's catch). */
+const typedRetryFirstAttempts = new Map<ts.Node, ScrDiagnostic[]>();
+
+function lowerLambdaTyped(
+  lowerer: Lowerer,
+  node: Parameters<typeof lowerLambda>[1],
+  checkedReceiver: boolean,
+): IrExpr {
+  lowerer.setBindingTypedRetry(true);
+  try {
+    return lowerLambda(lowerer, node, checkedReceiver);
+  } finally {
+    lowerer.setBindingTypedRetry(false);
+    typedRetryFirstAttempts.delete(node);
   }
 }
 
@@ -807,6 +929,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     if (sig.isAsync) fn.async = true;
     if (sig.generator !== undefined)
       fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
+    noteFunctionSourceNode(lowerer, fn, decl);
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT
@@ -844,8 +967,12 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
         ...(sig.generator ? { generator: sig.generator } : {}),
       });
       if (fence) return fence;
+      return null;
     }
-    return null;
+    // A TypeScript function: localized failure's commit point
+    // (Lowerer.lowerFunction) degrades a failing declaration slot and
+    // lowers the function again, or skips it.
+    throw e;
   } finally {
     lowerer.fnStack.pop();
   }
@@ -899,7 +1026,7 @@ function undefinedResultParam(
   const error =
     errorSymbol !== undefined &&
     errorDecl.initializer === undefined &&
-    bindingNeverReassigned(lowerer, errorSymbol, errorDecl)
+    bindingNeverReassigned(lowerer.bindingScope(), errorSymbol, errorDecl)
       ? errorSymbol
       : null;
   return { symbol, name: decl.name, error, onlyAdapterCalls };

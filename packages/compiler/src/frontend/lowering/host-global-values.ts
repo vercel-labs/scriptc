@@ -25,7 +25,12 @@ import { BOOL, DYN, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.j
 import { boolLit, varRef } from "../../ir/build.js";
 import { hostGlobalDiag } from "../../diagnostics/diagnostic.js";
 import type { Lowerer } from "./lowerer.js";
-import { hostGlobalLength } from "./host-globals.js";
+import {
+  defineRefusingFunction,
+  locatedFenceMessage,
+  refusingFunctionRef,
+} from "./builtin-function-fences.js";
+import { nodeGlobalKind } from "./node-values.js";
 import { locOf } from "../program.js";
 
 /** The constructor value the global `name` reads as. Built once per program
@@ -36,7 +41,7 @@ import { locOf } from "../program.js";
 export function hostGlobalValue(lowerer: Lowerer, name: string, node: ts.Node): IrExpr {
   const loc = locOf(node);
   const helper = `%builtin.hostGlobal.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === helper))
+  if (lowerer.liftedFnNamed(helper) === undefined)
     defineHostGlobalBuilder(lowerer, name, helper, node);
   lowerer.noteEdge(helper);
   return { kind: "call", callee: helper, args: [], type: DYN, loc };
@@ -52,25 +57,16 @@ function defineHostGlobalBuilder(
 ): void {
   const loc = locOf(node);
   const fence = `%builtin.fence.global.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === fence)) {
-    const diag = hostGlobalDiag(name, loc);
-    lowerer.liftedFns.push({
-      name: fence,
-      ownsPrototype: true,
-      params: [],
-      locals: [],
-      returnType: DYN,
-      body: [{ kind: "runtimeFence", code: diag.code, message: fenceMessage(diag, node), loc }],
-      loc,
-    });
-  }
+  const diag = hostGlobalDiag(name, loc);
+  defineRefusingFunction(lowerer, fence, diag, locatedFenceMessage(diag, node), loc, true);
   const storage = `%g.${helper}`;
   const ready = `${storage}%ready`;
   lowerer.globalsList.push(
     { id: storage, name: `${name} global value`, type: DYN, mutable: true },
     { id: ready, name: "%ready", type: BOOL, mutable: true },
   );
-  const length = hostGlobalLength(name);
+  // Node's `length` of the class, from the census of the pinned Node.
+  const kind = nodeGlobalKind(name);
   const body: IrStmt[] = [
     {
       kind: "if",
@@ -82,20 +78,12 @@ function defineHostGlobalBuilder(
     {
       kind: "assign",
       localId: storage,
-      value: {
-        kind: "dynFrom",
-        value: {
-          kind: "closure",
-          fnName: fence,
-          captures: [],
-          type: { kind: "func", params: [], ret: DYN },
-          loc,
-        },
-        fnName: name,
-        ...(length !== undefined ? { fnLength: length } : {}),
-        type: DYN,
+      value: refusingFunctionRef(
+        fence,
+        name,
+        kind?.kind === "function" ? kind.length : undefined,
         loc,
-      },
+      ),
       loc,
     },
     // The constructor's own [[Prototype]]: a plain object, so the `instanceof`
@@ -121,15 +109,4 @@ function defineHostGlobalBuilder(
   const locals: IrLocal[] = [];
   lowerer.liftedFns.push({ name: helper, params: [], locals, returnType: DYN, body, loc });
   lowerer.shareHelper(helper);
-}
-
-/** The thrown message, in the shape every deferred fence throws: the
- * diagnostic's message at the site that first read the value. */
-function fenceMessage(
-  diag: { code: string; message: string; loc: { file: string; start: number } },
-  node: ts.Node,
-): string {
-  const source = ts.getSourceFileOfNode(node);
-  const pos = ts.getLineAndCharacterOfPosition(source, diag.loc.start);
-  return `${diag.message} [${diag.code} at ${diag.loc.file}:${pos.line + 1}]`;
 }

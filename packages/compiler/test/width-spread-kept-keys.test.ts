@@ -206,3 +206,50 @@ export {};
   );
   expect(notes).toBe(1);
 });
+
+test("a clone snapshots its source's own keys only for a source that has more than its fields", async () => {
+  const { notes, ir } = await sourceNotes(
+    `type Item = { id: number; label: string; note?: string };
+function relabel(item: Item): Item {
+  return { ...item, label: item.label + "!" };
+}
+function annotate(item: Item): Item {
+  return { ...item, note: "n" };
+}
+const parsed = JSON.parse('{"label":"a","id":1,"extra":true}') as Item;
+console.log(JSON.stringify(relabel(parsed)), JSON.stringify(annotate({ id: 2, label: "b" })));
+export {};
+`,
+  );
+  expect(notes).toBe(2);
+  const mod = deserializeModule(ir);
+  // The test each clone declares before it reads its source's keys.
+  const tests: string[] = [];
+  const render = (value: unknown): string => {
+    const node = value as {
+      kind: string;
+      fn?: string;
+      field?: string;
+      left?: unknown;
+      right?: unknown;
+      operand?: unknown;
+    };
+    if (node.kind === "logical") return `${render(node.left)} || ${render(node.right)}`;
+    if (node.kind === "unary") return `!${render(node.operand)}`;
+    if (node.kind === "libCall") return String(node.fn);
+    if (node.kind === "recordHas") return `has ${node.field}`;
+    return node.kind;
+  };
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (value === null || typeof value !== "object") return;
+    const node = value as { kind?: unknown; localId?: unknown; init?: unknown };
+    if (node.kind === "varDecl" && String(node.localId).startsWith("%cloneOwn."))
+      tests.push(render(node.init));
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(mod.functions);
+  // `label` is always present, so only a kept source matters; `note` may be absent, and a
+  // clone that creates it lists it last.
+  expect(tests.sort()).toEqual(["record.sourceHas", "record.sourceHas || !has note"]);
+});

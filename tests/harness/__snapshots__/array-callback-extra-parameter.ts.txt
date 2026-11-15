@@ -1,0 +1,6 @@
+array-callback-extra-parameter.ts:10:23 - error SC1090: an array-method callback whose parameter 2 is '{ upper: boolean } | undefined' where the method passes the index (JavaScript calls the callback with the element, its index and the array, so the function would receive that value; pass a function that takes only what it reads, such as '(value) => f(value)') is not supported yet
+
+   9 | // @ts-expect-error the index is not an options record
+  10 | console.log(["a"].map(shows[0]!));
+     |                       ^~~~~~~~~
+  11 | 

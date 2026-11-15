@@ -3,8 +3,12 @@
  * syntax that needs a transform (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX) and it
  * resolves relative imports only with their written extension, so a module
  * that needs either cannot run in a Node island as written (H3.5). The
- * checks are syntactic except the one for a plain `import { T }` of a
- * type, which needs the checker: Node keeps that import and fails at load. */
+ * checks are syntactic except the ones for a binding that names only a
+ * type without saying so, which need the checker: Node erases only what is
+ * written as a type, so it keeps a plain `import T`, `import { T }`,
+ * `export { T }` or `export default T` of a type and fails when it loads
+ * the module (the binding does not exist) or runs it (the name is not
+ * defined). */
 import type { SrcLoc } from "../ir/ir.js";
 import * as ts from "../frontend/ts7/adapter.js";
 
@@ -55,10 +59,11 @@ function isTypeOnlyStatement(statement: ts.Node): boolean {
   return false;
 }
 
-/** The value meaning of an imported name, following alias symbols. */
-function importedValue(checker: ts.TypeChecker, element: ts.ImportSpecifier): boolean | null {
-  const local = element.name;
-  let symbol = checker.getSymbolAtLocation(local);
+/** Whether the name an import or export binding introduces (or the name an
+ * `export default` names) has a value meaning, following alias symbols;
+ * null when the checker does not resolve it. */
+function namesValue(checker: ts.TypeChecker, name: ts.Node): boolean | null {
+  let symbol = checker.getSymbolAtLocation(name);
   if (symbol === undefined) return null;
   const seen = new Set<ts.Symbol>();
   while ((symbol.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(symbol)) {
@@ -132,22 +137,43 @@ export function stripProblem(program: ts.Program, sf: ts.SourceFile): StripProbl
         report(`the relative import '${spec}' without a file extension`);
         return undefined;
       }
-      if (
-        clause === undefined ||
-        clause.namedBindings === undefined ||
-        !ts.isNamedImports(clause.namedBindings)
-      )
+      if (clause === undefined) return undefined;
+      // The default binding is as much a value import as a named one.
+      const defaultName = clause.name;
+      if (defaultName !== undefined) {
+        checker ??= program.getTypeChecker();
+        if (namesValue(checker, defaultName) === false) {
+          found = {
+            construct: `the default import of '${defaultName.text}', which is only a type (use \`import type\`)`,
+            loc: locOf(defaultName),
+          };
+          return "stop";
+        }
+      }
+      if (clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings))
         return undefined;
       checker ??= program.getTypeChecker();
       for (const element of clause.namedBindings.elements.nodes) {
         if (element.isTypeOnly) continue;
-        if (importedValue(checker, element) === false) {
+        if (namesValue(checker, element.name) === false) {
           found = {
             construct: `the import of '${element.name.text}', which is only a type (use \`import type\`)`,
             loc: locOf(element),
           };
           return "stop";
         }
+      }
+      return undefined;
+    }
+    if (ts.isExportAssignment(node)) {
+      // `export default T` of an interface or a type alias: TypeScript's own
+      // emit drops the statement, Node keeps it and T is not defined.
+      if (ts.isIdentifier(node.expression)) {
+        checker ??= program.getTypeChecker();
+        if (namesValue(checker, node.expression) === false)
+          report(
+            `the default export of '${node.expression.text}', which is only a type (use \`export type { ${node.expression.text} as default }\`)`,
+          );
       }
       return undefined;
     }
@@ -160,8 +186,25 @@ export function stripProblem(program: ts.Program, sf: ts.SourceFile): StripProbl
         ts.isStringLiteral(specifier) &&
         isRelativeSpecifier(specifier.text) &&
         !hasResolvedExtension(specifier.text)
-      )
+      ) {
         report(`the relative export from '${specifier.text}' without a file extension`);
+        return undefined;
+      }
+      // `export { T }` and `export { T } from` of a type, without `type`.
+      const exported = node.exportClause;
+      if (node.isTypeOnly || exported === undefined || !ts.isNamedExports(exported))
+        return undefined;
+      for (const element of exported.elements.nodes) {
+        if (element.isTypeOnly) continue;
+        checker ??= program.getTypeChecker();
+        if (namesValue(checker, element.name) === false) {
+          found = {
+            construct: `the export of '${element.name.text}', which is only a type (use \`export type\`)`,
+            loc: locOf(element),
+          };
+          return "stop";
+        }
+      }
       return undefined;
     }
     if (

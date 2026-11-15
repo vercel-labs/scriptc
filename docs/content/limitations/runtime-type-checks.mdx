@@ -1,15 +1,72 @@
 Casts from values whose type is only known at runtime validate the value.
 For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`.
 A TypeScript assertion alone does not perform this validation when run under Node.js.
+A program that catches that error without reading it therefore takes the handler's path for data that Node.js accepts, and prints nothing.
+In the program below, the second line is valid JSON without `usage.total`: Node.js prints `message 1` for it, and the compiled program prints `skipped`.
+
+```ts:log.ts
+interface Usage {
+  input: number;
+  total: number;
+}
+interface Entry {
+  type: "message";
+  usage: Usage;
+}
+function parse(line: string): Entry | null {
+  try {
+    return JSON.parse(line) as Entry;
+  } catch {
+    return null;
+  }
+}
+const lines = [
+  '{"type":"message","usage":{"input":1,"total":2}}',
+  '{"type":"message","usage":{"input":1}}',
+  "not json",
+];
+for (const line of lines) {
+  const entry = parse(line);
+  console.log(entry === null ? "skipped" : entry.type + " " + entry.usage.input);
+}
+```
+
+An executable built with `--optimization dev` and without `--strip` reports such failures when it runs with the environment variable `SCRIPTC_CONVERSION_TRACE` set to a value other than the empty string and `0`.
+Each failed check then writes the error and the file, line, and column of the conversion to stderr at the moment it fails, whether or not the program catches the error:
+
+```console
+$ scriptc build log.ts --optimization dev -o log
+/app/log
+$ SCRIPTC_CONVERSION_TRACE=1 ./log > /dev/null
+scriptc: checked conversion failed: TypeError: expected number at $.usage.total, got undefined
+    at parse (/app/log.ts:11:12)
+```
+
+The line that is not JSON fails with a `SyntaxError`, which is not a failed check and is not reported.
+The report changes nothing else about the run, a release build has none, and the variable is read only when a check fails.
 A record or class instance cast from `unknown` to a dictionary type such as `Record<string, number>` keeps its identity, and the cast does not validate it.
 Reading a value that does not match the dictionary's value type throws a `TypeError`, such as `expected number at $, got string`, where Node.js returns the value.
 
+A cast from `unknown` to `undefined` or `void` checks that the value is `undefined`, and so does a cast to a type argument that is one of them, such as `value as T` in a generic function called with `<void>`.
+Any other value throws a `TypeError`, such as `expected null | undefined at $, got object`, where Node.js keeps the value.
+
 Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.
 `SC6004` reports calls that pass such an instance to a function that casts it.
+
+A value typed by an interface that extends `Error` is an error object or a plain object that has the members.
+Handing it to a slot typed by an `Error` class (a parameter, a binding, a return, a member or an element) checks that it is an error and throws a `TypeError` for the plain object, where Node.js reads the members.
+`SC6004` reports those sites too.
+Inside a generic function or class it reports a value whose type is a type parameter that a call or a `new` expression binds to such an interface, whether the parameter's type is the type parameter itself or holds it, as in `list: T[]`.
 
 A Promise converted from `unknown` to a typed result validates its fulfilled value.
 A mismatch rejects with a `TypeError`.
 Rejection reasons and reference equality are preserved across conversions.
 
+A rejection handler that declares its parameter's type, such as `(error: Error) => ...`, validates the rejection reason when it runs, whether it is written inline or passed as a function value.
+A mismatch rejects the promise that `catch` or `then` returned with a `TypeError`, where Node.js calls the handler with the reason unchanged.
+
 A non-null assertion (`value!`) checks the value when it extracts an object, array or other non-nullable member from a union.
 If the value holds `null` or `undefined`, the assertion throws a `TypeError`, even when the result is never used; Node.js continues until a property of the value is read.
+
+A callback of `filter`, `find` or `findLast` that is written as a type predicate, such as `(item): item is Tagged => "tags" in item` or a guard function passed by name, runs as an ordinary test.
+The elements it accepts are checked against the predicate's type: an element that is not of that type throws a `TypeError`, where Node.js answers the element unchanged.

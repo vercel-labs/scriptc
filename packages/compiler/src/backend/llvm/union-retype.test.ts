@@ -249,6 +249,14 @@ test("a union whose boxes a cast caches stops sharing them", async () => {
   const { ir } = await llvmFor(`${VISITOR}
 const parsed = JSON.parse('{"kind":"neg","operand":{"kind":"num","value":3}}') as Leaf;
 console.log(leafValue(parsed));
+// A narrowed conversion, not a member read: the read below lowers over the
+// stored union when the field is shared (no retag to read the flag), so keep
+// the outer union's retype exercised explicitly.
+function narrowedLeaf(e: Expr): Neg | Add {
+  if (e.kind === "num") throw new Error("num");
+  return e;
+}
+console.log(narrowedLeaf(parsed));
 `);
   // Caching a checked box sets its union's flag, which the retype reads.
   const stored = /store i8 1, ptr (@sc_retype_guard_\d+)/.exec(ir);

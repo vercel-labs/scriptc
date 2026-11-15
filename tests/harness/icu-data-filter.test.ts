@@ -6,7 +6,14 @@
  * equal. A later Intl form that reads a dropped category gets ICU's root
  * fallback or a missing-data error from the pack's file and fails here;
  * that change removes the category from ICU_DATA_DROPPED and updates the
- * pinned sha256 and size beside it. */
+ * pinned sha256 and size beside it.
+ *
+ * ICU's full data file is the pack build's own input: `ensureIcuData` reads
+ * it from the build's download cache (node_modules/.cache/scriptc-icu-data,
+ * which CI restores) and verifies it against its pin, and downloads it
+ * through the build's retry helper only when it is not there. A download
+ * that fails is reported as "download failed", apart from data that
+ * differs. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, globSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -14,8 +21,12 @@ import { availableParallelism } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
+import {
+  PINNED_INPUT_HOOK_TIMEOUT_MS,
+  pinnedInput,
+} from "../../packages/runtime-pack-common/test/pinned-input.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -142,21 +153,30 @@ const skip = process.platform !== "linux" || process.arch !== "x64";
 describe.skipIf(skip)("the runtime pack's filtered ICU data", () => {
   afterAll(() => rmSync(workDir, { recursive: true, force: true }));
 
-  test("is the pinned full data file without the dropped categories", async () => {
+  /** The path of ICU's pinned full data file, verified against its pin. */
+  let fullDataPath: () => string;
+  beforeAll(async () => {
+    fullDataPath = await pinnedInput("ICU's pinned full data file", () =>
+      icuData.ensureIcuData(join(repoRoot, "node_modules/.cache/scriptc-icu-data")),
+    );
+  }, PINNED_INPUT_HOOK_TIMEOUT_MS);
+
+  test("is the pinned full data file without the dropped categories", () => {
     mkdirSync(workDir, { recursive: true });
-    const full = readFileSync(
-      await icuData.ensureIcuData(join(repoRoot, "node_modules/.cache/scriptc-icu-data")),
-    );
+    const full = readFileSync(fullDataPath());
     const filtered = icuData.filterIcuData(full, (name) => !icuData.icuDataItemDropped(name));
-    expect(createHash("sha256").update(filtered).digest("hex")).toBe(
-      icuInputs.ICU_PACK_DATA_SHA256,
-    );
+    expect(
+      createHash("sha256").update(filtered).digest("hex"),
+      "data differs: the pinned full data file without the categories in ICU_DATA_DROPPED " +
+        "is not the file ICU_PACK_DATA_SHA256 pins",
+    ).toBe(icuInputs.ICU_PACK_DATA_SHA256);
     expect(icuInputs.ICU_DATA_DROPPED.length).toBeGreaterThan(0);
   }, 120_000);
 
   test.for(programs.map((file) => [file.slice(corpusDir.length + 1), file] as const))(
     "%s gives the same output with the pack's data, the full data and Node",
     async ([rel, file]) => {
+      const fullData = fullDataPath();
       const out = join(workDir, rel.replace(/[/.]/g, "_"));
       const result = await compile(file, {
         outPath: join(out, "filtered", "program"),
@@ -173,10 +193,7 @@ describe.skipIf(skip)("the runtime pack's filtered ICU data", () => {
       const fullBinary = join(out, "full", basename(result.binaryPath));
       mkdirSync(dirname(fullBinary), { recursive: true });
       copyFileSync(result.binaryPath, fullBinary);
-      copyFileSync(
-        await icuData.ensureIcuData(join(repoRoot, "node_modules/.cache/scriptc-icu-data")),
-        join(dirname(fullBinary), "icudt78l.dat"),
-      );
+      copyFileSync(fullData, join(dirname(fullBinary), "icudt78l.dat"));
       const env = programEnv(file);
       const cases = TIME_ZONES.flatMap((tz) =>
         LOCALES.map((locale) => ({ ...env, TZ: tz, LC_ALL: locale })),

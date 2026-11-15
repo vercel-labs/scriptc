@@ -3,22 +3,24 @@ import type { CompileFailure, CompileRequestOptions } from "../compile-types.js"
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
-  checkerPanicDiag,
+  nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
   nodeIslandImplicitGlobalReadDiag,
+  nodeIslandMarkStripDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
   nodeIslandReaderStripDiag,
   nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
+  nodeIslandUnmatchedMarkDiag,
+  nodeIslandUnmatchedPackageDiag,
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
-  isCheckerPanic,
-  stdioPatchAcrossIslandsDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
+import { compilerCrashDiag, isCompilerCrash } from "../diagnostics/crash-site.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { validateModule } from "../ir/validate.js";
 import { checkContracts } from "../contracts/check.js";
@@ -35,10 +37,17 @@ import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
 import {
+  globMatch,
   isMarkedUserModule,
   nodeIslandPolicy,
+  type NodeIslandPathMark,
   type NodeIslandPolicy,
 } from "../node-islands/policy.js";
+import {
+  checkPackageMarks,
+  commandLinePackageMarks,
+  type PackageMark,
+} from "../node-islands/package-marks.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
 import { nodeIslandSet } from "../node-islands/boundary.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
@@ -58,6 +67,8 @@ import {
 } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
+import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
+import { withInsertedSpans } from "../frontend/js-void-initializers.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -71,6 +82,24 @@ export interface PreparedExecutableModule {
    * reasons): packages by name, modules by file. A cached build repeats
    * them. */
   islands?: { packages: string[]; modules: string[] };
+  /** The first place the program reached into Node (LowerResult), for
+   * SC8005's hint when no pack can be recorded. */
+  nodeIslandUse?: { file: string; api: string };
+}
+
+/** prepareRounds, with each diagnostic and warning on a line a source shadow
+ * wrote into (frontend/js-void-initializers.ts) carrying what was inserted,
+ * so it is reported at its column in the file as written. */
+export function prepareExecutableModule(
+  ...args: Parameters<typeof prepareRounds>
+): PreparedExecutableModule | CompileFailure {
+  const result = prepareRounds(...args);
+  if (!result.ok) {
+    const diagnostics = withInsertedSpans(result.diagnostics, result.sourceTexts);
+    return diagnostics === result.diagnostics ? result : { ...result, diagnostics };
+  }
+  result.warnings = withInsertedSpans(result.warnings, result.sourceTexts);
+  return result;
 }
 
 /** The parts of a frontend `decideNodeIslands` reads. Typing the decision's
@@ -81,12 +110,12 @@ type IslandDecisionInputs = Pick<
 >;
 
 /** What the island rounds of one compile share. Every round's first
- * frontend is the same call — createFrontend(entryPath, opts.npmStatic,
- * undefined, undefined, { islandScan }) with the compile's own entry and
- * options — and a round after the first reads it only to decide its
- * islands. So the first round captures what that decision reads, and the
- * later rounds decide from the capture instead of loading and checking the
- * whole program again (on pi a 7-load npm-static ladder per round). */
+ * frontend is the same call — createFrontend with the compile's own entry,
+ * options and island scan — and a round after the first reads it only to
+ * decide its islands. So the first round captures what that decision reads,
+ * and the later rounds decide from the capture instead of loading and
+ * checking the whole program again (on pi a 7-load npm-static ladder per
+ * round). */
 interface RoundState {
   /** The first load's island-decision inputs, captured once per compile;
    * null until the first load has run (or when rounds may not reuse it,
@@ -207,6 +236,9 @@ interface PrepareInputs {
   timing: CompilationTiming;
   /** Whether the island decision reads the detector's scan. */
   islandScan: boolean;
+  /** The command line's `--native` and `--npm-static` marks
+   * (node-islands/package-marks.ts), checked once against the first load. */
+  packageMarks: readonly PackageMark[];
 }
 
 /** The islands, modules and fence rule the next round retries with. */
@@ -249,7 +281,7 @@ type RoundOutcome =
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
-export function prepareExecutableModule(
+function prepareRounds(
   entryPath: string,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,
@@ -268,6 +300,11 @@ export function prepareExecutableModule(
     foldFenceGrowth: roundOptions.foldFenceGrowth !== false,
     round: 1,
   };
+  // The island decision reads the detector's scan unless islands are off,
+  // and so does the check of the command line's --native and --npm-static
+  // marks (node-islands/package-marks.ts).
+  const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+  const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
   const inputs: PrepareInputs = {
     entryPath,
     opts,
@@ -275,8 +312,8 @@ export function prepareExecutableModule(
     buildPlatform,
     createFrontend,
     timing,
-    // The island decision reads the detector's scan unless islands are off.
-    islandScan: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands).mode !== "off",
+    islandScan: loadPolicy.mode !== "off" || packageMarks.length > 0,
+    packageMarks,
   };
   // The island rounds run one at a time. A round whose preflight, lowering
   // or fence report grows the island set returns that set instead of
@@ -366,7 +403,8 @@ function prepareRound(
   inputs: PrepareInputs,
   request: RoundRequest,
 ): RoundOutcome {
-  const { entryPath, opts, createFrontend, timing, islandScan, buildPlatform, ffi } = inputs;
+  const { entryPath, opts, createFrontend, timing, islandScan, packageMarks, buildPlatform, ffi } =
+    inputs;
   const { islands: lowerIslands, modules: lowerModules, retryFences, unitStore } = request;
   const round = state.round++;
   traceIslandRound(
@@ -382,8 +420,31 @@ function prepareRound(
       ? null
       : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
   if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
-    first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
+    first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+      islandScan,
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
+    });
     timing("frontend-load");
+    // A mark that names nothing the build could act on is refused instead of
+    // compiling as if the flag were not there. The program is the same on
+    // every retry, so the first load answers for all of them.
+    if (
+      packageMarks.length > 0 &&
+      first.nodeIslandScan !== undefined &&
+      lowerIslands.size === 0 &&
+      lowerModules.size === 0
+    ) {
+      const diagnostics = checkPackageMarks(
+        entryPath,
+        packageMarks,
+        first.nodeIslandScan({ userJs: false }),
+      ).problems;
+      if (diagnostics.length > 0) {
+        const sourceTexts = first.sourceTexts();
+        first.dispose();
+        return { kind: "failed", failure: { ok: false, diagnostics, sourceTexts } };
+      }
+    }
     const captured = captureIslandInputs(first);
     // Node islands (scope-B NI-4): packages refused natively run in Node,
     // unless the policy says otherwise. The frontend reloads without them,
@@ -416,6 +477,9 @@ function prepareRound(
         ? { islandModules: new Set(islandDecision.modules.keys()) }
         : {}),
       islandScan,
+      // The reload re-reads the program: the define values still decide its
+      // branches and set its variables at startup.
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
     });
     timing("frontend-island-reload");
   } else {
@@ -537,16 +601,29 @@ function prepareRound(
           },
         };
       }
-      return fail(
-        refused.map((entry) =>
+      // The build stops here, and one attempt reports every blocker this
+      // load knows: the packages that neither compile nor run in an island,
+      // each with what the user can do about it, and the program's own
+      // preflight errors, which the next attempt would otherwise report
+      // alone after another whole load. A preflight refusal the island
+      // rules answer by themselves (an import a package's island resolves)
+      // is not a blocker and is left out.
+      const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+      const growth = growthOf();
+      const own = fe.preflight.filter(
+        (d) => growth === null || growIslandSet(growth, lowerIslands, { preflight: [d] }) === null,
+      );
+      return fail([
+        ...refused.map((entry) =>
           npmStaticRefusalDiag(
             entry.package,
             entry.detail ?? "its static compilation was refused",
             fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
-            entry.hint,
+            refusedPackageHint(entry.package, entry.hint, policy),
           ),
         ),
-      );
+        ...own,
+      ]);
     }
     if (fe.preflight.length > 0) {
       // An import of a natively compiled package that preflight refuses
@@ -601,10 +678,11 @@ function prepareRound(
       // The last-resort panic fence: an upstream tsgo panic that crossed a
       // checker call no statement/collection fence wrapped still becomes a
       // clean failed compile (anchored at the entry), never a crashed CLI.
-      if (!isCheckerPanic(e)) throw e;
-      return fail([
-        checkerPanicDiag(e.message.split("\n", 1)[0]!, { file: entryPath, start: 0, end: 0 }),
-      ]);
+      // An internal compiler error no fence reported takes the same exit.
+      // Both carry the innermost node the lowering had reached when one
+      // was noted (diagnostics/crash-site.ts); the entry is the last resort.
+      if (!isCompilerCrash(e)) throw e;
+      return fail([compilerCrashDiag(e, { file: entryPath, start: 0, end: 0 })]);
     }
     if (lowered.module === null) {
       // The decisions `fe.lower` already made from this exact result, when
@@ -668,14 +746,6 @@ function prepareRound(
       return fail(lowered.diagnostics);
     }
 
-    // A program that replaces a process output stream's write method has
-    // nowhere to route an island's writes: the island's process.stdout is
-    // its own object. Until islands share the native stream object (H2),
-    // refuse the combination instead of silently missing the patch.
-    if (islandDecision !== null && lowered.stdioPatches !== undefined) {
-      return fail(lowered.stdioPatches.map((p) => stdioPatchAcrossIslandsDiag(p.stream, p.loc)));
-    }
-
     const validation = validateModule(lowered.module);
     timing("ir-validate");
     if (validation.length > 0) {
@@ -703,7 +773,16 @@ function prepareRound(
       if (checked.contracts) lowered.module.contracts = checked.contracts;
       contractWarnings = checked.warnings;
     }
-    if (retryFences) {
+    // The sure rule reads every compiling build, a fence retry's included
+    // (`retryFences` only stops the report rule from running twice): a
+    // package can meet a fence that surely fires only once a package it
+    // requires is an island, and that island may itself be the growth of
+    // this rule. A retry that did not look would compile that throw into a
+    // program that stops when it starts, while a build that held the same
+    // island from its first round (a mark, a replayed decision) islands
+    // the importer: the decision must be the same set either way. Every
+    // step adds a package, so the retries end.
+    {
       const growth = growthOf();
       fenceGrown =
         growth === null
@@ -728,6 +807,7 @@ function prepareRound(
     mod: lowered.module!,
     sourceTexts,
     stats: lowered.stats,
+    ...(lowered.nodeIslandUse !== undefined ? { nodeIslandUse: lowered.nodeIslandUse } : {}),
     warnings: [
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),
@@ -812,6 +892,11 @@ const PATCH_REASONS: ReadonlySet<string> = new Set(["builtin-patch"]);
  * is an island runs the whole file in Node, which is a different feature. */
 interface ModuleIslandDecision {
   modules: Map<string, IslandModule>;
+  /** A mark the build cannot honor (SC8006): one that names the entry
+   * module, a TypeScript module Node cannot run by stripping its types, or
+   * (from the command line) no module of the program. An ignored mark would
+   * leave the module native without a word. */
+  markProblems: ScrDiagnostic[];
   /** The entry module's own `builtin-patch` marker: the entry stays native
    * (a whole-file island is a different feature), so the build refuses it
    * with SC8006. */
@@ -829,21 +914,37 @@ function moduleIslands(
   const modules = new Map<string, IslandModule>();
   let entryPatch: ModuleIslandDecision["entryPatch"] = null;
   const stripProblems: ModuleIslandDecision["stripProblems"] = [];
+  const markProblems: ScrDiagnostic[] = [];
+  const start = (file: string): SrcLoc => ({ file, start: 0, end: 0 });
+  // The command-line marks no user module of the program matches, by
+  // pattern.
+  const unmatched = new Map<string, NodeIslandPathMark>();
+  for (const entry of policy.userModules)
+    if (entry.mark !== undefined) unmatched.set(entry.pattern, entry.mark);
   for (const m of scan.modules) {
     if (m.origin !== "user") continue;
+    const path = m.file.replaceAll("\\", "/");
+    for (const pattern of unmatched.keys())
+      if (globMatch(pattern.replaceAll("\\", "/"), path)) unmatched.delete(pattern);
+    const marked = isMarkedUserModule(policy, m.file);
     const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
-    // A TypeScript module islands only for a builtin patch (H3.2).
-    if (!isJsSourceFileName(m.file) && patches.length === 0) continue;
+    // A TypeScript module islands for a builtin patch (H3.2) or a mark.
+    if (!isJsSourceFileName(m.file) && patches.length === 0 && marked === null) continue;
     if (sameFile(m.file, entryPath)) {
       if (patches.length > 0 && entryPatch === null)
         entryPatch = { file: m.file, marker: patches[0]! };
+      if (marked !== null)
+        markProblems.push(nodeIslandEntryMarkDiag(m.file, marked, start(m.file)));
       continue;
     }
     if (m.stripProblem !== null) {
-      stripProblems.push({ file: m.file, ...m.stripProblem });
+      if (patches.length > 0) stripProblems.push({ file: m.file, ...m.stripProblem });
+      else
+        markProblems.push(
+          nodeIslandMarkStripDiag(m.file, marked!, m.stripProblem.construct, m.stripProblem.loc),
+        );
       continue;
     }
-    const marked = isMarkedUserModule(policy, m.file);
     const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
     if (
       marked === null &&
@@ -862,9 +963,12 @@ function moduleIslands(
             : 'marked "node" in scriptc.nodeIslands.modules'
           : describe(reason),
       decision: marked === null ? "auto" : "marked",
+      ...(patches.length > 0 ? { patchesBuiltin: true as const } : {}),
     });
   }
-  return { modules, entryPatch, stripProblems };
+  for (const mark of unmatched.values())
+    markProblems.push(nodeIslandUnmatchedMarkDiag(mark, start(entryPath)));
+  return { modules, markProblems, entryPatch, stripProblems };
 }
 
 /** The packages and modules a build runs in Node islands, or null for none:
@@ -880,7 +984,7 @@ function decideNodeIslands(
   lowerIslands: ReadonlyMap<string, IslandPackage>,
   lowerModules: ReadonlyMap<string, IslandModule>,
 ): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
   // A package marked native stays refused: the build reports it rather
   // than running it in Node.
@@ -894,7 +998,12 @@ function decideNodeIslands(
   for (const name of lowerIslands.keys()) refused.add(name);
   // The pre-scan's user-JavaScript markers exist only where a build may act
   // on them.
-  const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
+  const scan = fe.nodeIslandScan({
+    userJs: policy.mode === "auto",
+    ...(policy.userModules.length > 0
+      ? { marked: (file: string) => isMarkedUserModule(policy, file) !== null }
+      : {}),
+  });
   const moduleDecision = moduleIslands(entryPath, policy, scan);
   const modules = moduleDecision.modules;
   // A sloppy write to an undeclared name creates a global — a sloppy-only
@@ -923,7 +1032,7 @@ function decideNodeIslands(
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
-  const errors: ScrDiagnostic[] = [];
+  const errors: ScrDiagnostic[] = [...moduleDecision.markProblems];
   if (moduleDecision.entryPatch !== null) {
     const { file, marker } = moduleDecision.entryPatch;
     errors.push(
@@ -1075,6 +1184,7 @@ function decideNodeIslands(
   if (
     refused.size === 0 &&
     policy.forcedNode.size === 0 &&
+    policy.packageMarks.size === 0 &&
     modules.size === 0 &&
     readerPackages.size === 0 &&
     readerGlobals.size === 0
@@ -1208,9 +1318,61 @@ function decideNodeIslands(
         end: 0,
       }),
     );
+  // A package named with --node-island that is not in the island set has
+  // nothing the build runs in Node: --native names it too, scriptc compiles
+  // it from its own implementation, it is a Node builtin under another name,
+  // or the program loads no module of it from node_modules. The build names
+  // why instead of compiling as if the flag were not there.
+  const unhonored = [...policy.packageMarks.values()]
+    .filter((mark) => !packages.has(mark.name))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  if (unhonored.length > 0) {
+    return {
+      ...nodeIslandSet(new Map(), new Map()),
+      notes: [],
+      errors: unhonored.map((mark) =>
+        nodeIslandUnmatchedPackageDiag(
+          mark,
+          policy.forcedNative.has(mark.name)
+            ? "native"
+            : packageShimFor(entryPath, mark.name) !== null
+              ? "shim"
+              : builtinPackageAliasFor(entryPath, mark.name) !== null
+                ? "builtin"
+                : "absent",
+          fe.npmImportSites.get(mark.name) ?? { file: entryPath, start: 0, end: 0 },
+        ),
+      ),
+    };
+  }
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** What to do about a package that neither compiles nor runs in a Node
+ * island, beside the selection's own hint (how to compile it anyway): the
+ * setting that would run it in Node. With islands off that is the mode; for
+ * a package marked native, the mark; under the explicit policy, a mark of
+ * its own. Under the automatic policy an unmarked package that reaches this
+ * stop has no island to offer, and the selection's hint stands alone. */
+function refusedPackageHint(
+  name: string,
+  hint: string | undefined,
+  policy: NodeIslandPolicy,
+): string | undefined {
+  let island: string | null = null;
+  if (policy.mode === "off")
+    island = `--node-islands=off is set: --node-islands=auto runs every package that does not compile in Node.js, and --node-islands=explicit with --node-island=${name} runs this one`;
+  else if (policy.forcedNative.has(name))
+    island =
+      policy.mode === "auto"
+        ? "it is marked native: without the mark it runs in a Node island"
+        : `it is marked native: --node-island=${name} in place of the mark runs it in Node.js`;
+  else if (policy.mode === "explicit")
+    island = `--node-island=${name} runs it in Node.js instead (--node-islands=auto does so for every package that does not compile)`;
+  if (island === null) return hint;
+  return hint === undefined ? island : `${hint}; ${island}`;
 }
 
 /** The installed package directory of `name` as Node resolves it from
@@ -1255,7 +1417,7 @@ function refusalIslands(
   refused: readonly NpmStaticStatus[],
   known: ReadonlyMap<string, IslandPackage>,
 ): Map<string, IslandPackage> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode !== "auto") return null;
   const grown = new Map(known);
   for (const entry of refused) {
@@ -1338,7 +1500,7 @@ function islandGrowth(
   if (scan === undefined) return null;
   return {
     entry: entryPath,
-    policy: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands),
+    policy: nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath),
     scan,
     npm: fe.npmStatic,
     npmImportSites: fe.npmImportSites,
@@ -1358,7 +1520,7 @@ function loweringModules(
   diagnostics: readonly ScrDiagnostic[],
   known: ReadonlyMap<string, IslandModule>,
 ): Map<string, IslandModule> | null {
-  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   if (policy.mode !== "auto" || known.size > 16) return null;
   const grown = new Map(known);
   for (const d of diagnostics) {

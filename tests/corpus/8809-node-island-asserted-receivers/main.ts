@@ -26,4 +26,9 @@ const msg = assistant();
 (msg as { reasoning_content?: string }).reasoning_content = "why";
 (msg as any).tool_calls = [{ id: "call-1" }];
 console.log("msg", (msg as { reasoning_content?: string }).reasoning_content);
-console.log("calls", (msg as { tool_calls?: Array<{ id: string }> }).tool_calls?.[0]?.id);
+// A record element read out of an island array is an explicit copy (SPEC
+// 1b = B): `structuredClone` states it, and the copy is exact.
+const first = structuredClone(
+  (msg as { tool_calls?: Array<{ id: string }> }).tool_calls?.[0],
+);
+console.log("calls", first?.id);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-deep-equal-buffers.ts"
+ ],
+ "diags": []
+}

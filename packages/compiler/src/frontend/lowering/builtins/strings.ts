@@ -246,10 +246,7 @@ export function lowerStringLastIndexOfCall(
   }
   const receiver = lowerer.lowerExprExpecting(access.expression, STRING);
   const positionNode = call.arguments.nodes[1];
-  if (!positionNode) {
-    const needle = lowerStringSearchArgument(lowerer, call.arguments.nodes[0], loc);
-    return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
-  }
+  if (!positionNode) return stringLastIndexOf(lowerer, call, receiver);
   const needle = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
   const position = lowerOptionalArgument(
     lowerer,
@@ -264,4 +261,27 @@ export function lowerStringLastIndexOfCall(
     type: F64,
     loc,
   };
+}
+
+/** `s.lastIndexOf(searchValue?)` where the checker types `s` as `any` and
+ * its value already lowered to a string (a JavaScript function compiled
+ * for a string argument): the same search, the search value converted
+ * with ToString. Null for other members and for a call with a position,
+ * whose conversion from an untyped value the typed form does not make. */
+export function lowerUntypedStringLastIndexOfCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  receiver: IrExpr,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (access.name.text !== "lastIndexOf" || receiver.type.kind !== "string") return null;
+  if (call.arguments.nodes.length > 1 || call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  return stringLastIndexOf(lowerer, call, receiver);
+}
+
+function stringLastIndexOf(lowerer: Lowerer, call: ts.CallExpression, receiver: IrExpr): IrExpr {
+  const loc = locOf(call);
+  const needle = lowerStringSearchArgument(lowerer, call.arguments.nodes[0], loc);
+  return { kind: "libCall", fn: "string.lastIndexOf", args: [receiver, needle], type: F64, loc };
 }

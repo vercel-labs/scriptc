@@ -50,12 +50,14 @@ const sized: Record<string, readonly string[]> = {
     "literals",
     "copies",
     "methodResults",
+    "merges",
     "widths",
     "sourceProbes",
     "clones",
     "observed",
     "changed",
     "keptSourceShapes",
+    "warnings",
   ],
 };
 

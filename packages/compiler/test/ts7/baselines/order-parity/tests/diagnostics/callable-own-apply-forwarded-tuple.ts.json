@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/callable-own-apply-forwarded-tuple.ts"
+ ],
+ "diags": []
+}

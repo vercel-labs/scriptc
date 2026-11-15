@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8749-missing-element-nested-functions.ts"
+ ],
+ "diags": []
+}

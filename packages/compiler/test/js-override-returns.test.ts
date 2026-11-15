@@ -149,7 +149,7 @@ test.each([
 test.each([
   ["TypeScript", "ts", ""],
   ["a TypeScript base", "cjs", "import { Base } from './base.ts';"],
-])("%s keeps incompatible returns as class refusals", (_name, extension, importedBase) => {
+])("%s keeps incompatible returns as build refusals", (_name, extension, importedBase) => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-typed-overrides-"));
   try {
     const entry = join(dir, `main.${extension}`);
@@ -157,7 +157,7 @@ test.each([
     writeFileSync(join(dir, "base.ts"), "export " + base);
     writeFileSync(
       entry,
-      `// @ts-nocheck\n${importedBase || base}\nclass Derived extends Base { method() { return 'x'; } }\nnew Derived();\n`,
+      `// @ts-nocheck\n${importedBase || base}\nclass Derived extends Base { method() { return 'x'; } }\nnew Derived().method();\n`,
     );
     const { coverage } = analyze(entry, {});
     const diagnostics = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])];

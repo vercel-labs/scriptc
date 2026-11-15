@@ -1,0 +1,15 @@
+function-namespace-unsupported-member.ts:9:3 - error SC1090: an exported class in the function+namespace merge 'tool' is not supported yet
+
+   8 |   export const version = 1;
+   9 |   export class Runner {
+     |   ^~~~~~~~~~~~~~~~~~~~~
+  10 |     run(): number {
+
+  hint: a merged namespace's exported members are own properties of the function object; this lowering writes exported const/let/var members with an initializer and exported functions there
+
+function-namespace-unsupported-member.ts:15:35 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  14 | }
+  15 | console.log(tool(), tool.version, new tool.Runner().run());
+     |                                   ^~~~~~~~~~~~~~~~~
+  16 | 

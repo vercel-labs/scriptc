@@ -607,8 +607,10 @@ export function lowerMapForEachCall(
   ) {
     // A JavaScript source lowers the call anyway: a non-callable callback
     // throws Node's `<value> is not a function`, and a callback of another
-    // shape is called with (value, key, map) at run time.
-    if (jsSource) {
+    // shape is called with (value, key, map) at run time. A callback
+    // that is a checked-dynamic function in a TypeScript source
+    // (`map.forEach(console.log)`) takes the same call.
+    if (jsSource || fnArg.type.kind === "dyn") {
       const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Map", fnArg);
       if (dynamic) return dynamic;
     }
@@ -703,9 +705,9 @@ export function lowerSetMethodCall(
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   let probedUntyped = false;
   // The identity-Set idiom (JS): the CHECKER type is an unmappable
-  // Set<union-of-signatures>, but the VALUE lowered as a real Set of
-  // identity tokens (the new-Set probe) — the lowered receiver's type
-  // is the honest dispatch key.
+  // Set<union-of-signatures>, but the VALUE lowered as a real Set (the
+  // new-Set probe) — the lowered receiver's type is the honest dispatch
+  // key.
   if (receiverIr?.kind !== "set" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "set") {
@@ -809,8 +811,9 @@ export function lowerSetForEachCall(
     // throws Node's `<value> is not a function`, a callback of another shape
     // is called with (value, value, set) at run time, and forEach's optional
     // thisArg crosses too, so a callback reading `this` sees what Node
-    // passes.
-    if (jsSource) {
+    // passes. A callback that is a checked-dynamic function in a
+    // TypeScript source (`set.forEach(console.log)`) takes the same call.
+    if (jsSource || fnArg.type.kind === "dyn") {
       const dynamic = lowerCollectionForEachDyn(lowerer, call, receiver, "Set", fnArg);
       if (dynamic) return dynamic;
     }

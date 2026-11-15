@@ -377,7 +377,13 @@ done:
         .sort();
     expect(await symbols(helperObject, ["-u"])).toEqual(await symbols(clangObject, ["-u"]));
     expect(await symbols(helperObject, ["-gU"])).toEqual(await symbols(clangObject, ["-gU"]));
-    expect(await symbols(helperObject, ["-gU"])).toEqual(["0000000000000000 T _main"]);
+    // The program's initializers and %main are out-of-line local functions
+    // ahead of `main` in __text (emit-module.ts), so `main` starts after them
+    // rather than at 0; the helper places it at the address clang does. What
+    // the object must still show is `main` as its only exported symbol.
+    const exported = async (object: string) =>
+      (await symbols(object, ["-gU"])).map((line) => line.replace(/^[0-9a-f]+\s+/, ""));
+    expect(await exported(helperObject)).toEqual(["T _main"]);
     expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v48");
 
     const clangExe = join(dir, "clang-program");

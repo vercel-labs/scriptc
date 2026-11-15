@@ -13,7 +13,9 @@
  * everywhere (JS shared-binding semantics).
  *
  * The compiler emits the callee's C signature as (ScrClosure *env, params…);
- * the callee borrows env->caps[] (the closure owns them). rc == SIZE_MAX
+ * the callee borrows env->caps[] (the closure owns them). A binding nothing
+ * rebinds needs no box: its value sits behind the boxes ("captured values"
+ * below). rc == SIZE_MAX
  * marks an immortal closure (the compiler interns one per top-level
  * function referenced as a value, so `f === f` is true like in JS).
  *
@@ -98,6 +100,9 @@ void scr_box_set_ref(ScrBox *b, void *v); /* releases old, owns new */
  * call. Set only by the compiler; the kind proper is
  * function_kind & SCR_CLOSURE_KIND_MASK. */
 #define SCR_CLOSURE_KIND_RECEIVER_FREE 16u
+/* The environment also holds captured values (ScrClosureValues below). Set
+ * only by scr_closure_new_values. */
+#define SCR_CLOSURE_KIND_VALUES 32u
 #define SCR_CLOSURE_KIND_MASK 15u
 
 typedef struct ScrClosure {
@@ -136,6 +141,47 @@ typedef struct ScrClosure {
 } ScrClosure;
 
 ScrClosure *scr_closure_new(void *fn, size_t ncaps); /* +1; caller fills caps with +1 box refs */
+
+/* ── captured values ────────────────────────────────────────────────
+ * A binding that nothing rebinds after the closure is created needs no
+ * shared cell: the compiler copies its value into the environment. Such a
+ * closure is laid out as
+ *
+ *   ScrClosure | caps[0..ncaps) boxes | ScrClosureValues * | references | scalars
+ *
+ * so `ncaps` still counts the boxes and caps[] still holds only boxes. The
+ * descriptor has one row per reference value, with the entry points a
+ * SCR_BOX_OBJ box of that value's type carries: the closure owns one
+ * reference to each, `release` gives it up (NULL-tolerant callers: a NULL
+ * value is skipped), and `trace` is non-NULL exactly when the value's type
+ * carries a cycle header (the closure's trace then visits it). Numbers and
+ * booleans sit behind the references; the runtime never reads them.
+ * Descriptors are constants the compiler emits and outlive every closure. */
+typedef struct ScrClosureValue {
+  void (*release)(void *);
+  ScrTraceFn trace;
+} ScrClosureValue;
+
+typedef struct ScrClosureValues {
+  size_t count;
+  ScrClosureValue refs[];
+} ScrClosureValues;
+
+/* The descriptor of a closure with captured values, else NULL, and where its
+ * reference values start. */
+static inline const ScrClosureValues *scr_closure_values(const ScrClosure *c) {
+  if (!(c->function_kind & SCR_CLOSURE_KIND_VALUES)) return NULL;
+  return (const ScrClosureValues *)(const void *)c->caps[c->ncaps];
+}
+static inline void **scr_closure_value_slots(ScrClosure *c) {
+  return (void **)&c->caps[c->ncaps + 1];
+}
+
+/* +1, zeroed. `size` is the whole object in bytes (header, boxes, descriptor
+ * pointer and every value); the caller fills caps with +1 box refs and the
+ * reference values with +1 references. */
+ScrClosure *scr_closure_new_values(void *fn, size_t ncaps, const ScrClosureValues *values,
+                                   size_t size);
 
 static inline ScrClosure *scr_closure_retain(ScrClosure *c) {
   if (c->rc != SIZE_MAX) {

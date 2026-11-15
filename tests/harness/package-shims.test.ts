@@ -24,8 +24,15 @@
  * - a CommonJS package's require() of a shimmed package (fs-extra, required
  *   by an installed package's JavaScript) compiles the shim, and matches
  *   Node running the real package;
+ * - the undici 5.x shim's ProxyAgent sends what undici 5.29 sends through a
+ *   proxy in the test process (the CONNECT request, credentials, a refused
+ *   tunnel), and its fetch takes the global RequestInit;
  * - the undici shim compiles under a project tsconfig with
- *   strictPropertyInitialization off.
+ *   strictPropertyInitialization off;
+ * - the undici shim compiles in a project whose own @types/node declares no
+ *   DOMException global (20.11 and earlier): the declaration joins the
+ *   program beside the project's types, and an aborted fetch rejects with
+ *   the DOMException undici rejects with.
  */
 import { execFile, spawn } from "node:child_process";
 import {
@@ -33,6 +40,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -91,6 +99,41 @@ async function buildInCase(name: string, entry: string): Promise<{ dir: string; 
   });
   if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
   return { dir, binary: result.binaryPath };
+}
+
+/** The cells of an options table (`label: outcome` lines): how many are
+ * the same under the real undici and the built-in one, how many the
+ * built-in refuses by name, and the labels of any other difference. */
+function cellsAgainst(
+  undici: string,
+  builtIn: string,
+): { same: number; refused: number; different: string[] } {
+  const cells = (text: string): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      const at = line.indexOf(": ");
+      if (at !== -1) out.set(line.slice(0, at), line.slice(at + 2));
+    }
+    return out;
+  };
+  const theirs = cells(undici);
+  const ours = cells(builtIn);
+  let same = 0;
+  let refused = 0;
+  const different: string[] = [];
+  for (const [label, outcome] of theirs) {
+    const here = ours.get(label);
+    if (here === outcome) same++;
+    else if (
+      here !== undefined &&
+      here.includes("NotSupportedError") &&
+      here.includes("scriptc's undici")
+    )
+      refused++;
+    else different.push(label);
+  }
+  for (const label of ours.keys()) if (!theirs.has(label)) different.push(label);
+  return { same, refused, different };
 }
 
 /** Runs `binary <port>` against undici-hostile-peer.mjs. */
@@ -417,6 +460,230 @@ describe("package shims", () => {
       ].join("\n"),
     );
   }, 180_000);
+
+  test("undici5: fetch compiles in a project whose @types/node declares no DOMException global", async () => {
+    const dir = copyCase("undici5", "undici5-old-node-types");
+    // The vendored @types/node without its DOMException global, which is
+    // what the shim sees of @types/node 20.11 and earlier: the project's own
+    // code cannot name the class, the shim's fetch does.
+    const vendored = join(repoRoot, "tests/fixtures/node-types/node_modules");
+    const types = join(dir, "node_modules/@types/node");
+    cpSync(join(vendored, "@types/node"), types, { recursive: true });
+    cpSync(join(vendored, "undici-types"), join(dir, "node_modules/undici-types"), {
+      recursive: true,
+    });
+    const reference = '/// <reference path="web-globals/domexception.d.ts" />\n';
+    const index = readFileSync(join(types, "index.d.ts"), "utf8");
+    expect(index).toContain(reference);
+    writeFileSync(join(types, "index.d.ts"), index.replace(reference, ""));
+    rmSync(join(types, "web-globals/domexception.d.ts"));
+    writeFileSync(join(dir, "tsconfig.json"), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { createServer } from "node:http";',
+        'import { fetch } from "undici";',
+        "const server = createServer((req, res) => {",
+        '  if (req.url === "/slow") return;',
+        "  res.end(`${req.method} ${req.url}`);",
+        "});",
+        'server.listen(0, "127.0.0.1", async () => {',
+        "  const address = server.address();",
+        '  const port = typeof address === "object" && address ? address.port : 0;',
+        "  const ok = await fetch(`http://127.0.0.1:${port}/ok`);",
+        "  console.log(ok.status, await ok.text());",
+        "  const controller = new AbortController();",
+        "  const pending = fetch(`http://127.0.0.1:${port}/slow`, { signal: controller.signal });",
+        "  controller.abort();",
+        "  try {",
+        "    await pending;",
+        '    console.log("not aborted");',
+        "  } catch (error) {",
+        "    const failure = error as Error;",
+        "    console.log(failure.name, failure.message, failure instanceof Error);",
+        "  }",
+        "  server.closeAllConnections();",
+        "  server.close();",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const out = join(dir, ".scriptc");
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(out, "program"),
+      outDir: out,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n"));
+    // undici 5.29.0's output under Node.
+    expect(await run(result.binaryPath, [], dir)).toBe(
+      "200 GET /ok\nAbortError This operation was aborted true\n",
+    );
+  }, 300_000);
+
+  test("undici5: ProxyAgent tunnels every request through HTTP CONNECT", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-proxy-agent.ts");
+    // undici 5.29.0's output under Node 24 (the vendored fixture is 5.12).
+    expect(await run(binary, [], dir)).toBe(
+      [
+        "true false false",
+        "200 GET /one host=127.0.0.1:<target> x=a",
+        "200 GET /two host=127.0.0.1:<target> x=a",
+        "2 CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close",
+        "200 POST /post host=127.0.0.1:<target> x=-",
+        "200 GET /fetched host=127.0.0.1:<target> x=f 0",
+        "true true",
+        "200 GET /token host=127.0.0.1:<target> x=-",
+        "200 GET /user host=127.0.0.1:<target> x=-",
+        "200 GET /auth host=127.0.0.1:<target> x=-",
+        "CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | x-via: fixture | proxy-authorization: Bearer secret || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYSBzcw== || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYXNz",
+        "200 GET /global host=127.0.0.1:<target> x=- true 1",
+        "AbortError UND_ERR_ABORTED Proxy response (407) !== 200 when HTTP Tunneling",
+        "TypeError fetch failed cause: Error Request was cancelled.",
+        "true 2",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy opts.uri is mandatory",
+        "InvalidArgumentError UND_ERR_INVALID_ARG opts.auth cannot be used in combination with opts.token",
+        "TypeError Invalid URL",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy-Authorization should be sent in ProxyAgent constructor",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: fetch takes the global RequestInit and sends byte bodies", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-fetch-init.ts");
+    // undici 5.29.0's output under Node 24.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'variable: 200 POST station=north tide=high type=text/plain;charset=UTF-8 bytes=9 "0612 4.2m"',
+        'pairs: 200 PUT station=north tide=low type=text/plain;charset=UTF-8 bytes=9 "1240 0.9m"',
+        'headers object: 200 POST station=south tide=slack type=text/plain;charset=UTF-8 bytes=1 "-"',
+        'nothing: 200 GET station=south tide=- type=- bytes=0 ""',
+        'signal and redirect: 200 GET station=east tide=- type=- bytes=0 ""',
+        'typed array: 200 POST station=west tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'array buffer: 200 POST station=- tide=- type=- bytes=3 "hi!"',
+        'data view: 200 POST station=- tide=- type=- bytes=2 "\\n\u00ff"',
+        'dispatcher: 200 POST station=pier tide=ebb type=text/plain;charset=UTF-8 bytes=9 "1903 1.4m"',
+        'dispatcher bytes: 200 POST station=pier tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'other method: 200 PROPFIND station=pier tide=- type=- bytes=0 ""',
+        'request: 200 REPORT station=pier tide=- type=- bytes=0 ""',
+        "aborted: AbortError",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: the global fetch sends a request through a dispatcher of the package", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-relay.ts");
+    // Node 24 with undici 5.29.0 installed: its global fetch dispatches
+    // through the package's objects.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'straight | 200 GET /parcels/1 bay=A parcel="" | tunnels 0',
+        'in the init | 200 GET /parcels/2 bay=B parcel="" | tunnels 1',
+        'in the init, with a body | 200 POST /parcels bay=none parcel="crate of pears" | tunnels 2',
+        'assigned | 200 PUT /parcels/3 bay=none parcel="two crates" | tunnels 2',
+        'assigned again | 200 GET /parcels/4 bay=C parcel="" | tunnels 2',
+        'own class | 200 GET /parcels/5 bay=none parcel="" | tunnels 2',
+        "handed on 1",
+        'agent | 200 GET /parcels/6 bay=D parcel="" | tunnels 2',
+        "agent used the relay: false",
+        'never set | 200 DELETE /parcels/7 bay=none parcel="" | tunnels 2',
+        'undefined | 200 GET /parcels/8 bay=none parcel="" | tunnels 2',
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: the global fetch refuses, by name, an object that is no dispatcher of the package", async () => {
+    // Written in the init, the object is refused when the program is built.
+    await expect(
+      buildInCase("undici5", "undici5-global-fetch-literal-dispatch.ts"),
+    ).rejects.toThrow(
+      /RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package/,
+    );
+    // Reached through a record, it is refused where the call runs.
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-own-dispatch.ts");
+    expect(await run(binary, [], dir)).toBe(
+      "NotSupportedError | scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)\n",
+    );
+  }, 180_000);
+
+  // Every RequestInit member, one value per cell, without a dispatcher and
+  // through an Agent. `expected` is the built-in undici's output; `undici`
+  // is the real package's under Node 24 (5.29.0 for the 5.x entry, 7.30.0
+  // for the 7.x one). A cell is the same in both, or the built-in refuses
+  // it naming the member: nothing is taken and then not acted on.
+  test.each([
+    ["undici5", "5.29.0", 132, 64],
+    ["undici7", "7.30.0", 131, 65],
+  ])(
+    "%s: every RequestInit member is acted on as undici %s does, or refused by name",
+    async (name, release, same, refused) => {
+      const { dir, binary } = await buildInCase(name, "undici-fetch-members.ts");
+      const expected = readFileSync(join(shimFixtures, `undici-fetch-members.${name}.txt`), "utf8");
+      const undici = readFileSync(
+        join(shimFixtures, `undici-fetch-members.undici-${release}.txt`),
+        "utf8",
+      );
+      expect(await run(binary, [], dir)).toBe(expected);
+      expect(cellsAgainst(undici, expected)).toEqual({ same, refused, different: [] });
+    },
+    180_000,
+  );
+
+  test("undici5: every ProxyAgent option is applied as undici 5.29.0 applies it, or refused by name", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-proxy-agent-options.ts");
+    cpSync(join(shimFixtures, "tls"), join(dir, "tls"), { recursive: true });
+    const expected = readFileSync(
+      join(shimFixtures, "undici5-proxy-agent-options.undici5.txt"),
+      "utf8",
+    );
+    const undici = readFileSync(
+      join(shimFixtures, "undici5-proxy-agent-options.undici-5.29.0.txt"),
+      "utf8",
+    );
+    expect(await run(binary, [], dir)).toBe(expected);
+    // Among the cells that are the same: a proxy URL that is an IPv6 literal
+    // reaches the proxy, a line break in a token or a header fails the
+    // request before the proxy is dialed, and an https origin's certificate
+    // is checked against the origin's name.
+    expect(cellsAgainst(undici, expected)).toEqual({ same: 43, refused: 13, different: [] });
+    expect(expected).toContain(
+      "uri with an IPv6 literal: 200 origin GET /p | proxy saw CONNECT 127.0.0.1:PORT HTTP/1.1 / host: [::1]:PORT / connection: close",
+    );
+    expect(expected).toContain(
+      "token with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing",
+    );
+    expect(expected).toContain(
+      "tls, certificate of the proxy's address: threw Error ERR_TLS_CERT_ALTNAME_INVALID",
+    );
+  }, 180_000);
+
+  // The global RequestInit a program holds, spread whole into the package's
+  // fetch and into a wrapper's init that names the package's dispatch(),
+  // under the declarations the compiler bundles (these cases have no
+  // @types/node); undici-shim-types.test.ts has the same under the Node
+  // types of the 20 line.
+  test.each(["undici5", "undici7"])(
+    "%s: the bundled RequestInit spread whole fits the package's fetch and dispatch()",
+    async (name) => {
+      const dir = copyCase(name, `${name}-whole-init`);
+      copyFileSync(join(shimFixtures, "undici-whole-init.ts"), join(dir, "main.ts"));
+      const out = join(dir, ".scriptc");
+      const result = await compile(join(dir, "main.ts"), {
+        outPath: join(out, "program"),
+        outDir: out,
+        outputKind: "ir",
+      });
+      expect(
+        result.ok,
+        !result.ok ? result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n") : "",
+      ).toBe(true);
+    },
+    120_000,
+  );
 
   test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
     const dir = copyCase("undici7", "undici7-loose");

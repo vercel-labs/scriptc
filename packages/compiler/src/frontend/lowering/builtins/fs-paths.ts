@@ -14,11 +14,11 @@
  * otherwise be absent or a literal that passes that validation; other
  * forms fence with SC2020. */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { sideEffectFreeOptionValue } from "../surfaces.js";
-import { stripTypeWrappers } from "../typed-arguments.js";
-import { boolLit, varRef } from "../../../ir/build.js";
+import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import { BOOL, DYN, type IrExpr, type IrStmt, STRING, URL_T, VOID } from "../../../ir/ir.js";
 import { InternalCompilerError } from "../../../errors.js";
 
@@ -28,34 +28,48 @@ interface FsPathRow {
   /** Whether Node validates the paths before every other argument
    * (otherwise the options come first). */
   readonly pathsFirst: boolean;
-  /** The path parameters' names in Node's errors, when there are two. */
+  /** The path parameters' names in Node's errors, when they are not `path`. */
   readonly names?: readonly string[];
+  /** How Node treats an untyped path that is not a string, a URL or a
+   * Uint8Array, for the functions checked against Node 24: "validate"
+   * throws ERR_INVALID_ARG_TYPE (getValidatedPath); "descriptor" first
+   * asks whether the value is a file descriptor, which converts it to a
+   * number (so a symbol throws that conversion's TypeError), and then
+   * validates. Absent where Node does something else (realpathSync
+   * converts the value to a string, truncateSync has a deprecated
+   * descriptor form): those keep the checked cast. */
+  readonly untyped?: "validate" | "descriptor";
 }
 
 /** The fs functions whose path parameters accept a URL. */
 const FS_URL_PATHS: Readonly<Record<string, FsPathRow>> = {
-  accessSync: { paths: [0], pathsFirst: true },
-  appendFileSync: { paths: [0], pathsFirst: false },
-  chmodSync: { paths: [0], pathsFirst: true },
-  chownSync: { paths: [0], pathsFirst: true },
-  copyFileSync: { paths: [0, 1], pathsFirst: true, names: ["src", "dest"] },
-  lchownSync: { paths: [0], pathsFirst: true },
-  lstatSync: { paths: [0], pathsFirst: true },
-  mkdirSync: { paths: [0], pathsFirst: false },
-  mkdtempSync: { paths: [0], pathsFirst: false },
-  openSync: { paths: [0], pathsFirst: true },
-  opendirSync: { paths: [0], pathsFirst: true },
-  readFileSync: { paths: [0], pathsFirst: false },
-  readdirSync: { paths: [0], pathsFirst: false },
+  accessSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  appendFileSync: { paths: [0], pathsFirst: false, untyped: "descriptor" },
+  chmodSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  chownSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  copyFileSync: { paths: [0, 1], pathsFirst: true, names: ["src", "dest"], untyped: "validate" },
+  lchownSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  lstatSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  mkdirSync: { paths: [0], pathsFirst: false, untyped: "validate" },
+  mkdtempSync: { paths: [0], pathsFirst: false, names: ["prefix"], untyped: "validate" },
+  openSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  opendirSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  readFileSync: { paths: [0], pathsFirst: false, untyped: "descriptor" },
+  readdirSync: { paths: [0], pathsFirst: false, untyped: "validate" },
   realpathSync: { paths: [0], pathsFirst: false },
-  "realpathSync.native": { paths: [0], pathsFirst: false },
-  renameSync: { paths: [0, 1], pathsFirst: true, names: ["oldPath", "newPath"] },
-  rmSync: { paths: [0], pathsFirst: false },
-  rmdirSync: { paths: [0], pathsFirst: true },
-  statSync: { paths: [0], pathsFirst: true },
+  "realpathSync.native": { paths: [0], pathsFirst: false, untyped: "validate" },
+  renameSync: {
+    paths: [0, 1],
+    pathsFirst: true,
+    names: ["oldPath", "newPath"],
+    untyped: "validate",
+  },
+  rmSync: { paths: [0], pathsFirst: false, untyped: "validate" },
+  rmdirSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  statSync: { paths: [0], pathsFirst: true, untyped: "validate" },
   truncateSync: { paths: [0], pathsFirst: true },
-  unlinkSync: { paths: [0], pathsFirst: true },
-  writeFileSync: { paths: [0], pathsFirst: false },
+  unlinkSync: { paths: [0], pathsFirst: true, untyped: "validate" },
+  writeFileSync: { paths: [0], pathsFirst: false, untyped: "descriptor" },
 };
 
 /** The fs.promises functions with path parameters. */
@@ -105,19 +119,13 @@ function isUrlArgument(lowerer: Lowerer, node: ts.Expression | undefined): boole
   return node !== undefined && lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "url";
 }
 
-function stripParens(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
 /** A literal that Node's option validation accepts before it reads the
  * path: a string (the checker admits only the declared encodings, flags
  * and type names), a boolean, an integer in [0, 2^31 - 1] (every numeric
  * option of these functions accepts that range), undefined or null, or an
  * object literal of those. */
 function preValidatedLiteral(node: ts.Expression): boolean {
-  const e = stripParens(node);
+  const e = withoutParentheses(node);
   if (ts.isStringLiteralLike(e)) return true;
   if (
     e.kind === ts.SyntaxKind.TrueKeyword ||
@@ -165,7 +173,7 @@ function optionsBeforePaths(
       i === 1 &&
       lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "string"
     ) {
-      encoding = stripTypeWrappers(arg);
+      encoding = withoutParenthesesTypeWrappers(arg);
       continue;
     }
     lowerer.noLowering(`${name} with a URL path and options that are not literals`, arg, HINT);
@@ -191,14 +199,14 @@ function stagedAfter(
   // what an earlier one read.
   let last = first;
   for (let i = first + 1; i < args.length; i++) {
-    const e = stripTypeWrappers(args[i]!);
+    const e = withoutParenthesesTypeWrappers(args[i]!);
     if (!sideEffectFreeOptionValue(e) || force(e, i)) last = i;
   }
   const staged: ts.Expression[] = [];
   for (let i = first + 1; i <= last; i++) {
     // Keyed without type-only wrappers (`satisfies`, `as`, `!`), so a
     // lowering that reads through them finds the saved value.
-    const e = stripTypeWrappers(args[i]!);
+    const e = withoutParenthesesTypeWrappers(args[i]!);
     // Literals are read by their members, so a whole-value slot cannot
     // hold them.
     if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) {
@@ -227,21 +235,26 @@ export function checkFsUrlPaths(
   if (!row) return;
   const args = call.arguments.nodes;
   const first = row.paths.find((i) => isUrlArgument(lowerer, args[i]));
-  if (first === undefined || lowerer.fsPathPlans.has(stripParens(args[first]!))) return;
+  if (first === undefined || lowerer.fsPathPlans.has(withoutParentheses(args[first]!))) return;
   const name = bi.member;
   if (args.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with spread arguments and a URL path`, call);
   const checks: { path: ts.Expression; name: string }[] = [];
   for (const i of row.paths) {
     if (i >= first || args[i] === undefined) continue;
-    const path = stripParens(args[i]!);
+    const path = withoutParentheses(args[i]!);
     checks.push({ path, name: row.names?.[i] ?? "path" });
     lowerer.fsPathPlans.set(path, { kind: "save", local: null });
   }
   const encoding = optionsBeforePaths(lowerer, args, bi.member, row, name);
   const staged = stagedAfter(lowerer, args, first, name, (e) => e === encoding);
   for (const e of staged) lowerer.stagedArguments.set(e, null);
-  lowerer.fsPathPlans.set(stripParens(args[first]!), { kind: "convert", staged, checks, encoding });
+  lowerer.fsPathPlans.set(withoutParentheses(args[first]!), {
+    kind: "convert",
+    staged,
+    checks,
+    encoding,
+  });
 }
 
 /** existsSync and the fs.promises functions with URL paths: each URL
@@ -294,7 +307,7 @@ export function lowerFallibleFsUrlCall(
     const value = lowerer.lowerExpr(e);
     const slot = save(value, "%fsArg", e);
     lowerer.stagedArguments.set(e, { localId: slot, type: value.type });
-    const index = args.findIndex((arg) => stripTypeWrappers(arg) === e);
+    const index = args.findIndex((arg) => withoutParenthesesTypeWrappers(arg) === e);
     if (urls.includes(index)) values.set(index, slot);
   }
   const results: string[] = [];
@@ -308,7 +321,7 @@ export function lowerFallibleFsUrlCall(
       loc,
     };
     const local = save(converted, "%fsPathValue", args[i]!);
-    lowerer.fsPathPlans.set(stripParens(args[i]!), { kind: "value", local });
+    lowerer.fsPathPlans.set(withoutParentheses(args[i]!), { kind: "value", local });
     results.push(local);
   }
   lowerer.fallibleFsCalls.add(call);
@@ -337,16 +350,82 @@ export function lowerFallibleFsUrlCall(
   return { kind: "seqExpr", stmts, result, type: inner.type, loc };
 }
 
+/** The path parameter `node` is the argument of, when its call is one of the
+ * synchronous fs functions whose treatment of an untyped path is modeled
+ * (FsPathRow.untyped) in a JavaScript source: Node's name for it, and
+ * whether Node first asks for a file descriptor. Those functions check the
+ * path where they run and throw. Null for a TypeScript source, whose
+ * untyped arguments keep the checked cast, and for the functions that
+ * report an invalid path another way: existsSync answers false,
+ * fs.promises rejects, and the callback forms are not in the table. */
+function jsSyncPathParam(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): { name: string; descriptor: boolean } | null {
+  const call = node.parent;
+  if (!ts.isCallExpression(call) || !isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
+  const callee = call.expression;
+  const builtin = ts.isIdentifier(callee)
+    ? lowerer.builtinImportOf(callee)
+    : ts.isPropertyAccessExpression(callee)
+      ? lowerer.builtinMemberOf(callee)
+      : null;
+  if (builtin?.module !== "fs") return null;
+  const row = FS_URL_PATHS[builtin.member];
+  const at = row?.paths.indexOf(call.arguments.nodes.indexOf(node)) ?? -1;
+  if (row?.untyped === undefined || at < 0) return null;
+  return { name: row.names?.[at] ?? "path", descriptor: row.untyped === "descriptor" };
+}
+
+/** An untyped path of a synchronous fs function in a JavaScript source, as
+ * its string: `dyn.validateFsPath` answers the path of a string, a URL or a
+ * Uint8Array and throws Node's ERR_INVALID_ARG_TYPE under the parameter's
+ * name for any other value. Where Node first asks for a file descriptor,
+ * the value converts to a number as Node's test does, and a number keeps
+ * a named refusal (the descriptor forms compile from a typed number).
+ * `value` is the lowered argument; null when the call is not one of those
+ * functions or the value has no untyped form. */
+export function jsFsPathValue(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr | null {
+  const param = jsSyncPathParam(lowerer, node);
+  if (param === null) return null;
+  const loc = locOf(node);
+  const untyped: IrExpr | null =
+    value.type.kind === "dyn"
+      ? value
+      : value.kind === "unitLit" || lowerer.dynConvertible(value.type)
+        ? { kind: "dynFrom", value, type: DYN, loc }
+        : null;
+  if (untyped === null) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.validateFsPath",
+    args: [untyped, strLit(param.name, loc), boolLit(param.descriptor, loc)],
+    type: STRING,
+    loc,
+  };
+}
+
+/** A path argument whose static type is not string, in the calls
+ * jsFsPathValue serves: lowered once, untyped. A statically typed string
+ * path keeps the direct lowering. */
+function jsUntypedFsPath(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  if (jsSyncPathParam(lowerer, node) === null) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string") return null;
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "string") return value;
+  return jsFsPathValue(lowerer, node, value) ?? lowerer.coerceInto(node, value, STRING);
+}
+
 /** An fs path argument as a string: a URL converts with fileURLToPath's
  * conversion (url.fileURLToPathUrl), which throws Node's errors for other
  * schemes, hosts and encoded separators, after the checks its plan names. */
 export function lowerFsPath(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const loc = locOf(node);
-  const plan = lowerer.fsPathPlans.get(stripParens(node));
+  const plan = lowerer.fsPathPlans.get(withoutParentheses(node));
   if (plan?.kind === "value")
     return { kind: "dynCheck", value: varRef(plan.local, DYN, loc), type: STRING, loc };
   if (!isUrlArgument(lowerer, node)) {
-    const value = lowerer.lowerExprExpecting(node, STRING);
+    const value = jsUntypedFsPath(lowerer, node) ?? lowerer.lowerExprExpecting(node, STRING);
     if (plan?.kind !== "save") return value;
     const slot = lowerer.declareHiddenLocal("%fsPath", STRING);
     plan.local = slot.id;

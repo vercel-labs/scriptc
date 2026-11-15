@@ -1,4 +1,5 @@
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { webAssemblyDiag } from "../../../diagnostics/diagnostic.js";
@@ -40,20 +41,10 @@ const WASM_CLASSES = [
   "LinkError",
   "RuntimeError",
 ] as const;
-/** Strips the spellings that leave a value unchanged: parentheses, type
- * assertions, `satisfies` and non-null assertions. */
-function bare(expr: ts.Expression): ts.Expression {
-  for (;;) {
-    if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) expr = expr.expression;
-    else if (ts.isAsExpression(expr) || ts.isTypeAssertion(expr)) expr = expr.expression;
-    else if (ts.isSatisfiesExpression(expr)) expr = expr.expression;
-    else return expr;
-  }
-}
 
 /** The global object itself, as `globalThis` or `global` spells it. */
 function isGlobalThis(lowerer: Lowerer, expr: ts.Expression): boolean {
-  const node = bare(expr);
+  const node = withoutParenthesesTypeWrappers(expr);
   return (
     ts.isIdentifier(node) &&
     (node.text === "globalThis" || node.text === "global") &&
@@ -65,7 +56,7 @@ function isGlobalThis(lowerer: Lowerer, expr: ts.Expression): boolean {
  * (and the global object reached through a cast, as in
  * `(globalThis as any).WebAssembly`). */
 function isWebAssemblyGlobal(lowerer: Lowerer, expr: ts.Expression): boolean {
-  expr = bare(expr);
+  expr = withoutParenthesesTypeWrappers(expr);
   if (ts.isIdentifier(expr)) {
     return expr.text === "WebAssembly" && stdlibGlobalNameOf(lowerer, expr) === "WebAssembly";
   }
@@ -101,12 +92,12 @@ function webAssemblySurface(lowerer: Lowerer, expr: ts.Expression): string | nul
     // inherits the global's own WebAssembly declaration: that cast names the
     // whole global object, whose other properties stay readable and writable.
     const globalMember = lowerer.checker.getPropertyOfType(
-      lowerer.typeOf(bare(expr.expression)),
+      lowerer.typeOf(withoutParenthesesTypeWrappers(expr.expression)),
       "WebAssembly",
     );
     return member !== undefined && member !== globalMember ? "globalThis.WebAssembly" : null;
   }
-  const node = bare(expr);
+  const node = withoutParenthesesTypeWrappers(expr);
   if (ts.isIdentifier(node)) {
     return node.text === "WebAssembly" && isWebAssemblyGlobal(lowerer, node) ? "WebAssembly" : null;
   }
@@ -117,10 +108,10 @@ function webAssemblySurface(lowerer: Lowerer, expr: ts.Expression): string | nul
     // WebAssembly.<member>, and members of members
     // (WebAssembly.Module.customSections).
     const names = [node.name.text];
-    let receiver = bare(node.expression);
+    let receiver = withoutParenthesesTypeWrappers(node.expression);
     while (ts.isPropertyAccessExpression(receiver) && receiver.name.text !== "WebAssembly") {
       names.unshift(receiver.name.text);
-      receiver = bare(receiver.expression);
+      receiver = withoutParenthesesTypeWrappers(receiver.expression);
     }
     const spelled =
       (ts.isIdentifier(receiver) && receiver.text === "WebAssembly") ||
@@ -182,7 +173,7 @@ function lowerArg(lowerer: Lowerer, arg: ts.Expression): IrExpr {
 /** An argument whose evaluation has no effect: a literal, a plain
  * identifier, or an empty object or array literal. */
 function isInert(arg: ts.Expression): boolean {
-  const node = bare(arg);
+  const node = withoutParenthesesTypeWrappers(arg);
   if (ts.isObjectLiteralExpression(node)) return node.properties.nodes.length === 0;
   if (ts.isArrayLiteralExpression(node)) return node.elements.nodes.length === 0;
   return (
@@ -374,7 +365,7 @@ export function lowerWebAssemblyValue(lowerer: Lowerer, expr: ts.Expression): Ir
   const surface = webAssemblySurface(lowerer, expr);
   if (surface === null) return null;
   const loc = locOf(expr);
-  const node = bare(expr);
+  const node = withoutParenthesesTypeWrappers(expr);
   const fn = (name: string, args: IrExpr[]): IrExpr => {
     lowerer.usesWebAssembly = true;
     return { kind: "libCall", fn: name as "wasm.namespace", args, type: DYN, loc };

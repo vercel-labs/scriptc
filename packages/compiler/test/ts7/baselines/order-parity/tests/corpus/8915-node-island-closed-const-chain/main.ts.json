@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8915-node-island-closed-const-chain/shapes.ts",
+  "<repo>/tests/corpus/8915-node-island-closed-const-chain/main.ts"
+ ],
+ "diags": []
+}

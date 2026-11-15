@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-buffer-resizable-typed.ts"
+ ],
+ "diags": []
+}

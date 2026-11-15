@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { npmCases } from "./npm-cases.js";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -53,8 +53,10 @@ const cases = npmCases(join(repoRoot, "tests/fixtures"))
   .sort((a, b) => a.name.localeCompare(b.name))
   .filter((_, index) => all || index % 6 === 0);
 
+// CI runs this file on every Linux shard; each runs its share of the cases.
+const testCosts = suiteCosts(import.meta.filename);
 describe("program host reuse parity", () => {
-  beforeEach((context) => skipUnownedTest(context, {}));
+  beforeEach((context) => skipUnownedTest(context, testCosts));
   for (const { name, entry } of cases) {
     test(
       name,

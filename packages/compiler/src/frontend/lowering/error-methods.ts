@@ -12,7 +12,7 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import { classPrototypeData, hasClassPrototypeData } from "./class-prototypes.js";
 import { classMethodValue } from "./class-method-values.js";
-import { accessorCall, findMethodOn } from "./lower-classes.js";
+import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 
 const helperName = "%error.toString.method";
 const errorType: IrType = { kind: "object", className: "%Error" };
@@ -25,7 +25,7 @@ export function errorPropertyRead(
   const name = `%error.${property}.read`,
     loc = receiver.loc;
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "error.0", name: "error", type: errorType }],
@@ -52,7 +52,7 @@ export function errorPropertyWrite(
   const name = `%error.${property}.write`,
     loc = receiver.loc;
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [
@@ -99,7 +99,7 @@ export function refreshErrorPropertyDispatch(
   for (const property of properties) {
     if (
       (overrides.length || accessors) &&
-      !lowerer.liftedFns.some((fn) => fn.name === `%error.${property}.read`)
+      lowerer.liftedFnNamed(`%error.${property}.read`) === undefined
     ) {
       const loc = overrides[0]?.def.loc ?? lowerer.errorAccessorReflection!;
       errorPropertyRead(lowerer, varRef("error.0", errorType, loc), property);
@@ -443,7 +443,7 @@ export function errorToStringMethod(
 ): Extract<IrExpr, { kind: "call" }> {
   const loc = receiver.loc;
   lowerer.shareHelper(helperName);
-  if (!lowerer.liftedFns.some((fn) => fn.name === helperName)) {
+  if (lowerer.liftedFnNamed(helperName) === undefined) {
     lowerer.liftedFns.push({
       name: helperName,
       params: [{ localId: "error.0", name: "error", type: errorType }],
@@ -467,7 +467,7 @@ export function errorToStringCall(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const method = errorToStringMethod(lowerer, receiver);
   const name = "%error.toString.virtual";
   lowerer.shareHelper(name);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value = varRef("error.0", errorType, loc);
     lowerer.liftedFns.push({
       name,
@@ -506,6 +506,13 @@ export function errorToStringCall(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   };
 }
 
+/** Whether `info` itself implements toString. An abstract declaration emits
+ * no prototype member, so the lookup passes it to the class above. */
+function implementsToString(info: ClassInfo): boolean {
+  const sig = info.methods.get("toString");
+  return sig !== undefined && sig.abstract !== true;
+}
+
 /** Runtime Error vtables have no user slots. Walk most-derived declarations
  * and their own prototype data, retaining the builtin method as fallback. */
 export function refreshErrorMethodDispatch(
@@ -517,7 +524,7 @@ export function refreshErrorMethodDispatch(
   const overrides = [...lowerer.classes.values()].filter(
     (info) =>
       !info.builtinError &&
-      (info.methods.has("toString") || hasClassPrototypeData(info)) &&
+      (implementsToString(info) || hasClassPrototypeData(info)) &&
       lowerer.isSubclassOf(info.def.name, "%Error"),
   );
   overrides.sort((a, b) =>
@@ -528,11 +535,7 @@ export function refreshErrorMethodDispatch(
         : 0,
   );
   const revision = JSON.stringify(
-    overrides.map((info) => [
-      info.def.name,
-      hasClassPrototypeData(info),
-      info.methods.has("toString"),
-    ]),
+    overrides.map((info) => [info.def.name, hasClassPrototypeData(info), implementsToString(info)]),
   );
   if (lowerer.errorMethodDispatchRevision === revision) return false;
   lowerer.errorMethodDispatchRevision = revision;
@@ -565,7 +568,7 @@ export function refreshErrorMethodDispatch(
         else_: null,
         loc,
       });
-    if (info.methods.has("toString")) {
+    if (implementsToString(info)) {
       const method = classMethodValue(lowerer, info.decl!, info, "toString", loc)!;
       branch.push({
         kind: "return",

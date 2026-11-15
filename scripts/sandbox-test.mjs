@@ -135,8 +135,18 @@ const NATIVE_OUTPUT_NAMES = [
 const LLVM_HELPER_INPUTS = ["native/llvm-codegen", "packages/llvm-linux-x64-gnu"];
 const NATIVE_ARTIFACTS = {
   llvm: {
-    inputs: LLVM_HELPER_INPUTS,
-    outputs: ["packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen"],
+    // The helper package also builds the comptime evaluator, from the engine
+    // and the runtime's math port.
+    inputs: [
+      ...LLVM_HELPER_INPUTS,
+      "packages/runtime/vendor/quickjs-ng",
+      "packages/runtime/src/scr_ieee754.c",
+      "packages/runtime/src/scr_ieee754.h",
+    ],
+    outputs: [
+      "packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen",
+      "packages/llvm-linux-x64-gnu/bin/scriptc-comptime",
+    ],
   },
   runtime: {
     inputs: [

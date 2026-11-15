@@ -4,6 +4,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerToNumberArguments } from "../lower-exprs.js";
 import { programDeclaresDateClass } from "./date-classes.js";
+import { isDateLocaleMethod, lowerDateToLocale } from "./intl-formatters.js";
 import { programAddsHandleProperties, refuseShadowedImplicitReader } from "../handle-properties.js";
 import {
   BOOL,
@@ -73,7 +74,7 @@ const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 export const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering";
+  'getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleDateString(), toLocaleTimeString() (with the default locale, "en-US" or "en", and options), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported';
 
 /** Date statics and methods on Date objects (a TimeClip'd millisecond
  * time value with identity): getters, text forms and setters.
@@ -129,7 +130,12 @@ export function lowerDateCall(
     return null;
   if (name === "toJSON") return lowerDateToJson(lowerer, call, access);
   if (isDateSetter(name)) return lowerDateSetter(lowerer, call, access, name);
-  if (call.arguments.nodes.length !== 0) {
+  // The locale formatters take a locale and options; the two forms with
+  // neither that the default-locale formatter answers keep it.
+  const localeForm =
+    isDateLocaleMethod(name) &&
+    (call.arguments.nodes.length !== 0 || name === "toLocaleDateString");
+  if (call.arguments.nodes.length !== 0 && !localeForm) {
     lowerer.noLowering(`Date.prototype.${name} with arguments`, call, DATE_METHOD_HINT);
   }
   const raw = lowerer.lowerExpr(access.expression);
@@ -139,6 +145,7 @@ export function lowerDateCall(
       : raw;
   if (receiver.type.kind !== "date")
     lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+  if (localeForm) return lowerDateToLocale(lowerer, call, name, receiver);
   const result = dateValueMethod(name, receiver, loc);
   if (result) return result;
   lowerer.noLowering(

@@ -12,6 +12,18 @@ const child = `import { compile } from ${JSON.stringify(source)};
   const result = await compile(process.argv[1], JSON.parse(process.argv[2]));
   writeFileSync(process.argv[3], JSON.stringify(result));`;
 
+// One fixture's compile, and its whole test (the Node reference, the
+// compile, the run). The sanitized lane gets twice the plain limits. Alone
+// on a runner the slowest sanitized compile takes 170 to 262 s
+// (cluster-handlers.ts, ten CI runs), but a Sandbox lane runs a fixture
+// beside the other case files of its shard, and on a slow machine that
+// doubles: in 57 rounds sanitized fixtures passed at up to 539 s and seven
+// runs of three fixtures were killed at 540 s. Plain fixtures stayed under
+// 450 s in the same rounds.
+const laneFactor = process.env["SCRIPTC_SAN"] === "1" ? 2 : 1;
+const compileLimit = 540_000 * laneFactor;
+export const effectFixtureTimeout = 600_000 * laneFactor;
+
 async function run(command: string, args: string[]) {
   try {
     const { stdout, stderr } = await exec(command, args, { encoding: "utf8", timeout: 60_000 });
@@ -58,7 +70,7 @@ export async function checkEffectFixture(
         JSON.stringify(options),
         resultPath,
       ],
-      { timeout: 540_000 },
+      { timeout: compileLimit },
     );
     const result = JSON.parse(await readFile(resultPath, "utf8")) as CompileResult;
     if (!result.ok)

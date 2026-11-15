@@ -164,7 +164,7 @@ const sink = new Writable({
 run(Readable.from(["a", "b"]), sink);
 `;
 
-test("a push-down pass ended at its stream flags decides from the stream pass and reuses it", () => {
+test("a push-down pass ended at its stream flags decides from the stream pass the pipeline keeps", () => {
   withProgram("stream.cjs", BOTH_STREAM_FLAGS, (lower) => {
     const asked: string[] = [];
     const decided = lower({
@@ -176,12 +176,10 @@ test("a push-down pass ended at its stream flags decides from the stream pass an
     // The ended pass has no module, but it is not a failure to decide from:
     // the stream pass compiles the program, so the predicate is not asked.
     expect(asked).toEqual([]);
-    // One stream pass, kept as the round's result.
-    expect(decided.passes).toEqual([
-      "reachable-emit (stream-flags)",
-      "dyn-streams-relower",
-      "stream-relower-reused",
-    ]);
+    // One stream pass, kept as the round's result: the pipeline lowers the
+    // program with streams once, as the pass it would lower without a
+    // predicate.
+    expect(decided.passes).toEqual(["reachable-emit (stream-flags)", "dyn-streams-relower"]);
     expect(decided.module).not.toBeNull();
     // The program is the one the pipeline lowers without a predicate, and
     // the one it lowers when the push-down pass runs to its end.
@@ -240,7 +238,6 @@ test("a failing stream program decides once, from its stream pass, and lowers wi
     expect(declined.passes).toEqual([
       "reachable-emit (stream-flags)",
       "general-streams-relower",
-      "stream-relower-reused",
       "whole-slot-relower",
     ]);
     // It reports what the pipeline reports without a predicate.
@@ -256,12 +253,11 @@ test("a failing stream program decides once, from its stream pass, and lowers wi
   });
 }, 300_000);
 
-// The async-iteration protocol relower (LowerOptions.dynAsyncProtocol) can
-// compile a program whose earlier pass refused a class in an AsyncIterable<T>
-// slot. A prepared round decides from the pass the pipeline reports, so the
-// protocol relower runs before the predicate is asked: deciding from the
-// refusing pass would island a dependency for a refusal the protocol slots
-// clear.
+// The async-iteration protocol decision (async-protocol-holders.ts) is a
+// shared program fact: a class held in an AsyncIterable<T> slot resolves in
+// the pass that maps it, so the program compiles without a second lowering.
+// A prepared round decides from the pass the pipeline reports, so the
+// predicate is never asked.
 const PROTOCOL_SLOT = `
 class Counter implements AsyncIterable<number> {
   async *[Symbol.asyncIterator](): AsyncIterator<number> {
@@ -295,7 +291,7 @@ const sink = new Writable({
 run(Readable.from(["a", "b"]), sink);
 `;
 
-test("a program the protocol relower compiles is not asked about its refusing pass", () => {
+test("a program with an async-iteration protocol slot compiles in its first pass and is not asked", () => {
   withProgram("protocol.ts", PROTOCOL_SLOT, (lower) => {
     const asked: string[] = [];
     const decided = lower({
@@ -305,7 +301,7 @@ test("a program the protocol relower compiles is not asked about its refusing pa
       },
     });
     expect(asked).toEqual([]);
-    expect(decided.passes).toEqual(["reachable-emit", "dyn-async-protocol-relower"]);
+    expect(decided.passes).toEqual(["reachable-emit"]);
     expect(decided.module).not.toBeNull();
     const plain = lower({});
     expect(plain.passes).toEqual(decided.passes);
@@ -314,7 +310,7 @@ test("a program the protocol relower compiles is not asked about its refusing pa
   });
 }, 300_000);
 
-test("a stream program decides after its protocol relower and reuses that pass", () => {
+test("a stream program with a protocol slot compiles in its stream pass and is not asked", () => {
   withProgram("stream-protocol.ts", TYPED_STREAM_FLAGS + PROTOCOL_SLOT, (lower) => {
     const asked: string[] = [];
     const decided = lower({
@@ -323,24 +319,15 @@ test("a stream program decides after its protocol relower and reuses that pass",
         return true;
       },
     });
-    // The stream pass refuses the class in the generator slot and the
-    // protocol pass compiles it, so the round has no failure to decide from.
+    // The stream pass compiles the protocol slot, so the round has no
+    // failure to decide from.
     expect(asked).toEqual([]);
-    expect(decided.passes).toEqual([
-      "reachable-emit (stream-flags)",
-      "dyn-streams-relower",
-      "dyn-async-protocol-relower",
-      "stream-relower-reused",
-    ]);
+    expect(decided.passes).toEqual(["reachable-emit (stream-flags)", "dyn-streams-relower"]);
     expect(decided.module).not.toBeNull();
     // The same program as the pipeline without a predicate, which runs the
-    // same stream and protocol passes once.
+    // same stream pass once.
     const plain = lower({});
-    expect(plain.passes).toEqual([
-      "reachable-emit (stream-flags)",
-      "dyn-streams-relower",
-      "dyn-async-protocol-relower",
-    ]);
+    expect(plain.passes).toEqual(["reachable-emit (stream-flags)", "dyn-streams-relower"]);
     expect(plain.diagnostics).toEqual(decided.diagnostics);
     expect(plain.module).toEqual(decided.module);
   });

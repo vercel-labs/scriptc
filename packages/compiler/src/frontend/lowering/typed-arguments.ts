@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { restTupleElementTypes, unitOnlyUnion } from "../type-mapper.js";
@@ -9,13 +10,16 @@ import {
   type IrParam,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   arrayOf,
+  typeEquals,
 } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { captureContextArguments } from "./function-context.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { omittedArgFor } from "./call-arguments.js";
+import { callableDeclaresMember } from "./callable-properties.js";
 
 /** Variadic forwarding through a FIXED signature.
  *
@@ -27,18 +31,6 @@ import { omittedArgFor } from "./call-arguments.js";
  * site's concrete signature, so a higher-order wrapper specializes to the
  * wrapped function's exact ABI. Forwarding (`f.apply(thisArg, args)`,
  * `f(...args)`) then calls with the tuple's positions directly. */
-
-/** `e`, with the type-only wrappers that never change its value removed. */
-export function stripTypeWrappers(e: ts.Expression): ts.Expression {
-  let cur = e;
-  for (;;) {
-    if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
-    else if (ts.isAsExpression(cur) || ts.isTypeAssertion(cur) || ts.isSatisfiesExpression(cur))
-      cur = cur.expression;
-    else if (ts.isNonNullExpression(cur)) cur = cur.expression;
-    else return cur;
-  }
-}
 
 /** The outermost type assertion around `node` (`node as unknown as F` → F),
  * looking through parentheses; null when the value is not asserted. */
@@ -93,6 +85,9 @@ export function typedArgumentsCandidate(node: ts.Node): node is ts.FunctionExpre
 export function typedArgumentsTarget(
   lowerer: Lowerer,
   node: ts.FunctionExpression,
+  /** Set when the signature is the contextual one: the function is then
+   * the content of a declared slot, not a value asserted to a type. */
+  origin?: { contextual: boolean },
 ): (IrType & { kind: "func" }) | null {
   const fixed = (t: (IrType & { kind: "func" }) | null) => (t && t.rest !== true ? t : null);
   const direct = assertedFuncType(lowerer, node);
@@ -131,8 +126,28 @@ export function typedArgumentsTarget(
   if (!ctxType) return null;
   const sigs = lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType));
   if (sigs.length !== 1) return null;
+  // One declared signature: a slot that also takes something else (an
+  // options object, a listener object) has no single parameter list to
+  // type `arguments` by.
+  if (sigs[0]!.declaration === undefined) return null;
   const mapped = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(ctxType));
-  return mapped?.kind === "func" ? fixed(mapped) : null;
+  if (mapped?.kind !== "func") return null;
+  // `arguments` becomes the tuple of the signature's parameters, so the
+  // lowered signature must name every parameter the declared one does: a
+  // contextual type whose lowering names fewer (a callback type beside an
+  // options object or a listener object) would hand the function a shorter
+  // `arguments` than its caller passes. A declared rest parameter is the
+  // lowering's to lay out (a tuple flattens into one parameter each).
+  const declared = (sigs[0]!.declaration?.parameters?.nodes ?? []).filter(
+    (param) => ts.isParameter(param) && !isThisParameter(param),
+  );
+  if (
+    declared.length !== mapped.params.length &&
+    !declared.some((param) => ts.isParameter(param) && param.dotDotDotToken !== undefined)
+  )
+    return null;
+  if (origin !== undefined) origin.contextual = true;
+  return fixed(mapped);
 }
 
 function enclosingScope(node: ts.Node): ts.Node | null {
@@ -286,11 +301,48 @@ export function onlyForwarded(
 /** The native slots of a pure-forwarded tuple binding read at `node` in
  * the current function, or null when the tuple is materialized. */
 function pureSlotsOf(lowerer: Lowerer, node: ts.Expression): IrLocal[] | null {
-  const operand = stripTypeWrappers(node);
+  const operand = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(operand)) return null;
   const local =
     operand.text === "arguments" ? lowerer.ctx.argumentsLocal : lowerer.peekLocal(operand);
   return local ? (lowerer.ctx.pureTuples.get(local.id) ?? null) : null;
+}
+
+/** The value of a forwarded-only tuple that is read as a value after all,
+ * or null when `node` reads no such binding.
+ *
+ * onlyForwarded judges by syntax that every read forwards (`g(...args)`
+ * into a program function), and declareRestTupleParam then never builds
+ * the tuple. Which lowering a call takes is decided later and by more
+ * than syntax: a call of a method some code replaces on an instance, for
+ * one, takes its spread operand as an iterable. Such a read builds the
+ * tuple here from the slots, which is what the prologue builds for a
+ * tuple that is read; no read can observe which of the two happened,
+ * because every read of this binding is a forward.
+ *
+ * A tuple with optional positions has no value type of its own (its
+ * length varies per call, and the slots always hold every position), so
+ * there is no faithful tuple to build: that read is refused. The typed
+ * `arguments` of a function expression is the same case with a tuple that
+ * always has a value type (lowerIdentifierExpr builds it). */
+export function forwardedOnlyTupleValue(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (lowerer.ctx.pureTuples.size === 0) return null;
+  const local = lowerer.peekLocal(node);
+  const slots = local ? lowerer.ctx.pureTuples.get(local.id) : undefined;
+  if (!local || !slots) return null;
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (declared === null || !typeEquals(declared, local.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `rest tuple '${node.text}' with optional positions used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)`,
+    );
+  }
+  return lowerer.tupleOfSlots(slots, local.type, node, loc);
 }
 
 /** The positional values `node` forwards when it is a pure-forwarded tuple
@@ -318,7 +370,7 @@ function isTypedArgumentsRead(lowerer: Lowerer, node: ts.Expression): boolean {
  * fixed-tuple rest parameter, or a const alias of either — seen through
  * type assertions, which never change the value. */
 export function forwardedTupleType(lowerer: Lowerer, node: ts.Expression): IrType | null {
-  const operand = stripTypeWrappers(node);
+  const operand = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(operand)) return null;
   if (operand.text === "arguments") {
     if (!isTypedArgumentsRead(lowerer, operand)) return null;
@@ -397,6 +449,19 @@ export function lowerForwardingApply(
   if (argNodes.length !== 2 || argNodes.some(ts.isSpreadElement)) return null;
   const tupleType = forwardedTupleType(lowerer, argNodes[1]!);
   if (!tupleType) return null;
+  // A callable whose own type declares `apply` dispatches to its table entry,
+  // not to Function.prototype.apply: the direct call below would run the
+  // function body instead. The general member-call path reads the table, but
+  // it lowers the argument list as values, and a forwarded tuple has no value
+  // form (its positions are the caller's slots), so the combination refuses
+  // by name rather than diverging. An array argument keeps working there.
+  if (callableDeclaresMember(lowerer, access.expression, "apply")) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "forwarding a fixed argument tuple through 'apply' on a callable that declares its own 'apply' member",
+    );
+  }
   const callee = tryLowerExpression(lowerer, access.expression);
   if (callee?.type.kind !== "func") return null;
   const fnType = callee.type;
@@ -425,7 +490,7 @@ export function lowerForwardingApply(
     stmts.push({
       kind: "varDecl",
       localId: savedArgs.id,
-      init: lowerer.lowerExpr(stripTypeWrappers(argNodes[1]!)),
+      init: lowerer.lowerExpr(withoutParenthesesTypeWrappers(argNodes[1]!)),
       loc,
     });
     reads = tupleReads(
@@ -488,7 +553,7 @@ export function lowerTupleAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclarati
     lowerer.ctx.pureTuples.set(local.id, slots);
     return { kind: "block", body: [], loc: locOf(decl) };
   }
-  const init = lowerer.lowerExpr(stripTypeWrappers(decl.initializer));
+  const init = lowerer.lowerExpr(withoutParenthesesTypeWrappers(decl.initializer));
   const local = lowerer.declareLocal(decl.name, decl.name.text, tupleType, false);
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
 }

@@ -581,6 +581,16 @@ export function eachStringField(
       visit(node.localId, "localId");
       return;
     }
+    case "viewOf": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
+    case "viewSource": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
     case "virtualCall": {
       visit(node.kind, "kind");
       visit(node.className, "className");
@@ -1584,6 +1594,28 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "varRef": {
       walker.string(node.kind);
       walker.string(node.localId);
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
+    case "viewOf": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
+    case "viewSource": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }
@@ -3103,6 +3135,20 @@ export function replaceChildExpr(node: IrExpr | IrStmt, from: IrExpr, to: IrExpr
       }
       return false;
     }
+    case "viewOf": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "viewSource": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
     case "virtualCall": {
       for (let index192 = 0; index192 < node.args.length; index192++) {
         const item191 = node.args[index192]!;
@@ -3163,7 +3209,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "bytesNew" }>, "kind" | "source" | "from" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "bytesNew" }>["from"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "call" }>, "kind" | "callee" | "args" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "callValue" }>, "kind" | "callee" | "receiver" | "args" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "callValue" }>, "kind" | "callee" | "receiver" | "args" | "untyped" | "type" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "callValue" }>["untyped"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtCheck" }>, "kind" | "value" | "className" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtNarrow" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtTest" }>, "kind" | "value" | "test" | "className" | "negated" | "type" | "loc">>,
@@ -3171,17 +3218,19 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtToDyn" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "chainRecv" }>, "kind" | "id" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "classRef" }>, "kind" | "className" | "type" | "loc" | "captures">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "closure" }>, "kind" | "fnName" | "captures" | "adapts" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "closure" }>, "kind" | "fnName" | "captures" | "adapts" | "length" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "closure" }>["adapts"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "closure" }>["length"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "constCell" }>, "kind" | "numbers" | "strings" | "index" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "downcast" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynArrLit" }>, "kind" | "elems" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>, "arg" | "what">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>["arg"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCall" }>, "kind" | "callee" | "receiver" | "calleeName" | "calleeNameValue" | "args" | "spreads" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "shared" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["shared"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["origin"]>>,
@@ -3220,17 +3269,20 @@ export type IrFieldsCurrent = [
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "jsonStringify" }>["circular"]>>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "libCall" }>["assertOptions"]>, object>, "diff" | "skipPrototype">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "libCall" }>["assertOptions"]>, object>["skipPrototype"]>>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "libCall" }>, "kind" | "fn" | "args" | "type" | "loc" | "prototypeIdentityOnly" | "realTimer" | "assertOptions" | "bindsThis">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "libCall" }>, "kind" | "fn" | "args" | "type" | "loc" | "prototypeIdentityOnly" | "realTimer" | "assertOptions" | "bindsThis" | "namedKey">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["prototypeIdentityOnly"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["realTimer"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["bindsThis"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["namedKey"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "logical" }>, "kind" | "op" | "left" | "right" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "mapIntrinsic" }>, "kind" | "method" | "receiver" | "args" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "mapNew" }>["seed"]>, readonly unknown[]>[number]>, object>, "key" | "value">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "mapNew" }>, "kind" | "seed" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>, "kind" | "moduleId" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>, "kind" | "moduleId" | "type" | "loc" | "esmNamespace">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>["esmNamespace"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "new" }>, "kind" | "className" | "args" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "newPromise" }>, "kind" | "executor" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "newPromise" }>, "kind" | "executor" | "resolves" | "type" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "newPromise" }>["resolves"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "newValue" }>, "kind" | "callee" | "args" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "nullish" }>, "kind" | "left" | "right" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "numLit" }>, "kind" | "value" | "spelling" | "type" | "loc">>,
@@ -3291,6 +3343,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "unitLit" }>, "kind" | "unit" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "upcast" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "varRef" }>, "kind" | "localId" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewOf" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewSource" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "virtualCall" }>, "kind" | "className" | "method" | "args" | "type" | "loc" | "targets">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["captureCompletion"]>, object>, "returnType">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "yieldExpr" }>, "kind" | "value" | "awaited" | "delegated" | "captureCompletion" | "type" | "loc">>,
@@ -3325,7 +3379,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "rethrow" }>, "kind" | "localId" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "return" }>, "kind" | "value" | "awaited" | "loc">>,
   Unread<ValuesNotRead<Extract<IrStmt, { kind: "return" }>["awaited"]>>,
-  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "guarded" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrStmt, { kind: "runtimeFence" }>["guarded"]>>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrStmt, { kind: "switch" }>["cases"]>, readonly unknown[]>[number]>, object>, "test" | "body">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "switch" }>, "kind" | "disc" | "cases" | "labels" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "throw" }>, "kind" | "value" | "loc">>,
@@ -3354,9 +3409,10 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "f64" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "fileHandle" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "fsWatcher" }>, "kind">>,
-  Unread<FieldsNotRead<Extract<IrType, { kind: "func" }>, "kind" | "params" | "ret" | "rest" | "restAbi" | "argumentsAll">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "func" }>, "kind" | "params" | "ret" | "rest" | "restAbi" | "argumentsAll" | "argumentsPresence">>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["rest"]>>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["argumentsAll"]>>,
+  Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["argumentsPresence"]>>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "generator" }>, "kind" | "async" | "yieldT" | "retT" | "nextT">>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "generator" }>["async"]>>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "http2Session" }>, "kind">>,

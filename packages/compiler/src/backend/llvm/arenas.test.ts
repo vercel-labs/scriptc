@@ -381,3 +381,140 @@ console.log(total);
   const cls = arenaConstructors(llvm).find((body) => !body.includes("@sc_rnew_"))!;
   expect(cls).toContain("store i64 536870912, ptr %o");
 });
+
+const PARTS = `
+class Part {
+  id: number;
+  label: string;
+  constructor(id: number, label: string) {
+    this.id = id;
+    this.label = label;
+  }
+}
+function parts(n: number): Part[] {
+  const out: Part[] = [];
+  for (let i = 0; i < n; i++) out.push(new Part(i, "part" + String(i * 3)));
+  return out;
+}
+`;
+
+/** The emitted bodies of source function `name` (it and its clones) that open an arena. */
+function arenaBodies(llvm: string, name: string): string[] {
+  return [...llvm.matchAll(new RegExp(`^define [^\\n]*@sc_f_${name}[^\\n]*\\n[\\s\\S]*?^}`, "gm"))]
+    .map((m) => m[0])
+    .filter((body) => body.includes("@scr_arena_open"));
+}
+
+test("a group made from another group's members is dropped before it", async () => {
+  // `notes(xs)` holds members of `parts(n)` and releases them when its arena
+  // is dropped (a note's text is a string of its own, so the group is not
+  // closed): the scope has to drop it first.
+  const llvm = await llvmFor(`${PARTS}
+interface Note { item: Part; text: string }
+function notes(xs: Part[]): Note[] {
+  const out: Note[] = [];
+  for (const x of xs) out.push({ item: x, text: x.label + "!" });
+  return out;
+}
+function work(n: number): string {
+  const xs = parts(n);
+  const ys = notes(xs);
+  return ys[1]!.item.label + ys[1]!.text + String(xs.length);
+}
+console.log(work(5));
+`);
+  const bodies = arenaBodies(llvm, "work");
+  expect(bodies.length).toBeGreaterThan(0);
+  for (const body of bodies) {
+    const opens = [...body.matchAll(/@scr_arena_open\(ptr (%t\d+),/g)].map((m) => m[1]);
+    const drops = [...body.matchAll(/@scr_arena_drop\(ptr (%t\d+)\)/g)].map((m) => m[1]);
+    expect(opens.length).toBe(2);
+    expect(drops.slice(0, 2)).toEqual([opens[1], opens[0]]);
+  }
+});
+
+test("a group whose members a cycle on the heap can hold takes no arena", async () => {
+  // The two links hold each other, so the collector frees them some time
+  // after `work` returned: the parts they hold must still be there.
+  const llvm = await llvmFor(`${PARTS}
+class Link {
+  item: Part;
+  next: Link | null;
+  constructor(item: Part) {
+    this.item = item;
+    this.next = null;
+  }
+}
+function ring(xs: Part[]): Link {
+  const a = new Link(xs[0]!);
+  const b = new Link(xs[1]!);
+  a.next = b;
+  b.next = a;
+  return a;
+}
+function work(n: number): string {
+  const xs = parts(n);
+  const r = ring(xs);
+  return r.next!.item.label + String(xs.length);
+}
+console.log(work(5));
+`);
+  expect(arenaBodies(llvm, "work")).toEqual([]);
+});
+
+const TIE = `${PARTS}
+class Link {
+  items: Part[] | null = null;
+  next: Link | null = null;
+}
+function tie(xs: Part[], cb: (x: Part[]) => Link): Link {
+  return cb(xs);
+}
+`;
+
+test("a group whose members a callback can tie into a cycle takes no arena", async () => {
+  // `tie` allocates nothing itself: the ring is made by the callback it
+  // calls, and the collector frees it some time after `work` returned.
+  const llvm = await llvmFor(`${TIE}
+function work(n: number): string {
+  const xs = parts(n);
+  const r = tie(xs, (x) => {
+    const a = new Link();
+    a.next = a;
+    a.items = x;
+    return a;
+  });
+  return r.items![1]!.label + String(xs.length);
+}
+console.log(work(5));
+`);
+  expect(arenaBodies(llvm, "work")).toEqual([]);
+});
+
+test("a call region that reaches a callback's cycle on the heap takes no arena", async () => {
+  // The call of `tie` runs with the arena suspended, so the ring is a heap
+  // object that holds the region's list.
+  const llvm = await llvmFor(`${TIE}
+function count(n: number): number {
+  const xs = parts(n);
+  let s = xs.length;
+  for (let i = 0; i < 2; i++) {
+    s += tie(xs, (x) => {
+      const a = new Link();
+      a.next = a;
+      a.items = x;
+      return a;
+    }).items!.length;
+  }
+  return s;
+}
+function work(rounds: number): number {
+  let s = 0;
+  for (let r = 0; r < rounds; r++) s += count(5 + r);
+  return s;
+}
+console.log(work(5));
+`);
+  expect(arenaBodies(llvm, "work")).toEqual([]);
+  expect(arenaBodies(llvm, "count")).toEqual([]);
+});

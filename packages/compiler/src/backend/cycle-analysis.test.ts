@@ -5,6 +5,7 @@ import {
   STRING,
   VOID,
   RUNTIME_EMITTER_CLASS,
+  RUNTIME_EVENT_TARGET_CLASS,
   arrayOf,
   funcOf,
   mapOf,
@@ -15,7 +16,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
-import { computeTraced, explainCycle } from "./cycle-analysis.js";
+import { computeCyclic, computeTraced, explainCycle } from "./cycle-analysis.js";
 import { computeImmutableFields } from "./immutability.js";
 import { computeTraced as llvmTraced } from "./llvm/shapes.js";
 import { addRecordResultEntries } from "./llvm/record-results.js";
@@ -177,6 +178,58 @@ test("the runtime emitter and its descendants retain listener tracing", () => {
     { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
   ];
   check(mod, ["object:Events", `object:${RUNTIME_EMITTER_CLASS}`]);
+});
+
+test("a slot typed as a subclass leads to what the runtime holds for its base", () => {
+  const mod = module();
+  const of = (className: string): IrType => ({ kind: "object", className });
+  mod.classes = [
+    { name: RUNTIME_EMITTER_CLASS, loc, fields: [] },
+    { name: "%Writable", loc, base: RUNTIME_EMITTER_CLASS, fields: [] },
+    { name: "Events", loc, base: RUNTIME_EMITTER_CLASS, fields: [] },
+    { name: "Deeper", loc, base: "Events", fields: [] },
+    { name: RUNTIME_EVENT_TARGET_CLASS, loc, fields: [] },
+    { name: "Board", loc, base: RUNTIME_EVENT_TARGET_CLASS, fields: [] },
+    { name: "Local", loc, localCaptures: [], fields: [] },
+    { name: "Inner", loc, base: "Local", fields: [] },
+    { name: "Plain", loc, fields: [{ name: "size", type: F64 }] },
+    { name: "HoldsDeeper", loc, fields: [{ name: "events", type: of("Deeper") }] },
+  ];
+  // No field is ever written after construction: the listeners, the engine
+  // state and the class value reach anything, whatever the edges' mutability.
+  mod.records = [
+    shape("holdsSink", [of("%Writable")]),
+    shape("holdsEvents", [of("Events")]),
+    shape("holdsBoard", [of("Board")]),
+    shape("holdsInner", [of("Inner")]),
+    shape("holdsHolder", [ref("holdsSink"), F64]),
+    shape("holdsPlain", [of("Plain")]),
+  ];
+  checkExact(mod, [
+    `object:${RUNTIME_EMITTER_CLASS}`,
+    "object:%Writable",
+    "object:Events",
+    "object:Deeper",
+    `object:${RUNTIME_EVENT_TARGET_CLASS}`,
+    "object:Board",
+    "object:Local",
+    "object:Inner",
+    "object:HoldsDeeper",
+    "record:holdsSink",
+    "record:holdsEvents",
+    "record:holdsBoard",
+    "record:holdsInner",
+    "record:holdsHolder",
+  ]);
+  expect(explainCycle(mod, "record:holdsSink")).toEqual({
+    kind: "intrinsic",
+    steps: [
+      { from: "record:holdsSink", label: { kind: "field", field: "field0", mutable: false } },
+    ],
+    owner: "object:%Writable",
+    field: "<listeners>",
+    holds: "func",
+  });
 });
 
 test("separate calls do not share mutable fixed-point state", () => {
@@ -898,4 +951,127 @@ test("a hierarchy member's explanation names the member that needs the header", 
       holds: "func",
     },
   });
+});
+
+test("a weak-collection key is traced with every type that can reach it", () => {
+  const plain = module();
+  plain.records = [shape("key", [F64]), shape("holder", [ref("key")]), shape("other", [F64])];
+  checkExact(plain, []);
+  const keyed = structuredClone(plain);
+  keyed.weakKeys = ["record:key"];
+  checkExact(keyed, ["record:holder", "record:key"]);
+  expect(explainCycle(keyed, "record:holder")).toEqual({
+    kind: "intrinsic",
+    steps: [{ from: "record:holder", label: { kind: "field", field: "field0", mutable: false } }],
+    owner: "record:key",
+    field: "",
+    holds: "weakKey",
+  });
+  // A unit the module does not have names nothing.
+  const stale = structuredClone(plain);
+  stale.weakKeys = ["record:gone", "object:Gone"];
+  checkExact(stale, []);
+});
+
+test("a weak key of a class type can be an instance of any class in its subtree", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Root", loc, fields: [] },
+    { name: "Base", loc, base: "Root", fields: [] },
+    { name: "Derived", loc, base: "Base", fields: [] },
+    { name: "Apart", loc, fields: [] },
+  ];
+  mod.records = [
+    shape("holdsDerived", [{ kind: "object", className: "Derived" }]),
+    shape("holdsApart", [{ kind: "object", className: "Apart" }]),
+  ];
+  mod.weakKeys = ["object:Base"];
+  // Root shares the hierarchy's layout; a Derived can be the key.
+  checkExact(mod, ["object:Root", "object:Base", "object:Derived", "record:holdsDerived"]);
+});
+
+test("a checked weak key can be any value the program converts to a checked value", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Boxed", loc, fields: [] },
+    { name: "Kept", loc, fields: [] },
+  ];
+  mod.records = [
+    shape("converted", [arrayOf({ kind: "union", unionId: "arm" })]),
+    shape("inner", [F64]),
+    shape("typedOnly", [{ kind: "object", className: "Kept" }]),
+  ];
+  mod.unions = [{ id: "arm", arms: [ref("inner"), { kind: "object", className: "Boxed" }] }];
+  const convert: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "dynFrom", value: value(ref("converted")), type: DYN, loc },
+    loc,
+  };
+  mod.functions[0]!.body.push(convert);
+  checkExact(mod, []);
+  const keyed = structuredClone(mod);
+  keyed.weakKeys = ["*"];
+  // The conversion reaches the record's fields, container elements and
+  // union arms; a type no conversion names keeps its layout.
+  checkExact(keyed, ["object:Boxed", "record:converted", "record:inner"], ["arm"]);
+});
+
+test("a unit traced only through weak keys is told apart from one on a cycle of its own", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Root", loc, fields: [] },
+    { name: "Leaf", loc, base: "Root", fields: [] },
+    // One member of this hierarchy holds a callback; the other holds a key.
+    { name: "Cell", loc, fields: [{ name: "key", type: ref("key") }] },
+    {
+      name: "HookCell",
+      loc,
+      base: "Cell",
+      fields: [
+        { name: "key", type: ref("key") },
+        { name: "hook", type: funcOf([], VOID) },
+      ],
+    },
+  ];
+  mod.records = [
+    shape("key", [F64]),
+    shape("holder", [ref("key")]),
+    // Reaches the key and a callback: on a cycle with or without the marks.
+    shape("listener", [ref("key"), funcOf([], VOID)]),
+    shape("holdsListener", [ref("listener")]),
+    shape("other", [F64]),
+  ];
+  // The traced shapes that cannot be on a cycle of counted references.
+  const weakOnly = (m: IrModule): string[] => {
+    const cyclic = computeCyclic(m)!;
+    return [...computeTraced(m).shapes].filter((key) => !cyclic.has(key)).sort();
+  };
+  // No weak collection: nothing is asked twice.
+  expect(computeCyclic(mod)).toBeNull();
+  const keyed = structuredClone(mod);
+  keyed.weakKeys = ["record:key", "object:Leaf"];
+  checkExact(keyed, [
+    "object:Root",
+    "object:Leaf",
+    "object:Cell",
+    "object:HookCell",
+    "record:key",
+    "record:holder",
+    "record:listener",
+    "record:holdsListener",
+  ]);
+  // Every class of a weak-key hierarchy has the header; a class answers for
+  // what its own objects hold, so Cell is not on a cycle although HookCell,
+  // which shares its header, is.
+  expect(weakOnly(keyed)).toEqual([
+    "object:Cell",
+    "object:Leaf",
+    "object:Root",
+    "record:holder",
+    "record:key",
+  ]);
+  // A key type that is on a cycle of its own stays the collector's.
+  const cyclic = structuredClone(mod);
+  cyclic.weakKeys = ["record:listener"];
+  expect(weakOnly(cyclic)).toEqual(["object:Cell"]);
 });

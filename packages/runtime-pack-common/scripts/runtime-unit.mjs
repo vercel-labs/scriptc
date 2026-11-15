@@ -28,21 +28,24 @@ function hostHelperPackage() {
   return null;
 }
 
+/** The host LLVM helper's package path when SCRIPTC_LLVM_CODEGEN is not set,
+ * or null on a host with no helper package. */
+export function hostHelperPath(repoRoot) {
+  const pkg = hostHelperPackage();
+  if (pkg === null) return null;
+  return join(
+    repoRoot,
+    "packages",
+    pkg,
+    "bin",
+    process.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
+  );
+}
+
 export async function resolveRuntimeUnitHelper(repoRoot, triple) {
   if (process.env.SCRIPTC_RUNTIME_BITCODE === "0") return null;
   const explicit = process.env.SCRIPTC_LLVM_CODEGEN;
-  const pkg = hostHelperPackage();
-  const helper =
-    explicit ??
-    (pkg === null
-      ? null
-      : join(
-          repoRoot,
-          "packages",
-          pkg,
-          "bin",
-          process.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
-        ));
+  const helper = explicit ?? hostHelperPath(repoRoot);
   if (helper === null) return null;
   try {
     await access(helper, constants.X_OK);

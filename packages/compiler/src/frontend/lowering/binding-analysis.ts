@@ -1,182 +1,10 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
 import { isGenericCallableMemberType } from "../type-mapper.js";
-
-/** True when nothing in `sym`'s DECLARING FILE ever writes it after the
- * initializer: assignments (plain and compound, destructuring targets
- * included), ++/--, for-of/for-in expression targets, a `var` in a
- * for-of/for-in head, and redeclarations that initialize all count.
- * Sound file-locally for module-scope bindings because ESM import
- * bindings are read-only — no other file can write one. Cached per
- * symbol (the scan walks the whole file once). */
-export function bindingNeverReassigned(
-  lowerer: Lowerer,
-  sym: ts.Symbol,
-  decl: ts.Node,
-  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined = (ident) =>
-    lowerer.resolveValueSymbol(ident),
-): boolean {
-  const cached = lowerer.neverReassignedCache.get(sym);
-  if (cached !== undefined) return cached;
-  const written = fileWritesBinding(sym, ts.getSourceFileOfNode(decl), resolve);
-  lowerer.neverReassignedCache.set(sym, !written);
-  return !written;
-}
-
-/** True when something in `file` writes `sym` (the writes
- * bindingNeverReassigned counts), resolving identifiers with `resolve`.
- * With `afterPos`, a write counts only when it can run after that source
- * position: a top-level write before it is already reflected in the value
- * Node copies at an export statement there, while a write inside a
- * function or class body runs on its own schedule and always counts. */
-export function fileWritesBinding(
-  sym: ts.Symbol,
-  file: ts.SourceFile,
-  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
-  afterPos?: number,
-): boolean {
-  if (declarationsWriteBinding(sym)) return true;
-  let written = false;
-  /** Whether a write at `n` can execute after `afterPos`. */
-  const lateEnough = (n: ts.Node): boolean => {
-    if (afterPos === undefined || n.getStart(file) > afterPos) return true;
-    for (let p = n.parent; p !== undefined && p !== file; p = p.parent) {
-      if (
-        ts.isFunctionLike(p) ||
-        ts.isClassDeclaration(p) ||
-        ts.isClassExpression(p) ||
-        ts.isClassStaticBlockDeclaration(p)
-      )
-        return true;
-    }
-    return false;
-  };
-  // Text pre-check keeps the file walk cheap: only same-named
-  // identifiers pay a symbol resolution.
-  const symText = ts.symbolName(sym);
-  const namesSym = (e: ts.Node): boolean =>
-    ts.isIdentifier(e) && e.text === symText && resolve(e) === sym;
-  const scanTarget = (t: ts.Expression): void => {
-    let e: ts.Expression = t;
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (namesSym(e)) {
-      written = true;
-      return;
-    }
-    // Destructuring assignment targets: any identifier inside the LHS
-    // pattern could be the binding — over-approximate by scanning.
-    if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
-      const walk = (n: ts.Node): void => {
-        if (namesSym(n)) written = true;
-        else ts.forEachChild(n, walk);
-      };
-      walk(e);
-    }
-  };
-  const visit = (n: ts.Node): void => {
-    if (written) return;
-    if (ts.isBinaryExpression(n)) {
-      const k = n.operatorToken.kind;
-      if (
-        k >= ts.SyntaxKind.FirstAssignment &&
-        k <= ts.SyntaxKind.LastAssignment &&
-        lateEnough(n)
-      ) {
-        scanTarget(n.left);
-      }
-    } else if (
-      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
-      (n.operator === ts.SyntaxKind.PlusPlusToken ||
-        n.operator === ts.SyntaxKind.MinusMinusToken) &&
-      lateEnough(n)
-    ) {
-      scanTarget(n.operand as ts.Expression);
-    } else if (
-      (ts.isForOfStatement(n) || ts.isForInStatement(n)) &&
-      !ts.isVariableDeclarationList(n.initializer) &&
-      lateEnough(n)
-    ) {
-      scanTarget(n.initializer as ts.Expression);
-    }
-    ts.forEachChild(n, visit);
-  };
-  ts.forEachChild(file, visit);
-  return written;
-}
-
-/** True when `sym`'s own declarations write it after it holds a value:
- * a `var` in a for-in or for-of head is written on every iteration, a
- * `var` with an initializer inside a loop body is written each time the
- * body runs, and a binding declared more than once (`var x = 1; ... var x
- * = 2;`, a parameter or function declaration that a `var` redeclares) is
- * written by each initializing declaration that runs. Only value
- * declarations count, and of functions only implementations: overload
- * signatures have no body. A redeclaration without an initializer is
- * counted too, which only over-approximates. */
-function declarationsWriteBinding(sym: ts.Symbol): boolean {
-  let values = 0;
-  let initializing = 0;
-  for (const d of sym.declarations) {
-    let root: ts.Node = d;
-    while (
-      root.parent !== undefined &&
-      (ts.isBindingElement(root) ||
-        ts.isObjectBindingPattern(root) ||
-        ts.isArrayBindingPattern(root))
-    )
-      root = root.parent;
-    if (ts.isVariableDeclaration(root)) {
-      const list = root.parent;
-      if (
-        ts.isVariableDeclarationList(list) &&
-        (list.flags & ts.NodeFlags.BlockScoped) === 0 &&
-        (ts.isForInStatement(list.parent) || ts.isForOfStatement(list.parent))
-      )
-        return true;
-      values++;
-      if (root.initializer !== undefined) {
-        if (insideLoopBody(root)) return true;
-        initializing++;
-      }
-    } else if (
-      ts.isParameter(root) ||
-      (ts.isFunctionDeclaration(d) && d.body !== undefined) ||
-      ts.isClassDeclaration(d)
-    ) {
-      values++;
-      initializing++;
-    }
-  }
-  return values > 1 && initializing > 0;
-}
-
-/** Whether a declaration sits in the body of a loop of its own function,
- * where it runs once per iteration. */
-function insideLoopBody(node: ts.Node): boolean {
-  let child = node;
-  for (let parent = node.parent; parent !== undefined; parent = parent.parent) {
-    if (
-      ts.isFunctionLike(parent) ||
-      ts.isClassStaticBlockDeclaration(parent) ||
-      ts.isSourceFile(parent)
-    )
-      return false;
-    if (
-      (ts.isForStatement(parent) ||
-        ts.isForInStatement(parent) ||
-        ts.isForOfStatement(parent) ||
-        ts.isWhileStatement(parent) ||
-        ts.isDoStatement(parent)) &&
-      parent.statement === child
-    )
-      return true;
-    child = parent;
-  }
-  return false;
-}
-
+export { bindingNeverReassigned, fileWritesBinding, type BindingScope } from "../binding-writes.js";
 /** An identifier that reads or declares a binding (not a member name).
  * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
  * the identifier in a NAME position: the checker answers the MEMBER's symbol
@@ -200,32 +28,12 @@ export function isValueIdentifier(node: ts.Identifier): boolean {
   return true;
 }
 
-/** Strips the value-preserving wrappers off an expression: parens,
- * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
- * remains is the expression that actually evaluates. */
-export function stripValueWrappers(e: ts.Expression): ts.Expression {
-  let v: ts.Expression = e;
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(v) ||
-      ts.isNonNullExpression(v) ||
-      ts.isAsExpression(v) ||
-      ts.isSatisfiesExpression(v) ||
-      ts.isTypeAssertion(v)
-    ) {
-      v = v.expression;
-      continue;
-    }
-    return v;
-  }
-}
-
 /** The nullish unit `e` provably evaluates to: a bare null/undefined
  * literal (assertion-wrapped — `null as any`, `null!`), or a read of a
  * registered NULLISH binding (nullishGenericBindingUnitOf). Null when
  * the value could be anything else. */
 export function nullishExprUnitOf(lowerer: Lowerer, e: ts.Expression): "null" | "undefined" | null {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (v.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (ts.isIdentifier(v)) {
     if (v.text === "undefined" && (lowerer.typeOf(v).flags & ts.TypeFlags.Undefined) !== 0) {
@@ -437,7 +245,7 @@ function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): bool
  * unobservable. Bare identifier reads stay OUT (a read above a `let`
  * declaration is a TDZ throw Node WOULD serve). */
 function sideEffectFreeValueExpr(lowerer: Lowerer, e: ts.Expression): boolean {
-  const v = stripValueWrappers(e);
+  const v = withoutParenthesesTypeWrappers(e);
   if (ts.isArrowFunction(v) || ts.isFunctionExpression(v)) return true;
   if (
     ts.isLiteralExpression(v) ||
@@ -540,8 +348,30 @@ export function deadUnmappableBinding(
   for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (!dead) break;
     if (file.isDeclarationFile) continue;
+    // The walk acts on identifiers spelled like the binding and on nothing
+    // else, so a file that spells the name nowhere is not walked.
+    if (!lowerer.facts.maySpellIdentifier(file, symText)) continue;
     ts.forEachChild(file, visit);
   }
   if (dead) lowerer.deadBindings.add(sym);
   return dead;
+}
+
+/** Whether an access is assigned, updated or deleted. */
+export function isWriteTarget(access: ts.Expression): boolean {
+  let node: ts.Node = access;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    );
+  return ts.isDeleteExpression(parent);
 }

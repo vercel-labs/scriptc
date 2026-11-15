@@ -1,0 +1,7 @@
+- **Unassigned fields:** A field that a method reads before the constructor has assigned it holds `undefined`, as in Node.js, when construction calls that method through `this`.
+  This covers a method the constructor calls before the assignment, the override a derived class supplies for a method its base constructor calls, and a callback written in either that captures `this`.
+  `typeof`, comparisons with `undefined` or `null`, truthiness tests, `??`, string conversion and `console.log` see the `undefined`.
+  Arithmetic on an unassigned number field gives `NaN`, and reading a member of an unassigned object, array or string field throws a `TypeError`, as in Node.js.
+  Any other use that needs the declared type throws a `TypeError` for an object, array, string or bigint field, and reads `NaN` for a number field and `false` for a boolean field, where Node.js passes `undefined` on.
+  When a constructor hands the instance to other code before it has assigned a field, such as `register(this)`, a read of that field in that code does not see `undefined`: a number reads `0`, a boolean reads `false`, and using an object, array or string field stops the program.
+  Assign the fields first, or include `undefined` in the field's type.

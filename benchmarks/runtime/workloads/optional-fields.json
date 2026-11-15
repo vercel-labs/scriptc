@@ -2,5 +2,6 @@
   "entry": "workloads/optional-fields.ts",
   "args": [
     "10"
-  ]
+  ],
+  "scaleArg": 0
 }

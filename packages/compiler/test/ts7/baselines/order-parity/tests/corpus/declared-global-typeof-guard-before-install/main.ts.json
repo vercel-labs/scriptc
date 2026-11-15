@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/declared-global-typeof-guard-before-install/probe.ts",
+  "<repo>/tests/corpus/declared-global-typeof-guard-before-install/install.ts",
+  "<repo>/tests/corpus/declared-global-typeof-guard-before-install/main.ts"
+ ],
+ "diags": []
+}

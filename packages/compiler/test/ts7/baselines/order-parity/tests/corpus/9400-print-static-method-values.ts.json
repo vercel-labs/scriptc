@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9400-print-static-method-values.ts"
+ ],
+ "diags": []
+}

@@ -91,10 +91,20 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows); /* +1; explicit 
 ScrStr *scr_url_to_path_w32(ScrUrl *u);      /* +1, or throws */
 ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
 
-/* URL.revokeObjectURL(id): the id is already coerced to a string. A
- * compiled program registers no blob URLs, so Node's registry lookup
- * always misses and the call answers undefined; the argument is borrowed
- * (the caller releases it). */
+/* Object URLs (URL.createObjectURL): a Blob or File is registered under a
+ * fresh "blob:nodedata:<uuid v4>" and that id answers; any other value
+ * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. The registry is per
+ * thread (Node's is per environment) and holds one reference to every id
+ * and blob until revokeObjectURL (or the thread's cleanup) drops it.
+ * scr_url_lookup_object_url answers the registered blob (+1) for exactly
+ * this serialized URL (fetch's request URL, no fragment), or NULL. */
+ScrStr *scr_url_create_object_url(ScrDyn *blob);     /* +1, or throws */
+ScrDyn *scr_url_lookup_object_url(const ScrStr *id); /* +1 or NULL */
+
+/* URL.revokeObjectURL(id): the id is already coerced to a string; the
+ * registration whose id is exactly that string is dropped, and any other
+ * string misses (Node keys its registry by the id it answered). The
+ * argument is borrowed (the caller releases it); never throws. */
 void scr_url_revoke_object_url(ScrStr *id);
 
 /* ── URLSearchParams (scr_url.c) ─────────────────────────────────────

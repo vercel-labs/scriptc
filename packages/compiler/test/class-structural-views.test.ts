@@ -333,14 +333,17 @@ console.log(button.presses);
   expect(kinds["button"]).toBe("object");
 });
 
-test("a data-only anonymous type keeps the native width copy", async () => {
+test("a data-only anonymous type keeps the instance it names", async () => {
   const kinds = await globalKinds(`
 class Point { x = 1; y = 2; }
 const point = new Point();
 const copy: { x: number; y: number } = point;
 console.log(copy.x + copy.y);
 `);
-  expect(kinds["copy"]).toBe("record");
+  // Every member of the record is a field of the instance at the same type,
+  // so the binding holds the instance: a write through either name is seen
+  // through the other, and JSON keeps the fields Node's object carries.
+  expect(kinds["copy"]).toBe("object");
   expect(kinds["point"]).toBe("object");
 });
 

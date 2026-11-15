@@ -14,7 +14,14 @@ name: Profile refresh
 # the committed layout's and match fewer of the functions builds on main
 # compile, so refreshing the layout is a separate change.
 #
-# Pushes made with the repository's default token do not start workflows, so
+# The repository accepts only signed commits on every branch, and a commit
+# made with git on the runner has no signature: the push was refused (GH013)
+# on every run from the day this job was added. The commit is therefore made
+# through GitHub's API, which signs it: on a scratch branch at the commit the
+# profile was collected on, and the pull request's branch is then pointed at
+# it, so the branch is always that commit plus the profile.
+#
+# Changes made with the repository's default token do not start workflows, so
 # a pull request this job opens with it carries no CI run. Configure a
 # PROFILE_REFRESH_TOKEN secret (a fine-grained token with contents and pull
 # request write access) to have the pull request run CI as any other.
@@ -44,14 +51,14 @@ jobs:
     # profile (below) about as long as the CI profile check's.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -89,7 +96,6 @@ jobs:
       - name: Open the pull request
         env:
           GH_TOKEN: ${{ secrets.PROFILE_REFRESH_TOKEN || github.token }}
-          PUSH_TOKEN: ${{ secrets.PROFILE_REFRESH_TOKEN || github.token }}
         run: |
           set -euo pipefail
           if git diff --quiet -- packages/compiler/native/cli.profdata.gz; then
@@ -99,12 +105,50 @@ jobs:
           summary=$(grep -m1 '^native compiler profile: ' "$RUNNER_TEMP/profile-check.log" || true)
           test -n "$summary" || { echo "the build printed no profile summary"; exit 1; }
           branch=refresh-native-profile
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch --force-create "$branch"
-          git add packages/compiler/native/cli.profdata.gz
-          git commit -m "Refresh the native compiler profile"
-          git push --force "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          profile=packages/compiler/native/cli.profdata.gz
+          refs="repos/$GITHUB_REPOSITORY/git/refs"
+          # One branch by its exact name. A read of "$refs/heads/<name>"
+          # answers with every branch that starts with the name when none
+          # has it, and the scratch branch starts with the branch's name.
+          ref="repos/$GITHUB_REPOSITORY/git/ref"
+          head=$(git rev-parse HEAD)
+          # The commit: the checked-out commit of main plus the profile, made
+          # by GitHub on a scratch branch that this step removes again.
+          scratch="$branch-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh api --method POST "$refs" -f ref="refs/heads/$scratch" -f sha="$head" > /dev/null
+          trap 'gh api --method DELETE "$refs/heads/$scratch" > /dev/null || true' EXIT
+          base64 -w0 "$profile" > "$RUNNER_TEMP/profile.b64"
+          jq -n --rawfile contents "$RUNNER_TEMP/profile.b64" \
+            --arg repository "$GITHUB_REPOSITORY" --arg branch "$scratch" --arg head "$head" --arg path "$profile" '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: { input: {
+                branch: { repositoryNameWithOwner: $repository, branchName: $branch },
+                expectedHeadOid: $head,
+                message: { headline: "Refresh the native compiler profile" },
+                fileChanges: { additions: [{ path: $path, contents: $contents }] }
+              } }
+            }' > "$RUNNER_TEMP/commit.json"
+          # The request carries the whole profile and its answer can be lost.
+          # The scratch branch says whether the commit was made: it moves off
+          # the checked-out commit exactly when it was.
+          commit=
+          for attempt in 1 2 3; do
+            gh api graphql --input "$RUNNER_TEMP/commit.json" > /dev/null || true
+            commit=$(gh api "$ref/heads/$scratch" --jq .object.sha)
+            if [ "$commit" != "$head" ]; then break; fi
+            commit=
+            sleep 10
+          done
+          test -n "$commit" || { echo "GitHub did not make the commit"; exit 1; }
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit" --jq .commit.verification.verified)
+          test "$verified" = true || { echo "commit $commit is not signed"; exit 1; }
+          # Point the pull request's branch at it. An open pull request keeps
+          # its number and shows the new profile on the new commit of main.
+          if gh api "$ref/heads/$branch" > /dev/null 2>&1; then
+            gh api --method PATCH "$refs/heads/$branch" -f sha="$commit" -F force=true > /dev/null
+          else
+            gh api --method POST "$refs" -f ref="refs/heads/$branch" -f sha="$commit" > /dev/null
+          fi
           if gh pr list --head "$branch" --state open --json number --jq '.[].number' | grep -q .; then
             echo "updated the open pull request"
             exit 0

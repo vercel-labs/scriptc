@@ -1,12 +1,18 @@
 /** The scriptc command line's commands and options. `CLI_OPTIONS` configures the argument
  * parser, `CLI_OPTION_DOCS` and `CLI_COMMANDS` describe every option and command, and the help
- * text and the MCP tools are both generated from these tables. */
+ * text and the MCP tools are both generated from these tables. They also decide which options a
+ * command line may set: a command refuses an option its row does not name
+ * (`firstUnacceptedOption`), and a launcher fast path answers only for the options
+ * `CLI_FAST_PATHS` gives it. */
+
+import type { parseArgs } from "node:util";
 
 export const CLI_OPTIONS = {
   out: { type: "string", short: "o" },
   emit: { type: "string" },
   print: { type: "string" },
   "fail-on": { type: "string" },
+  coverage: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
@@ -26,15 +32,21 @@ export const CLI_OPTIONS = {
   "dry-run": { type: "boolean", default: false },
   "keep-llvm": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },
+  "emit-lowered": { type: "string" },
+  "from-lowered": { type: "string" },
+  "from-lowered-accept": { type: "string", multiple: true },
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  define: { type: "string", multiple: true },
   "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
+  "copy-warning": { type: "boolean", default: true },
+  "key-order-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -50,6 +62,39 @@ export const CLI_OPTIONS = {
 
 /** A command-line option, named as `parseArgs` and `--<name>` spell it. */
 export type CliOptionName = keyof typeof CLI_OPTIONS;
+
+/** The option values `parseArgs` reads from a command line with `CLI_OPTIONS`. */
+export type CliOptionValues = ReturnType<
+  typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
+>["values"];
+
+/** Every option, in the table's order. */
+const CLI_OPTION_NAMES = Object.keys(CLI_OPTIONS) as CliOptionName[];
+
+/** Whether the command line set `option`: a string option has a value, a repeatable one has at
+ * least one, and a boolean one differs from its default. `--no-strip` and `--keep-llvm` spell
+ * the defaults and set nothing. */
+export function cliOptionIsSet(values: CliOptionValues, option: CliOptionName): boolean {
+  const value = values[option];
+  if (value === undefined) return false;
+  if (typeof value === "boolean") {
+    const config: { type: string; default?: boolean } = CLI_OPTIONS[option];
+    return value !== config.default;
+  }
+  return typeof value === "string" || value.length > 0;
+}
+
+/** The first option, in the table's order, that the command line set and `accepted` does not
+ * name; undefined when `accepted` names every option it set. */
+export function firstCliOptionOutside(
+  values: CliOptionValues,
+  accepted: readonly CliOptionName[],
+): CliOptionName | undefined {
+  for (const option of CLI_OPTION_NAMES) {
+    if (!accepted.includes(option) && cliOptionIsSet(values, option)) return option;
+  }
+  return undefined;
+}
 
 /** A term in the help text, such as a flag or a command's syntax, and the lines that explain it. */
 export interface CliHelpEntry {
@@ -102,15 +147,32 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
   "fail-on": {
     entries: [
       {
-        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>",
+        term: "--fail-on <blockers|divergences|dynamic|dynamic-slots|type-claims|node-islands|eager-node-islands|island-gaps>",
         help: [
           "coverage only: exit 1 when the entry path has blockers",
           "(a build would fail), or also when it has Node",
           "divergences, likely-hot functions that use untyped",
-          "values (SC6101), dynamic slots (SC6104), any Node",
+          "values (SC6101), dynamic slots (SC6104), checked",
+          "conversions that trust an unverified type, any Node",
           "island (eager-node-islands is the same until deferred",
           "evaluation lands), or a gap island (a package scriptc",
           "should compile but cannot yet)",
+        ],
+      },
+    ],
+  },
+  coverage: {
+    entries: [
+      {
+        term: "--coverage <full|reached>",
+        help: [
+          "coverage only: how much of the program to analyze.",
+          "full (the default) also lowers code the entry never",
+          "reaches. reached skips that pass, for a large program",
+          "whose analysis would otherwise run out of memory; its",
+          "report has no unreached group, counts reached",
+          "statements only, and is not comparable with a full",
+          "report",
         ],
       },
     ],
@@ -316,6 +378,44 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "emit-lowered": {
+    entries: [
+      {
+        term: "--emit-lowered <file>",
+        help: [
+          "compiler development: also write the lowered program",
+          "(the IR the frontend hands the backend, with its",
+          "sources, warnings and the inputs it was lowered from)",
+          "to the file (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered": {
+    entries: [
+      {
+        term: "--from-lowered <file>",
+        help: [
+          "compiler development: build from a file --emit-lowered",
+          "wrote instead of running the frontend. The build is",
+          "refused when the compiler, the options or an input",
+          "differ from the ones the file records (build only)",
+        ],
+      },
+    ],
+  },
+  "from-lowered-accept": {
+    entries: [
+      {
+        term: "--from-lowered-accept <kind[,kind…]>",
+        help: [
+          "build from the file although the named kinds differ",
+          "(compiler, options, inputs); each difference is",
+          "reported on stderr (repeatable)",
+        ],
+      },
+    ],
+  },
   sanitize: { entries: [{ term: "--sanitize", help: ["build with ASan + runtime RC audit"] }] },
   ffi: {
     entries: [
@@ -339,6 +439,23 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
           '"pkg..." also names every package pkg depends on).',
           "Packages that fail preflight are refused with a",
           "diagnostic. Eligible dependencies compile automatically.",
+          "A name the program does not load selects nothing; one",
+          "installed nowhere the program could load it from is",
+          "SC8006.",
+        ],
+      },
+    ],
+  },
+  define: {
+    entries: [
+      {
+        term: "--define <process.env.NAME=value>",
+        help: [
+          "run the executable with the environment variable set to",
+          "the value, a JSON string, whatever its environment holds",
+          "(repeatable): --define='process.env.NODE_ENV=\"production\"'.",
+          "JavaScript if statements it decides compile only their",
+          "taken branch",
         ],
       },
     ],
@@ -388,8 +505,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "tier policy (default: auto). static-only keeps every",
           "construct without a static lowering a compile error, so",
-          "the program has no dynamic-tier demotions. Both modes",
-          "currently compile identically",
+          "the program has no dynamic-tier demotions; auto compiles",
+          "such a construct in the dynamic tier where it can",
         ],
       },
     ],
@@ -418,6 +535,30 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "copy-warning": {
+    entries: [
+      {
+        term: "--no-copy-warning",
+        help: [
+          "build and coverage: leave out SC6001, the warning at",
+          "conversions that copy a value the program can tell from",
+          "the original",
+        ],
+      },
+    ],
+  },
+  "key-order-warning": {
+    entries: [
+      {
+        term: "--no-key-order-warning",
+        help: [
+          "build and coverage: leave out SC6014, the warning for a",
+          "record type whose objects create their keys in orders",
+          "the compiler does not follow per object",
+        ],
+      },
+    ],
+  },
   "node-islands": {
     entries: [
       {
@@ -437,9 +578,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--node-island <pkg-or-path>",
         help: [
-          "mark an npm package or one of your modules (a path or",
-          "glob) to run in a Node island (repeatable, comma lists;",
-          "report-only)",
+          "mark an npm package (its name, whatever it looks like:",
+          "highlight.js is a package) or one of your modules (a",
+          "path or glob; ./file.js is always a file) to run in a",
+          "Node island (repeatable, comma lists; report-only)",
         ],
       },
     ],
@@ -450,7 +592,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         term: "--native <pkg>",
         help: [
           "require an npm package to compile natively; outside the",
-          "native subset it is SC8003 (repeatable; report-only)",
+          "native subset it is SC8003, and a name the program does",
+          "not load is SC8006 (repeatable)",
         ],
       },
     ],
@@ -534,6 +677,10 @@ export interface CliCommand {
   readonly usage: readonly CliHelpEntry[];
   readonly positionals: readonly CliPositional[];
   readonly options: readonly CliOptionName[];
+  /** Options the command neither uses nor refuses: a command line may set them and nothing
+   * changes. These are the options the command's hand-written check left out before it read
+   * this table. Removing a name makes the option a usage error for the command. */
+  readonly toleratedOptions: readonly CliOptionName[];
   readonly requiredOptions: readonly CliOptionName[];
   /** Whether `--print=diagnostics` makes the command write the JSON diagnostics envelope. */
   readonly diagnostics: boolean;
@@ -576,10 +723,13 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "sanitize",
   "ffi",
   "npm-static",
+  "define",
   "shape-overlay",
   "provenance-sources",
   "tier",
   "dynamic-tier-warning",
+  "copy-warning",
+  "key-order-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -595,7 +745,14 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     positionals: [ENTRY],
-    options: [...EXECUTABLE_OPTIONS, "print"],
+    options: [
+      ...EXECUTABLE_OPTIONS,
+      "print",
+      "emit-lowered",
+      "from-lowered",
+      "from-lowered-accept",
+    ],
+    toleratedOptions: ["profile"],
     requiredOptions: [],
     diagnostics: true,
     effect: "write",
@@ -606,6 +763,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     usage: [{ term: "scriptc run <file.ts|.js> [options]", help: ["compile and run"] }],
     positionals: [ENTRY],
     options: EXECUTABLE_OPTIONS,
+    toleratedOptions: ["profile"],
     requiredOptions: [],
     diagnostics: false,
     effect: "execute",
@@ -627,17 +785,32 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     options: [
       "print",
       "fail-on",
+      "coverage",
       "ffi",
       "npm-static",
+      "define",
       "provenance-sources",
       "external-types",
       "tier",
       "explain-dynamic",
       "dynamic-tier-warning",
+      "copy-warning",
+      "key-order-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
       "wasm",
+    ],
+    toleratedOptions: [
+      "out",
+      "backend",
+      "optimization",
+      "libnode",
+      "keep-llvm",
+      "emit-ir",
+      "sanitize",
+      "shape-overlay",
+      "profile",
     ],
     requiredOptions: [],
     diagnostics: true,
@@ -662,6 +835,13 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     ],
     positionals: [],
     options: ["profile", "out", "emit-ir", "sanitize", "keep-llvm"],
+    toleratedOptions: [
+      "libnode",
+      "shape-overlay",
+      "provenance-sources",
+      "dynamic-tier-warning",
+      "wasm",
+    ],
     requiredOptions: ["profile"],
     diagnostics: false,
     effect: "write",
@@ -701,6 +881,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     options: ["range", "dry-run"],
+    toleratedOptions: [],
     requiredOptions: [],
     diagnostics: false,
     effect: "write",
@@ -713,6 +894,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     ],
     positionals: [],
     options: [],
+    toleratedOptions: [],
     requiredOptions: [],
     diagnostics: false,
     effect: "read",
@@ -738,6 +920,14 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     options: ["optimization", "sanitize"],
+    toleratedOptions: [
+      "libnode",
+      "range",
+      "dry-run",
+      "shape-overlay",
+      "dynamic-tier-warning",
+      "wasm",
+    ],
     requiredOptions: [],
     diagnostics: false,
     effect: "write",
@@ -767,11 +957,81 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       },
     ],
     options: ["out", "sparse"],
+    toleratedOptions: ["libnode", "range", "dry-run", "shape-overlay", "dynamic-tier-warning"],
     requiredOptions: ["out"],
     diagnostics: false,
     effect: "write",
   },
 ];
+
+/** Options any command line may carry: they answer before a command runs. */
+const GLOBAL_OPTIONS: readonly CliOptionName[] = ["help", "version"];
+
+/** The first option the command line set that the command named `name` neither takes nor
+ * tolerates, or undefined when there is none. `--help`, `--version` and the flags among the
+ * command's own `argv` count as taken. */
+export function firstUnacceptedOption(
+  name: string,
+  values: CliOptionValues,
+): CliOptionName | undefined {
+  const command = CLI_COMMANDS.find((candidate) => candidate.name === name);
+  if (command === undefined) throw new Error(`no command ${name}`);
+  const flags = command.argv.filter((arg) => arg.startsWith("--")).map((arg) => arg.slice(2));
+  return firstCliOptionOutside(values, [
+    ...command.options,
+    ...command.toleratedOptions,
+    ...GLOBAL_OPTIONS,
+    ...CLI_OPTION_NAMES.filter((option) => flags.includes(option)),
+  ]);
+}
+
+/** A launcher fast path: an answer served from a cache without loading the compiler
+ * (packages/cli/src/bootstrap.ts). */
+export interface CliFastPath {
+  /** The commands it answers, by `CliCommand.name`. */
+  readonly commands: readonly string[];
+  /** The only options a command line it answers may set. Each is part of the fast path's cache
+   * key or handled by its code. A command line that sets any other option goes to the full
+   * CLI, which uses the option or refuses it. */
+  readonly options: readonly CliOptionName[];
+}
+
+export const CLI_FAST_PATHS = {
+  /** `build` and `run` restoring a linked executable. */
+  executable: {
+    commands: ["build", "run"],
+    options: [
+      "out",
+      "emit",
+      "backend",
+      "optimization",
+      "strip",
+      "static",
+      "detached-exit",
+      "libnode",
+      "large-pages",
+      "cpu-dispatch",
+      "keep-llvm",
+      "sanitize",
+      "ffi",
+      "npm-static",
+      "shape-overlay",
+      "dynamic-tier-warning",
+    ],
+  },
+  /** `coverage` replaying the verdict of an unchanged program. */
+  coverage: {
+    commands: ["coverage"],
+    options: [
+      "print",
+      "fail-on",
+      "coverage",
+      "dynamic-tier-warning",
+      "copy-warning",
+      "key-order-warning",
+    ],
+  },
+} satisfies Record<string, CliFastPath>;
 
 const USAGE_HELP_COLUMN = 44;
 const OPTION_HELP_COLUMN = 21;

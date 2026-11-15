@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/record-width-alias-literal.ts"
+ ],
+ "diags": []
+}

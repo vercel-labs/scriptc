@@ -249,3 +249,117 @@ console.log(kept, breaks);
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a switch over the unit keeps the units copy; ASCII strings skip its tests", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-unit-switch-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `
+function marks(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    switch (s.charCodeAt(i)) {
+      case 38:
+        n += 2;
+        break;
+      case 60:
+        n += 4;
+        break;
+      case 0x4e2d:
+        n += 100;
+        break;
+    }
+  }
+  return n;
+}
+function tagged(s: string, tag: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += s.charCodeAt(i);
+    switch (tag) {
+      case "a":
+        n += 1;
+        break;
+    }
+  }
+  return n;
+}
+function sum(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n += s.charCodeAt(i);
+  return n;
+}
+function from(s: string, start: number): number {
+  let n = 0;
+  let i = start;
+  for (; i < s.length; i++) n += s.charCodeAt(i);
+  return n + i;
+}
+function dashes(s: string, start: number): string {
+  let out = "";
+  let i = start;
+  for (; i < s.length; i++) if (s.charCodeAt(i) === 32) out += "-";
+  return out;
+}
+console.log(marks("a<b&c"), marks("中<文&é"), tagged("ab", "a"), tagged("é", "b"));
+console.log(sum("ab"), sum("é"), from("ab", 1), from("éé", 1), dashes("a b", 0), dashes("é é", 0));
+`,
+    );
+    const outPath = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!lowered.ok)
+      throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = (name: string): string => {
+      const head = `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{`;
+      return ll.match(new RegExp(`${head}[\\s\\S]*?\\n\\}`))![0];
+    };
+    // A switch over a number compares numbers: the loop has a units copy.
+    const marks = body("marks");
+    expect(marks).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    // The guard branches on the representation first. The ASCII side tests
+    // the range against the byte length and never reads the scan receiver;
+    // the other side publishes the string and tests its unit count.
+    const bytesAt = marks.search(/^bytes\.version\.bytes\d+:/m);
+    const unitsAt = marks.search(/^bytes\.version\.units\d+:/m);
+    const slowAt = marks.search(/^bytes\.version\.slow\d+:/m);
+    expect(bytesAt).toBeGreaterThan(0);
+    expect(unitsAt).toBeGreaterThan(bytesAt);
+    expect(slowAt).toBeGreaterThan(unitsAt);
+    expect(marks.slice(0, bytesAt)).not.toContain("@scr_str_scan");
+    const bytesSide = marks.slice(bytesAt, unitsAt);
+    expect(bytesSide).not.toContain("@scr_str_scan");
+    expect(bytesSide).not.toContain("bytes.version.fast.units");
+    expect(bytesSide).toMatch(/label %bytes\.version\.fast\d+, label %bytes\.version\.slow\d+/);
+    const unitsSide = marks.slice(unitsAt, slowAt);
+    expect(unitsSide).toContain("@scr_str_scan_units_for");
+    const toUnits = /label %bytes\.version\.fast\.units\d+, label %bytes\.version\.slow\d+/;
+    expect(unitsSide).toMatch(toUnits);
+    // A switch over a string compares strings: no units copy.
+    expect(body("tagged")).not.toContain("bytes.version.fast.units");
+    // A loop without a switch takes both representations through one
+    // sequence of tests behind the joined length.
+    const sum = body("sum");
+    expect(sum).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    expect(sum).toMatch(/^bytes\.version\.length\d+:/m);
+    expect(sum).not.toMatch(/^bytes\.version\.bytes\d+:/m);
+    // A `for` without an initializer is versioned as the while loop it
+    // stands for, behind a guard that decides the representation first.
+    const from = body("from");
+    expect(from).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    expect(from).toMatch(/^bytes\.version\.bytes\d+:/m);
+    expect(from).not.toMatch(/^bytes\.version\.length\d+:/m);
+    // One that appends to a string has no units copy, and no guard either:
+    // the guard would fail for every string that is not ASCII.
+    expect(body("dashes")).not.toContain("bytes.version");
+
+    const exe = join(dir, "main");
+    const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
+    if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
+    expect(execFileSync(exe, { encoding: "utf8" })).toBe("6 106 197 233\n195 233 100 235 - -\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

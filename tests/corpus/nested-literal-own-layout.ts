@@ -1,4 +1,4 @@
-// The outer literal's context (a union with a WeakRef arm) has no layout,
+// The outer literal's context (a union with a BigInt64Array arm) has no layout,
 // so it builds at its own type; its nested literals must follow that
 // layout instead of their own contextual one, and the outer coercion then
 // lifts the whole tree (headers into the index-signature record).
@@ -11,7 +11,7 @@ interface AuthResult {
   auth: ModelAuth;
   source?: string;
 }
-type Answer = AuthResult | WeakRef<object> | undefined;
+type Answer = AuthResult | BigInt64Array<ArrayBuffer> | undefined;
 function make(flag: boolean): Answer {
   return flag ? { auth: { headers: { Authorization: "Bearer x" } }, source: "env" } : undefined;
 }

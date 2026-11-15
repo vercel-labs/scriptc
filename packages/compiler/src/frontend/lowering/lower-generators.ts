@@ -24,6 +24,7 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 import { genResultRecord } from "../type-mapper.js";
 import { forOfVarTarget, lowerDestructuringAssign } from "./lower-stmts.js";
 import {
@@ -89,6 +90,20 @@ export function lowerYield(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
       // AsyncGeneratorYield itself awaits its operand. The explicit IR
       // await above performs that one required hop; the runtime must settle
       // in the same continuation instead of inserting another.
+      awaited = true;
+    } else if (
+      lowerer.ctx.isAsync &&
+      raw.type.kind === "dyn" &&
+      mayResolveThroughThen(lowerer, lowerer.typeOf(expr.expression))
+    ) {
+      // A checked-dynamic operand may hold a promise, which the yield's
+      // await settles first: its fulfillment is the yielded value and its
+      // rejection throws here. Any other value takes the same one turn.
+      value = lowerer.coerceInto(
+        expr.expression,
+        { kind: "libCall", fn: "async.awaitDyn", args: [raw], type: DYN, loc: raw.loc },
+        gen.yieldT,
+      );
       awaited = true;
     } else {
       value = lowerer.coerceInto(expr.expression, raw, gen.yieldT);

@@ -1,89 +1,80 @@
-console-fences.ts:8:1 - error SC2020: 'console.trace' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:7:15 - error SC2020: 'console.table of 'Map<string, number>' values' is part of the standard library types but has no scriptc lowering yet
 
-  7 | // terminates in a named diagnostic.
-  8 | console.trace("where");
-    | ^~~~~~~~~~~~~
+  6 | // terminates in a named diagnostic.
+  7 | console.table(new Map([["k", 1]]));
+    |               ^~~~~~~~~~~~~~~~~~~
+  8 | console.table(new Set([1, 2]));
+
+  hint: arrays, plain objects, and their JSON-shaped contents are the lowered tables
+
+console-fences.ts:8:15 - error SC2020: 'console.table of 'Set<number>' values' is part of the standard library types but has no scriptc lowering yet
+
+  7 | console.table(new Map([["k", 1]]));
+  8 | console.table(new Set([1, 2]));
+    |               ^~~~~~~~~~~~~~~
   9 | 
 
-  hint: console.log/info/debug (stdout), console.error/warn (stderr), assert, count, countReset, dir, dirxml, group, groupCollapsed, groupEnd, table, time, timeEnd, timeLog, clear, profile, profileEnd, and timeStamp are the supported console surface (arguments render with Node's console semantics: strings verbatim, everything else through the static util.inspect)
+  hint: arrays, plain objects, and their JSON-shaped contents are the lowered tables
 
-console-fences.ts:10:15 - error SC2020: 'console.table of 'Map<string, number>' values' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:10:13 - error SC2020: 'console.dir of 'Buffer<ArrayBufferLike>' values' is part of the standard library types but has no scriptc lowering yet
 
    9 | 
-  10 | console.table(new Map([["k", 1]]));
-     |               ^~~~~~~~~~~~~~~~~~~
-  11 | console.table(new Set([1, 2]));
-
-  hint: arrays, plain objects, and their JSON-shaped contents are the lowered tables
-
-console-fences.ts:11:15 - error SC2020: 'console.table of 'Set<number>' values' is part of the standard library types but has no scriptc lowering yet
-
-  10 | console.table(new Map([["k", 1]]));
-  11 | console.table(new Set([1, 2]));
-     |               ^~~~~~~~~~~~~~~
-  12 | 
-
-  hint: arrays, plain objects, and their JSON-shaped contents are the lowered tables
-
-console-fences.ts:13:13 - error SC2020: 'console.dir of 'Buffer<ArrayBufferLike>' values' is part of the standard library types but has no scriptc lowering yet
-
-  12 | 
-  13 | console.dir(Buffer.from([1, 2]));
+  10 | console.dir(Buffer.from([1, 2]));
      |             ^~~~~~~~~~~~~~~~~~~
-  14 | const options = { depth: 1 };
+  11 | const options = { depth: 1 };
 
   hint: console.dir disables custom inspection, and the typed-array rendering it falls back to has no lowering yet — use console.log
 
-console-fences.ts:15:23 - error SC2020: 'console.dir with a non-literal options argument' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:12:23 - error SC2020: 'console.dir with a non-literal options argument' is part of the standard library types but has no scriptc lowering yet
 
-  14 | const options = { depth: 1 };
-  15 | console.dir({ a: 1 }, options);
+  11 | const options = { depth: 1 };
+  12 | console.dir({ a: 1 }, options);
      |                       ^~~~~~~
-  16 | console.dir({ a: 1 }, { customInspect: true });
+  13 | console.dir({ a: 1 }, { customInspect: true });
 
   hint: the options must be an object literal ({ depth, colors: false, ... }) so the knobs resolve at compile time
 
-console-fences.ts:16:40 - error SC2020: 'console.dir with customInspect: true' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:13:40 - error SC2020: 'console.dir with customInspect: true' is part of the standard library types but has no scriptc lowering yet
 
-  15 | console.dir({ a: 1 }, options);
-  16 | console.dir({ a: 1 }, { customInspect: true });
+  12 | console.dir({ a: 1 }, options);
+  13 | console.dir({ a: 1 }, { customInspect: true });
      |                                        ^~~~
-  17 | console.dir({ a: 1 }, { showHidden: true });
+  14 | console.dir({ a: 1 }, { showHidden: true });
 
   hint: only customInspect: false (console.dir's default) is lowered
 
-console-fences.ts:22:35 - error SC2020: 'console.assert with a format string and computed arguments' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:19:35 - error SC2020: 'console.assert with a format string and computed arguments' is part of the standard library types but has no scriptc lowering yet
 
-  21 | }
-  22 | console.assert(false, "value %d", computed());
+  18 | }
+  19 | console.assert(false, "value %d", computed());
      |                                   ^~~~~~~~~~
-  23 | const format = process.argv.length > 99 ? "%s" : "plain %s";
+  20 | const format = process.argv.length > 99 ? "%s" : "plain %s";
 
   hint: evaluate the argument first (const v = ...) and pass the binding
 
-console-fences.ts:24:23 - error SC2020: 'console.assert with a runtime format string and further arguments' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:21:23 - error SC2020: 'console.assert with a runtime format string and further arguments' is part of the standard library types but has no scriptc lowering yet
 
-  23 | const format = process.argv.length > 99 ? "%s" : "plain %s";
-  24 | console.assert(false, format, "argument");
+  20 | const format = process.argv.length > 99 ? "%s" : "plain %s";
+  21 | console.assert(false, format, "argument");
      |                       ^~~~~~
-  25 | const message: string | number = process.argv.length > 99 ? "text" : 1;
+  22 | const message: string | number = process.argv.length > 99 ? "text" : 1;
 
   hint: the %-substitution positions are runtime-dependent — use a string literal
 
-console-fences.ts:26:23 - error SC2020: 'console.assert with a first message argument that may be a string' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:23:23 - error SC2020: 'console.assert with a first message argument that may be a string' is part of the standard library types but has no scriptc lowering yet
 
-  25 | const message: string | number = process.argv.length > 99 ? "text" : 1;
-  26 | console.assert(false, message);
+  22 | const message: string | number = process.argv.length > 99 ? "text" : 1;
+  23 | console.assert(false, message);
      |                       ^~~~~~~
-  27 | 
+  24 | 
 
   hint: Node prefixes string messages and inserts a separate prefix otherwise — narrow the message type
 
-console-fences.ts:28:17 - error SC2020: 'console.profile with a '{ label: string }' argument' is part of the standard library types but has no scriptc lowering yet
+console-fences.ts:25:17 - error SC2020: 'console.profile with a '{ label: string }' argument' is part of the standard library types but has no scriptc lowering yet
 
-  27 | 
-  28 | console.profile({ label: "object" } as unknown as string);
+  24 | 
+  25 | console.profile({ label: "object" } as unknown as string);
      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  29 | 
+  26 | 
 
   hint: pass a string label

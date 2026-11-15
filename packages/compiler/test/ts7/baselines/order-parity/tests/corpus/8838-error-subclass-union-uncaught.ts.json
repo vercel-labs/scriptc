@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8838-error-subclass-union-uncaught.ts"
+ ],
+ "diags": []
+}

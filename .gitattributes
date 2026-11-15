@@ -1,0 +1,4 @@
+# The toolchain verifier and its pin file are read by sh and sha256sum on every
+# platform, Windows checkouts included: keep their line endings as committed.
+scripts/verify-toolchain.sh text eol=lf
+scripts/toolchain.sha256 text eol=lf

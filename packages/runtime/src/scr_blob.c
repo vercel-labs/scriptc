@@ -582,9 +582,12 @@ static bool scr_blob_read_file_part(const ScrBlobPart *part, uint8_t *out) {
 }
 
 /* The blob's bytes (+1); NULL with the exception pending when a file part
- * cannot be read any more. */
+ * cannot be read any more, or when the recorded length is past the largest
+ * buffer a typed array can hold (`scr_bytes_new` throws its RangeError and
+ * answers NULL at 2^53 - 1 bytes). */
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
+  if (!bytes) return NULL;
   size_t at = 0;
   for (size_t i = 0; i < b->nparts; i++) {
     const ScrBlobPart *part = &b->parts[i];

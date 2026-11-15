@@ -24,6 +24,7 @@ import { locOf } from "../../program.js";
 import { lowerAbsenceProbe } from "../lower-exprs.js";
 import { bodyReadsArguments } from "../../arguments-usage.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { voidizedCallback } from "../lower-server.js";
 
 /** Side-effect-free read shapes — identifiers and (optional) property
@@ -170,6 +171,52 @@ export function lowerBuiltinOptionalDefault(
     }
   }
   return lowerer.coerceInto(node, value, expected);
+}
+
+/** The effect of an explicitly supplied argument whose static type is only
+ * unit values (the caller has already established that with
+ * `staticallyAbsent`): the call substitutes its own default for the value,
+ * but JavaScript evaluates every argument before the call, so the
+ * expression still runs its statements and may throw. Answers the
+ * expression to evaluate, or NULL when leaving it out changes nothing. */
+export function lowerUnitArgumentEffect(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  const value = lowerStaticallyUndefinedArgument(lowerer, node) ?? lowerer.lowerExpr(node);
+  return isSafeToDiscard(value) ? null : value;
+}
+
+/** A call that also evaluates unit-valued argument expressions: `values`
+ * are the argument values in source order, `effects` the expressions their
+ * defaults replaced. Each value is bound to a hidden local first, so the
+ * effects run after every argument value and before the call, which is the
+ * order JavaScript evaluates the list in. `build` receives the bound
+ * values. Answers the bare call when there is nothing to sequence. */
+export function bindArgumentsThen(
+  lowerer: Lowerer,
+  values: readonly IrExpr[],
+  effects: readonly IrExpr[],
+  build: (bound: readonly IrExpr[]) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const built = build(values);
+  if (effects.length === 0) return built;
+  const locals = values.map((value, index) =>
+    lowerer.declareHiddenLocal(`%fsArg${index}`, value.type),
+  );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...values.map((value, index) => ({
+        kind: "varDecl" as const,
+        localId: locals[index]!.id,
+        init: value,
+        loc: value.loc,
+      })),
+      ...effects.map((expr) => ({ kind: "exprStmt" as const, expr, loc: expr.loc })),
+    ],
+    result: build(locals.map((local, index) => varRef(local.id, values[index]!.type, loc))),
+    type: built.type,
+    loc,
+  };
 }
 
 /** The literal `{ flag: true/false }` options shape: every property a

@@ -37,7 +37,11 @@ import {
   staticallyAbsent,
 } from "./filesystem-calls.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
-import { lowerBuiltinOptionalDefault } from "./arguments.js";
+import {
+  bindArgumentsThen,
+  lowerBuiltinOptionalDefault,
+  lowerUnitArgumentEffect,
+} from "./arguments.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -495,9 +499,24 @@ export function lowerBuiltinModuleCall(
     const dest = lowerFsPath(lowerer, expr.arguments.nodes[1]!);
     const modeNode = expr.arguments.nodes[2];
     // An omitted mode and a statically absent one (undefined, or a `void`
-    // value) are both Node's plain copy, whose mode is 0.
-    if (!modeNode || staticallyAbsent(lowerer, modeNode))
-      return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
+    // value) are both Node's plain copy, whose mode is 0. A supplied
+    // expression still evaluates after the two paths, before the copy.
+    if (!modeNode || staticallyAbsent(lowerer, modeNode)) {
+      const effect = modeNode ? lowerUnitArgumentEffect(lowerer, modeNode) : null;
+      return bindArgumentsThen(
+        lowerer,
+        [src, dest],
+        effect ? [effect] : [],
+        ([srcArg, destArg]) => ({
+          kind: "libCall",
+          fn: fn.fn,
+          args: [srcArg!, destArg!],
+          type: fn.result,
+          loc,
+        }),
+        loc,
+      );
+    }
     const flags: IrLibFn = bi.module === "fs" ? "fs.copyFileFlagsSync" : "fsp.copyFileFlags";
     return {
       kind: "libCall",

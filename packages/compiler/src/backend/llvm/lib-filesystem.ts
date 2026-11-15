@@ -599,14 +599,20 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   }
   if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
     // Loop-liveness bookkeeping only (the watcher's uv handle ref/unref);
-    // the receiver comes back BORROWED for chaining, like Node's methods
-    // answering `this`.
+    // the receiver comes back, like Node's methods answering `this`. The
+    // runtime answers the pointer it was given, so the value the emitter
+    // hands on carries its own reference: a call whose result is stored
+    // (or passed on) owns what it receives like every other refcounted
+    // result.
     const w = host.emitExpr(e.args[0]!);
     const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
     host.declare(`declare ptr @${sym}(ptr)`);
+    host.declare(`declare ptr @scr_watcher_retain(ptr)`);
     const t = B.tmp();
     B.line(`${t} = call ptr @${sym}(ptr ${w.name})`);
-    return { name: t, type: e.type };
+    const retained = B.tmp();
+    B.line(`${retained} = call ptr @scr_watcher_retain(ptr ${t})`);
+    return host.own({ name: retained, type: e.type });
   }
   if (e.fn === "watcher.close") {
     // Idempotent; never throws.

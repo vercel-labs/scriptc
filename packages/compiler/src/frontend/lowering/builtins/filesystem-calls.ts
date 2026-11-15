@@ -30,7 +30,13 @@ import {
   funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import {
+  bindArgumentsThen,
+  lowerBuiltinOptionalDefault,
+  lowerUnitArgumentEffect,
+  optionMember,
+  literalBoolOptions,
+} from "./arguments.js";
 import { lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { defaultAfterUndefined } from "../optional-arguments.js";
@@ -1580,6 +1586,10 @@ export function lowerFsPromisesMkdirCall(
   const optsNode = expr.arguments.nodes[1];
   let recursive = false;
   let modeNode: ts.Expression | null = null;
+  // Supplied expressions whose static type is only unit values take Node's
+  // default in the call, but JavaScript evaluates the argument list first:
+  // they run after the path and before the call.
+  const effects: IrExpr[] = [];
   if (optsNode !== undefined && !staticallyAbsent(lowerer, optsNode)) {
     if (ts.isObjectLiteralExpression(optsNode)) {
       const options = parseMkdirOptions(optsNode);
@@ -1596,9 +1606,18 @@ export function lowerFsPromisesMkdirCall(
       // Node reads a non-object options value as the mode itself.
       modeNode = optsNode;
     }
-    if (modeNode && staticallyAbsent(lowerer, modeNode)) modeNode = null;
+    if (modeNode && staticallyAbsent(lowerer, modeNode)) {
+      const effect = lowerUnitArgumentEffect(lowerer, modeNode);
+      if (effect) effects.push(effect);
+      modeNode = null;
+    }
+  } else if (optsNode !== undefined) {
+    const effect = lowerUnitArgumentEffect(lowerer, optsNode);
+    if (effect) effects.push(effect);
   }
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const finish = (build: (pathArg: IrExpr) => IrExpr): IrExpr =>
+    bindArgumentsThen(lowerer, [path], effects, ([pathArg]) => build(pathArg!), loc);
   let mode: IrExpr | null = null;
   let octal: string | null = null;
   if (modeNode) {
@@ -1616,16 +1635,18 @@ export function lowerFsPromisesMkdirCall(
   if (!recursive) {
     const type: IrType = { kind: "promise", inner: VOID };
     if (octal !== null)
-      return {
+      return finish((pathArg) => ({
         kind: "libCall",
         fn: "fsp.mkdirModeOctal",
-        args: [path, strLit(octal, loc)],
+        args: [pathArg, strLit(octal, loc)],
         type,
         loc,
-      };
-    return mode
-      ? { kind: "libCall", fn: "fsp.mkdirMode", args: [path, mode], type, loc }
-      : { kind: "libCall", fn: "fsp.mkdir", args: [path], type, loc };
+      }));
+    return finish((pathArg) =>
+      mode
+        ? { kind: "libCall", fn: "fsp.mkdirMode", args: [pathArg, mode], type, loc }
+        : { kind: "libCall", fn: "fsp.mkdir", args: [pathArg], type, loc },
+    );
   }
   // recursive: true answers the first created directory, a `string |
   // undefined` union the runtime spells as a string or NULL.
@@ -1644,20 +1665,20 @@ export function lowerFsPromisesMkdirCall(
       "recursive: true answers the first created directory",
     );
   if (octal !== null)
-    return {
+    return finish((pathArg) => ({
       kind: "libCall",
       fn: "fsp.mkdirRecursiveFirstOctal",
-      args: [path, strLit(octal, loc)],
+      args: [pathArg, strLit(octal, loc)],
       type: callType,
       loc,
-    };
-  return {
+    }));
+  return finish((pathArg) => ({
     kind: "libCall",
     fn: "fsp.mkdirRecursiveFirst",
-    args: [path, mode ?? numLit(0o777, loc)],
+    args: [pathArg, mode ?? numLit(0o777, loc)],
     type: callType,
     loc,
-  };
+  }));
 }
 
 /** True when the expression's static type is only the unit types (null,
@@ -1709,7 +1730,22 @@ export function lowerFsPromisesEncodeOptionsCall(
     type,
     loc,
   });
-  const plain = (): IrExpr => answer(plainFn, [path], wantsBuffer ? bytesType : strType);
+  // The default-utf8 spelling: an options expression whose static type is
+  // only unit values is Node's default, but it still evaluates before the
+  // call (after the path).
+  const plain = (): IrExpr => {
+    const effect =
+      optsNode !== undefined && staticallyAbsent(lowerer, optsNode)
+        ? lowerUnitArgumentEffect(lowerer, optsNode)
+        : null;
+    return bindArgumentsThen(
+      lowerer,
+      [path],
+      effect ? [effect] : [],
+      ([pathArg]) => answer(plainFn, [pathArg!], wantsBuffer ? bytesType : strType),
+      loc,
+    );
+  };
   const fence = (node: ts.Node): never =>
     lowerer.noLowering(
       `${spelling} with this options value`,

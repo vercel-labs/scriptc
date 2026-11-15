@@ -111,6 +111,11 @@ try {
     jsonClassReadsLayout: () => false,
     jsonClassDynWrite: () => { throw new Error("json class walk is not modeled by this fixture"); },
     toDynHelper: () => "@sc_fixture_to_dyn",
+    // A record whose index map is consulted for a `toJSON` hook would box it
+    // live; no request here reaches that path, so it fails loudly instead.
+    streamTypedRefBoxValue: () => {
+      throw new Error("live checked-dynamic boxing is not modeled by this fixture");
+    },
   };
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const graph = buildClassGraph(mod, functions);

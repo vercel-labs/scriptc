@@ -1,4 +1,5 @@
 import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
+import type { CoverageMode } from "../compile-types.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -20,13 +21,7 @@ import {
 } from "../node-islands/policy.js";
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
-import {
-  renderConfigWarnings,
-  renderTypePatchWarnings,
-  renderWarnings,
-} from "../diagnostics/render.js";
-import { isTypePatchCode } from "../diagnostics/diagnostic.js";
-import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
+import { buildWarnings, renderBuildWarnings } from "../diagnostics/build-warnings.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { renderNativeProfileMatch } from "../backend/native-profile.js";
 import {
@@ -43,6 +38,7 @@ import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { serveMcp } from "./mcp.js";
 import { CLI_OPTIONS, firstUnacceptedOption, USAGE } from "./usage.js";
+import type { Defines } from "../frontend/defines.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -60,6 +56,37 @@ class CliExit extends Error {
 function fail(msg: string): never {
   process.stderr.write(msg + "\n");
   throw new CliExit(1);
+}
+
+/** `--define` arguments: `process.env.NAME=<JSON string>`. */
+function parseDefines(args: readonly string[]): Defines | undefined {
+  if (args.length === 0) return undefined;
+  const define: Record<string, string> = {};
+  for (const arg of args) {
+    const at = arg.indexOf("=");
+    if (at < 0) fail(`--define=${arg}: expected <name>=<value>`);
+    const key = arg.slice(0, at);
+    const text = arg.slice(at + 1);
+    if (!/^process\.env\.[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      fail(`--define=${arg}: defining '${key}' is not supported yet (only process.env.NAME)`);
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = undefined;
+    }
+    if (typeof value !== "string") {
+      fail(
+        `--define=${arg}: ${key} is a string, so its value must be a JSON string: --define='${key}=${JSON.stringify(text)}'`,
+      );
+    }
+    if (define[key] !== undefined && define[key] !== value) {
+      fail(`--define: ${key} is defined twice with different values`);
+    }
+    define[key] = value;
+  }
+  return define;
 }
 
 /** parseArgs, with its throw turned into the CLI's own one-line error.
@@ -241,7 +268,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     if (firstUnacceptedOption("build-lib", values) !== undefined) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -340,6 +367,16 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (failOnRaw === "dynamic" && !dynamicTierWarning) {
     fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
   }
+  // --no-copy-warning leaves out SC6001 (frontend/lowering/width-copies.ts).
+  const copyWarning = values["copy-warning"] !== false;
+  if (failOnRaw === "divergences" && !copyWarning) {
+    fail(`--fail-on=divergences checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
+  }
+  // --no-key-order-warning leaves out SC6014 (frontend/lowering/key-order-witness.ts).
+  const keyOrderWarning = values["key-order-warning"] !== false;
+  if (failOnRaw === "divergences" && !keyOrderWarning) {
+    fail(`--fail-on=divergences checks the warning --no-key-order-warning leaves out\n\n${USAGE}`);
+  }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -352,6 +389,23 @@ async function main(args: string[], host: CliHost): Promise<number> {
   const explainDynamic = values["explain-dynamic"];
   if (explainDynamic !== undefined && command !== "coverage") {
     fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+  }
+  const coverageModeRaw = values.coverage;
+  if (
+    coverageModeRaw !== undefined &&
+    coverageModeRaw !== "full" &&
+    coverageModeRaw !== "reached"
+  ) {
+    fail(`unknown --coverage value "${coverageModeRaw}" (supported: full, reached)\n\n${USAGE}`);
+  }
+  const coverageMode = coverageModeRaw as CoverageMode | undefined;
+  if (coverageMode !== undefined && command !== "coverage") {
+    fail(`--coverage is a coverage option\n\n${USAGE}`);
+  }
+  if (coverageMode === "reached" && explainDynamic !== undefined) {
+    fail(
+      `--coverage=reached cannot be combined with --explain-dynamic: the explanation needs the unreached remainder\n\n${USAGE}`,
+    );
   }
   const explainIsland = values["explain-island"];
   if (explainIsland !== undefined && command !== "coverage") {
@@ -520,6 +574,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   } else if (npmStaticRaw.length > 0) {
     npmStatic = npmStaticRaw;
   }
+  const define = parseDefines(values.define ?? []);
 
   // --provenance-sources resolves BEFORE the program loads (tsgo needs the
   // source "paths" at creation): attestations and source trees fetch (or
@@ -541,14 +596,20 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage") {
     const { coverage, sourceTexts } = await host.analyze(input, {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
       ...(tier !== undefined ? { tier } : {}),
       ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
       ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(coverageMode === "reached" ? { coverage: "reached" as const } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
+    if (!copyWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+    if (!keyOrderWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -637,6 +698,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
       ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
@@ -670,9 +732,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
     }
-    const warnings = (result.warnings ?? []).filter(
-      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
-    );
+    const warnings = buildWarnings(result.warnings ?? [], {
+      dynamicTier: dynamicTierWarning,
+      copy: copyWarning,
+      keyOrder: keyOrderWarning,
+    });
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
         compilerVersion: host.version(),
@@ -689,33 +753,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
       // warning names likely-hot functions that use untyped values. `run`
       // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      const config = warnings.filter((d) => d.code === "SC8004");
-      const patches = warnings.filter((d) => isTypePatchCode(d.code));
-      const divergences = warnings.filter(
-        (d) => !isPerformanceCode(d.code) && d.code !== "SC8004" && !isTypePatchCode(d.code),
+      process.stderr.write(
+        renderBuildWarnings(warnings, result.sourceTexts ?? new Map(), { color }) + "\n",
       );
-      const performance = warnings.filter((d) => isPerformanceCode(d.code));
-      if (config.length > 0)
-        process.stderr.write(
-          renderConfigWarnings(config, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      if (patches.length > 0) {
-        if (config.length > 0) process.stderr.write("\n");
-        process.stderr.write(
-          renderTypePatchWarnings(patches, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      }
-      if (divergences.length > 0) {
-        if (config.length > 0 || patches.length > 0) process.stderr.write("\n");
-        process.stderr.write(
-          renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      }
-      if (performance.length > 0) {
-        if (divergences.length > 0 || config.length > 0 || patches.length > 0)
-          process.stderr.write("\n");
-        process.stderr.write(renderPerformanceWarnings(performance) + "\n");
-      }
     }
     if (result.artifact.kind === "exe") {
       // How the profile matched the program's functions; `run` keeps stderr

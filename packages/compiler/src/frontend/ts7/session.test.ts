@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
-import { API } from "typescript/unstable/sync";
+import { API } from "typescript/sync";
+import { serverFS } from "typescript/fs";
 import { Ts7RpcClient } from "./rpc-client.js";
 import {
   registerTs7FileSystem,
@@ -27,7 +28,7 @@ const fallback: Ts7FileSystem = {
   getAccessibleEntries: () => undefined,
 };
 
-// These tests compare the session with the pinned SDK, which runs tsgo 7.0. The session runs
+// These tests compare the session with the pinned SDK, which runs TypeScript 7.1. The session runs
 // tsc 7.0 and tsc 7.1, whose answers to these cases are the same.
 function transport(
   server: Ts7TestServer,
@@ -75,33 +76,36 @@ for (const server of ts7TestServers())
     const session = connect(server, dir, fallback, true);
     const sdk = new API({ cwd: dir });
     try {
-      expect(session.parseConfigFile(config)).toEqual(sdk.parseConfigFile(config));
+      const sdkConfig = sdk.parseConfigFile(config);
+      const parsed = session.parseConfigFile(config);
+      expect({ options: parsed.options, fileNames: parsed.fileNames }).toEqual({
+        options: sdkConfig.options,
+        fileNames: sdkConfig.fileNames,
+      });
       const snapshot = session.updateSnapshot({ openProjects: [config], openFiles: [file] });
-      const oracle = sdk.updateSnapshot({ openProjects: [config], openFiles: [file] });
+      const oracle = sdk.createSnapshot({ openProjects: [config], openFiles: [file] });
       expect(snapshot).toBeInstanceOf(Ts7SessionSnapshot);
       const project = snapshot.getProject(config)!;
-      const expected = oracle.getProject(config)!;
+      const expected = oracle.getConfiguredProject(config)!;
       expect(project).toBeInstanceOf(Ts7SessionProject);
       expect(project.program.getCompilerOptions()).toEqual(expected.program.getCompilerOptions());
-      expect(project.rootFiles).toEqual(expected.rootFiles);
+      expect(project.rootFiles).toEqual(expected.parsedCommandLine.fileNames);
       expect(snapshot.getDefaultProjectForFile(file)).toBe(project);
       expect(snapshot.getProject(protocolPath(join(dir, "./tsconfig.json")))).toBe(project);
       const names = project.program.getSourceFileNames();
       const expectedNames = expected.program.getSourceFileNames();
-      if (server.ts71) {
-        // tsc 7.1 reads its own lib files, which split some esnext libs into es2026 ones.
-        const isLib = (name: string) => /\/lib\.[^/]*\.d\.ts$/.test(name);
-        expect(names.filter((name) => !isLib(name))).toEqual(
-          expectedNames.filter((name) => !isLib(name)),
-        );
-        for (const lib of ["lib.es5.d.ts", "lib.esnext.d.ts"])
-          expect(
-            names.some((name) => name.endsWith(`/${lib}`)),
-            lib,
-          ).toBe(true);
-      } else {
-        expect(names).toEqual(expectedNames);
-      }
+      // Each server reads its own bundled lib files, and their set differs
+      // between 7.0 and the 7.1 oracle (which splits some esnext libs into
+      // es2026 ones). Sources outside the standard library must still match.
+      const isLib = (name: string) => /\/lib\.[^/]*\.d\.ts$/.test(name);
+      expect(names.filter((name) => !isLib(name))).toEqual(
+        expectedNames.filter((name) => !isLib(name)),
+      );
+      for (const lib of ["lib.es5.d.ts", "lib.esnext.d.ts"])
+        expect(
+          names.some((name) => name.endsWith(`/${lib}`)),
+          lib,
+        ).toBe(true);
       const source = project.program.getSourceFile(file)!;
       expect(source).toBeInstanceOf(AstNode);
       expect(source.text).toBe(expected.program.getSourceFile(file)!.text);
@@ -121,6 +125,11 @@ for (const server of ts7TestServers())
       const before = session.getTimingInfo().totals.requestCount;
       expect(project.program.getSourceFileMetadata(missing)).toBeUndefined();
       expect(session.getTimingInfo().totals.requestCount).toBe(before);
+      // Each server reads its own bundled lib files, whose contents and
+      // positions differ from the oracle's, so diagnostics located in them
+      // are left out of both sides.
+      const own = <T extends { fileName?: string | undefined }>(list: T[]) =>
+        list.filter((item) => !/\/lib\.[^/]*\.d\.ts$/.test(item.fileName ?? ""));
       for (const name of [
         "getSyntacticDiagnostics",
         "getBindDiagnostics",
@@ -129,14 +138,9 @@ for (const server of ts7TestServers())
         "getDeclarationDiagnostics",
       ] as const) {
         // scriptc's diagnostics have every member set (ts7Diagnostic); the SDK's leave absent ones out.
-        expect(project.program[name](file), name).toEqual(
-          expected.program[name](file).map(ts7Diagnostic),
+        expect(own(project.program[name](file)), name).toEqual(
+          own(expected.program[name](file).map(ts7Diagnostic)),
         );
-        // tsc 7.1's lib files differ from 7.0's, and so do their diagnostics.
-        const own = <T extends { fileName?: string | undefined }>(list: T[]) =>
-          server.ts71
-            ? list.filter((item) => !/\/lib\.[^/]*\.d\.ts$/.test(item.fileName ?? ""))
-            : list;
         expect(own(project.program[name]()), name).toEqual(
           own(expected.program[name]().map(ts7Diagnostic)),
         );
@@ -175,32 +179,47 @@ for (const server of ts7TestServers())
       stable = protocolPath(join(dir, "stable.ts"));
     let content = "export const value = 1;";
     let option = "esnext";
-    const overlay: Ts7FileSystem = {
-      ...fallback,
-      readFile: (file) => {
-        if (file === a || file === b)
-          return JSON.stringify({
-            compilerOptions: { strict: true, target: option, types: [] },
-            files: [changed, stable],
-          });
-        if (file === changed) return content;
-        if (file === stable) return "export const stable = true;";
-        return undefined;
-      },
-      fileExists: (file) => ([a, b, changed, stable].includes(file) ? true : undefined),
+    const readFile = (file: string) => {
+      if (file === a || file === b)
+        return JSON.stringify({
+          compilerOptions: { strict: true, target: option, types: [] },
+          files: [changed, stable],
+        });
+      if (file === changed) return content;
+      if (file === stable) return "export const stable = true;";
+      return undefined;
     };
+    const fileExists = (file: string) =>
+      [a, b, changed, stable].includes(file) ? true : undefined;
+    const overlay: Ts7FileSystem = { ...fallback, readFile, fileExists };
     const session = connect(server, dir, overlay, true);
-    const sdk = new API({ cwd: dir, fs: overlay });
+    // The pinned API's filesystem callbacks are all required, and it names
+    // the filesystem server's fallbacks differently: a path it does not know
+    // is the operating system's, and a write or stat it never receives
+    // reports the file as synthetic or does nothing.
+    const sdk = new API({
+      cwd: dir,
+      fs: {
+        readFile: (file) => readFile(file) ?? serverFS.useOS,
+        fileExists: (file) => fileExists(file) ?? serverFS.useOS,
+        directoryExists: serverFS.useOS,
+        getAccessibleEntries: serverFS.useOS,
+        realpath: serverFS.identity,
+        stat: serverFS.fakeStat,
+        writeFile: serverFS.noop,
+        removeFile: serverFS.noop,
+      },
+    });
     try {
       const first = session.updateSnapshot({ openProjects: [a, b] });
-      const oracleFirst = sdk.updateSnapshot({ openProjects: [a, b] });
-      const oracleStable = oracleFirst.getProject(a)!.program.getSourceFile(stable)!;
+      const oracleFirst = sdk.createSnapshot({ openProjects: [a, b] });
+      const oracleStable = oracleFirst.getConfiguredProject(a)!.program.getSourceFile(stable)!;
       const old = first.getProject(a)!.program.getSourceFile(changed)!;
       const retained = first.getProject(a)!.program.getSourceFile(stable)!;
       expect(first.getProject(b)!.program.getSourceFile(changed)).toBe(old);
       content = 'export const value: number = "wrong";';
       const second = session.updateSnapshot({ fileChanges: { changed: [changed] } });
-      const oracleSecond = sdk.updateSnapshot({ fileChanges: { changed: [changed] } });
+      const oracleSecond = oracleFirst.update({ fileNotifications: { changed: [changed] } });
       const next = second.getProject(a)!.program.getSourceFile(changed)!;
       expect(next).not.toBe(old);
       expect(old.text).toContain("= 1");
@@ -215,28 +234,33 @@ for (const server of ts7TestServers())
       expect(second.getProject(a)!.program.getSourceFile(stable)).toBe(retained);
       first.dispose();
       second.dispose();
-      oracleFirst.dispose();
-      oracleSecond.dispose();
       const before = session.getTimingInfo().totals.sourceFilesFetched;
       const third = session.updateSnapshot();
-      const oracleThird = sdk.updateSnapshot();
+      const oracleThird = oracleSecond.update({});
       const refreshed = third.getProject(a)!.program.getSourceFile(stable)!;
       expect(refreshed.text).toBe(retained.text);
       expect(session.getTimingInfo().totals.sourceFilesFetched).toBe(before + 1);
       option = "es2020";
       const fourth = session.updateSnapshot({ fileChanges: { changed: [a, b] } });
-      const oracleFourth = sdk.updateSnapshot({ fileChanges: { changed: [a, b] } });
+      // The session asks the server to bring every program up to date after
+      // each update, so the oracle does the same.
+      const oracleFourth = oracleThird.update({
+        fileNotifications: { changed: [a, b] },
+        ensurePrograms: true,
+      });
       const reparsed = fourth.getProject(a)!.program.getSourceFile(stable)!;
       expect(reparsed === refreshed).toBe(
-        oracleFourth.getProject(a)!.program.getSourceFile(stable) === oracleStable,
+        oracleFourth.getConfiguredProject(a)!.program.getSourceFile(stable) === oracleStable,
       );
       expect(fourth.getProject(a)!.compilerOptions.target).toBe(
-        oracleFourth.getProject(a)!.compilerOptions.target,
+        oracleFourth.getConfiguredProject(a)!.parsedCommandLine.options.target,
       );
       expect(fourth.getProject(a)!.compilerOptions.target).not.toBe(
         third.getProject(a)!.compilerOptions.target,
       );
-      expect(oracleThird.getProject(a)!.program.getSourceFile(stable)).toBe(oracleStable);
+      expect(oracleThird.getConfiguredProject(a)!.program.getSourceFile(stable)).toBe(oracleStable);
+      oracleFirst.dispose();
+      oracleSecond.dispose();
       const closed = session.updateSnapshot({ closeProjects: [b] });
       expect(closed.getProject(b)).toBeUndefined();
       expect(closed.getProject(a)).toBeDefined();

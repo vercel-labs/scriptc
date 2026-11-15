@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   statements analyzed   30
   compile statically    30  (100%)
-    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     10  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     tc-island  static
@@ -35,8 +35,8 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
       ×1  tc-island@3.1.0 declares label() as string (index.d.ts:6): a Node island value
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:35:42
           fix: if the declaration is wrong, patch it: scriptc types patch tc-island 'label()' '<type>' (a type that starts with | widens the declared one, as in '| undefined')
-      ×1  tc-island@3.1.0 declares load() as any (index.d.ts:9): a Node island value the program reads as { name: string; retries: number }
-          at tests/coverage-fixtures/node-islands-type-claims/main.ts:31:16
+      ×1  tc-island@3.1.0 declares load() as any (index.d.ts:9): a Node island value the program reads as string
+          at tests/coverage-fixtures/node-islands-type-claims/main.ts:35:13
           fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch tc-island 'load()' '<type>'
       ×1  the program asserts the type of 'table()', a value it holds dynamically: { a: { n: number } }
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:45:17

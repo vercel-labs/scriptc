@@ -1,0 +1,69 @@
+builtin-class-subclass-fences.ts:4:25 - error SC1090: extending the built-in class 'Map' (its instances have no subclass layout: keep the Map in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes) is not supported yet
+
+  3 | // arguments, and the refusal says what compiles instead.
+  4 | class Timetable extends Map<string, number> {
+    |                         ^~~~~~~~~~~~~~~~~~~
+  5 |   earliest(): number {
+
+builtin-class-subclass-fences.ts:12:21 - error SC1090: extending the built-in class 'Set' (its instances have no subclass layout: keep the Set in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes) is not supported yet
+
+  11 | 
+  12 | class Piers extends Set<string> {
+     |                     ^~~~~~~~~~~
+  13 |   label = "piers";
+
+builtin-class-subclass-fences.ts:16:24 - error SC1090: extending the built-in class 'ReadableStream' (its instances have no subclass layout: keep the ReadableStream in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes) is not supported yet
+
+  15 | 
+  16 | class Crossing extends ReadableStream<Uint8Array> {
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 |   allAboard: Promise<void> = Promise.resolve();
+
+builtin-class-subclass-fences.ts:20:23 - error SC1090: extending the built-in class 'Promise' (its instances have no subclass layout: keep the Promise in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes) is not supported yet
+
+  19 | 
+  20 | class Arrival extends Promise<number> {
+     |                       ^~~~~~~~~~~~~~~
+  21 |   label = "arrival";
+
+builtin-class-subclass-fences.ts:24:23 - error SC1090: extending the built-in class 'URL' (its instances have no subclass layout: keep the URL in a field of the class and forward the members you need; program classes can extend Error and its subclasses, EventEmitter, EventTarget, Event, Date, Array and the node:stream classes) is not supported yet
+
+  23 | 
+  24 | class Landing extends URL {
+     |                       ^~~
+  25 |   pier(): string {
+
+builtin-class-subclass-fences.ts:30:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  29 | 
+  30 | console.log(new Timetable().earliest());
+     |             ^~~~~~~~~~~~~~~
+  31 | console.log(new Piers().label);
+
+builtin-class-subclass-fences.ts:31:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  30 | console.log(new Timetable().earliest());
+  31 | console.log(new Piers().label);
+     |             ^~~~~~~~~~~
+  32 | console.log(new Crossing().allAboard === undefined);
+
+builtin-class-subclass-fences.ts:32:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  31 | console.log(new Piers().label);
+  32 | console.log(new Crossing().allAboard === undefined);
+     |             ^~~~~~~~~~~~~~
+  33 | console.log(new Arrival((resolve) => resolve(1)).label);
+
+builtin-class-subclass-fences.ts:33:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  32 | console.log(new Crossing().allAboard === undefined);
+  33 | console.log(new Arrival((resolve) => resolve(1)).label);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | console.log(new Landing("ferry://quay/north").pier());
+
+builtin-class-subclass-fences.ts:34:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  33 | console.log(new Arrival((resolve) => resolve(1)).label);
+  34 | console.log(new Landing("ferry://quay/north").pier());
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  35 | 

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { API, type Snapshot, type Symbol as SdkSymbol } from "typescript/unstable/sync";
+import { API, type Snapshot, type Symbol as SdkSymbol } from "typescript/sync";
 import { Ts7Api, ts7Executable } from "../../src/frontend/ts7/rpc-api.js";
 import { Ts7RpcClient } from "../../src/frontend/ts7/rpc-client.js";
 import type { Ts7FileSystem } from "../../src/frontend/ts7/rpc-filesystem.js";
@@ -60,7 +60,6 @@ function programFacts(snapshot: Snapshot, config: string, path: string) {
   const type = checker.getTypeAtPosition(path, position)!;
   const symbol = checker.getSymbolAtPosition(path, position)!;
   return {
-    roots: project.rootFiles,
     files: project.program.getSourceFileNames(),
     options: project.program.getCompilerOptions(),
     text: file.text,
@@ -97,8 +96,16 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
   }
   const sdk = new API({ cwd: dir });
   try {
-    expect(nativeClient.parseConfigFile(config)).toEqual(sdk.parseConfigFile(config));
-    const expected = sdk.updateSnapshot({ openProjects: [config] });
+    // The session answers with the server's reply (the parsed command line
+    // plus the raw config, errors and compileOnSave); the SDK reports the
+    // parsed command line alone.
+    const nativeConfig = nativeClient.parseConfigFile(config);
+    const sdkConfig = sdk.parseConfigFile(config);
+    expect({ options: nativeConfig.options, fileNames: nativeConfig.fileNames }).toEqual({
+      options: sdkConfig.options,
+      fileNames: sdkConfig.fileNames,
+    });
+    const expected = sdk.createSnapshot({ openProjects: [config] });
     const actual = nativeClient.updateSnapshot({ openProjects: [config] });
     const facts = programFacts(actual as unknown as Snapshot, config, path);
     expect(facts).toEqual(programFacts(expected, config, path));
@@ -106,6 +113,9 @@ test("production RPC bridge preserves pinned SDK parser/checker behavior", () =>
     expect(facts.symbol).toBe("answer");
     expect(facts.semantic.map((diagnostic) => diagnostic.code)).toEqual([2322]);
     const project = actual.getProject(config)!;
+    // The SDK's configured project reports no root list; the client carries
+    // the parsed command line's files.
+    expect(project.rootFiles).toEqual([path]);
     const source = project.program.getSourceFile(path)!;
     expect(source).toBeInstanceOf(AstNode);
     expect(project.program.getSourceFile(path)).toBe(source);
@@ -217,7 +227,7 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
   const api = new Ts7Api({ cwd: dir, fs: fallback });
   const sdk = new API({ cwd: dir });
   // scriptc's node lists keep their nodes in `nodes`; the SDK's lists are arrays.
-  type SdkNode = import("typescript/unstable/ast").Node;
+  type SdkNode = import("typescript/ast").Node;
   const nodesOf = (list: unknown): readonly SdkNode[] =>
     Array.isArray(list) ? list : (list as { nodes: readonly SdkNode[] }).nodes;
   function facts(snapshot: Snapshot) {
@@ -243,7 +253,7 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
         explicitDeclaration:
           declarationHandlesOf(symbolB)[0]!.resolve(b) ===
           nodesOf(
-            (nodesOf(fileB.statements)[1] as import("typescript/unstable/ast").VariableStatement)
+            (nodesOf(fileB.statements)[1] as import("typescript/ast").VariableStatement)
               .declarationList.declarations,
           )[0],
         texts: [a.checker.typeToString(typeA), b.checker.typeToString(typeB)],
@@ -259,7 +269,7 @@ test("native semantic registries preserve project scope and snapshot lifetimes",
     const first = api.updateSnapshot({ openProjects: [firstConfig, secondConfig] });
     const actual = facts(first as unknown as Snapshot);
     expect(actual.shape).toEqual(
-      facts(sdk.updateSnapshot({ openProjects: [firstConfig, secondConfig] })).shape,
+      facts(sdk.createSnapshot({ openProjects: [firstConfig, secondConfig] })).shape,
     );
     expect(actual.signatureA).toBeInstanceOf(SemanticSignature);
     expect(actual.typeA).toBeInstanceOf(SemanticType);

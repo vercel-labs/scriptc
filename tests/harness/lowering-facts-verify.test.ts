@@ -24,8 +24,12 @@ const entryPath = join(fixtureDir, "main.ts");
 // The facts each pass of one island round shares: protocol identity for a
 // class and for an object literal whose member kinds disagree with its
 // target, stdlib provenance of a Map, and the per-file classification every
-// fact memo is keyed by.
-const program = `interface Reader {
+// fact memo is keyed by. A declaration nothing reads whose type has no
+// static mapping is looked for in every file by name, and each reference to
+// the default import resolves its module.
+const program = `import tally from "./tally.ts";
+var spare: typeof Array;
+interface Reader {
   read(): string;
 }
 interface Sized {
@@ -56,6 +60,13 @@ const parts = new Parts();
 const totals = new Map<string, number>([["a", 1]]);
 const literal = report();
 console.log(parts.read(), parts.size, literal.words, totals.get("a"));
+console.log(tally(["a", "b"]), tally([]));
+`;
+const tallyModule = `export default function tally(words: string[]): number {
+  let length = 0;
+  for (const word of words) length += word.length;
+  return length;
+}
 `;
 
 const previousVerify = process.env["SCRIPTC_LOWERING_FACTS_VERIFY"];
@@ -73,7 +84,10 @@ else process.env["SCRIPTC_FRONTEND_PROCESS"] = previousFrontendProcess;
 test("the verify mode recomputes a real compile's shared facts", async () => {
   mkdirSync(fixtureDir, { recursive: true });
   writeFileSync(entryPath, program);
+  writeFileSync(join(fixtureDir, "tally.ts"), tallyModule);
   const before = verifiedLoweringFactHits();
+  const beforeSpelled = verifiedLoweringFactHits("maySpellIdentifier");
+  const beforeImported = verifiedLoweringFactHits("importedModule");
   const beforeProvenance = verifiedLoweringFactHits("symbolProvenance");
   const beforeProtocols = verifiedLoweringFactHits("classProtocols");
   const result = await compile(entryPath, {
@@ -96,4 +110,8 @@ test("the verify mode recomputes a real compile's shared facts", async () => {
   // LoweringFacts' internal hits cannot satisfy this.
   expect(verifiedLoweringFactHits("symbolProvenance") - beforeProvenance).toBeGreaterThan(0);
   expect(verifiedLoweringFactHits("classProtocols") - beforeProtocols).toBeGreaterThan(0);
+  // The search for the unread declaration skipped the module that does not
+  // spell its name, and the default import's module was asked for again.
+  expect(verifiedLoweringFactHits("maySpellIdentifier") - beforeSpelled).toBeGreaterThan(0);
+  expect(verifiedLoweringFactHits("importedModule") - beforeImported).toBeGreaterThan(0);
 });

@@ -91,6 +91,7 @@ test("early library cache restores generated artifacts and metadata", async () =
     bigintBytes: false,
     mutableBuffers: false,
     dynInvoke: false,
+    fnMemberProps: false,
   };
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
@@ -147,6 +148,7 @@ test("early library cache publishes after creating a fresh output directory", as
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -180,6 +182,7 @@ test("early library cache hits refresh every payload's LRU time", async () => {
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -228,6 +231,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -260,6 +264,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: editedTracker.snapshot(),
   });
@@ -312,6 +317,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -378,6 +384,7 @@ test("semantic library cache refuses token and directive edits", async () => {
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -429,6 +436,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -470,6 +478,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
         bigintBytes: false,
         mutableBuffers: false,
         dynInvoke: false,
+        fnMemberProps: false,
       },
       frontend: tracker.snapshot(),
       semantic: {
@@ -534,6 +543,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: {
@@ -576,6 +586,7 @@ test("early library cache is separated by the host Node version", async () => {
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -610,6 +621,7 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -647,6 +659,7 @@ test("disabled early library cache performs no reads or writes", async () => {
       bigintBytes: false,
       mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   };

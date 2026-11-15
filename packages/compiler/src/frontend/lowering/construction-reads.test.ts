@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "vitest";
 import * as ts from "../ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "../ts7/source-parser-node.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { classHierarchyOf, constructionReads } from "./construction-reads.js";
 
 afterAll(closeSourceParser);
@@ -17,9 +18,7 @@ function early(source: string, name: string): string[] {
   const resolve = (heritage: ts.Expression): ts.ClassLikeDeclaration | null | undefined =>
     ts.isIdentifier(heritage) ? (classes.get(heritage.text) ?? null) : undefined;
   const baseOf = (decl: ts.ClassLikeDeclaration): ts.ClassLikeDeclaration | null | undefined => {
-    const heritage = decl.heritageClauses?.nodes.find(
-      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types?.nodes[0]?.expression;
+    const heritage = extendsElementOf(decl)?.expression;
     return heritage === undefined ? null : resolve(heritage);
   };
   const decl = classes.get(name);

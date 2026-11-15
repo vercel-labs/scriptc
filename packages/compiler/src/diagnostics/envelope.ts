@@ -222,6 +222,10 @@ export interface DiagnosticsEnvelope {
    * "compile" when blockers remain, "native" when native code generation
    * or linking failed, "complete" otherwise. */
   phase: "preflight" | "compile" | "native" | "complete";
+  /** coverage `--coverage=reached` only: the unreached remainder was not
+   * analyzed. `stats` then counts reached statements only, and no group or
+   * diagnostic carries the `unreached` scope. Absent otherwise. */
+  coverageMode?: "reached";
   stats?: {
     statementsTotal: number;
     statementsStatic: number;
@@ -333,9 +337,10 @@ export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
   const code: string = diag.code;
   if (isDivergenceCode(code)) return "divergence";
   if (isPerformanceCode(code)) return "performance";
+  if (code === "SC6201") return "invalid-source";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
   if (code === "SC0003") return "invalid-source";
-  if (code === "SC0002" || code === "SC0004") return "environment";
+  if (code === "SC0002" || code === "SC0004" || code === "SC0016") return "environment";
   if (/^SC[35]\d{3}$/.test(code)) return "environment";
   if (code === "SC8004" || code === "SC8005" || code === "SC8012") return "environment";
   if (isTypePatchCode(code)) return "environment";
@@ -453,6 +458,17 @@ export function locateDiagnostic(
 ): LocatedDiagnostic {
   const start = locator.position(diag.loc.file, diag.loc.start);
   const end = locator.position(diag.loc.file, diag.loc.end);
+  // What a source shadow inserted into the diagnostic's lines is not part
+  // of the columns: they are the file's as written (ScrDiagnostic.inserted).
+  for (const [at, length] of diag.inserted ?? []) {
+    for (const [pos, offset] of [
+      [start, diag.loc.start],
+      [end, diag.loc.end],
+    ] as const) {
+      const lineStart = offset - (pos.column - 1);
+      if (at >= lineStart && at < offset) pos.column -= Math.min(length, offset - at);
+    }
+  }
   return {
     code: diag.code,
     category: categoryOf(diag),
@@ -460,6 +476,7 @@ export function locateDiagnostic(
       isDivergenceCode(diag.code) ||
       isPerformanceCode(diag.code) ||
       isNodeIslandNoticeCode(diag.code) ||
+      diag.code === "SC6201" ||
       diag.code === "SC8004" ||
       isTypePatchCode(diag.code)
         ? "warning"

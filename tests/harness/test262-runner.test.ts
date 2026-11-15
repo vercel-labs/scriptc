@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import ts from "typescript";
+import ts from "typescript5";
 import { expect, test } from "vitest";
 import { boundedRun } from "../test262/execute.js";
 import { closeIslandRuleScanner, islandRuleMarker } from "../test262/island-marker.js";

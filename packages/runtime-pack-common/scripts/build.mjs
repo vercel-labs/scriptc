@@ -16,6 +16,7 @@ import {
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { probeHardeningSupport, runtimeHardeningFlags } from "./hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
@@ -79,6 +80,11 @@ async function build() {
   const compilerArgs = config.compilerArgs ?? [];
   const archiver = process.env.AR ?? config.archiver ?? "ar";
   const archiverArgs = config.archiverArgs ?? [];
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: [...compilerArgs, ...config.targetArgs, ...(config.compilerFlags ?? [])],
+  });
   const commonFlags = [
     ...config.targetArgs,
     ...(config.compilerFlags ?? []),
@@ -121,7 +127,6 @@ async function build() {
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
     ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"));
-  const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
   const zstdBuild = zstdInputs(config.target.llvm_triple);
@@ -504,6 +509,11 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...tlsFlags,
               ...includeFlags,
+              // Zero-initialized small locals and, on Linux, stack-clash probes.
+              ...runtimeHardeningFlags(config, {
+                optimized: flavorSpec.optimization !== "-O0",
+                ...hardeningSupport,
+              }),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             let unitBuild = false;
@@ -581,9 +591,9 @@ async function build() {
     )
       .flat()
       .sort();
-    // Vendored QuickJS reads `clock_gettime` for its monotonic clock. WASI
-    // exposes that declaration only when its process-clock emulation ABI is
-    // selected, so vendor sources inherit the target's runtime defines too.
+    // Vendor sources inherit the target's runtime defines too: WASI exposes
+    // some declarations (`clock_gettime` among them) only when its emulation
+    // ABIs are selected.
     const vendorTarget = [
       ...config.targetArgs,
       ...(config.compilerFlags ?? []),
@@ -592,27 +602,18 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
+    // zlib, brotli, zstd and mbedtls parse untrusted input and get every
+    // protection; libregexp keeps its flags (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(config, {
+      optimized: true,
+      vendor: true,
+      ...hardeningSupport,
+    });
     const requestedArchives = new Set(matrix.archives.map((entry) => entry.id));
     const archives =
       config.vendorArchives === false
         ? []
         : [
-            ...(requestedArchives.has("quickjs")
-              ? [
-                  await archive("quickjs", qjsSources, quickjs, [
-                    ...vendorTarget,
-                    "-std=gnu11",
-                    "-fvisibility=hidden",
-                    "-funsigned-char",
-                    "-DQUICKJS_NG_BUILD",
-                    "-D_GNU_SOURCE",
-                    "-DNDEBUG",
-                    "-Os",
-                    "-I",
-                    quickjs,
-                  ]),
-                ]
-              : []),
             ...(requestedArchives.has("libregexp")
               ? [
                   await archive("libregexp", lreSources, quickjs, [
@@ -637,6 +638,7 @@ async function build() {
                     ...zlibBuild.defines.map((define) => `-D${define}`),
                     "-I",
                     zlib,
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -648,6 +650,7 @@ async function build() {
                     "-Os",
                     "-I",
                     join(brotli, "include"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -659,6 +662,7 @@ async function build() {
                     "-O3",
                     ...zstdBuild.defines.map((define) => `-D${define}`),
                     ...zstdBuild.compileFlags,
+                    ...vendorHardening,
                     ...codeAlignment,
                     "-I",
                     zstd,
@@ -676,6 +680,7 @@ async function build() {
                     join(mbedtls, "include"),
                     "-I",
                     join(mbedtls, "library"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -801,12 +806,15 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STREAM_WRITE_ERRORS",
-          "SCR_NATIVE_REACTIONS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
+          "SCR_CHILD_STREAM_FLOW",
+          "SCR_TTY_COLORS",
           "SCR_NODE_ISLANDS",
+          "SCR_NODE_ISLAND_STDIO",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

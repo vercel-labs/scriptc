@@ -3,6 +3,7 @@ import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
 import { keptLayoutTypeOf, refuseCopiedStore } from "../structural-instances.js";
 import { constituentTypes } from "../../ts7/checker.js";
+import { withoutParenthesesAssertionsSatisfies } from "../../outer-expressions.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -77,7 +78,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedMemberRead,
+  classFieldTarget,
+  erasedDeclareField,
+  lowerUnionKeyedRead,
+} from "./property-access.js";
 import {
   assertedOnlyMemberWrite,
   assertedProbeAccessOf,
@@ -99,6 +105,8 @@ import {
   lowerSafeIndexRead,
   primitiveElement,
   unionArrayValueRead,
+  unionArmsIndexRead,
+  unionArmsView,
   unaffectedByIndex,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
@@ -107,7 +115,10 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
-import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  lowerClassPrototypeComputedAssignment,
+} from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import {
   isKeyedFieldAccess,
@@ -126,6 +137,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { refuseDefinedEnvWrite } from "../builtins/environment.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
@@ -154,6 +166,21 @@ function assertedProbeElementRead(
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
+/** The answer of a keyed read of a class instance's checked-dynamic view.
+ * A read its index signature answers is a JavaScript property read: a
+ * missing property answers undefined, so the read keeps the value type armed
+ * with undefined (Lowerer.classIndexSignatureRead), as a record's
+ * index-signature read does. Other reads narrow to the checker's type. */
+function classKeyedReadResult(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  read: IrExpr,
+): IrExpr {
+  const indexValue = lowerer.classIndexSignatureRead(expr);
+  const optional = indexValue ? lowerer.withUndefinedArmOf(indexValue) : null;
+  return optional ? lowerer.coerceInto(expr, read, optional) : lowerer.maybeNarrow(read, expr);
+}
+
 export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpression): IrExpr {
   // The bracket spelling of the mutableBuffers fact (`b["transfer"]()`,
   // buffers.ts, t262-dc §2.4).
@@ -330,18 +357,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // lower to the ONE process.envGet intrinsic. The read narrows like any
   // union-typed expression when the checker narrowed this occurrence.
   if (lowerer.isProcessEnv(expr.expression)) {
-    const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        expr.argumentExpression,
-        "indexing process.env with non-string keys",
-      );
-    }
     const get: IrExpr = {
       kind: "libCall",
-      fn: "process.envGet",
-      args: [key],
+      fn: envGetFn(lowerer, expr.argumentExpression),
+      args: [envKeyArg(lowerer, expr.argumentExpression)],
       type: lowerer.envValueType(),
       loc: locOf(expr),
     };
@@ -353,17 +372,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   {
     const live = heldEnvValueType(lowerer, expr.expression);
     if (live !== null) {
-      const key = lowerEnvironmentKey(lowerer, expr.argumentExpression);
-      if (key.type.kind === "string") {
-        const get: IrExpr = {
-          kind: "libCall",
-          fn: "process.envGet",
-          args: [key],
-          type: live,
-          loc: locOf(expr),
-        };
-        return lowerer.maybeNarrow(get, expr);
-      }
+      const get: IrExpr = {
+        kind: "libCall",
+        fn: envGetFn(lowerer, expr.argumentExpression),
+        args: [envKeyArg(lowerer, expr.argumentExpression)],
+        type: live,
+        loc: locOf(expr),
+      };
+      return lowerer.maybeNarrow(get, expr);
     }
   }
   // Expando function members in element clothing (`foo[strMem]`,
@@ -420,7 +436,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       ((receiver.type.kind === "map" || receiver.type.kind === "set") &&
         lowerer.dynConvertible(receiver.type))
     ) {
-      const fnName = jsFuncNameOf(expr.expression);
+      const fnName = jsFuncNameOf(expr.expression, lowerer);
       receiver = {
         kind: "dynFrom",
         value: receiver,
@@ -468,7 +484,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
     if (receiver?.type.kind === "func" && lowerer.dynConvertible(receiver.type)) {
       const loc = locOf(expr);
-      const fnName = jsFuncNameOf(expr.expression);
+      const fnName = jsFuncNameOf(expr.expression, lowerer);
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: receiver,
@@ -522,6 +538,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (receiver?.type.kind === "union") {
       const present = lowerer.stripUndefinedArm(receiver.type);
       if (present.kind === "array" || present.kind === "bytes") receiverIr = present;
+      // A union of sequences the VALUE holds while the checker still names
+      // one (`any` for a closure-captured `var`): each arm answers its own
+      // element read, dispatched on the tag.
+      else if (indexedUnionArms(lowerer, receiver.type) !== null) receiverIr = receiver.type;
     }
   }
   // A readonly tuple union under Array.isArray is checker-typed as an
@@ -542,17 +562,30 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (receiverIr.className === "%Error" || isDynTypedRefType(receiverIr)) {
       const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
-      return lowerer.maybeNarrow(
-        { kind: "dynKeyGet", value: receiver, key, type: DYN, loc: locOf(expr) },
-        expr,
-      );
+      return classKeyedReadResult(lowerer, expr, {
+        kind: "dynKeyGet",
+        value: receiver,
+        key,
+        type: DYN,
+        loc: locOf(expr),
+      });
     }
   }
 
   // An element read of a union of typed arrays and number arrays: each
-  // arm's own read, dispatched on the tag (indexed-unions.ts).
+  // arm's own read, dispatched on the tag (indexed-unions.ts). In a
+  // JavaScript source the checker spells the receiver the way its JSDoc
+  // declares it (`Array.<number>`, `Int32Array`) while the value holds the
+  // union the calling function's argument bound: the arm dispatch asks the
+  // lowered VALUE what storage it holds, so a JS sequence receiver takes
+  // this path even when the checker names one storage only.
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(expr));
   const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
-  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  const jsSequenceReceiver =
+    jsSource &&
+    receiverIr !== null &&
+    (receiverIr.kind === "array" || receiverIr.kind === "bytes" || receiverIr.kind === "union");
+  if (receiverIr !== null && ((indexedArms !== null && !jsSource) || jsSequenceReceiver)) {
     let recv = lowerer.lowerExpr(expr.expression);
     if (recv.type.kind === "dyn") recv = lowerer.coerceInto(expr.expression, recv, receiverIr);
     const arms = indexedUnionArms(lowerer, recv.type);
@@ -788,17 +821,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
       if (key.type.kind === "string" || key.type.kind === "dyn") {
         const opt = hasOptionalChainGuard(expr.expression, lowerer);
-        return lowerer.maybeNarrow(
-          {
-            kind: "dynKeyGet",
-            key,
-            ...(opt ? { optional: true as const } : {}),
-            value: lowerer.coerceToExpected(obj, DYN),
-            type: DYN,
-            loc: locOf(expr),
-          },
-          expr,
-        );
+        const read: IrExpr = {
+          kind: "dynKeyGet",
+          key,
+          ...(opt ? { optional: true as const } : {}),
+          value: lowerer.coerceToExpected(obj, DYN),
+          type: DYN,
+          loc: locOf(expr),
+        };
+        return obj.type.kind === "object"
+          ? classKeyedReadResult(lowerer, expr, read)
+          : lowerer.maybeNarrow(read, expr);
       }
     }
     // A checker-`any` receiver that LOWERS to a static ARRAY
@@ -1092,6 +1125,11 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       : lowerer.maybeNarrow(arr, expr.expression);
   }
 
+  // A union of tuples and arrays the checker reads as one array: the
+  // position is read in the value itself once the index is known
+  // (unionArmsView), below.
+  const armsView = unionArmsView(lowerer, expr.expression, arr, receiverIr, locOf(expr.expression));
+
   // An alias or container of an evolving array whose reads disagree
   // (`rows[0]` after `const rows = [xs]`) holds elements the checker's type
   // does not list, so its element read stays checked-dynamic.
@@ -1156,6 +1194,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+  }
+  if (armsView) {
+    // Like every array read, the answer keeps its undefined: an index past
+    // the arm's end reads it whatever the checker's type says.
+    const read = unionArmsIndexRead(lowerer, armsView, index, locOf(expr));
+    if (read) return read;
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `indexing a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' whose elements have no common representation (narrow it to one arm first)`,
+    );
   }
   // The LOWERED receiver's element type wins over the checker's when
   // both are arrays: a spoke result can be more precise than the
@@ -1680,6 +1729,7 @@ export function lowerRecordKeyRead(
       loc,
     };
   }
+  refuseUnnamedTemplateKey(lowerer, expr, keyNode, shape, shapeId);
   // The result type of the access — the index signature's value type
   // armed with undefined, or the declared fields' one common type on
   // signature-free shapes (tsc's keyof check proved membership; a
@@ -1726,11 +1776,28 @@ export function lowerRecordKeyRead(
       // the read dispatches over those keys; a key the type system does not
       // admit is a smuggled miss, which reads undefined as a missing
       // property does (the join must hold the arm to say so).
-      const domain = literalKeyDomain(lowerer, keyNode);
+      // A key spelled by a template (`row[\`min-${axis}\`]`) names only the
+      // declared fields its text can spell (templateKeyDomain).
+      const literalDomain = literalKeyDomain(lowerer, keyNode);
+      const domain =
+        literalDomain ??
+        (shape.indexValue === undefined ? templateKeyDomain(lowerer, keyNode, shape) : null);
       const reachable =
         domain === null ? [] : shape.fields.filter((field) => domain.includes(field.name));
-      if (domain !== null && reachable.length > 0 && reachable.length < shape.fields.length) {
-        const join = joinedFieldType(lowerer, reachable);
+      // A template may spell every declared field (`flags[\`--${name}\`]`
+      // beside members that are all flags): the read then dispatches over
+      // all of them. A literal domain that names every field keeps the
+      // refusal it had.
+      if (
+        domain !== null &&
+        reachable.length > 0 &&
+        (literalDomain === null || reachable.length < shape.fields.length)
+      ) {
+        // A template's text may spell a name that is no declared field, so
+        // its answer holds undefined whatever the reachable fields declare.
+        const joined = joinedFieldType(lowerer, reachable);
+        const join =
+          joined !== null && literalDomain === null ? lowerer.withUndefinedArmOf(joined) : joined;
         if (
           join !== null &&
           join.kind === "union" &&
@@ -1950,6 +2017,98 @@ function literalKeyDomain(lowerer: Lowerer, node: ts.Expression): string[] | nul
   return domain.length > 0 ? domain : null;
 }
 
+/** The template a key expression spells, looked for through parentheses,
+ * assertions (`as const`) and a `const` binding initialized with one
+ * (`const key = \`min-${axis}\` as const; row[key]`). Null for any other
+ * key. */
+function keyTemplateOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  depth = 0,
+): ts.TemplateExpression | null {
+  const key = withoutParenthesesAssertionsSatisfies(node);
+  if (ts.isTemplateExpression(key)) return key;
+  if (!ts.isIdentifier(key) || depth > 4) return null;
+  const decl = lowerer.checker.getSymbolAtLocation(key)?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return keyTemplateOf(lowerer, decl.initializer, depth + 1);
+}
+
+/** The declared fields a TEMPLATE-spelled key can name: the fields whose
+ * names the template's text spells, with each interpolation standing for
+ * any string unless its type is one literal. A template's value always has
+ * that form, whatever its interpolations hold, so no other declared field
+ * can be the one read; a spelled name that is no declared field reads
+ * undefined, as a missing property does. Null when the key is no template
+ * or its text fits no declared field. */
+function templateKeyDomain(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  shape: IrRecordShape,
+): string[] | null {
+  const template = keyTemplateOf(lowerer, node);
+  if (template === null) return null;
+  const quote = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let pattern = `^${quote(template.head.text)}`;
+  for (const span of template.templateSpans.nodes) {
+    // An interpolation whose own type is one literal spells it; any other
+    // (a string, a type parameter whatever this instance binds it to) is
+    // any text.
+    const t = lowerer.typeOf(span.expression);
+    const literal = t.isStringLiteralType()
+      ? t.value
+      : t.isNumberLiteralType()
+        ? String(t.value)
+        : null;
+    pattern += (literal === null ? "[\\s\\S]*" : quote(literal)) + quote(span.literal.text);
+  }
+  const spelled = new RegExp(`${pattern}$`);
+  const names = shape.fields.filter((field) => spelled.test(field.name)).map((f) => f.name);
+  return names.length > 0 ? names : null;
+}
+
+/** Inside a generic instance, a key spelled by a template of a type
+ * parameter on a record none of whose declared members the template can
+ * spell. The members such a key reads are the ones a mapped type names
+ * through the parameter, and the record lists them only in an instance for
+ * a call that passes a literal; an instance for any string has no member
+ * for them, so a read there would answer undefined for a property the
+ * object holds. Refused by name. */
+function refuseUnnamedTemplateKey(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  keyNode: ts.Expression,
+  shape: IrRecordShape,
+  shapeId: string,
+): void {
+  const bindings = lowerer.typeParamBindings;
+  if (bindings === null || shape.indexValue !== undefined) return;
+  const template = keyTemplateOf(lowerer, keyNode);
+  if (template === null) return;
+  // Only an instance that binds the parameter to `string`: the instance a
+  // function used as a value gets (its parameters unknown) keeps the
+  // lowering it has.
+  const ofParameter = template.templateSpans.nodes.some((span) => {
+    const type = lowerer.typeOf(span.expression);
+    if ((type.flags & ts.TypeFlags.TypeParameter) === 0) return false;
+    const symbol = type.getSymbol();
+    return symbol !== undefined && bindings.get(symbol)?.kind === "string";
+  });
+  if (!ofParameter || templateKeyDomain(lowerer, keyNode, shape) !== null) return;
+  lowerer.unsupported(
+    "SC1090",
+    expr,
+    `a read keyed by a template of a type parameter where no declared member of '${lowerer.fmt({ kind: "record", shapeId })}' has such a name (the members the parameter names are listed only for a call that passes a literal)`,
+  );
+}
+
 /* The interned join of the given fields' types, deduped and sorted (the
  * canonical union form). Null when an arm has no value representation (a
  * bare 'void', a generator, a caught value) — the caller keeps its fence. */
@@ -2083,6 +2242,26 @@ function lowerTupleIndexRead(
     locOf(expr.argumentExpression),
     expr.argumentExpression,
   );
+  // An untyped key, or a JavaScript file's non-number key (`t[name]` over
+  // the names Object.getOwnPropertyNames answered): the property read is
+  // dynamic, as it is for an array receiver. The tuple answers through its
+  // checked-dynamic array view: an index, "length", or undefined.
+  if (
+    index.type.kind === "dyn" ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      index.type.kind !== "f64" &&
+      lowerer.dynConvertible(index.type))
+  ) {
+    const view = lowerer.coerceToExpected(obj, DYN);
+    if (view.type.kind === "dyn")
+      return {
+        kind: "dynKeyGet",
+        value: view,
+        key: lowerer.coerceToExpected(index, DYN),
+        type: DYN,
+        loc,
+      };
+  }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
   }
@@ -2634,25 +2813,31 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       heldEnvValueType(lowerer, target.expression) !== null)
   ) {
     const loc = locOf(expr);
-    const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
-    if (key.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        target.argumentExpression,
-        "indexing process.env with non-string keys",
-      );
+    // Node's env proxy ToStrings the key and the value (a Symbol on
+    // either side throws); string keys and values keep the fast setenv.
+    if (envKeyIsString(lowerer, target.argumentExpression)) {
+      const key = lowerEnvironmentKey(lowerer, target.argumentExpression);
+      refuseDefinedEnvWrite(lowerer, key, target);
+      if (envKeyIsString(lowerer, expr.right)) {
+        const value = lowerer.lowerExpr(expr.right);
+        return {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+          loc,
+        };
+      }
+      const value = lowerer.lowerExprExpecting(expr.right, DYN);
+      return {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.envSetDyn", args: [key, value], type: VOID, loc },
+        loc,
+      };
     }
-    const value = lowerer.lowerExpr(expr.right);
-    if (value.type.kind !== "string") {
-      lowerer.unsupported(
-        "SC1090",
-        expr.right,
-        `assigning '${lowerer.fmt(value.type)}' values to process.env (env values are strings — convert first: \`\${v}\`)`,
-      );
-    }
+    const key = lowerer.lowerExprExpecting(target.argumentExpression, DYN);
+    const value = lowerer.lowerExprExpecting(expr.right, DYN);
     return {
       kind: "exprStmt",
-      expr: { kind: "libCall", fn: "process.envSet", args: [key, value], type: VOID, loc },
+      expr: { kind: "libCall", fn: "process.envSetKeyDyn", args: [key, value], type: VOID, loc },
       loc,
     };
   }
@@ -2825,6 +3010,41 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
             ),
             loc: locOf(expr),
           };
+        }
+        // `instance["name"] = v` with a literal key the class does not
+        // declare is the bracket spelling of the dot write `instance.name =
+        // v` (which a class with an index signature admits): the same own
+        // property of the instance, through its checked-dynamic view. A
+        // `declare` field is such a name too. A declared `stack` on an
+        // Error subclass keeps the refusal: the runtime error holds its
+        // own stack, and the two spellings must reach one place.
+        if (
+          isDynTypedRefType(receiver.type) &&
+          !(
+            key === "stack" &&
+            lowerer.isErrorRootedClass(receiver.type.className) &&
+            erasedDeclareField(lowerer, receiver.type.className, key)
+          )
+        ) {
+          const info = lowerer.classes.get(receiver.type.className);
+          if (
+            info &&
+            !info.def.runtime &&
+            !info.builtinError &&
+            !info.builtinEmitter &&
+            !info.builtinStream &&
+            !isCompiledPrototypeMember(lowerer, info, key)
+          ) {
+            return {
+              kind: "exprStmt",
+              expr: lowerDynMemberAssignment(
+                lowerer,
+                expr,
+                lowerer.coerceInto(target.expression, receiver, DYN),
+              ),
+              loc: locOf(expr),
+            };
+          }
         }
         lowerer.unsupported(
           "SC1090",
@@ -3212,11 +3432,21 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     }
   }
   // An element write into a union of typed arrays and number arrays
-  // (indexed-unions.ts).
+  // (indexed-unions.ts). As for the read above, a JS sequence receiver
+  // takes this path on the storage the VALUE holds, even when its checker
+  // spelling names one only (`Array.<number>` for an argument bound to a
+  // typed array, or the reverse) or names none at all (a captured `var`).
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(expr));
   const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
-  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A bytes receiver returned above, so only these remain.
+  const receiverType: IrType | null = receiverIr;
+  const jsSequenceReceiver =
+    jsSource &&
+    (receiverType === null || receiverType.kind === "array" || receiverType.kind === "union");
+  if ((indexedArms !== null && !jsSource) || jsSequenceReceiver) {
     let recv = lowerer.lowerExpr(target.expression);
-    if (recv.type.kind === "dyn") recv = lowerer.coerceInto(target.expression, recv, receiverIr);
+    if (recv.type.kind === "dyn" && receiverIr !== null)
+      recv = lowerer.coerceInto(target.expression, recv, receiverIr);
     const arms = indexedUnionArms(lowerer, recv.type);
     if (arms) {
       const index = lowerOptionalNumber(
@@ -3337,6 +3567,26 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** Whether an environment key expression is statically a string — the
+ * getenv/setenv fast paths that need no conversion. */
+function envKeyIsString(lowerer: Lowerer, node: ts.Expression): boolean {
+  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string";
+}
+
+/** The key argument of an environment read: the plain string, or the
+ * checked-dynamic value whose ToString the runtime runs. Node's proxy
+ * answers undefined for a Symbol key (no conversion, no throw), which the
+ * dynamic getter mirrors. */
+function envKeyArg(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return envKeyIsString(lowerer, node)
+    ? lowerEnvironmentKey(lowerer, node)
+    : lowerer.lowerExprExpecting(node, DYN);
+}
+
+function envGetFn(lowerer: Lowerer, node: ts.Expression): "process.envGet" | "process.envGetDyn" {
+  return envKeyIsString(lowerer, node) ? "process.envGet" : "process.envGetDyn";
 }
 
 /** A number-keyed read of a union of arrays with a `(T | undefined)[]` arm

@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
+  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -95,9 +95,12 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  processFeatures: boolean;
+  islandChild: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
+  childStreamFlow: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   conversionTrace: boolean;
@@ -105,10 +108,13 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
   reflectProtoTarget: boolean;
+  classTestPrototype: boolean;
   recordSourceDelete: boolean;
   recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
+  recordSourceGet: boolean;
+  arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -116,6 +122,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
+  utilMarkPromiseAsHandled: boolean;
+  utilTraceSigInt: boolean;
   dynBuffer: boolean;
   fsPathValue: boolean;
   builtinValues: boolean;
@@ -128,6 +136,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value (scr_dyn_fn_own.c). */
+  functionOwnWrite?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -148,6 +161,19 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
+  /** The program names a terminal color method of a process stream it
+   * holds: scr_tty_colors.c and the SCR_TTY_COLORS build of the events
+   * unit. */
+  ttyColors: boolean;
+  /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
+  streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -156,6 +182,10 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   primitiveWrapper: boolean;
   iteratorProto: boolean;
   nativeFetch: boolean;
+  /** The program links scr_async_dyn.c, the one unit that makes a promise
+   * adapter: it selects the scr_map.c build whose checked-dynamic key of a
+   * boxed promise is the identity cell the adapters share. */
+  dynPromiseKeys: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -365,9 +395,12 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    processFeatures: features.processFeatures === true,
+    islandChild: features.islandChild === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
+    childStreamFlow: features.childStreamFlow === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     conversionTrace: features.conversionTrace === true,
@@ -375,10 +408,13 @@ export function effectiveRuntimeFeatures(
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
     reflectProtoTarget: features.reflectProtoTarget === true,
+    classTestPrototype: features.classTestPrototype === true,
     recordSourceDelete: features.recordSourceDelete === true,
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
+    recordSourceGet: features.recordSourceGet === true,
+    arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -386,12 +422,16 @@ export function effectiveRuntimeFeatures(
     webBodies: features.webBodies === true,
     abortSignal,
     utilTiming: features.utilTiming === true,
+    utilMarkPromiseAsHandled: features.utilMarkPromiseAsHandled === true,
+    utilTraceSigInt: features.utilTraceSigInt === true,
     dynBuffer: features.dynBuffer === true,
     fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
+    functionOwnWrite: features.functionOwnWrite === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
@@ -401,6 +441,10 @@ export function effectiveRuntimeFeatures(
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
     streamWriteErrors: features.streamWriteErrors === true,
+    stdioObject: features.stdioObject === true,
+    ttyColors: features.ttyColors === true,
+    streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,
@@ -409,6 +453,17 @@ export function effectiveRuntimeFeatures(
     primitiveWrapper: features.primitiveWrapper === true,
     iteratorProto: features.iteratorProto === true,
     nativeFetch,
+    // The predicate of scr_async_dyn.c in runtime-pack-matrix.mjs.
+    dynPromiseKeys:
+      features.dynAsync ||
+      features.dynInvoke ||
+      features.dc ||
+      features.fileHandle ||
+      nativeFetch ||
+      features.nodeIsland === true ||
+      features.nodeTest ||
+      // The stub resolver settles its promise results through the unit.
+      features.dnsResolve,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
     abortSignalOnly: abortSignal && !nativeFetch,

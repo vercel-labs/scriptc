@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import {
   BOOL,
   DYN,
@@ -21,7 +21,11 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
+import {
+  classDeclaresHasInstanceHook,
+  erasedGenericFamily,
+  inheritedBuiltinCtorFence,
+} from "./lower-classes.js";
 import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
@@ -504,12 +508,28 @@ export class ClassConstructionDispatch {
           if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
-          const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
-            kind: "dynCheck",
-            value: callee,
-            type,
-            loc,
-          });
+          // A generic class taken as a value is its erased instantiation,
+          // and JavaScript's one class answers for every instantiation: an
+          // instance of any of them (or of their subclasses) passes.
+          const family = erasedGenericFamily(lowerer, name);
+          const result =
+            family !== null && family.length > 1
+              ? family
+                  .map((member) => classInstanceOf(lowerer, varRef("value", DYN, loc), member, loc))
+                  .reduce((left, right): IrExpr => ({
+                    kind: "logical",
+                    op: "||",
+                    left,
+                    right,
+                    type: BOOL,
+                    loc,
+                  }))
+              : classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
+                  kind: "dynCheck",
+                  value: callee,
+                  type,
+                  loc,
+                });
           fn.body.unshift({
             kind: "if",
             cond: {
@@ -557,16 +577,16 @@ export class ClassConstructionDispatch {
           fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
-        const value = constructedValue(lowerer, info, {
+        // The result is an untyped value, so a constructor that returns an
+        // object of another kind answers that object (constructedDynValue).
+        const value = constructedDynValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
           args,
           type: { kind: "object", className: name },
           loc,
         });
-        const body: IrStmt[] = [
-          { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
-        ];
+        const body: IrStmt[] = [{ kind: "return", value, loc }];
         // A spread call's argument count is known only at run time.
         if (fence !== null && fn.name === PACKED)
           body.unshift({

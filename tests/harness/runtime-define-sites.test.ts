@@ -8,6 +8,12 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { noLinkFeatures } from "../../packages/compiler/src/backend/native-link-info-core.js";
+import {
+  effectiveRuntimeFeatures,
+  evaluateRuntimePredicate,
+  type RuntimePredicate,
+} from "../../packages/compiler/src/backend/runtime-pack-core.js";
 import {
   BASE_RUNTIME_SOURCES,
   OPTIONAL_RUNTIME_SOURCES,
@@ -93,4 +99,43 @@ test("a unit tests a build define only when the matrix builds it with that defin
   // give it that build in runtime-pack-matrix.mjs, or reach the feature
   // through a table its unit installs instead of a define.
   expect([...new Set(unbuilt)]).toEqual([]);
+});
+
+test("the map unit's promise-key build is selected exactly when the dynamic promise unit is linked", () => {
+  // Only scr_async_dyn.c makes a promise adapter: a second box of one promise
+  // at another address. scr_map.c keys a boxed promise by the identity the
+  // adapters share only in its SCR_DYN_PROMISE_KEYS build, so a program that
+  // linked the unit with the default map object would store a promise as a
+  // key and never find it again, without any error. The unit's predicate is
+  // written in the matrix and the build's feature (dynPromiseKeys) in the
+  // compiler: this holds the two to each other, one link feature at a time.
+  const unit = (OPTIONAL_RUNTIME_SOURCES as [string, RuntimePredicate][]).find(
+    ([source]) => source === "scr_async_dyn.c",
+  );
+  expect(unit).toBeDefined();
+  const predicate = unit![1];
+  const builds: { id: string; when: Record<string, boolean>; defines: string[] }[] =
+    variantsFor("scr_map.c");
+  const keyed = builds.filter((build) => build.defines.includes("SCR_DYN_PROMISE_KEYS"));
+  expect(keyed.length).toBeGreaterThan(0);
+  for (const build of builds)
+    expect(build.when.dynPromiseKeys === true, build.id).toBe(
+      build.defines.includes("SCR_DYN_PROMISE_KEYS"),
+    );
+  const off = effectiveRuntimeFeatures(noLinkFeatures(), {});
+  expect(evaluateRuntimePredicate(predicate, off)).toBe(false);
+  expect(off.dynPromiseKeys).toBe(false);
+  // Every name the runtime feature set has is tried as a link feature; a
+  // computed name is no link feature and leaves the set as it was.
+  const linking: string[] = [];
+  for (const feature of Object.keys(off)) {
+    const on = effectiveRuntimeFeatures({ ...noLinkFeatures(), [feature]: true }, {});
+    const linked = evaluateRuntimePredicate(predicate, on);
+    expect(on.dynPromiseKeys, `a program with ${feature}`).toBe(linked);
+    if (linked) linking.push(feature);
+  }
+  // The loop reached every way the matrix links the unit.
+  const ways = typeof predicate === "object" ? (predicate.any ?? []) : [];
+  expect(ways.length).toBeGreaterThan(0);
+  expect(linking.length).toBeGreaterThanOrEqual(ways.length);
 });

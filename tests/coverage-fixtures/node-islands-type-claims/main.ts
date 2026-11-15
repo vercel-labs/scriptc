@@ -28,7 +28,7 @@ const doubled = session.ttl * 2;
 each(["a", "b"], (item, index) => {
   console.log(item, index);
 });
-const loaded = load("p") as Config;
+const loaded = load("p") as Loaded;
 const when: Date = started();
 
 console.log(config.name, other.retries, first + second, size("q"), ttl, doubled);
@@ -63,3 +63,11 @@ function late(value: any): number {
   return typeof value === "number" ? n : 0;
 }
 console.log(late(3));
+
+// The island's value is read through a type of its own: an assertion applied
+// to an island value makes that type a view of the island's object, and
+// `Config` stays the type of parsed data alone.
+interface Loaded {
+  name: string;
+  retries: number;
+}

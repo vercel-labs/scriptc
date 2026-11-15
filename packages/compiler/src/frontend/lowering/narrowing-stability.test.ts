@@ -494,3 +494,61 @@ console.log(stale());
   expect(readsLocal(await lower(source("var copy;")), "stale", "copy")).toBe(true);
   expect(readsLocal(await lower(source("let copy;")), "stale", "copy")).toBe(false);
 });
+
+test("a binding initialized from `read && other` holds what the right operand answers", async () => {
+  // The checker types `seen && fresh()` as `null` (it has `seen` narrowed
+  // to its initializer), and `both` with it. The stored value is read, so
+  // the pair answers `fresh()` once the closure has run, and the binding
+  // is untyped: no checker type says what it holds.
+  const source = (pair: string): string => `
+function fresh(): boolean | undefined {
+  return true;
+}
+function stale(): string {
+  let seen: { n: number } | null = null;
+  const mark = (): void => {
+    seen = { n: 3 };
+  };
+  mark();
+  const both = ${pair};
+  return both ? "both" : "not both";
+}
+console.log(stale());
+`;
+  // The local holds the pair's own type (the binding's units and the right
+  // operand's values), not the `null` the checker inferred for it.
+  const holdsBoolean = (module: IrModule): boolean => {
+    const stale = module.functions.find((f) => f.name === "stale" || f.name.endsWith(".stale"))!;
+    const type = stale.locals.find((item) => item.name === "both")!.type;
+    if (type.kind === "dyn") return true;
+    if (type.kind !== "union") return false;
+    const arms = (module.unions ?? []).find((u) => u.id === type.unionId)?.arms ?? [];
+    return arms.some((arm) => arm.kind === "bool") && arms.some((arm) => arm.kind === "nullT");
+  };
+  expect(holdsBoolean(await lower(source("seen && fresh()")))).toBe(true);
+  // A longer chain as well.
+  expect(holdsBoolean(await lower(source("seen && fresh() && fresh()")))).toBe(true);
+  // `read || other` and `read ?? other` keep their refusal: the binding's
+  // checker type there is the right operand's, which the read does not fit.
+  await expect(lower(source("seen || fresh()"))).rejects.toThrow(/SC2003|SC1090/);
+  await expect(lower(source("seen ?? fresh()"))).rejects.toThrow(/SC2003|SC1090/);
+});
+
+test("`read && other` over a binding nothing else assigns keeps the checker's type", async () => {
+  // Nothing can have assigned `seen` between its initializer and the read:
+  // the narrowing holds, the pair is `null`, and a right operand of
+  // another type has no place in it.
+  await expect(
+    lower(`
+function fresh(): boolean | undefined {
+  return true;
+}
+function current(): string {
+  let seen: { n: number } | null = null;
+  const both = seen && fresh();
+  return both ? "both" : "not both";
+}
+console.log(current());
+`),
+  ).rejects.toThrow(/SC2003/);
+});

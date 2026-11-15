@@ -72,6 +72,8 @@ import {
 } from "./zero-cost-compare.mjs";
 import {
   budgetVerdict,
+  dynamicClassesEnv,
+  dynamicClassReport,
   HEAP_PROBE_FLAGS,
   heapLimitMb,
   judgesSelfCompile,
@@ -406,7 +408,8 @@ function buildEnv() {
 }
 
 /** Every build runs with the heap limit of the gate's own checkout (the self-compile budget's).
- * `trace` adds what the budget reads: the phase timing lines and the heap at each pass's end. */
+ * `trace` adds what the budget reads: the phase timing lines, the heap at each pass's end, and
+ * the report on the classes the built checkout's budget keeps out of the dynamic tier. */
 const heapLimit = heapLimitMb(readBudget(repoRoot));
 function compile(tree, args, trace = false) {
   return exec(
@@ -418,7 +421,12 @@ function compile(tree, args, trace = false) {
       "build",
       ...args,
     ],
-    { cwd: programsRoot, env: trace ? { ...buildEnv(), SCRIPTC_TIMING: "1" } : buildEnv() },
+    {
+      cwd: programsRoot,
+      env: trace
+        ? { ...buildEnv(), SCRIPTC_TIMING: "1", ...dynamicClassesEnv(readBudget(tree)) }
+        : buildEnv(),
+    },
   );
 }
 
@@ -446,7 +454,12 @@ async function buildProgram(program, label, tree = trees[label], trace = false) 
       dir,
       llvm,
       ms: result.ms,
-      ...(trace ? { trace: selfCompileTrace(result.stderr) } : {}),
+      ...(trace
+        ? {
+            trace: selfCompileTrace(result.stderr),
+            dynamicClasses: dynamicClassReport(result.stderr),
+          }
+        : {}),
     };
   }
   const exe = join(dir, "program");
@@ -1220,7 +1233,14 @@ async function selfCompileBudget(build) {
   // not measured either: the gate also runs over checkouts that hold a
   // compiler and no source (tests/harness/zero-cost-gate.test.ts).
   const bytes = budget === null ? null : sourceBytes(candidateSelfProgram.entry);
-  const verdict = budgetVerdict({ budget, previous, trace: build.trace, bytes });
+  const verdict = budgetVerdict({
+    budget,
+    previous,
+    trace: build.trace,
+    bytes,
+    dynamicClasses: build.dynamicClasses,
+    root: trees.candidate,
+  });
   const result = {
     passes: build.trace.passes,
     liveHeapMb: build.trace.liveHeapMb,

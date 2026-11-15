@@ -6,6 +6,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isNodeTypesPath } from "../../dts-paths.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import {
   BOOL,
@@ -103,6 +104,61 @@ export function lowerFsStreamMethodCall(
   return { kind: "libCall", fn: "fs.fsStreamCloseCb", args: [receiver, cb], type: VOID, loc };
 }
 
+/** Whether a value of this type can hold a `signal` member: the type names
+ * one, or it is open (any, unknown, a type parameter, `object`, `{}`, an
+ * index signature), so its members are not known here. The type of an
+ * object literal is closed: it holds the members written in it. */
+function typeMayHoldSignal(lowerer: Lowerer, type: ts.Type): boolean {
+  if (type.flags & ts.TypeFlags.AnyOrUnknown) return true;
+  if (type.isUnionType()) {
+    return ts.constituentTypes(type).some((part) => typeMayHoldSignal(lowerer, part));
+  }
+  if (type.flags & (ts.TypeFlags.Primitive | ts.TypeFlags.Never)) return false;
+  const checker = lowerer.checker;
+  if (checker.getPropertyOfType(type, "signal") !== undefined) return true;
+  if ((type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) === 0) return true;
+  if (checker.getIndexInfosOfType(type).length > 0) return true;
+  if (type.flags & ts.TypeFlags.Object) {
+    if ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) return false;
+  }
+  return checker.getPropertiesOfType(type).length === 0;
+}
+
+/** Whether the options of an fs stream can hold a `signal`, which Node's
+ * stream constructors apply with addAbortSignal: an options literal that
+ * writes the member (or a key computed at run time, or spreads a value that
+ * can hold one), and any other value whose type can (typeMayHoldSignal). The
+ * call then names the `...Signal` entry, whose program links the fs stream
+ * unit's SCR_FS_STREAM_SIGNAL build and the event-target unit. Every other
+ * call keeps the default unit, where a signal that arrives anyway (a wider
+ * object behind a narrower type) is refused when the stream is created. */
+export function fsStreamOptionsMayHoldSignal(
+  lowerer: Lowerer,
+  options: ts.Expression | undefined,
+): boolean {
+  if (options === undefined) return false;
+  const value = withoutParenthesesTypeWrappers(options);
+  if (!ts.isObjectLiteralExpression(value))
+    return typeMayHoldSignal(lowerer, lowerer.typeOf(value));
+  return value.properties.nodes.some((member) => {
+    if (ts.isSpreadAssignment(member)) {
+      return fsStreamOptionsMayHoldSignal(lowerer, member.expression);
+    }
+    const name = member.name;
+    if (name === undefined) return true;
+    if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text === "signal";
+    if (ts.isNumericLiteral(name)) return false;
+    if (ts.isComputedPropertyName(name)) {
+      const key = withoutParenthesesTypeWrappers(name.expression);
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
+        return key.text === "signal";
+      }
+      return !ts.isNumericLiteral(key);
+    }
+    return false;
+  });
+}
+
 /** fs.createReadStream / createWriteStream(path[, options]) and their
  * constructor spellings: the path and options cross as dyn values, so
  * literal and computed options take the runtime's Node-order checks. The
@@ -138,9 +194,16 @@ export function fsStreamCreateExpr(
   };
   const path = asDyn(args[0], "path");
   const options = asDyn(args[1], "options value");
+  const signal = fsStreamOptionsMayHoldSignal(lowerer, args[1]);
   return {
     kind: "libCall",
-    fn: readable ? "fs.createReadStream" : "fs.createWriteStream",
+    fn: readable
+      ? signal
+        ? "fs.createReadStreamSignal"
+        : "fs.createReadStream"
+      : signal
+        ? "fs.createWriteStreamSignal"
+        : "fs.createWriteStream",
     args: [path, options],
     type: { kind: "object", className: readable ? "%Readable" : "%Writable" },
     loc,

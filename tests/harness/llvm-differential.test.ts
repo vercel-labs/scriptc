@@ -11,14 +11,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
+import { icuAvailable } from "./icu.js";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
 
@@ -108,8 +110,11 @@ function requiresIcu(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
 }
 
-function icuAvailable(): boolean {
-  return process.platform === "linux" && process.arch === "x64";
+/** `// @skip-darwin` (differential.test.ts's twin): the Node oracle itself
+ * does not finish on macOS (it aborts while exiting), so there is no
+ * reference output for the LLVM-built program to match. */
+function skipsDarwin(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @skip-darwin\s*$/.test(l));
 }
 
 async function runBinary(
@@ -186,7 +191,7 @@ function wantsTscDecorators(file: string): boolean {
 }
 
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -249,7 +254,9 @@ function programInputs(file: string): string[] {
 }
 
 async function build(file: string, optimization: "release" | "dev") {
-  const hash = createHash("sha256");
+  const defines = programDefines(directiveHead(file));
+  // The entry joins the key: a directory can hold several entries.
+  const hash = createHash("sha256").update(file).update("\0");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")
@@ -269,6 +276,7 @@ async function build(file: string, optimization: "release" | "dev") {
     sanitize,
     optimization,
     ...(cpuDispatch ? { cpuDispatch } : {}),
+    ...(defines ? { define: defines.define } : {}),
     ...(targetCpu === undefined ? {} : { targetCpu }),
   });
 }
@@ -281,8 +289,13 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      if (skipsDarwin(file) && process.platform === "darwin") skip();
+      const oracleEnv = {
+        ...programEnv(file),
+        ...programDefines(directiveHead(file))?.env,
+      };
       const oracle = await runStep(`${rel}: node oracle`, (track) =>
-        runBinary(process.execPath, nodeOracleArgs(file), undefined, programEnv(file), track),
+        runBinary(process.execPath, nodeOracleArgs(file), undefined, oracleEnv, track),
       );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import type { SourceFile, Node } from "typescript/unstable/ast";
+import type { SourceFile, Node } from "typescript/ast";
 import { AstFile, AstNode, AstNodeList } from "./ast-node.js";
 import {
   AstKind,
@@ -136,7 +136,10 @@ beforeAll(() => {
   try {
     client.requestText("initialize", "null");
     const snapshot = JSON.parse(
-      client.requestText("updateSnapshot", JSON.stringify({ openProjects: [config] })),
+      client.requestText(
+        "createSnapshot",
+        JSON.stringify({ openProjects: [config], ensurePrograms: true }),
+      ),
     ) as { snapshot: string; projects: { id: string }[] };
     for (const name of [...Object.keys(cases), "model.ts"]) {
       const bytes = client.requestBytes(

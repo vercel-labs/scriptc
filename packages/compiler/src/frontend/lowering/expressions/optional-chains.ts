@@ -1,4 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { isTerminalStreamMethodRead } from "../builtins/process.js";
 import { memberCallHolder, withMemberCallReceiver } from "../member-call-receivers.js";
 import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
@@ -161,6 +162,8 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Method) || symbol.flags & ts.SymbolFlags.Optional)
     return false;
   if (!lowerer.isStdlibSymbol(symbol)) return false;
+  // A process stream has its terminal methods only on a terminal.
+  if (isTerminalStreamMethodRead(lowerer, node)) return false;
   const nullable =
     ts.TypeFlags.Any |
     ts.TypeFlags.Unknown |
@@ -334,7 +337,9 @@ export function lowerOptionalChain(
     dotNode === expr &&
     ts.isCallExpression(expr) &&
     !alwaysPresentStdlibMethod(lowerer, recvNode) &&
-    neverNullishCallee(lowerer, recvNode) &&
+    // A process stream's terminal method is optional and has no value form
+    // either: its call tests the stream itself.
+    (neverNullishCallee(lowerer, recvNode) || isTerminalStreamMethodRead(lowerer, recvNode)) &&
     tryLowerExpression(lowerer, recvNode) === null
   ) {
     lowerer.chainHandled.add(dotNode);
@@ -515,7 +520,7 @@ export function lowerOptionalChain(
     if (!hadNarrow) {
       lowerer.chainNarrowedType.set(
         recvNode,
-        lowerer.checker.getNonNullableType(lowerer.checker.getTypeAtLocation(recvNode)),
+        lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode)),
       );
     }
     try {
@@ -588,9 +593,7 @@ export function lowerOptionalChain(
 
   // Member forms: re-dispatch the normal lowering with the receiver node
   // bound to the chain (reads as chainRecv, types as non-nullish).
-  const narrowedTs = lowerer.checker.getNonNullableType(
-    lowerer.checker.getTypeAtLocation(recvNode),
-  );
+  const narrowedTs = lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode));
   lowerer.chainRecvByNode.set(recvNode, recvRef);
   lowerer.chainNarrowedType.set(recvNode, narrowedTs);
   lowerer.chainHandled.add(dotNode);
@@ -634,6 +637,16 @@ export function lowerOptionalChain(
     for (const n of tailSteps) lowerer.chainNarrowedType.delete(n);
   }
   return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
+}
+
+/** The type of a chain's receiver before the chain narrows it: the
+ * checker's, or, where the checker calls it `any` while a refused statement
+ * lowers again (Lowerer.bindingTypedRetry), the type its bindings declare. */
+function chainReceiverType(lowerer: Lowerer, recvNode: ts.Expression): ts.Type {
+  const checked = lowerer.checker.getTypeAtLocation(recvNode);
+  return lowerer.bindingTypedRetry && (checked.flags & ts.TypeFlags.Any) !== 0
+    ? lowerer.typeOf(recvNode)
+    : checked;
 }
 
 /** The optChain node around a lowered chain body: void bodies keep the

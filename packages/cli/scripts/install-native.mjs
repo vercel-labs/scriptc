@@ -47,7 +47,6 @@ export function relocateToolchain(manifest, sourceDirectory, destinationDirector
     "runtime_pack",
     "runtime_sources",
     "declarations",
-    "comptime",
     "wasi_node_runner",
     "lib_diagnostics",
   ]) {
@@ -127,8 +126,8 @@ export function installNativeCli(
     for (const path of [
       manifest.ts7,
       ...(manifest.tsc_ts === undefined ? [] : [manifest.tsc_ts]),
-      manifest.comptime,
       join(manifest.llvm_package, "bin/scriptc-llvm-codegen"),
+      join(manifest.llvm_package, "bin/scriptc-comptime"),
     ]) {
       chmodSync(resolve(bin, path), 0o755);
     }

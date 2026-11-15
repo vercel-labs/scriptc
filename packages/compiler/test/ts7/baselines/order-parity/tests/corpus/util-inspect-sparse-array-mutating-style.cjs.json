@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-inspect-sparse-array-mutating-style.cjs"
+ ],
+ "diags": []
+}

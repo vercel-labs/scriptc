@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/dns-promises-resolve.cjs"],
+  "diags": []
+}

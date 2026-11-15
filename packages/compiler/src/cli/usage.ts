@@ -12,6 +12,7 @@ export const CLI_OPTIONS = {
   emit: { type: "string" },
   print: { type: "string" },
   "fail-on": { type: "string" },
+  coverage: { type: "string" },
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
@@ -37,12 +38,15 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  define: { type: "string", multiple: true },
   "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
+  "copy-warning": { type: "boolean", default: true },
+  "key-order-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -153,6 +157,22 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
           "island (eager-node-islands is the same until deferred",
           "evaluation lands), or a gap island (a package scriptc",
           "should compile but cannot yet)",
+        ],
+      },
+    ],
+  },
+  coverage: {
+    entries: [
+      {
+        term: "--coverage <full|reached>",
+        help: [
+          "coverage only: how much of the program to analyze.",
+          "full (the default) also lowers code the entry never",
+          "reaches. reached skips that pass, for a large program",
+          "whose analysis would otherwise run out of memory; its",
+          "report has no unreached group, counts reached",
+          "statements only, and is not comparable with a full",
+          "report",
         ],
       },
     ],
@@ -426,6 +446,20 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  define: {
+    entries: [
+      {
+        term: "--define <process.env.NAME=value>",
+        help: [
+          "run the executable with the environment variable set to",
+          "the value, a JSON string, whatever its environment holds",
+          "(repeatable): --define='process.env.NODE_ENV=\"production\"'.",
+          "JavaScript if statements it decides compile only their",
+          "taken branch",
+        ],
+      },
+    ],
+  },
   "shape-overlay": {
     entries: [
       {
@@ -497,6 +531,30 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "build and coverage: leave out SC6101, the warning that",
           "names likely-hot functions that use untyped values",
+        ],
+      },
+    ],
+  },
+  "copy-warning": {
+    entries: [
+      {
+        term: "--no-copy-warning",
+        help: [
+          "build and coverage: leave out SC6001, the warning at",
+          "conversions that copy a value the program can tell from",
+          "the original",
+        ],
+      },
+    ],
+  },
+  "key-order-warning": {
+    entries: [
+      {
+        term: "--no-key-order-warning",
+        help: [
+          "build and coverage: leave out SC6014, the warning for a",
+          "record type whose objects create their keys in orders",
+          "the compiler does not follow per object",
         ],
       },
     ],
@@ -665,10 +723,13 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "sanitize",
   "ffi",
   "npm-static",
+  "define",
   "shape-overlay",
   "provenance-sources",
   "tier",
   "dynamic-tier-warning",
+  "copy-warning",
+  "key-order-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -724,13 +785,17 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
     options: [
       "print",
       "fail-on",
+      "coverage",
       "ffi",
       "npm-static",
+      "define",
       "provenance-sources",
       "external-types",
       "tier",
       "explain-dynamic",
       "dynamic-tier-warning",
+      "copy-warning",
+      "key-order-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
@@ -957,7 +1022,14 @@ export const CLI_FAST_PATHS = {
   /** `coverage` replaying the verdict of an unchanged program. */
   coverage: {
     commands: ["coverage"],
-    options: ["print", "fail-on", "dynamic-tier-warning"],
+    options: [
+      "print",
+      "fail-on",
+      "coverage",
+      "dynamic-tier-warning",
+      "copy-warning",
+      "key-order-warning",
+    ],
   },
 } satisfies Record<string, CliFastPath>;
 

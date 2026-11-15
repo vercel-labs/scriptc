@@ -18,3 +18,7 @@ Change the generator, not the files.
 ## islands/
 
 A command-line program with three dependencies in Node islands, for the `startup-islands-*` workloads; its row in `benchmarks/runtime/README.md` describes it. Those workloads need a libnode pack (`requires` in the same README).
+
+## unused/
+
+A command-line tool of four modules that build their tables when they load: number tables filled by loops, a table of records derived from a smaller one, a catalogue of groups flattened into rows with `Object.entries` and `flatMap`, and regular expressions assembled from strings. Its `--version`, which the `startup-unused-tables` workload runs, uses none of them, so the time to exit is what tables nobody reads cost a start. `check` uses each table once and prints one line.

@@ -1,5 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -17,6 +18,7 @@ import {
   canDynCheckTo,
   isUnitType,
   shapeHasAccessorSlots,
+  sortArms,
   typeEquals,
 } from "../../../ir/ir.js";
 import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
@@ -3014,10 +3016,13 @@ export function lowerObjectLiteral(
  * present-test desugar owns that case), when the site type is not a
  * narrowing of the stored union, or in JavaScript files. */
 function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrExpr): IrExpr | null {
+  if (stored.type.kind === "dyn") return checkedDynamicSpreadSource(lowerer, node, stored);
   if (stored.type.kind !== "union") return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
   const def = lowerer.unions.get(stored.type.unionId);
-  if (!def || def.arms.filter((arm) => arm.kind === "record").length < 2) return null;
+  if (!def) return null;
+  if (def.arms.filter((arm) => arm.kind === "record").length < 2)
+    return narrowedRecordSpreadSource(lowerer, node, stored);
   const site = lowerer.mapTypeOf(lowerer.typeOf(node));
   if (!site || typeEquals(site, stored.type)) return null;
   const loc = stored.loc;
@@ -3029,6 +3034,82 @@ function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrEx
   if (site.kind !== "union") return null;
   const helper = lowerer.narrowedRetagHelper(node, stored.type.unionId, site.unionId, loc);
   return helper ? { kind: "call", callee: helper, args: [stored], type: site, loc } : null;
+}
+
+/** A checked-dynamic spread source that the checker types as one record
+ * beside unit arms (`x?.list && { list: x.list }` where `x` is held as a
+ * checked-dynamic value, so the `&&` is one too): the value enters that
+ * type through the checked conversion. The present-test desugar then
+ * spreads the record and copies nothing for undefined or null, as
+ * JavaScript does, and a value the type excludes throws the catchable
+ * TypeError. Null in JavaScript files, and where the type has no checked
+ * conversion (the spread keeps its refusal). */
+function checkedDynamicSpreadSource(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  stored: IrExpr,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
+  const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (site?.kind !== "union") return null;
+  const arms = lowerer.unions.get(site.unionId)?.arms ?? [];
+  if (
+    arms.filter((arm) => arm.kind === "record").length !== 1 ||
+    !arms.every((arm) => arm.kind === "record" || isUnitType(arm)) ||
+    lowerer.dynCheckBlocker(site) !== null
+  )
+    return null;
+  return lowerer.coerceInto(node, stored, site);
+}
+
+/** A spread source whose stored union holds one record arm beside arms
+ * that are neither records nor units (`string | { source: string }`), where
+ * the checker narrowed this site to the record (`typeof x === "string" ? s
+ * : { ...x, source: s }`): re-tag the value into the record beside the
+ * stored unit arms, so the present-test desugar spreads the record and
+ * copies nothing for `undefined` or `null`, as JavaScript does, and an arm
+ * the checker excluded throws the catchable TypeError. Null when the stored
+ * union has no such arm (the desugar already owns it), or when the site
+ * type is not that record, alone or beside unit arms. */
+function narrowedRecordSpreadSource(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  stored: IrExpr,
+): IrExpr | null {
+  if (stored.type.kind !== "union") return null;
+  const fromId = stored.type.unionId;
+  const def = lowerer.unions.get(fromId);
+  if (!def) return null;
+  const excluded = new Set<number>();
+  def.arms.forEach((arm, tag) => {
+    if (arm.kind !== "record" && !isUnitType(arm)) excluded.add(tag);
+  });
+  if (excluded.size === 0) return null;
+  // The site names the record, alone or beside unit arms the checker kept
+  // (`string | Rec | undefined` after the string left).
+  const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (!site) return null;
+  const siteArms = site.kind === "union" ? (lowerer.unions.get(site.unionId)?.arms ?? []) : [site];
+  const record = siteArms.find((arm) => arm.kind === "record");
+  if (
+    record === undefined ||
+    !siteArms.every(
+      (arm) => (isUnitType(arm) || typeEquals(arm, record)) && lowerer.armTag(fromId, arm) >= 0,
+    )
+  )
+    return null;
+  const units = def.arms.filter((arm) => isUnitType(arm));
+  const loc = stored.loc;
+  if (units.length === 0) {
+    const helper = lowerer.narrowedArmHelper(fromId, record, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, stored, record, loc) : null;
+  }
+  const to: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern(sortArms([record, ...units])),
+  };
+  const helper = lowerer.unionRetagHelper(fromId, to.unionId, loc, excluded);
+  return helper ? { kind: "call", callee: helper, args: [stored], type: to, loc } : null;
 }
 
 /** The field type is an array, or a union with exactly one array arm. */
@@ -4564,7 +4645,31 @@ function lowerDeclaredSpreadMerge(
       loc,
     });
   }
-  return { kind: "seqExpr", stmts, result: outRef, type, loc };
+  return lowerer.keyOrder.declaredMerge(
+    { kind: "seqExpr", stmts, result: outRef, type, loc },
+    {
+      outLocalId: out.id,
+      sources: srcs.map((source) => source.value.type),
+      noteable:
+        recordMayKeepSource(lowerer, type) &&
+        srcs.every((source) => {
+          if (source.value.type.kind === "dyn") return true;
+          if (source.value.type.kind !== "record") return false;
+          const sourceShape = lowerer.shapes.get(source.value.type.shapeId);
+          // A dictionary (`Record<string, unknown>`) boxes from its overflow
+          // map in the order its keys were inserted. A hybrid shape boxes
+          // its declared fields first and only then its overflow, so its
+          // boxed order is not the copy's; such a source stays out of the
+          // kept merge (its declared keys would be ordered by declaration).
+          return (
+            (sourceShape === undefined ||
+              sourceShape.indexValue === undefined ||
+              sourceShape.fields.length === 0) &&
+            lowerer.dynConvertible(source.value.type)
+          );
+        }),
+    },
+  );
 }
 
 /** The value of a shorthand property (`{ x }`): the binding `x` refers to.
@@ -4614,6 +4719,10 @@ export function lowerShorthandValue(
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };
     }
+    // A createRequire loader (`{ load }`): the value the long form
+    // `{ load: load }` reads.
+    const loader = createRequireLoaderValue(lowerer, propName, loc);
+    if (loader !== null) return loader;
     // A binding whose storage can hold undefined that the checker's type
     // here has dropped (a missing-element read) keeps its stored union,
     // exactly like the long form `{ name: name }`: the field records

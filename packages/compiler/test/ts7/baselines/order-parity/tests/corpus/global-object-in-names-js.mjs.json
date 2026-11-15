@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/global-object-in-names-js.mjs"
+ ],
+ "diags": []
+}

@@ -14,9 +14,9 @@ const owned = guards as unknown as Record<string, Predicate>;
 const signatures = ["is.generated.d.ts", "is.d.ts"].flatMap((file) =>
   [
     ...readFileSync(join(sdkRoot, "dist/ast", file), "utf8").matchAll(
-      /export declare function (is\w+)\((node|kind):/g,
+      /export declare function (is\w+)\((\w+):/g,
     ),
-  ].map((match) => ({ name: match[1]!, node: match[2] === "node" })),
+  ].map((match) => ({ name: match[1]!, node: match[2] !== "kind" })),
 );
 
 test("all owned guards match the pinned kind and flag predicates", () => {
@@ -33,7 +33,14 @@ test("all owned guards match the pinned kind and flag predicates", () => {
       for (const scriptKind of [ScriptKind.TS, ScriptKind.JS]) {
         const expression = { kind: SyntaxKind.AsExpression, type: { flags: NodeFlags.Reparsed } };
         const value = entry.node
-          ? { kind, expression, getSourceFile: () => ({ scriptKind }) }
+          ? {
+              kind,
+              expression,
+              // Some guards walk two levels up; a source file above a source
+              // file ends every walk without a property name in sight.
+              parent: { kind: SyntaxKind.SourceFile, parent: { kind: SyntaxKind.SourceFile } },
+              getSourceFile: () => ({ scriptKind }),
+            }
           : kind;
         expect(actual(value), `${entry.name}(${kind}, ${scriptKind})`).toBe(oracle(value));
         if (entry.name === "isOuterExpression") {
@@ -49,7 +56,7 @@ test("all owned guards match the pinned kind and flag predicates", () => {
         }
       }
     }
-    if (entry.node) expect(actual(undefined), `${entry.name}(missing parent)`).toBe(false);
+    if (entry.node) expect(actual(undefined), `${entry.name}(missing node)`).toBe(false);
   }
 });
 

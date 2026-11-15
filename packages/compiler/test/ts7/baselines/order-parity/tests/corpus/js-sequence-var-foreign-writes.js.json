@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-sequence-var-foreign-writes.js"
+ ],
+ "diags": []
+}

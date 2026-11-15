@@ -64,7 +64,24 @@ bool scr_global_host_absent_check(const char *key, size_t length) {
   return true;
 }
 
-bool scr_global_host_absent_has(ScrStr *key) {
+/* `key in <global object>`. A name native code does not provide throws
+ * (above). Otherwise the answer is Node's: one of the names Node's global
+ * object has or inherits, which the compiler hands over (`present`,
+ * borrowed: global-object-names.ts), or a property the program added to the
+ * global object. The builtin globals cannot be deleted or replaced through
+ * the global object (scr_global_set), so the table is the whole answer for
+ * them. The program's own properties are the keys a for-in over the global
+ * object visits beyond Node's enumerable names, which are all in the table. */
+bool scr_global_host_absent_has(ScrStr *key, ScrArr *present) {
   if (scr_global_host_absent_check(key->data, key->len)) return false;
-  return scr_dyn_in(scr_global_object(), key);
+  for (size_t i = 0; i < present->len; i++) {
+    ScrStr *name = (ScrStr *)scr_arr_get_ref(present, (double)i);
+    bool same = name->len == key->len && memcmp(name->data, key->data, key->len) == 0;
+    scr_str_release(name);
+    if (same) return true;
+  }
+  ScrDyn *keys = scr_global_for_in_object();
+  bool own = scr_dyn_obj_get(keys, key->data, key->len) != NULL;
+  scr_dyn_release(keys);
+  return own;
 }

@@ -37,6 +37,16 @@
  *                               bound is tight. One untyped view of a compiler type is enough
  *                               to move them: #2878 added 6.4% of the compiler's functions with
  *                               0.2% more source, and nothing reported it for five days.
+ *   neverDynamicClasses         The compiler's classes whose instances must not become dynamic
+ *                               values in its own build, by name. Exact, and a state, not a
+ *                               growth: the build reports every place that makes an instance of
+ *                               one a dynamic value (SCRIPTC_DYNAMIC_CLASSES,
+ *                               frontend/lowering/dynamic-class-report.ts), and one place fails
+ *                               the budget, with the place. The output-growth rule above sees
+ *                               the first such place and not a second one that lands while the
+ *                               first is in; the Lowerer became a dynamic value three times in
+ *                               five days (#2878, #3192, #2567), each through one helper whose
+ *                               parameter was an interface the class satisfies.
  *
  * Why the live heap is the number to watch: lowering holds the whole lowered program, so the heap
  * follows the program's size (about 5 MB live per MB of LLVM emitted), and the compiler is the
@@ -102,6 +112,9 @@ export const OUTPUT_GROWTH_TOLERANCE = 0.01;
  * reachable from one. #2878 added 52% of them. */
 export const DYNAMIC_TIER_GROWTH_TOLERANCE = 0.05;
 export const DYNAMIC_TIER_GROWTH_FLOOR = 100;
+/** How many places of a class that became a dynamic value a failure lists. One helper's
+ * parameter type is usually behind all of them (27 callers of one function, for #2567). */
+export const DYNAMIC_CLASS_SITES_SHOWN = 40;
 
 /** The budget of the checkout at `root`, or null when it has none. */
 export function readBudget(root) {
@@ -176,14 +189,83 @@ export function selfCompileTrace(stderr) {
   return { passes, liveHeapMb };
 }
 
+/** The classes a budget keeps out of the dynamic tier of the compiler's own build. */
+export function neverDynamicClasses(budget) {
+  const value = budget?.neverDynamicClasses?.value;
+  return Array.isArray(value) ? value : [];
+}
+
+/** The environment that makes a self-compile report on the budget's classes: empty when the
+ * budget names none. */
+export function dynamicClassesEnv(budget) {
+  const names = neverDynamicClasses(budget);
+  return names.length === 0 ? {} : { SCRIPTC_DYNAMIC_CLASSES: names.join(",") };
+}
+
+/** What a self-compile's stderr says about the classes it was asked about
+ * (SCRIPTC_DYNAMIC_CLASSES): the names it answered for and the places that make an instance of
+ * one a dynamic value, or null when the build printed no report. Every lowering pass that runs
+ * to its end closes a report with a `scriptc dynamic-classes` line; the last one is the
+ * program's, and the `scriptc dynamic-class` lines before it are its places. */
+export function dynamicClassReport(stderr) {
+  let report = null;
+  let pending = [];
+  for (const match of stderr.matchAll(/^scriptc (dynamic-class|dynamic-classes) (\{.*\})$/gm)) {
+    let event;
+    try {
+      event = JSON.parse(match[2]);
+    } catch {
+      continue;
+    }
+    if (match[1] === "dynamic-class") pending.push(event);
+    else if (Array.isArray(event.names)) {
+      report = { names: event.names, sites: pending };
+      pending = [];
+    }
+  }
+  return report;
+}
+
+/** One reported place, as a line: where, what happens there, and the source line. */
+function dynamicClassSiteLine(site, root) {
+  const file =
+    typeof site.file !== "string"
+      ? null
+      : root !== undefined && site.file.startsWith(root)
+        ? site.file.slice(root.length).replace(/^\/+/, "")
+        : site.file;
+  const where =
+    file === null
+      ? "(no position)"
+      : `${file}${site.line === undefined ? "" : `:${site.line}:${site.column}`}`;
+  const what =
+    site.kind === "dynamic"
+      ? `a ${site.name}${site.through === undefined ? "" : ` inside ${site.through}`} becomes a dynamic value`
+      : site.kind === "argument"
+        ? `a dynamic function is called with a ${site.name}${site.through === undefined ? "" : ` inside ${site.through}`}`
+        : site.kind === "cast"
+          ? `a dynamic value is checked into ${site.name}`
+          : `${site.name} is among the classes whose instances are dynamic values, with no place listed`;
+  return `${where}: ${what}${typeof site.text === "string" && site.text !== "" ? `  |  ${site.text}` : ""}`;
+}
+
 const percent = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(1)}%`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Judge one self-compile against the budget of the checkout whose source it compiled.
  * `trace` is selfCompileTrace's result, `bytes` the program's source bytes, `previous` the
- * baseline checkout's budget (null without one). Returns the report lines, the failures, and
- * `measured`: the values the run would record. */
-export function budgetVerdict({ budget, previous = null, trace, bytes }) {
+ * baseline checkout's budget (null without one), `dynamicClasses` dynamicClassReport's result
+ * (null or absent when the build printed none) and `root` the checkout its places are named
+ * against. Returns the report lines, the failures, and `measured`: the values the run would
+ * record. */
+export function budgetVerdict({
+  budget,
+  previous = null,
+  trace,
+  bytes,
+  dynamicClasses = null,
+  root,
+}) {
   const lines = [];
   const failures = [];
   const measured = {};
@@ -209,6 +291,33 @@ export function budgetVerdict({ budget, previous = null, trace, bytes }) {
           `${JSON.stringify(entry.value)} with the old reason; say why in its reason (${BUDGET_FILE})`,
       );
   }
+
+  // The classes kept typed: a list that changed says why, and the list does not go away.
+  const kept = budget.neverDynamicClasses;
+  if (kept === undefined) {
+    if (previous?.neverDynamicClasses !== undefined)
+      failures.push(
+        `self-compile budget: neverDynamicClasses was removed; the baseline lists ` +
+          `${JSON.stringify(previous.neverDynamicClasses.value)} (${BUDGET_FILE})`,
+      );
+  } else if (
+    !Array.isArray(kept.value) ||
+    kept.value.some((name) => typeof name !== "string" || name === "") ||
+    typeof kept.reason !== "string" ||
+    kept.reason.trim() === ""
+  )
+    failures.push(
+      `self-compile budget: neverDynamicClasses needs a list of class names and a reason (${BUDGET_FILE})`,
+    );
+  else if (
+    previous?.neverDynamicClasses !== undefined &&
+    !same(previous.neverDynamicClasses.value, kept.value) &&
+    previous.neverDynamicClasses.reason === kept.reason
+  )
+    failures.push(
+      `self-compile budget: neverDynamicClasses changed from ${JSON.stringify(previous.neverDynamicClasses.value)} to ` +
+        `${JSON.stringify(kept.value)} with the old reason; say why in its reason (${BUDGET_FILE})`,
+    );
 
   const granted = budget.sourceCostAllowance;
   if (
@@ -286,6 +395,42 @@ export function budgetVerdict({ budget, previous = null, trace, bytes }) {
           `every self-compile with an out-of-memory error. Reduce the heap, or raise heapLimitMb.value in ${BUDGET_FILE} and the ` +
           `--max-old-space-size the self-compile entry points pass (tests/harness/self-compile-budget.test.ts lists them)`,
       );
+  }
+
+  const names = neverDynamicClasses(budget);
+  if (names.length > 0) {
+    const listed = names.join(", ");
+    const answered =
+      dynamicClasses !== null && names.every((name) => dynamicClasses.names.includes(name));
+    if (!answered)
+      lines.push(
+        `dynamic classes: not reported for ${listed} (the build ran without SCRIPTC_DYNAMIC_CLASSES, or did not lower)`,
+      );
+    else {
+      const sites = dynamicClasses.sites.filter((site) => names.includes(site.name));
+      if (sites.length === 0)
+        lines.push(`keeps ${listed} out of the dynamic tier: no instance becomes a dynamic value`);
+      else {
+        const classes = [...new Set(sites.map((site) => site.name))].join(", ");
+        const shown = sites.slice(0, DYNAMIC_CLASS_SITES_SHOWN);
+        const places = shown.map((site) => `  ${dynamicClassSiteLine(site, root)}`);
+        if (sites.length > shown.length)
+          places.push(`  and ${sites.length - shown.length} more (the build's stderr lists them)`);
+        lines.push(
+          `${classes} ${sites.length === 1 ? "becomes a dynamic value in 1 place" : `becomes a dynamic value in ${sites.length} places`} of its own source`,
+        );
+        failures.push(
+          `self-compile budget: ${classes} must not be a dynamic value in the compiler's own build ` +
+            `(neverDynamicClasses, ${BUDGET_FILE}), and ${sites.length === 1 ? "1 place makes" : `${sites.length} places make`} it one:\n` +
+            `${places.join("\n")}\n` +
+            `A class instance handed over where an interface or a record type with a method is declared, or ` +
+            `where \`unknown\`, \`any\` or a type parameter is, is converted to a dynamic value, and the class and ` +
+            `every class its fields reach are then compiled for untyped code as well (the Lowerer: 6% of the ` +
+            `compiler's functions). Hand over what the callee reads instead: a record built once, a function, ` +
+            `or the class itself as the parameter's type.`,
+        );
+      }
+    }
   }
   return { lines, failures, measured };
 }
@@ -475,7 +620,8 @@ async function main() {
 --check compiles ${SELF_ENTRY} to LLVM with this checkout's built compiler
 (packages/cli/dist/bootstrap.js) and judges the build against ${BUDGET_FILE}:
 the whole-program lowering passes it takes, the heap it holds at the end of a pass per
-source byte, and the share of the heap limit that heap fills. --native-build runs scripts/build-native-cli.mts
+source byte, the share of the heap limit that heap fills, and that no instance of a class the
+budget lists becomes a dynamic value. --native-build runs scripts/build-native-cli.mts
 (pnpm build:native-compiler) with the budget's heap limit and judges that build's frontend
 the same way; its arguments follow --. Compile time is judged by scripts/zero-cost-gate.mjs,
 which has a baseline to pair it with.
@@ -488,7 +634,7 @@ Exit status: 0 within the budget, 1 over it, the build's own status when it fail
   }
   const budget = readBudget(root);
   const flags = [`--max-old-space-size=${heapLimitMb(budget)}`, ...HEAP_PROBE_FLAGS];
-  const env = { ...process.env, SCRIPTC_TIMING: "1" };
+  const env = { ...process.env, SCRIPTC_TIMING: "1", ...dynamicClassesEnv(budget) };
   let result;
   if (values.check) {
     const out = mkdtempSync(join(tmpdir(), "scriptc-self-compile-"));
@@ -520,7 +666,26 @@ Exit status: 0 within the budget, 1 over it, the build's own status when it fail
     process.exit(result.status ?? 1);
   }
   const trace = selfCompileTrace(result.stderr);
-  const verdict = budgetVerdict({ budget, trace, bytes: sourceBytes(join(root, SELF_ENTRY)) });
+  const dynamicClasses = dynamicClassReport(result.stderr);
+  const verdict = budgetVerdict({
+    budget,
+    trace,
+    bytes: sourceBytes(join(root, SELF_ENTRY)),
+    dynamicClasses,
+    root,
+  });
+  // This build was asked for the report, so a build without one was not judged: a frontend
+  // that did not run (a cached build), or a compiler that does not know the variable.
+  const names = neverDynamicClasses(budget);
+  if (
+    names.length > 0 &&
+    (dynamicClasses === null || !names.every((name) => dynamicClasses.names.includes(name)))
+  )
+    verdict.failures.push(
+      `self-compile budget: the build did not report on ${names.join(", ")} (neverDynamicClasses, ${BUDGET_FILE}), ` +
+        `so they were not checked. The report is printed when the frontend lowers the compiler's source with ` +
+        `SCRIPTC_DYNAMIC_CLASSES set; a build that takes its frontend from a cache prints none`,
+    );
   for (const line of verdict.lines) console.log(`self-compile: ${line}`);
   if (values.record) {
     if (budget === null)

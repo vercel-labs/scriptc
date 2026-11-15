@@ -486,6 +486,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_dyn_fn_own.c",
+  "function": "scr_dyn_fn_own_set",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_dyn_handle_props.c",
   "function": "hp_props_of_box",
   "message": "own properties on a %s are not supported yet",
@@ -745,6 +751,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_res_on_prefinish",
+  "message": "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"
@@ -765,6 +777,24 @@
   "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_settings_validate",
+  "message": "HTTP/2 customSettings are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_read",
+  "message": "reading '%s' from an %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_call",
+  "message": "'%s' on an %s is not supported yet",
   "code": "SC2020"
  },
  {
@@ -924,6 +954,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_intl.c",
+  "function": "scr_intl_refuse",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_js_promise_generic.c",
   "function": "scr_js_promise_generic_call",
   "message": "Promise static is not supported",
@@ -1045,6 +1081,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_typed_ref_string_view",
+  "message": "String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_bytes_instanceof_at",
   "message": "instanceof against this native constructor is not supported yet",
   "code": "SC1090"
@@ -1129,6 +1171,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_define_property",
   "message": "Object.defineProperty on a numeric property of a native array is not supported yet",
   "code": "SC2020"
@@ -1198,6 +1246,18 @@
   "function": "scr_function_constructor_call",
   "message": "constructing functions from source text is not supported in static code",
   "code": "SC2010"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_receiver",
+  "message": " on a callable that is not a function value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_to_string_call",
+  "message": "'Function.prototype.toString' on a dynamic value is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",
@@ -1293,6 +1353,12 @@
   "file": "scr_json.c",
   "function": "scr_finalization_registry_get",
   "message": "FinalizationRegistry method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_weak_ref_get",
+  "message": "WeakRef method values have no native lowering",
   "code": "SC2020"
  },
  {
@@ -1393,6 +1459,24 @@
  },
  {
   "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_unsupported",
+  "message": "Mac members other than update() and final() have no lowering on an 'unknown' value; cast the value to Mac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_dyn_method_call",
+  "message": "Mac methods called with a receiver other than their own Mac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_mac_new_dyn",
+  "message": "createMac algorithms other than \"hmac\" have no native lowering; use createHmac()",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
   "function": "scr_key_object_invoke",
   "message": "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering",
   "code": "SC2020"
@@ -1464,10 +1548,22 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_node_island.c",
+  "function": "ni_async_main_thread",
+  "message": "asynchronous island calls from a worker thread are not supported; call the island synchronously (@scriptc/node callSync) from the worker [SC8012]",
+  "code": "SC8012"
+ },
+ {
   "file": "scr_node_island_export.c",
   "function": "scr_ni_host_shared_get",
   "message": "scriptc: an array exported by a shared module cannot cross into a Node island yet",
   "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_worker_await_refusal",
+  "message": "awaiting an island value from a worker thread is not supported; await it on the main thread, which owns the Node island [SC8012]",
+  "code": "SC8012"
  },
  {
   "file": "scr_node_island_handle.c",
@@ -1482,15 +1578,15 @@
   "code": "SC8010"
  },
  {
-  "file": "scr_perf.c",
-  "function": "scr_perf_get_mark",
-  "message": "performance.measure with the '%.*s' Node timing milestone is not supported yet",
+  "file": "scr_pki.c",
+  "function": "sp_not_supported",
+  "message": "'%s' is part of the standard library types but has no scriptc lowering yet",
   "code": "SC2020"
  },
  {
   "file": "scr_pki.c",
-  "function": "sp_not_supported",
-  "message": "'%s' is part of the standard library types but has no scriptc lowering yet",
+  "function": "sp_encode",
+  "message": "encoding that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
   "code": "SC2020"
  },
  {
@@ -1704,6 +1800,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_stream.c",
+  "function": "scr_su_foreign_refuse",
+  "message": "%s over a child process or process stdio stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
@@ -1824,6 +1926,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_tty_colors.c",
+  "function": "scr_tty_refusal",
+  "message": "Native process stream %s has no lowering [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_url.c",
   "function": "url_apply_component",
   "message": "Native URL setter has no lowering",
@@ -1881,12 +1989,6 @@
   "file": "scr_util_compare.c",
   "function": "util_deep_refused",
   "message": " is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_util_promisify.c",
-  "function": "scr_util_promisify",
-  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
   "code": "SC2020"
  },
  {
@@ -2011,14 +2113,8 @@
  },
  {
   "file": "scr_zlib.c",
-  "function": "scr_zlib_base_options",
-  "message": "a zlib chunkSize above 4294967295 is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_zlib.c",
   "function": "scr_zlib_refuse_info",
-  "message": "the zlib option 'info' is not supported yet (it returns the engine object)",
+  "message": "the zlib option 'info' is not supported through a non-literal value; write info: true in the options object to get { buffer, engine }",
   "code": "SC2020"
  },
  {
@@ -2067,12 +2163,6 @@
   "file": "scr_bytes_dyn.c",
   "function": "scr_buffer_proto_unsupported",
   "message": "",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_open",
-  "message": "Runtime numeric filesystem flags have no portable native lowering",
   "code": "SC2020"
  },
  {
@@ -2229,6 +2319,12 @@
   "file": "scr_json.c",
   "function": "scr_dyn_key_set",
   "message": "Checked array growth exceeds the native allocation limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_check_fail",
+  "message": " (a native Proxy keeps its traps only in an untyped value, an interface or object type, or a dictionary, and a class type holds only instances of the class: declare the value 'any', an interface, or a Record<string, T>)",
   "code": "SC2020"
  },
  {

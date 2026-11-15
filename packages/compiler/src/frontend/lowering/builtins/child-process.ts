@@ -1,13 +1,23 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, helperLoc, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  helperLoc,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
+import { isDynUndefined } from "../../../ir/runtime-features.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CHILD_T,
@@ -26,6 +36,7 @@ import {
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import { optionMember } from "./arguments.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 
 /** The child-process args list: one string[] value. An omitted list
  * completes to an empty literal (Node's default); an array LITERAL
@@ -53,6 +64,32 @@ export function lowerChildArgsArg(
  * a file, and whose list follows the module path in what Node spawns. */
 export type ChildLaunchForm = 0 | 1 | 2 | 3;
 
+/** A capturing launch's own `maxBuffer` (without one the runtime applies
+ * Node's 1 MiB default). cp.maxBuffer validates it as validateMaxBuffer
+ * does (ERR_OUT_OF_RANGE for a negative or NaN value); `arm` also makes it
+ * the limit of the next capture, which is the launch. The promisified
+ * forms arm inside their helper and only validate at the call. `sync`
+ * names the order of Node's checks: spawnSync validates the limit after
+ * normalizeSpawnArguments has checked the launch's values; execFile
+ * validates it before spawn checks them, and exec checks its command
+ * before it calls execFile. */
+export interface ChildMaxBuffer {
+  value: IrExpr;
+  arm: boolean;
+  sync: boolean;
+}
+
+/** One evaluation of a launch, for the order the source gives them: an
+ * argument of the launch by its index, "limit" for a `maxBuffer` that is
+ * not one of the arguments, or `effect`: the value of an option the launch
+ * does not read (`windowsHide`), which runs where its member sits. */
+export type ChildEvalStep = number | "limit" | { effect: IrExpr };
+
+/** The limit of a launch that arms its own capture, or none. */
+export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuffer | undefined {
+  return value === null ? undefined : { value, arm: true, sync };
+}
+
 /** Node checks what a child launch hands to the operating system before
  * it starts a process (normalizeSpawnArguments and normalizeExecArgs): a
  * NUL in the file or command, an argument, `cwd` or an environment key or
@@ -60,14 +97,34 @@ export type ChildLaunchForm = 0 | 1 | 2 | 3;
  * arguments are evaluated first, in their order, into hidden locals; the
  * may-throw cp.checkArgs call reads them; the launch follows. `launch`
  * starts with the command and the argument list; `options` picks the
- * `cwd` and environment-pairs arguments it carries, if any. A launch
- * whose checked values are all literals that pass gets no check. */
+ * `cwd` and environment-pairs arguments it carries, if any, and names a
+ * capturing launch's `maxBuffer`. A launch whose checked values are all
+ * literals that pass gets no check.
+ *
+ * The limit shares the evaluated arguments, so a capture one of them runs
+ * has finished before the limit is armed, and it is armed last: a check
+ * that throws leaves no limit behind for another capture. Its own value is
+ * evaluated with the arguments, before any check. Where both the limit and
+ * a value can be refused, the checks run in Node's order.
+ *
+ * `sourceOrder` is the order in which the source evaluates what the launch
+ * reads: its arguments by index, and "limit" for a limit that is not one of
+ * them. An options literal evaluates its members as written, so a limit
+ * written before `cwd` is evaluated before it, and the options before a
+ * callback that follows them. It applies when the limit has an evaluation
+ * of its own (anything but a number literal) or the order holds an
+ * `effect`; a launch with neither keeps the order of its arguments. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
   form: ChildLaunchForm,
-  options: (args: readonly IrExpr[]) => { cwd?: IrExpr | undefined; envPairs?: IrExpr | undefined },
+  options: (args: readonly IrExpr[]) => {
+    cwd?: IrExpr | undefined;
+    envPairs?: IrExpr | undefined;
+    maxBuffer?: ChildMaxBuffer | undefined;
+  },
   loc: SrcLoc,
+  sourceOrder?: readonly ChildEvalStep[],
 ): IrExpr {
   const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
     e === undefined ||
@@ -83,41 +140,142 @@ export function withChildArgsCheck(
       : form === 3
         ? allPass(list)
         : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
-  if (fileAndArgsPass && passes(given.cwd, true) && allPass(given.envPairs)) return launch;
-  const stmts: IrStmt[] = [];
-  const args = launch.args.map((arg): IrExpr => {
-    // Literals and function literals have no evaluation to order, and a
-    // function-typed local read is the callback itself.
-    if (
+  const optionsPass = passes(given.cwd, true) && allPass(given.envPairs);
+  // A literal limit in range cannot be refused; it is still armed.
+  const limitPasses =
+    given.maxBuffer === undefined ||
+    (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
+  const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
+  const effects = sourceOrder !== undefined && sourceOrder.some((step) => typeof step === "object");
+  // Literals and function literals have no evaluation to order, and a
+  // function-typed local read is the callback itself.
+  const evaluates = (arg: IrExpr): boolean =>
+    !(
       arg.kind === "numLit" ||
       arg.kind === "strLit" ||
       arg.kind === "boolLit" ||
       arg.kind === "closure" ||
       (arg.kind === "varRef" && arg.type.kind === "func")
-    )
-      return arg;
-    const local = lowerer.declareHiddenLocal("%childArg", arg.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: arg, loc });
-    return varRef(local.id, arg.type, loc);
+    );
+  // The source's own order among the launch's option arguments matters
+  // only when two of them can be reordered observably: argument order and
+  // source order differ in nothing a program can see below that (the
+  // callback expression has no evaluation of its own).
+  const ordered =
+    sourceOrder !== undefined &&
+    (effects ||
+      (given.maxBuffer !== undefined && given.maxBuffer.value.kind !== "numLit") ||
+      sourceOrder.filter(
+        (step) => typeof step === "number" && step > 2 && evaluates(launch.args[step]!),
+      ).length > 1);
+  if (fileAndArgsPass && optionsPass && !limited && !ordered) return launch;
+  const stmts: IrStmt[] = [];
+  const hold = (value: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%childArg", value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  // A limit that is not an argument of the launch is evaluated at its own
+  // step. (One that is an argument is evaluated as that argument.)
+  const ownLimit =
+    limited && given.maxBuffer !== undefined && !launch.args.includes(given.maxBuffer.value)
+      ? given.maxBuffer.value
+      : undefined;
+  const steps: ChildEvalStep[] = [];
+  if (sourceOrder !== undefined && ordered) {
+    // A member written twice keeps its last place, as its last value is
+    // the one the launch reads.
+    sourceOrder.forEach((step, at) => {
+      if (sourceOrder.lastIndexOf(step) === at) steps.push(step);
+    });
+  }
+  for (let i = 0; i < launch.args.length; i++) if (!steps.includes(i)) steps.push(i);
+  if (!steps.includes("limit")) steps.push("limit");
+  const args: IrExpr[] = [...launch.args];
+  let ownLimitHeld: IrExpr | undefined;
+  steps.forEach((step, at) => {
+    if (typeof step === "object") {
+      stmts.push({ kind: "exprStmt", expr: step.effect, loc });
+    } else if (step !== "limit") {
+      const arg = launch.args[step]!;
+      if (evaluates(arg)) args[step] = hold(arg);
+    } else if (ownLimit !== undefined) {
+      // A local read is held only where a later evaluation could assign
+      // the local: Node has the limit's value before it evaluates those.
+      const followed = steps
+        .slice(at + 1)
+        .some(
+          (later) =>
+            typeof later === "object" || (later !== "limit" && evaluates(launch.args[later]!)),
+        );
+      ownLimitHeld =
+        ownLimit.kind === "numLit" || (ownLimit.kind === "varRef" && !followed)
+          ? ownLimit
+          : hold(ownLimit);
+    }
   });
   const held = options(args);
-  stmts.push({
+  const noStrings = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
+  const check = (
+    checked: ChildLaunchForm,
+    file: IrExpr,
+    values: IrExpr,
+    envPairs: IrExpr | undefined,
+    cwd: IrExpr | undefined,
+  ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "libCall",
       fn: "cp.checkArgs",
-      args: [
-        numLit(form, loc),
-        form === 3 ? strLit("", loc) : args[0]!,
-        args[1]!,
-        held.envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
-        held.cwd ?? strLit("", loc),
-      ],
+      args: [numLit(checked, loc), file, values, envPairs ?? noStrings(), cwd ?? strLit("", loc)],
       type: VOID,
       loc,
     },
     loc,
   });
+  const checkAll = (): IrStmt =>
+    check(form, form === 3 ? strLit("", loc) : args[0]!, args[1]!, held.envPairs, held.cwd);
+  const maxBufferCall = (value: IrExpr, arm: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "cp.maxBuffer",
+      args: [value, boolLit(arm, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  // The limit is an option, and Node has every option's value before it
+  // checks anything: an expression that changes the argument list has done
+  // so when the list is checked. So its value was evaluated above, at its
+  // step, before the checks, and they and the launch read the local.
+  let limit = limited ? held.maxBuffer : undefined;
+  if (limit !== undefined && ownLimitHeld !== undefined) limit = { ...limit, value: ownLimitHeld };
+  if (limit === undefined) {
+    // Reached with nothing to check only for an `effect`'s order.
+    if (!(fileAndArgsPass && optionsPass)) stmts.push(checkAll());
+  } else if (fileAndArgsPass && optionsPass) {
+    stmts.push(maxBufferCall(limit.value, limit.arm));
+  } else if (limit.sync || limitPasses) {
+    stmts.push(checkAll(), maxBufferCall(limit.value, limit.arm));
+  } else {
+    // exec and execFile, callback or promisified, where the limit and a
+    // launch value can both be refused. The limit is validated first and
+    // armed after the last check.
+    const value = limit.value;
+    if (form === 1) {
+      // exec: normalizeExecArgs checks the command, execFile the limit,
+      // spawn the options. Form 3 with no list checks neither a file nor
+      // an argument, which leaves the options.
+      if (!fileAndArgsPass) stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
+      stmts.push(maxBufferCall(value, false));
+      if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+    } else {
+      stmts.push(maxBufferCall(value, false), checkAll());
+    }
+    if (limit.arm) stmts.push(maxBufferCall(value, true));
+  }
   return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
 }
 
@@ -183,13 +341,52 @@ function stdioModeChain(
   };
 }
 
+/** An option Node reads on Windows only (`windowsHide`: no console window;
+ * `windowsVerbatimArguments`: no argument quoting). On every other target
+ * it is evaluated and has no effect, as in Node. `windowsVerbatimArguments`
+ * changes what the child receives on Windows, and the runtime's launch has
+ * no unquoted form, so there it is refused unless it is literally `false`.
+ * `evaluate` takes a value whose evaluation can be observed (a call, a
+ * getter) to run where the member sits; a form with no place for it (null)
+ * refuses such a value by name instead of dropping it. */
+export function windowsOnlyOption(
+  lowerer: Lowerer,
+  what: string,
+  name: string,
+  member: ts.Node,
+  valueNode: ts.Expression,
+  evaluate: ((value: IrExpr) => void) | null,
+): void {
+  if (
+    name === "windowsVerbatimArguments" &&
+    lowerer.targetPlatform === "win32" &&
+    valueNode.kind !== ts.SyntaxKind.FalseKeyword
+  ) {
+    lowerer.noLowering(
+      `${what} option 'windowsVerbatimArguments' on a Windows target`,
+      member,
+      "the native launch always quotes arguments: pass false, or leave the option out",
+    );
+  }
+  const value = lowerer.lowerExpr(valueNode);
+  if (isSafeToDiscard(value)) return;
+  if (evaluate === null) {
+    lowerer.noLowering(
+      `${what} option '${name}' with a value that must be evaluated`,
+      member,
+      "pass a literal or a plain binding (this form has no place to run the expression)",
+    );
+  }
+  evaluate(value);
+}
+
 /** True when the args slot is statically empty (omitted, `undefined`, or an
  * empty array literal): the shape the shell forms accept. Node joins the
  * arguments unescaped and warns DEP0190 whenever a non-empty list meets
  * `shell: true`, and a native build has no warning channel to match it. */
 function staticallyEmptyArgs(node: ts.Expression | undefined): boolean {
   if (!node) return true;
-  const bare = withoutParenthesesAssertionsNonNull(node);
+  const bare = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(bare) && bare.text === "undefined") return true;
   return ts.isArrayLiteralExpression(bare) && bare.elements.nodes.length === 0;
 }
@@ -231,6 +428,37 @@ const NODE_SIGNAL_NAMES = new Set([
   "SIGINFO",
 ]);
 
+/** Node's convertToValidSignal uppercases a killSignal name before its
+ * table lookup, so "sigkill" and "SigTerm" resolve like the uppercase
+ * spelling; an unknown name stays a compile-time fence. */
+function isNodeSignalName(value: string): boolean {
+  return NODE_SIGNAL_NAMES.has(value.toUpperCase());
+}
+
+/** A run-time Buffer-encoding NAME — the value's type must be a union of
+ * Buffer encoding string literals (`BufferEncoding` and its spellings), so
+ * every run-time value is a name Node's tables accept, and the call
+ * decodes through it. A widened `string`, a "buffer" or nullish arm, and
+ * any other value make the capture's static type depend on the value, so
+ * they fence. */
+export function encodingNameValue(lowerer: Lowerer, what: string, node: ts.Expression): IrExpr {
+  const t = lowerer.typeOf(node);
+  const arms = t.flags & ts.TypeFlags.Union ? ts.constituentTypes(t) : [t];
+  const fence = (): never =>
+    lowerer.noLowering(
+      `${what} with this encoding value`,
+      node,
+      'encoding is a Buffer encoding name literal, or a value typed as a union of them; "buffer"/null select the Buffer result',
+    );
+  if (arms.length === 0) fence();
+  for (const arm of arms) {
+    if (!arm.isStringLiteralType() || knownBufEncoding(arm.value) === undefined) fence();
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "string") fence();
+  return value;
+}
+
 /** `spawnSync(command, args?, options?)` → one cp.spawnSync /
  * cp.spawnSyncOpts libCall. An omitted args list completes to an empty
  * string[] literal (Node's default). The options argument must be an
@@ -267,6 +495,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 
   let timeout: IrExpr = numLit(0, loc);
   let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // The encoding option's canonical Buffer encoding name ("" = the
+  // unencoded Buffer form, Node's default): the STRING reads of the
+  // capture decode the bytes through it.
+  let encoding: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // spawnSync's own maxBuffer: cp.maxBuffer validates it and arms it as the
+  // next capture's limit (Node's 1 MiB without it).
+  let maxBuffer: IrExpr | null = null;
   // stdio modes (scr_child.c's core): stdin 0 = /dev/null ("pipe" with
   // no input and "ignore" both read nothing), 1 = ignore, 2 = inherit;
   // stdout/stderr 0 = capture, 1 = ignore, 2 = inherit. A slot whose TYPE
@@ -306,7 +541,20 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order. `stdio`
   // stands for a tuple whose slots resolve at the call.
-  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input")[] = [];
+  const optionOrder: (
+    | "timeout"
+    | "cwd"
+    | "env"
+    | "stdio"
+    | "input"
+    | "windowsHide"
+    | "encoding"
+    | "maxBuffer"
+  )[] = [];
+  // A `windowsHide` value whose evaluation can be observed (a call, a
+  // getter): it runs where the member sits, through the extended entry
+  // point's ordered prelude.
+  const windowsHideValues: IrExpr[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -336,12 +584,15 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
                 runtime.hasInput,
                 runtime.shell,
                 ...extra,
+                runtime.encoding,
               ],
               type: SPAWNRES_T,
               loc,
             },
             0,
-            (a) => ({ cwd: a[7], envPairs: a[11] }),
+            // The env pairs ride only when the entry point takes them; the
+            // trailing argument is the encoding otherwise.
+            (a) => ({ cwd: a[7], envPairs: extra.length > 0 ? a[11] : undefined }),
             loc,
           );
         // An absent `env` inherits our environment; a present one replaces
@@ -404,6 +655,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         );
       };
       const t = lowerer.typeOf(node);
+      // A nullish scalar is Node's default: every slot piped.
+      if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
       if (t.isStringLiteralType()) {
         modeOf(t.value, 0);
         modeOf(t.value, 1);
@@ -414,6 +667,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         let slotRuntime = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
+          // null and undefined mean the default "pipe" entry.
+          if (et.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
           if (!et.isStringLiteralType()) {
             // A slot typed as a union of the supported literals maps at
             // the call. stdin's "ignore" and "pipe" both read nothing, but
@@ -468,16 +723,38 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       }
       switch (m.name) {
         case "encoding": {
+          // Node's normalizeSpawnArguments: null/undefined mean the Buffer
+          // form; "buffer" is the same; otherwise the value must name a
+          // Buffer encoding, which the result's STRING reads decode with.
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-            lowerer.noLowering(
-              "spawnSync with a non-utf8 encoding",
-              m.value,
-              'outputs are captured as utf8 — pass { encoding: "utf8" }',
-            );
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) break;
+          if (t.isStringLiteralType()) {
+            if (t.value === "buffer") break; // Node's normalizing of "buffer"
+            const lit = knownBufEncoding(t.value);
+            if (lit === undefined) {
+              lowerer.noLowering(
+                `spawnSync with encoding "${t.value}"`,
+                m.value,
+                'a Buffer encoding name (or "buffer"/null for the Buffer form) is the supported encoding option',
+              );
+            }
+            encoding = strLit(lit, loc);
+          } else {
+            // A value whose TYPE is a Buffer encoding name (BufferEncoding
+            // and its spellings): the runtime decodes per read with the
+            // name it holds. A nullish or "buffer" arm would make the
+            // capture's type depend on the value, which fences.
+            encoding = encodingNameValue(lowerer, "spawnSync", m.value);
           }
+          optionOrder.push("encoding");
+          plain = false;
           break;
         }
+        case "maxBuffer":
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionOrder.push("maxBuffer");
+          plain = false;
+          break;
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
           optionOrder.push("timeout");
@@ -485,7 +762,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || !NODE_SIGNAL_NAMES.has(t.value)) {
+          if (!t.isStringLiteralType() || !isNodeSignalName(t.value)) {
             lowerer.noLowering(
               "spawnSync with this killSignal",
               m.value,
@@ -501,7 +778,14 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; the value is still evaluated
+          // where the member sits.
+          windowsOnlyOption(lowerer, "spawnSync", m.name, p, m.value, (value) => {
+            windowsHideValues.push(value);
+            optionOrder.push("windowsHide");
+            extOptions = true;
+            plain = false;
+          });
           break;
         case "env":
           // A REPLACEMENT environment, as for spawn and execFileSync.
@@ -612,7 +896,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   if (plain) {
     return withChildArgsCheck(
       lowerer,
-      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc },
+      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv, encoding], type: SPAWNRES_T, loc },
       0,
       () => ({}),
       loc,
@@ -626,6 +910,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     );
   }
   if (stdioStr !== null) {
+    if (windowsHideValues.length > 0) {
+      lowerer.noLowering(
+        "spawnSync with a runtime stdio value and a windowsHide value that must be evaluated",
+        optsNode!,
+        'pass stdio as a "pipe"/"ignore"/"inherit" literal, or bind the windowsHide value to a constant before the call',
+      );
+    }
     if (extOptions) {
       lowerer.noLowering(
         "spawnSync with a runtime stdio value and cwd, input, or shell",
@@ -638,12 +929,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       {
         kind: "libCall",
         fn: "cp.spawnSyncStdioStr",
-        args: [cmd, argv, timeout, killSignal, stdioStr],
+        args: [cmd, argv, timeout, killSignal, stdioStr, encoding],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      () => ({}),
+      () => ({ maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
     );
   }
@@ -681,6 +972,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     let stdinModeArg = inMode;
     let outModeArg = outMode;
     let errModeArg = errMode;
+    let encodingArg = encoding;
+    let maxBufferArg = maxBuffer;
     for (const option of optionOrder) {
       if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
       else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
@@ -694,6 +987,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
+      } else if (option === "windowsHide") {
+        const value = windowsHideValues.shift();
+        if (value !== undefined) bind("%spawnSyncWindowsHide", value);
+      } else if (option === "encoding") {
+        encodingArg = bind("%spawnSyncEncoding", encoding);
+      } else if (option === "maxBuffer" && maxBuffer !== null) {
+        maxBufferArg = bind("%spawnSyncMaxBuffer", maxBuffer);
       }
     }
     // An `input` option makes the call read the stdin slot's runtime mode
@@ -740,12 +1040,17 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           hasInputArg,
           shell,
           ...(envArg !== null ? [envArg] : []),
+          encodingArg,
         ],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      (a) => ({ cwd: a[7], envPairs: a[11] }),
+      (a) => ({
+        cwd: a[7],
+        envPairs: envArg !== null ? a[11] : undefined,
+        maxBuffer: armedMaxBuffer(maxBufferArg, true),
+      }),
       loc,
     );
     return prelude.length === 0
@@ -766,12 +1071,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         outMode,
         errMode,
         ...(envPairs !== null ? [envPairs] : []),
+        encoding,
       ],
       type: SPAWNRES_T,
       loc,
     },
     0,
-    (a) => ({ envPairs: a[7] }),
+    (a) => ({
+      envPairs: envPairs !== null ? a[7] : undefined,
+      maxBuffer: armedMaxBuffer(maxBuffer, true),
+    }),
     loc,
   );
 }
@@ -800,6 +1109,9 @@ function lowerSpawnSyncRuntimeOptions(
   inMode: IrExpr;
   outMode: IrExpr;
   errMode: IrExpr;
+  /** The encoding option's name (the record requires it): the STRING
+   * reads of the capture decode through it. */
+  encoding: IrExpr;
   /** The `env` member's presence test, null when the record has no such
    * member; the pairs ride only the present branch. */
   hasEnv: IrExpr | null;
@@ -864,6 +1176,14 @@ function lowerSpawnSyncRuntimeOptions(
     loc,
   });
   const inMode = modeCall(0);
+  const encodingRead: IrExpr = {
+    kind: "recordGet",
+    obj: opts,
+    shapeId,
+    field: "encoding",
+    type: STRING,
+    loc,
+  };
   // input's PRESENCE rides separately (undefined = the option is absent —
   // no stdin pipe; "" pipes empty stdin), and Node IGNORES it when
   // stdio[0] takes the child's fd 0 away ("ignore"/"inherit"): the option
@@ -965,6 +1285,7 @@ function lowerSpawnSyncRuntimeOptions(
     inMode,
     outMode: modeCall(1),
     errMode: modeCall(2),
+    encoding: encodingRead,
     hasEnv,
     envPairs,
   };
@@ -1216,6 +1537,35 @@ function stdioModeExpr(
   };
 }
 
+/** `child[Symbol.dispose]()`: Node's ChildProcess dispose, which sends
+ * SIGTERM only while `killed` is false. The receiver must type as a child
+ * handle; any other element-access call is not ours. */
+export function lowerChildDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "dispose"
+  ) {
+    return null;
+  }
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("child[Symbol.dispose] with arguments", call);
+  }
+  return {
+    kind: "libCall",
+    fn: "child.dispose",
+    args: [lowerer.lowerExpr(access.expression)],
+    type: VOID,
+    loc: locOf(call),
+  };
+}
+
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
  * libCall. Computed options use native runtime normalization. Inline
  * stdio accepts "ignore", "inherit", or "pipe" as the scalar, or the
@@ -1229,8 +1579,10 @@ function stdioModeExpr(
  * orientation — POSIX_SPAWN_SETSID, the child gets its own session and
  * process group like Node's), `env` (a REPLACEMENT environment, the
  * exec-core pairs machinery), `cwd`, and `windowsHide` (a POSIX no-op).
- * The bare `{ stdio: "ignore" }` shape keeps its historical cp.spawn
- * lowering. */
+ * `timeout`, `killSignal` and `signal` ride cp.spawnArmed (the
+ * SCR_CHILD_CP_OPTIONS build), which runs Node's launch checks before the
+ * child starts. The bare `{ stdio: "ignore" }` shape keeps its historical
+ * cp.spawn lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -1288,6 +1640,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
   let shellEnabled = false;
+  // Node's spawn-side options, which the SCR_CHILD_CP_OPTIONS build
+  // implements: `timeout` (0 = none), `killSignal` and `signal`. Any of
+  // them switches the launch to cp.spawnArmed.
+  let armed = false;
+  let timeoutMs: IrExpr = numLit(0, loc);
+  let killSignalOpt: IrExpr = dynUndefinedExpr(loc);
+  let signalOpt: IrExpr = dynUndefinedExpr(loc);
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
@@ -1305,6 +1664,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     return varRef(local.id, value.type, loc);
   };
   const bind = (name: string, value: IrExpr): IrExpr => bindInto(valuePrelude, name, value);
+  // An explicitly absent checked-dynamic member stays the undefined
+  // literal: the emitter reads it to leave the event-target unit out, and
+  // the runtime reads it as Node's absent option.
+  const bindDyn = (name: string, value: IrExpr): IrExpr =>
+    isDynUndefined(value) ? value : bind(name, value);
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
     for (const p of optsNode.properties.nodes) {
@@ -1368,6 +1732,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
+              // null and undefined mean Node's default "pipe" entry.
+              if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+                if (which === 0) inMode = numLit(3, loc);
+                else if (which === 1) outMode = numLit(3, loc);
+                else errMode = numLit(3, loc);
+                plain = false;
+                return;
+              }
               if (t.isStringLiteralType()) {
                 if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
                   lowerer.noLowering(
@@ -1424,6 +1796,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             break;
           }
           const t = lowerer.typeOf(m.value);
+          // A nullish scalar is Node's default: all three slots piped.
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+            inMode = outMode = errMode = numLit(3, loc);
+            sawStdio = true;
+            plain = false;
+            break;
+          }
           // A scalar union-typed stdio expression feeds all three modes: it
           // is read once into a hidden local, so a side effect in the
           // expression runs once and the three modes cannot disagree.
@@ -1474,7 +1853,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+        case "windowsVerbatimArguments":
+          // Node reads them on Windows only (no console window; no
+          // argument quoting). The value is evaluated where the member sits.
+          windowsOnlyOption(lowerer, "spawn", m.name, p, m.value, (value) => {
+            bind(m.name === "windowsHide" ? "%spawnWindowsHide" : "%spawnVerbatimArguments", value);
+            plain = false;
+          });
           break;
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
@@ -1491,11 +1876,59 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             );
           }
           break;
+        case "timeout": {
+          // Node's validateTimeout: a nullish timeout is absent, and the
+          // timer arms only for a positive one, so an absent value and 0
+          // behave alike. A value that may be undefined lowers as
+          // `value ?? 0`, which keeps its runtime timeout and validation.
+          armed = true;
+          plain = false;
+          const t = lowerer.typeOf(m.value);
+          const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+          if ((t.flags & nullish) !== 0 && (t.flags & ~nullish) === 0) break;
+          const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+          const present = parts.filter((part) => (part.flags & nullish) === 0);
+          if (
+            present.length < parts.length &&
+            present.length === 1 &&
+            (present[0]!.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0
+          ) {
+            timeoutMs = bind("%spawnTimeout", {
+              kind: "nullish",
+              left: lowerer.lowerExpr(m.value),
+              right: numLit(0, loc),
+              type: F64,
+              loc,
+            });
+            break;
+          }
+          timeoutMs = bind("%spawnTimeout", lowerer.lowerExprExpecting(m.value, F64));
+          break;
+        }
+        case "killSignal":
+          // sanitizeKillSignal: a signal name in any case, or a signal
+          // number from the platform's table. The runtime resolves and
+          // rejects the value (ERR_UNKNOWN_SIGNAL, or
+          // ERR_INVALID_ARG_TYPE for a non-string/number) before the
+          // child starts; undefined and null are absent.
+          killSignalOpt = bindDyn("%spawnKillSignal", lowerer.lowerExprExpecting(m.value, DYN));
+          armed = true;
+          plain = false;
+          break;
+        case "signal":
+          // validateAbortSignal: an AbortSignal (Node's
+          // ERR_INVALID_ARG_TYPE for anything else, null included). The
+          // runtime checks the checked-dynamic handle's tag and
+          // subscribes to the abort.
+          signalOpt = bindDyn("%spawnSignal", lowerer.lowerExprExpecting(m.value, DYN));
+          armed = true;
+          plain = false;
+          break;
         default:
           lowerer.noLowering(
             `spawn option '${m.name}'`,
             p,
-            "stdio, detached, env, cwd, windowsHide, and shell are the supported options",
+            "stdio, detached, env, cwd, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell are the supported options",
           );
       }
     }
@@ -1529,26 +1962,50 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
-      {
-        kind: "libCall",
-        fn: "cp.spawnOpts",
-        args: [
-          callCmd,
-          callArgs,
-          inMode,
-          outMode,
-          errMode,
-          outFd,
-          errFd,
-          detached,
-          shell,
-          hasEnv,
-          envPairs,
-          cwd,
-        ],
-        type: CHILD_T,
-        loc,
-      },
+      armed
+        ? {
+            kind: "libCall",
+            fn: "cp.spawnArmed",
+            args: [
+              callCmd,
+              callArgs,
+              inMode,
+              outMode,
+              errMode,
+              outFd,
+              errFd,
+              detached,
+              shell,
+              hasEnv,
+              envPairs,
+              cwd,
+              timeoutMs,
+              killSignalOpt,
+              signalOpt,
+            ],
+            type: CHILD_T,
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "cp.spawnOpts",
+            args: [
+              callCmd,
+              callArgs,
+              inMode,
+              outMode,
+              errMode,
+              outFd,
+              errFd,
+              detached,
+              shell,
+              hasEnv,
+              envPairs,
+              cwd,
+            ],
+            type: CHILD_T,
+            loc,
+          },
       0,
       (a) => ({ envPairs: a[10], cwd: a[11] }),
       loc,
@@ -1621,6 +2078,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   let outMode = 1;
   let errMode = 1;
   let sawStdio = false;
+  let sawNullishScalar = false;
   let silent = false;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -1628,6 +2086,11 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 
   const stdioMode = (node: ts.Expression, label: string): number => {
     const type = lowerer.typeOf(node);
+    // A null/undefined entry takes spawn's default "pipe"; a null/undefined
+    // scalar takes fork's own default, which the caller resolves once
+    // `silent` is known (inherit unless silent, as Node's fork does for
+    // every non-array, non-string stdio value).
+    if (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return -1;
     const value = type.isStringLiteralType() ? type.value : null;
     if (value !== "ignore" && value !== "inherit" && value !== "pipe") {
       lowerer.noLowering(
@@ -1685,12 +2148,17 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
                 'the fourth stdio entry must be "ipc"',
               );
             }
-            inMode = stdioMode(member.value.elements.nodes[0]!, "stdin");
-            outMode = stdioMode(member.value.elements.nodes[1]!, "stdout");
-            errMode = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            sawNullishScalar = false;
+            const inEntry = stdioMode(member.value.elements.nodes[0]!, "stdin");
+            const outEntry = stdioMode(member.value.elements.nodes[1]!, "stdout");
+            const errEntry = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            inMode = inEntry === -1 ? 3 : inEntry;
+            outMode = outEntry === -1 ? 3 : outEntry;
+            errMode = errEntry === -1 ? 3 : errEntry;
           } else {
             const mode = stdioMode(member.value, "scalar");
-            inMode = outMode = errMode = mode;
+            sawNullishScalar = mode === -1;
+            if (mode !== -1) inMode = outMode = errMode = mode;
           }
           sawStdio = true;
           break;
@@ -1711,7 +2179,10 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
           // already compiled into this artifact, so no loader starts.
           break;
         case "windowsHide":
-          lowerer.lowerExpr(member.value); // accepted platform presentation option
+          // Node reads it on Windows only. This form binds no option
+          // values, so a value whose evaluation can be observed is refused
+          // by name instead of dropped.
+          windowsOnlyOption(lowerer, "fork", member.name, property, member.value, null);
           break;
         default:
           lowerer.noLowering(
@@ -1722,6 +2193,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
       }
     }
   }
+  if (sawNullishScalar) inMode = outMode = errMode = silent ? 3 : 1;
   if (!sawStdio && silent) inMode = outMode = errMode = 3;
 
   return withChildArgsCheck(
@@ -1755,10 +2227,13 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
- * fenced until their lifecycle can share this asynchronous core. */
+ * `encoding: "utf8"`, a numeric `maxBuffer` (the limit applies to each
+ * stream as in Node — 1 MiB without the option), `cwd`, `env`, `timeout`,
+ * `killSignal`, `shell`, and the Windows-only members are accepted. The
+ * deadline is Node's: at `timeout` the runtime destroys the capture streams
+ * and sends `killSignal` (SIGTERM without one), and the callback reports
+ * the exit's own status. Other options remain fenced until their lifecycle
+ * can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1786,9 +2261,16 @@ export function lowerExecFileCall(
   // failure messages). execFile's `shell: true` below turns it into the
   // same shape, so the launch values are final only after the options.
   let execShell = false;
-  // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
-  // one launch member the callback slice lacked.
+  // `cwd`, `env`, `timeout` and `killSignal` (the SCR_CHILD_CP_OPTIONS
+  // build): the launch members the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let envPairs: IrExpr | null = null;
+  let timeout: IrExpr | null = null;
+  let killSignal: IrExpr | null = null;
+  let maxBuffer: IrExpr | null = null;
+  // The options that are evaluated, as written: `cwd` is the launch's
+  // fifth argument.
+  const optionSteps: ChildEvalStep[] = [];
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1802,18 +2284,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
@@ -1834,15 +2304,45 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
+        optionSteps.push("limit");
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
+        optionSteps.push(4);
+      } else if (member.name === "env") {
+        // A REPLACEMENT environment, as for spawn and spawnSync; `env: {}`
+        // is an empty environment, not the inherited one.
+        envPairs = recordToEnvPairs(lowerer, member.value);
+        optionSteps.push(6);
+      } else if (member.name === "timeout") {
+        // Node's validateTimeout (the runtime): an unsigned integer, or a
+        // nullish value that means no deadline. The delay rides the
+        // launch's eighth argument.
+        const t = lowerer.typeOf(member.value);
+        if (!(t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))) {
+          timeout = lowerer.lowerExprExpecting(member.value, F64);
+          optionSteps.push(7);
+        }
+      } else if (member.name === "killSignal") {
+        // sanitizeKillSignal's name form: a literal from Node's table
+        // (the runtime's twin resolves it; SIGTERM without one).
+        const t = lowerer.typeOf(member.value);
+        if (!(t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))) {
+          if (!t.isStringLiteralType() || !isNodeSignalName(t.value)) {
+            lowerer.noLowering(
+              `${what} with this killSignal`,
+              member.value,
+              'a signal-name literal from Node\'s table ("SIGTERM", "SIGKILL", ...) is the supported form',
+            );
+          }
+          killSignal = { kind: "strLit", value: t.value, type: STRING, loc };
+          optionSteps.push(8);
+        }
+      } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
+        // Windows-only presentation and quoting: Node reads neither on
+        // POSIX. This form binds no member values, so a value whose
+        // evaluation could be observed has no place to run and is refused.
+        windowsOnlyOption(lowerer, what, member.name, property, member.value, null);
       } else if (member.name === "shell" && !shell) {
         // Node's shell form: [file, ...args].join(" ") through /bin/sh -c.
         // exec itself already IS the shell form, so its member stays out.
@@ -1858,7 +2358,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -1941,6 +2441,37 @@ export function lowerExecFileCall(
   // exec's first argument is Node's `command`; execFile's is its `file`,
   // in the shell launch too.
   const form: ChildLaunchForm = shell ? 1 : execShell ? 2 : 0;
+  // The source evaluates the file or command, the argument list, the
+  // options as written, and the callback last.
+  const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
+  if (envPairs !== null || timeout !== null || killSignal !== null) {
+    // The full option shape (the SCR_CHILD_CP_OPTIONS build): env REPLACES
+    // the environment (the flag says whether it is present at all),
+    // timeoutMs 0 means no deadline, and "" is the SIGTERM default.
+    const args: IrExpr[] = [
+      cmd,
+      argv,
+      callback,
+      boolLit(shellForm, loc),
+      cwd ?? strLit("", loc),
+      boolLit(envPairs !== null, loc),
+      envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+      timeout ?? numLit(0, loc),
+      killSignal ?? strLit("", loc),
+    ];
+    return withChildArgsCheck(
+      lowerer,
+      { kind: "libCall", fn: "cp.execFileOpts", args, type: CHILD_T, loc },
+      form,
+      (a) => ({
+        cwd: a[4],
+        envPairs: a[6],
+        maxBuffer: armedMaxBuffer(maxBuffer, false),
+      }),
+      loc,
+      sourceOrder,
+    );
+  }
   if (cwd !== null) {
     return withChildArgsCheck(
       lowerer,
@@ -1952,8 +2483,9 @@ export function lowerExecFileCall(
         loc,
       },
       form,
-      (a) => ({ cwd: a[4] }),
+      (a) => ({ cwd: a[4], maxBuffer: armedMaxBuffer(maxBuffer, false) }),
       loc,
+      sourceOrder,
     );
   }
   return withChildArgsCheck(
@@ -1966,7 +2498,8 @@ export function lowerExecFileCall(
       loc,
     },
     form,
-    () => ({}),
+    () => ({ maxBuffer: armedMaxBuffer(maxBuffer, false) }),
     loc,
+    sourceOrder,
   );
 }

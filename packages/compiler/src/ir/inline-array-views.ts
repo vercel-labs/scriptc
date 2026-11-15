@@ -87,9 +87,11 @@ const READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.toDyn",
   "dyn.this",
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classValueHash",
+  "dyn.classTestPrototype",
   "dyn.hasKey",
   "dyn.hasOwn",
   "dyn.in",
@@ -131,6 +133,7 @@ const READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Adoption turns shared source nodes into capsules of the native value;
   // it reads nothing the program sees.
   "dyn.adoptShared",
+  "dyn.adoptable",
   // A worker's data is a structured clone, as in Node.js: the clone holds
   // the elements, not the field.
   "worker.new",

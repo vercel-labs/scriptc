@@ -39,8 +39,9 @@ type TtySink = { write(text: string): boolean; isTTY: boolean };
 const tty: TtySink = process.stdout;
 console.log(tty.isTTY);
 
-// A variadic method stays outside the projection too: the projection calls
-// the member through the dynamic tier, which has no spread form.
+// A variadic write on such a binding is the stream's own write with more
+// arguments (an encoding, a callback): it is a call on the stream object,
+// which validates them when it runs, so nothing is refused here.
 type RestSink = { write(text: string, ...rest: any[]): boolean };
 const restSink: RestSink = process.stdout;
 console.log(restSink.write("one", "two"));

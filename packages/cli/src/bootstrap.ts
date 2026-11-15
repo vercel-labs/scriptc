@@ -184,21 +184,27 @@ async function tryFastPath(): Promise<number | null> {
   // program reads at run time was not installed beside it; the full compiler
   // restores the same executable and installs that file.
   if (hit.native.intl === true) return null;
-  // A cached build repeats every warning it reported. This path renders the
-  // performance warning itself (SC6101 needs no source frames); a hit that
-  // holds any other warning — a divergence, a Node island note, a type patch —
-  // takes the full compiler, which renders it as the cold build does.
-  const cachedWarnings = hit.warnings ?? [];
-  if (command === "build" && cachedWarnings.some((d) => !startup.isPerformanceCode(d.code)))
-    return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
-    const performance =
-      values["dynamic-tier-warning"] === false
-        ? []
-        : cachedWarnings.filter((d) => startup.isPerformanceCode(d.code));
-    if (performance.length > 0)
-      process.stderr.write(startup.renderPerformanceWarnings(performance) + "\n");
+    // A cached build repeats every warning it reported, rendered by the same
+    // function the full compiler uses, from the same entry: the warnings and,
+    // for a file the build edited before locating a warning in it, the text
+    // the entry kept. The fast path answers only the options that drop a
+    // warning; every other warning option takes the full CLI.
+    const cachedWarnings = hit.warnings ?? [];
+    const warnings = startup.buildWarnings(cachedWarnings, {
+      dynamicTier: values["dynamic-tier-warning"] !== false,
+    });
+    if (warnings.length > 0) {
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        startup.renderBuildWarnings(
+          warnings,
+          startup.warningSourceTexts(cachedWarnings, hit.warningSources),
+          { color },
+        ) + "\n",
+      );
+    }
     process.stdout.write(`${outPath}\n`);
     return 0;
   }
@@ -235,7 +241,17 @@ async function coverageFastPath(
     // refuses.
     firstCliOptionOutside(values, CLI_FAST_PATHS.coverage.options) !== undefined ||
     (print !== undefined && print !== "diagnostics") ||
-    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences")
+    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
+    // `--coverage=reached` keys its own verdicts; any other value is the
+    // full CLI's to validate.
+    (values.coverage !== undefined &&
+      values.coverage !== "full" &&
+      values.coverage !== "reached") ||
+    // --fail-on=divergences checks the warnings --no-copy-warning and
+    // --no-key-order-warning leave out: the full CLI refuses either pair,
+    // and a replayed verdict must not pass it.
+    (failOn === "divergences" &&
+      (values["copy-warning"] === false || values["key-order-warning"] === false))
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
@@ -244,10 +260,19 @@ async function coverageFastPath(
   } catch {
     return null;
   }
-  const hit = await startup.readCoverageVerdict(resolve(inputArg), {}).catch(() => null);
+  const hit = await startup
+    .readCoverageVerdict(
+      resolve(inputArg),
+      values.coverage === "reached" ? { coverage: "reached" } : {},
+    )
+    .catch(() => null);
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;
+  if (values["copy-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+  if (values["key-order-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8754-node-island-shared-read/dep.cjs",
+  "<repo>/tests/corpus/8754-node-island-shared-read/main.cjs"
+ ],
+ "diags": []
+}

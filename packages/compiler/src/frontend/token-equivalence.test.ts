@@ -370,3 +370,141 @@ test("an edit that is not equivalent says why", () => {
     "a token moved, and the build records source positions",
   );
 });
+
+/* A file compiled in a rewritten form (SourceTextRewrite): spans blanked,
+ * declarations appended. The reads of that form are recorded beside the
+ * reads of the text, and are answered over the form of each version. */
+const ELIDED = 'import { A, b } from "./m";\nconsole.log(b);\n';
+const ELIDED_TAIL = 'import type { A } from "./m";\n';
+/** `ELIDED`-like `text` with `A, ` blanked (from the start of `A` to the
+ * start of `b`) and the type-only declaration appended, with `reads` of
+ * that form. */
+const elidedForm = (
+  text: string,
+  reads: Partial<NonNullable<SourceTextReads["rewritten"]>> = {},
+): Partial<SourceTextReads> => ({
+  rewritten: {
+    blanks: [atStart(text.indexOf("A")), atStart(text.indexOf("b"))],
+    tail: ELIDED_TAIL,
+    ranges: [],
+    positions: [],
+    facts: [],
+    ...reads,
+  },
+});
+
+test("a rewritten form is made again from the edited text", () => {
+  const form = elidedForm(ELIDED);
+  expect(sameReads(ELIDED, "// lead\n" + ELIDED + "// trail\n", form)).toBe(true);
+  // A comment inside the blanked span is blanked with it.
+  const inside = ELIDED.replace("A,", "A /* a type */,");
+  expect(sameReads(ELIDED, inside, form)).toBe(true);
+  // The import's own text in the form, `import {    b } from "./m";`: the
+  // blanked span is part of what was read, and the comment widens it.
+  const statement = elidedForm(ELIDED, { ranges: [atStart(0), atEnd(ELIDED.indexOf(";") + 1)] });
+  expect(sameReads(ELIDED, "// lead\n" + ELIDED, statement)).toBe(true);
+  expect(sameReads(ELIDED, inside, statement)).toBe(false);
+  expect(
+    sourceEditDifference("/src/a.ts", ELIDED, inside, false, {
+      ranges: [],
+      positions: [],
+      facts: [],
+      ...statement,
+    }),
+  ).toBe("in its rewritten form, the frontend read the text at offset 0");
+});
+
+test("a predicate asked of a rewritten form is answered over the form", () => {
+  const asked = (needle: string, whole: boolean) => ({
+    predicate: { kind: "includes" as const, needle },
+    whole,
+    yes: [],
+    no: [],
+  });
+  // The form has no `A,` (blanked) and has `import type` (appended); the
+  // text as written is the other way round.
+  const form = elidedForm(ELIDED, { facts: [asked("A,", false), asked("import type", true)] });
+  expect(sameReads(ELIDED, ELIDED + "// done\n", form)).toBe(true);
+  // A comment outside the blanked span is part of the form.
+  expect(sameReads(ELIDED, ELIDED + "// A, then b\n", form)).toBe(false);
+  // Inside the span it is not.
+  expect(sameReads(ELIDED, ELIDED.replace("A,", "A /* A, */,"), form)).toBe(true);
+  // The same question asked of the text as written.
+  const text = { facts: [asked("A,", true), asked("import type", false)] };
+  expect(sameReads(ELIDED, ELIDED + "// A, then b\n", text)).toBe(true);
+  expect(sameReads(ELIDED, ELIDED + "// import type\n", text)).toBe(false);
+});
+
+test("an offset in the appended declarations keeps its distance from their start", () => {
+  // `A` in the appended declaration, and the line it stands on.
+  const at = ELIDED.length + ELIDED_TAIL.indexOf("A");
+  const name = elidedForm(ELIDED, { ranges: [atStart(at), atEnd(at + 1)] });
+  expect(sameReads(ELIDED, "// lead\n" + ELIDED + "// trail\n", name)).toBe(true);
+  const line = elidedForm(ELIDED, { positions: [at] });
+  expect(sameReads(ELIDED, ELIDED.replace(";\n", "; // one\n"), line)).toBe(true);
+  expect(sameReads(ELIDED, "// lead\n" + ELIDED, line)).toBe(false);
+  // A text without a final line break gets one before the declarations.
+  expect(sameReads(ELIDED, ELIDED.slice(0, -1), name)).toBe(true);
+  expect(sameReads(ELIDED, ELIDED.slice(0, -1), line)).toBe(true);
+  // The declaration with what leads up to it: the comments that end the text.
+  const leading = elidedForm(ELIDED, {
+    ranges: [atEnd(ELIDED.length - 1), atEnd(ELIDED.length + ELIDED_TAIL.length - 1)],
+  });
+  expect(sameReads(ELIDED, "// lead\n" + ELIDED, leading)).toBe(true);
+  expect(sameReads(ELIDED, ELIDED + "// trail\n", leading)).toBe(false);
+});
+
+test("an equivalent edit carries a rewrite and the reads of its form over", () => {
+  const at = ELIDED.length + ELIDED_TAIL.indexOf("A");
+  const reads: SourceTextReads = {
+    ranges: [],
+    // The start of `console`, in the text as written.
+    positions: [ELIDED.indexOf("console")],
+    facts: [],
+    ...elidedForm(ELIDED, {
+      ranges: [atStart(at), atEnd(at + 1)],
+      positions: [ELIDED.indexOf("console")],
+    }),
+  };
+  const current = "/* lead */ " + ELIDED.replace("A,", "A /* a type */,") + "// trail\n";
+  const edit = equivalentSourceEdit("/src/a.ts", ELIDED, current, false, reads);
+  const moved = current.length + ELIDED_TAIL.indexOf("A");
+  expect(edit).toEqual({
+    reads: {
+      ranges: [],
+      positions: [current.indexOf("console")],
+      facts: [],
+      rewritten: {
+        blanks: [atStart(current.indexOf("A")), atStart(current.indexOf("b"))],
+        tail: ELIDED_TAIL,
+        ranges: [atStart(moved), atEnd(moved + 1)],
+        positions: [current.indexOf("console")],
+        facts: [],
+      },
+    },
+  });
+  // The carried rewrite describes the edited text.
+  expect(equivalentSourceEdit("/src/a.ts", current, ELIDED, false, edit!.reads)).toEqual({ reads });
+});
+
+test("with positions, the declarations a rewrite appends must stay on their line", () => {
+  const reads: SourceTextReads = { ranges: [], positions: [], facts: [], ...elidedForm(ELIDED) };
+  const sameLine = ELIDED.replace(";\n", "; // one\n");
+  expect(tokenPositionEquivalentSource("/src/a.ts", ELIDED, sameLine, reads)).toBe(true);
+  // Every token of the text keeps its place; the appended ones move down.
+  const trailing = ELIDED + "// trail\n";
+  expect(tokenPositionEquivalentSource("/src/a.ts", ELIDED, trailing)).toBe(true);
+  expect(tokenPositionEquivalentSource("/src/a.ts", ELIDED, trailing, reads)).toBe(false);
+  expect(tokenEquivalentSource("/src/a.ts", ELIDED, trailing, reads)).toBe(true);
+  expect(sourceEditDifference("/src/a.ts", ELIDED, trailing, true, reads)).toBe(
+    "the declarations the frontend added after its last line moved, and the build records source positions",
+  );
+  // A rewrite that appends nothing has no such tokens.
+  const blanksOnly: SourceTextReads = {
+    ranges: [],
+    positions: [],
+    facts: [],
+    rewritten: { ...elidedForm(ELIDED).rewritten!, tail: "" },
+  };
+  expect(tokenPositionEquivalentSource("/src/a.ts", ELIDED, trailing, blanksOnly)).toBe(true);
+});

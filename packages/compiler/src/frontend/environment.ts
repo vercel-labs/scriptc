@@ -7,12 +7,18 @@ const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_CACHE_MAX_MB",
   // The shared checker server answers as the build's own checker does.
   "SCRIPTC_CHECKER_SERVER",
+  // Prints the stack of a compiler crash beside its diagnostic.
+  "SCRIPTC_CRASH_STACK",
   "SCRIPTC_EMIT_WORKERS",
   "SCRIPTC_EMIT_WORKER_FAIL",
   "SCRIPTC_EMIT_WORKER_FUNCTIONS",
-  // Reusing lowered units leaves the lowered module as it is.
-  "SCRIPTC_INCR_LOWERING",
+  // Checking reused units leaves the lowered module as it is. Reusing them
+  // (SCRIPTC_INCR_LOWERING) does not in a build with `--define`, which then
+  // leaves the conditions the define decides to the run
+  // (constant-conditions.ts), so that variable is part of the key.
   "SCRIPTC_INCR_VERIFY",
+  // The backend's report of which module initializers it defers.
+  "SCRIPTC_INITIALIZERS_TRACE",
   "SCRIPTC_TIMING",
 ]);
 

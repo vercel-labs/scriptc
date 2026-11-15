@@ -12,6 +12,7 @@ import {
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { startupFailureDiag } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import type { NpmStaticStatus } from "./npm-static-status.js";
@@ -38,7 +39,12 @@ import {
   npmStaticOffenders,
   npmStaticPackageOfPath,
 } from "./npm-static.js";
-import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
+import {
+  clearResolveCaches,
+  isInstalledPackagePath,
+  resolveBareModule,
+  resolveWorkspaceSourceModule,
+} from "./resolve.js";
 import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -68,6 +74,7 @@ import { readProjectConfig } from "../project-config.js";
 import { recordFrontendIslandReads, setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
+import type { Defines } from "./defines.js";
 import {
   scanFiles,
   type NodeIslandScan,
@@ -93,6 +100,7 @@ function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
+  define?: Defines | undefined;
 }
 
 /** A load owns its program resources until LoadResult.dispose(). Host
@@ -163,6 +171,9 @@ export interface FrontendOptions {
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
   nodeIslands?: boolean;
+  /** `--define` values: every program load resolves the JavaScript `if`
+   * statements they decide, and lowering sets the variables at startup. */
+  define?: Defines;
   /** The detector's scan alone, for a build that may run packages in Node
    * islands (executable/prepare.ts decides which). */
   islandScan?: boolean;
@@ -190,7 +201,7 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
   const added = new Set<SourceFile>();
   while (queue.length > 0) {
     const sf = queue.pop()!;
-    const packageJs = sf.fileName.includes("/node_modules/");
+    const packageJs = isInstalledPackagePath(sf.fileName);
     if (packageJs && !added.has(sf)) continue;
     const specs: { spec: string; kind: "import" | "require" }[] = [];
     // Every literal import() in the file, read from the syntax: a comment
@@ -229,7 +240,7 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
         resolveImport(load.program, sf, spec, kind) ??
         npmStaticDepSf7(load.program, sf, spec, kind);
       if (dep === null || scanned.has(dep)) continue;
-      if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      if (isInstalledPackagePath(dep.fileName) && !isJsSourceFileName(dep.fileName)) continue;
       // An import() whose graph Node refuses rejects: nothing in it loads.
       if (kind === "import" && load.dynamicImportRejections?.has(dep)) continue;
       scanned.add(dep);
@@ -291,7 +302,7 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
         resolveImport(load.program, sf, spec, kind) ??
         npmStaticDepSf7(load.program, sf, spec, kind);
       if (dep === null || scanned.has(dep) || dep.isDeclarationFile) continue;
-      if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      if (isInstalledPackagePath(dep.fileName) && !isJsSourceFileName(dep.fileName)) continue;
       scanned.add(dep);
       queue.push(dep);
     }
@@ -341,7 +352,7 @@ function detectAutoPackages(
           return !scanned.has(sf) && pkg !== null && transitive.has(pkg);
         });
   for (const sf of [...scanned, ...transitiveFiles]) {
-    if (mode === "auto" && sf.fileName.includes("/node_modules/")) continue;
+    if (mode === "auto" && isInstalledPackagePath(sf.fileName)) continue;
     // `--npm-static=pkg...` opts pkg's whole dependency closure in: every
     // package its compiled files import is selected the same explicit way,
     // without the declaration eligibility bar.
@@ -375,7 +386,7 @@ function detectAutoPackages(
       mode === "lib" &&
       !viaTransitive &&
       owner === null &&
-      !sf.fileName.includes("/node_modules/") &&
+      !isInstalledPackagePath(sf.fileName) &&
       // Any spelling of a call (`require (`, a comment before the paren):
       // the syntax scan below decides.
       sourceTextMatches(sf, /\brequire\b/)
@@ -478,7 +489,7 @@ function detectAutoPackages(
         // JavaScript importer has no declarations to check.
         const refusal =
           npm === null
-            ? owner === null && !sf.fileName.includes("/node_modules/")
+            ? owner === null && !isInstalledPackagePath(sf.fileName)
               ? "it ships no own .d.ts declaration surface"
               : null
             : definitelyTypedMismatch(runtimePkg, npm.typesFile);
@@ -522,7 +533,7 @@ function detectAutoPackages(
       pkg,
       typesFile,
       jsEntry !== null && isJsSourceFileName(jsEntry.typesFile) ? jsEntry.typesFile : null,
-      mode === "lib" && isJsSourceFileName(typesFile) && fromFile.includes("/node_modules/"),
+      mode === "lib" && isJsSourceFileName(typesFile) && isInstalledPackagePath(fromFile),
     );
     if (reason === null) chosen.push(pkg);
     else
@@ -601,8 +612,8 @@ export function runFrontend(
   // only live loads, releasing each immediately on normal fallback; this
   // also closes both the current program and a failed temporary probe.
   const active: ReturnType<ProgramLoader>[] = [];
-  const trackedLoader: ProgramLoader = (path, options) => {
-    const load = loadProgram(path, options);
+  const trackedLoader: ProgramLoader = (path, loadOptions) => {
+    const load = loadProgram(path, { ...loadOptions, define: options.define });
     active.push(load);
     return {
       ...load,
@@ -1144,13 +1155,25 @@ function loadFrontend(
   // Type patches that did not apply as written (SC8030–SC8033) warn; the
   // build goes on with the packages' own declarations there.
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
-  const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
+  // A program Node refuses before any module runs compiles to that refusal
+  // (LoadResult.startupCrash); the build says so (SC6201).
+  const crash = load.startupCrash ?? null;
+  const startupWarnings =
+    crash === null
+      ? []
+      : [startupFailureDiag(crash.className, crash.message, crash.loc, crash.hint)];
+  const buildWarnings = [
+    ...(report ? [] : configDiagnostics),
+    ...patchDiagnostics,
+    ...startupWarnings,
+    ...(load.importWarnings ?? []),
+  ];
   return {
     preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
-    entryText: () => finalLoad.entry.text,
+    entryText: () => finalLoad.elidedSources?.get(finalLoad.entry.fileName) ?? finalLoad.entry.text,
     entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
     // The contract scans the PROGRAM's source files, not the runtime
     // module order: a type-only module (nothing but exported types) has no
@@ -1182,7 +1205,12 @@ function loadFrontend(
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
-        ].map((sf) => [sf.fileName, carriedSourceText(sf)]),
+          // A file compiled with imports elided is recorded as it was
+          // before the elision: the same offsets, and the text on disk.
+        ].map((sf) => [
+          sf.fileName,
+          finalLoad.elidedSources?.get(sf.fileName) ?? carriedSourceText(sf),
+        ]),
       );
       // SC8004 and type patch diagnostics point into the project's
       // package.json.
@@ -1213,6 +1241,7 @@ function loadFrontend(
         if (l.shapeOverlayState !== undefined) restoreShapeOverlayState(l.shapeOverlayState);
         return lowerToIr(l.program, l.entry, lowerOrder(l), {
           ...opts,
+          define: options.define,
           frontendServices: l.services,
           startupCrash: l.startupCrash ?? null,
           admittedOpinions: l.admittedOpinions,
@@ -1220,6 +1249,7 @@ function loadFrontend(
           moduleEdges: l.moduleEdges,
           dynamicImportRejections: l.dynamicImportRejections,
           projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
+          parameterPropertiesFirst: l.parameterPropertiesFirst,
           externalTypes: l.externalTypes,
           externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
         });
@@ -1407,7 +1437,7 @@ function loadFrontend(
           const npm =
             statuses.length > 0 ||
             droppedScan.modules.length > 0 ||
-            [...files].some((sf) => sf.fileName.includes("/node_modules/"));
+            [...files].some((sf) => isInstalledPackagePath(sf.fileName));
           const scanned = scanFiles(finalLoad.program, [...files], {
             userJs,
             dropped: false,

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   F64,
+  REGEX,
   STRING,
   VOID,
   mapOf,
@@ -42,13 +43,14 @@ function moduleWith(functions: IrFunction[], globals: IrGlobal[] = []): IrModule
   };
 }
 
-/** `function show(value: Map<string, number>)` with `body` as its statements. */
-function show(body: IrStmt[]): IrFunction {
+/** `function show(value: Map<string, number>)` (or a value of `type`) with
+ * `body` as its statements. */
+function show(body: IrStmt[], type: IrType = table): IrFunction {
   return {
     name: "show",
-    params: [{ localId: "value", name: "value", type: table }],
+    params: [{ localId: "value", name: "value", type }],
     returnType: STRING,
-    locals: [{ id: "value", name: "value", type: table, mutable: false }],
+    locals: [{ id: "value", name: "value", type, mutable: false }],
     body,
     loc: fnLoc,
   };
@@ -65,27 +67,36 @@ function refusal(mod: IrModule): LlvmUnsupportedError {
 }
 
 test("a refusal raised by a type-keyed helper takes the statement's span", () => {
-  // The JSON writer is interned per type and knows no IR node.
+  // The JSON writer is interned per type and knows no IR node. A RegExp is
+  // a type it has no writer for (a Map or a Set is written as "{}").
   const error = refusal(
     moduleWith([
-      show([
-        {
-          kind: "return",
-          value: { kind: "jsonStringify", value: ref("value", table), type: STRING, loc: exprLoc },
-          loc: stmtLoc,
-        },
-      ]),
+      show(
+        [
+          {
+            kind: "return",
+            value: {
+              kind: "jsonStringify",
+              value: ref("value", REGEX),
+              type: STRING,
+              loc: exprLoc,
+            },
+            loc: stmtLoc,
+          },
+        ],
+        REGEX,
+      ),
     ]),
   );
-  expect(error.kind).toBe("jsonStringify:map");
+  expect(error.kind).toBe("jsonStringify:regex");
   expect(error.loc).toEqual(stmtLoc);
   expect(error.functionName).toBe("show");
   const diag = llvmRefusalDiag(error, "/project/src/entry.ts");
   expect(diag.code).toBe("SC3001");
   expect(diag.loc).toEqual(stmtLoc);
   expect(diag.message).toBe(
-    "the LLVM backend does not support this construct yet (jsonStringify:map): " +
-      "JSON.stringify reaching a value of type map<string,f64>, in show",
+    "the LLVM backend does not support this construct yet (jsonStringify:regex): " +
+      "JSON.stringify reaching a value of type regex, in show",
   );
 });
 

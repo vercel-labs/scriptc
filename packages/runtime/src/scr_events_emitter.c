@@ -146,6 +146,12 @@ struct ScrEeReg {
    * only removeAllListeners deletes: the named form drops the one key,
    * the no-argument wipe resets everything and leaves shape mode. */
   bool shape;
+  /* NodeEventTarget-style registries (Worker, MessagePort): no
+   * newListener/removeListener meta events, and emit passes the single
+   * borrowed argument straight through without the 'error' special case.
+   * The flag lives here rather than on the emitter so the emitted subclass
+   * layout is untouched. */
+  bool plain;
   /* Owner-internal observation of empty/nonempty listener transitions. It
    * runs before user meta events and must never invoke script or mutate the
    * emitter. The owner keeps the borrowed context alive with the emitter. */
@@ -164,6 +170,11 @@ SCR_TL double scr_emitter_default_max = 10; /* EventEmitter.defaultMaxListeners 
 /* Post-registration hook (scr_runtime.h): the stream unit's flow kick.
  * NULL in stream-free builds — behavior byte-identical. */
 SCR_TL void (*scr_emitter_on_hook)(ScrEmitter *em, ScrStr *name) = NULL;
+
+/* The worker unit's NodeEventTarget accessor (scr_events_emitter.h). It
+ * lives here rather than in scr_event_target.c because a worker-only build
+ * links this unit without the EventTarget one. */
+SCR_TL const ScrNodeEventTargetOps *scr_node_event_target_ops = NULL;
 
 /* ── entries and buckets ──────────────────────────────────────────────── */
 
@@ -188,6 +199,10 @@ static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
   }
   return em->reg;
 }
+
+/* NodeEventTarget semantics for a registry: no meta events on add/remove.
+ * Emit itself is already raw through scr_emitter_emit_flex. */
+void scr_emitter_mark_plain(ScrEmitter *em) { scr_ee_reg_ensure(em)->plain = true; }
 
 void scr_emitter_observe(ScrEmitter *em,
                         void (*observe)(void *, const ScrStr *, bool), void *context) {
@@ -503,6 +518,7 @@ SCR_TL const ScrEeDynOps *scr_ee_dyn = NULL;
  * checked-dynamic functions also receive the listener Node passes second
  * when it was itself registered dynamically (`fn`, borrowed, may be NULL). */
 static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name, const ScrDyn *fn) {
+  if (!em->reg || em->reg->plain) return;
   if (!scr_ee_has(em->reg, meta)) return;
   /* Node passes the affected event's name VALUE, and a symbol-keyed event's
    * name is a symbol — which the typed one-string tuple cannot carry. */
@@ -1031,6 +1047,23 @@ ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
   return scr_emitter_on_flex_this(em, name, cb, once, prepend, NULL);
 }
 
+/* NodeEventTarget keeps the type's listeners in a Set of the ORIGINAL
+ * functions — a once() registration joins the same Set, so either spelling
+ * of an already-registered listener is a no-op (Node's #addListener returns
+ * early on `listeners.has(listener)`). Functions compare by the closure
+ * they run — one per function object. */
+bool scr_emitter_has_listener_fn(ScrEmitter *em, const ScrStr *name, const ScrDyn *fn) {
+  if (!em->reg || fn->kind != SCR_DYN_FUNC) return false;
+  const ScrEeBucket *b = scr_ee_bucket_of(em->reg, name);
+  if (!b) return false;
+  for (size_t i = 0; i < b->n; i++) {
+    const ScrEeEntry *e = b->ls[i];
+    if (e->flex_cb == fn->v.fn.clo) return true;
+    if (e->orig == fn->v.fn.clo) return true;
+  }
+  return false;
+}
+
 /* on/once/prepend* through an untyped value, under a name the program never
  * fixes a tuple for: the thunk, and under 'error' and the meta events, whose
  * tuples typed code and the runtime emit with, a runtime-built typed adapter
@@ -1177,7 +1210,10 @@ static void scr_ee_unadd(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (!b) return;
   for (size_t i = b->n; i-- > 0;) {
-    if (b->ls[i]->cb == cb) {
+    /* The entry's IDENTITY: a registration made with a checked-dynamic
+     * listener holds it as flex_cb (its cb is NULL), one behind an adapter
+     * as orig. */
+    if (scr_ee_entry_fn(b->ls[i]) == cb) {
       scr_ee_remove_at_quiet(em, b, i);
       return;
     }
@@ -1234,10 +1270,19 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
     return;
   }
   if (!meta) {
-    for (size_t i = 0; i < b->n; i++) scr_ee_entry_unref(b->ls[i]);
+    /* Unlink before releasing (scr_cycle.c): releasing a listener can
+     * release what it captured, buffer a cycle candidate and run a
+     * collection, and the collection traces this registry. It must not
+     * find entries whose closures were already given up. */
+    ScrEeEntry **ls = b->ls;
+    size_t n = b->n;
+    b->ls = NULL;
     b->n = 0;
+    b->cap = 0;
     scr_ee_observe(em, b->name, false);
     scr_ee_bucket_drop(em->reg, b);
+    for (size_t i = 0; i < n; i++) scr_ee_entry_unref(ls[i]);
+    free(ls);
     return;
   }
   /* Node snapshots the list and removeListener()s each entry from the
@@ -1384,10 +1429,20 @@ struct ScrEeMessage {
   ScrDyn *decoded;
 };
 
-static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
-                             ScrDyn *const *flex_args, size_t flex_argc, ScrEeMessage *message) {
+static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                     ScrDyn *const *flex_args, size_t flex_argc);
+
+/* The dispatch pass, compiled once per value of `checked_first` (the two
+ * functions below). `checked_first` is the emit of a value that the typed
+ * tuple only stands for (scr_emitter_emit_error_carried): a typed listener
+ * with a checked-dynamic call is called through it with the value, and the
+ * typed tuple reaches only listeners that have no such call. */
+static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
+    ScrEmitter *em, ScrStr *name, va_list *ap_template, ScrDyn *const *flex_args, size_t flex_argc,
+    ScrEeMessage *message, const bool checked_first) {
   if (name->len == 5 && memcmp(name->data, "error", 5) == 0) {
-    scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
+    if (checked_first) scr_ee_emit_carried_core(em, SCR_EE_ERROR_MONITOR, ap_template, flex_args, flex_argc);
+    else scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
     if (scr_exc_pending()) return true;
   }
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
@@ -1452,7 +1507,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
     if (flex_args && e->flex_invoke) {
       ScrDyn *answer = e->flex_invoke(e->flex_cb, flex_args, flex_argc);
       scr_dyn_release(answer); /* EventEmitter ignores callback results. */
-    } else if (ap_template && e->inv) {
+    } else if (ap_template && e->inv && !(checked_first && e->fallback_invoke)) {
       va_list ap;
       va_copy(ap, *ap_template);
       e->inv(e->cb, ap);
@@ -1472,6 +1527,16 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
   }
   if (snap != small) free(snap);
   return true;
+}
+
+static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                             ScrDyn *const *flex_args, size_t flex_argc, ScrEeMessage *message) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, message, false);
+}
+
+static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                     ScrDyn *const *flex_args, size_t flex_argc) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, NULL, true);
 }
 
 static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...) {
@@ -1735,6 +1800,31 @@ bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
     return false;
   }
   return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+}
+
+static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...) {
+  va_list ap;
+  va_start(ap, argc);
+  bool had = scr_ee_emit_carried_core(em, name, &ap, args, argc);
+  va_end(ap);
+  return had;
+}
+
+/* emit('error') of a reason that is not an Error, from a unit that holds
+ * it as one (a stream): `err` only stands for the value `args[0]` inside
+ * the runtime. Listeners registered through untyped values and typed
+ * listeners receive the value, a typed listener through its checked-dynamic
+ * call (a parameter that does not admit the value fails its conversion by
+ * name; no listener is handed an Error the program never made). The
+ * runtime's own listeners, which have no such call, receive `err`. With no
+ * 'error' listener the value is unhandled by the untyped emit itself (the
+ * error monitor, then ERR_UNHANDLED_ERROR), so that path stays the one
+ * function it is for programs that never reach this entry. Borrows err and
+ * args. */
+bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                    ScrDyn *const *args, size_t argc) {
+  if (!scr_ee_has(em->reg, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
+  return scr_ee_emit_carried_va(em, name, args, argc, err);
 }
 
 /* ── introspection ────────────────────────────────────────────────────── */

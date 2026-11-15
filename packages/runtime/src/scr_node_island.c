@@ -33,9 +33,12 @@
  *
  * Process state is shared, not mirrored: island listeners for signals and
  * 'exit' join the runtime's registries (scr_events.c) at their position,
- * so the runtime keeps owning every signal disposition; the exit code
- * island code leaves in process.exitCode becomes the program's when the
- * loop ends; Node's process.exit runs the runtime's exit sequence.
+ * so the runtime keeps owning every signal disposition; the listeners of
+ * the events Node raises itself (uncaughtException, unhandledRejection,
+ * warning) are all on Node's `process`, native ones included, and
+ * process.exitCode is Node's property, which native code reads and writes
+ * (scr_node_island_events.c); Node's process.exit runs the runtime's exit
+ * sequence.
  *
  * Node's stack. V8 fixes an isolate's stack limit where it is created, and
  * calls into Node can come from any async fiber (512 KB stacks without a
@@ -54,6 +57,7 @@
 #include "scr_node_island.h"
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,8 +71,11 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <time.h>
 #include <ucontext.h>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/auxv.h>
@@ -127,12 +134,18 @@ __attribute__((used)) const char *__lsan_default_options(void) { return "print_s
 static const char *ni_libnode = NULL;      /* recorded pack directory */
 static const char *ni_node_version = NULL; /* recorded Node version */
 static const ScrNodeBridge *ni_bridge = NULL;
+/* Node's start completed on the island's thread (ni_start's tail). */
+static atomic_bool ni_started;
 static char ni_dir[4096];
 static uint32_t ni_next_id = 1;
 static NiPending *ni_pending = NULL;
 static size_t ni_npending = 0, ni_pending_cap = 0;
 
 void scr_node_island_install(const char *libnode, const char *node_version) {
+  /* The entry of every script thread records the same constants. The
+   * island's thread did before any other thread existed, and it reads them
+   * while a worker starts: a worker's entry writes nothing. */
+  if (!scr_ni_main_thread()) return;
   ni_libnode = libnode;
   ni_node_version = node_version;
 }
@@ -230,6 +243,8 @@ static const char *ni_pack_dir(void) {
  *   $XDG_CACHE_HOME/scriptc/node-islands/<manifest digest>/ (or
  *   ~/.cache/...), checked on every start; when that directory cannot be
  *   used, into a private directory under $TMPDIR removed at exit.
+ * Node's compile cache for the tree sits beside it in the same directory
+ * (see "Node's compile cache" below).
  * Directories are created 0700 and owned by the process's user; no link is
  * followed below the cache directory. A process with elevated privileges
  * refuses the tree, as it refuses SCRIPTC_LIBNODE. A call names its module
@@ -250,14 +265,15 @@ static const char *ni_pack_dir(void) {
  *   asks for scr_ni_tree_repair: every file the manifest lists and the
  *   tree lacks is written back from the executable's bytes, one line on
  *   stderr says so, and a module load is repeated once.
- * - A file someone modified is used as it is, as a file under node_modules
- *   is. Code running as the same user can replace the executable too, so
- *   no check here would be a boundary against it.
- * - Beside the executable the build writes the tree's name next to the
- *   modules directory (`<modules>.tree`). A start compares it; when it is
- *   absent or names another tree (a modules directory left from another
- *   build), the content is hashed against the manifest and a tree that
- *   differs is refused. */
+ * - A file someone modified in the installed tree is used as it is, as a
+ *   file under node_modules is. The tree is in the user's own private
+ *   directory, and code running as that user can replace the executable
+ *   too, so no check here would be a boundary against it.
+ * - Beside the executable the modules are files the program was deployed
+ *   with, which others than the user running it may be able to write. A
+ *   start hashes their content against the manifest every time and refuses
+ *   a tree that differs: nothing beside the modules can vouch for them in
+ *   place of their bytes. */
 static const char *ni_manifest = NULL;
 static size_t ni_manifest_len = 0;
 static const unsigned char *ni_modules = NULL;
@@ -270,6 +286,7 @@ static char ni_root[4096] = "/";
 void scr_node_island_install_modules(const char *manifest, size_t manifest_len,
                                      const unsigned char *data, size_t data_len,
                                      const char *location) {
+  if (!scr_ni_main_thread()) return; /* as scr_node_island_install */
   ni_manifest = manifest;
   ni_manifest_len = manifest_len;
   ni_modules = data;
@@ -761,7 +778,7 @@ static bool ni_links_match(int rootfd) {
 
 /* Whether the tree below `rootfd` holds exactly the manifest's files (by
  * size and digest) and links: the check of a tree the build placed beside
- * the executable when its name file does not vouch for it. */
+ * the executable, on every start. */
 static bool ni_tree_matches(int rootfd) {
   if (ni_tracing())
     fprintf(stderr, "[node-islands] hashing the module tree (%zu files)\n", ni_nfiles);
@@ -892,44 +909,45 @@ static bool ni_set_root(const char *a, const char *b, const char *c) {
  * runtime may repair (scr_ni_tree_repair). */
 static bool ni_root_installed = false;
 
-/* Whether the file the build wrote next to a beside tree (`<modules>.tree`)
- * names this program's tree. */
-static bool ni_beside_named(void) {
-  char path[4200];
-  int n = snprintf(path, sizeof path, "%s.tree", ni_root);
-  if (n <= 0 || (size_t)n >= sizeof path) return false;
-  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd < 0) return false;
-  char name[66];
-  ssize_t got = read(fd, name, sizeof name);
-  close(fd);
-  return got >= 64 && memcmp(name, ni_tree_name, 64) == 0 && (got == 64 || name[64] == '\n');
-}
-
-/* The tree in the cache directory, extracted there when absent. */
-static bool ni_cached_root(const char *digest) {
+/* The per-user directory the trees are installed in,
+ * $XDG_CACHE_HOME/scriptc/node-islands (or ~/.cache/scriptc/node-islands),
+ * created 0700 when absent: its descriptor, with the cache home's path in
+ * `base`. -1 when there is no home, or when `scriptc` or `node-islands` is
+ * reached through a link, belongs to another user or can be written by
+ * anyone else. Everything the runtime keeps for a program's island lives in
+ * this one directory (the tree, and Node's compile cache for it). */
+static int ni_islands_dir(char base[4096]) {
   const char *xdg = getenv("XDG_CACHE_HOME");
   const char *home = getenv("HOME");
-  char base[4096];
   int n;
   if (xdg != NULL && xdg[0] == '/')
-    n = snprintf(base, sizeof base, "%s", xdg);
+    n = snprintf(base, 4096, "%s", xdg);
   else if (home != NULL && home[0] == '/')
-    n = snprintf(base, sizeof base, "%s/.cache", home);
+    n = snprintf(base, 4096, "%s/.cache", home);
   else
-    return false;
-  if (n <= 0 || (size_t)n >= sizeof base) return false;
+    return -1;
+  if (n <= 0 || (size_t)n >= 4096) return -1;
   (void)mkdir(base, 0700);
   int basefd = open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (basefd < 0) return false;
+  if (basefd < 0) return -1;
   int scriptc = ni_dir_at(basefd, "scriptc", true);
   close(basefd);
   int islands = ni_private_dir(scriptc) ? ni_dir_at(scriptc, "node-islands", true) : -1;
   if (scriptc >= 0) close(scriptc);
   if (!ni_private_dir(islands)) {
     if (islands >= 0) close(islands);
-    return false;
+    return -1;
   }
+  return islands;
+}
+
+static void ni_compile_cache_open(int islands, const char *base);
+
+/* The tree in the cache directory, extracted there when absent. */
+static bool ni_cached_root(const char *digest) {
+  char base[4096];
+  int islands = ni_islands_dir(base);
+  if (islands < 0) return false;
   bool ok = false;
   int tree = ni_dir_at(islands, digest, false);
   if (tree < 0 && errno == ENOENT) {
@@ -956,13 +974,16 @@ static bool ni_cached_root(const char *digest) {
     ni_root_installed = ok;
   }
   if (tree >= 0) close(tree);
+  if (ok) ni_compile_cache_open(islands, base);
   close(islands);
   return ok;
 }
 
 /* ── repair ───────────────────────────────────────────────────────────── */
 
-static size_t ni_repaired = 0;
+/* Written on the island's thread; a worker thread reads it around its own
+ * synchronous call (K4), so the count is atomic. */
+static atomic_size_t ni_repaired = 0;
 
 size_t scr_ni_tree_repairs(void) { return ni_repaired; }
 
@@ -1054,6 +1075,34 @@ void scr_ni_tree_repair(void) {
   fflush(stderr);
 }
 
+static void ni_on_node_stack(void (*job)(void *), void *arg);
+
+typedef struct {
+  const char *code, *message, *stack;
+  size_t code_len, message_len, stack_len;
+} NiLostFile;
+
+static void ni_lost_file_job(void *p) {
+  const NiLostFile *e = p;
+  if (e->code != NULL && scr_ni_missing_file_code(e->code, e->code_len) &&
+      ((e->message != NULL && scr_ni_tree_named(e->message, e->message_len)) ||
+       (e->stack != NULL && scr_ni_tree_named(e->stack, e->stack_len))))
+    scr_ni_tree_repair();
+}
+
+/* An island error as Node reported it (a text is NULL when absent): when
+ * its code says Node did not find a file and its message or stack names
+ * the installed tree, what the tree lost is put back. The tree's state
+ * (the resolved root, the once-per-process repair, its count) belongs to
+ * the island's thread, so an error read on another thread is judged there
+ * (K4): the reader waits for the answer like any other island operation. */
+void scr_ni_tree_lost_file(const char *code, size_t code_len, const char *message,
+                           size_t message_len, const char *stack, size_t stack_len) {
+  NiLostFile e = {code, message, stack, code_len, message_len, stack_len};
+  if (scr_ni_main_thread()) ni_lost_file_job(&e);
+  else ni_on_node_stack(ni_lost_file_job, &e);
+}
+
 /* The tree in a private directory of this run, removed at exit. */
 static bool ni_temporary_root(void) {
   const char *tmp = getenv("TMPDIR");
@@ -1066,6 +1115,126 @@ static bool ni_temporary_root(void) {
   bool ok = ni_private_dir(fd) && ni_extract(fd);
   if (fd >= 0) close(fd);
   return ok && ni_set_root(ni_temp_root, "", "");
+}
+
+/* ── Node's compile cache ─────────────────────────────────────────────── */
+
+/* Node keeps the bytecode V8 compiled for each module it loads in a
+ * directory (module.enableCompileCache), named by the module's path and
+ * checked against its source, so a later start compiles nothing an earlier
+ * one compiled. Every program with an island module tree gets one beside
+ * the tree, named by it: <islands directory>/<tree name>.compile-cache. A
+ * rebuilt program has another tree, another path for every module and
+ * another directory, so it never reads an older build's entries, and a
+ * tree's cache can be removed with the tree.
+ *
+ * Node checks nothing about the directory: it creates what is missing with
+ * mode 0777 and loads any entry it finds whose CRC-32 sums agree, and an
+ * entry is code. The runtime therefore vouches for the directory it hands
+ * to Node. It is created 0700 inside the islands directory (the user's own,
+ * writable by no one else, never reached through a link: ni_islands_dir),
+ * opened without following a link, and used only when it is a directory
+ * owned by the process's user that no one else can write. Anything else
+ * leaves the island without a cache, silently: the cache changes how fast
+ * a module loads, never what it does. Node itself is as quiet about a
+ * directory it cannot write (a read-only file system) and about an entry
+ * that does not match its source, which it compiles again and replaces.
+ *
+ * The runtime makes no cache
+ * - when NODE_COMPILE_CACHE names a directory (the user's own choice, which
+ *   Node enables by itself) or NODE_DISABLE_COMPILE_CACHE is set;
+ * - for the private $TMPDIR copy of the tree that one run extracts, or for
+ *   a program that loads only built-in modules;
+ * - when the process's real and effective user or group differ (Node names
+ *   its entries by the real user; the checks above are for the effective
+ *   one), as for a process with elevated privileges, which gets no tree;
+ * - while the directory's file system has no free space: Node leaves an
+ *   empty temporary file behind for every entry it fails to write.
+ * A program whose island never starts runs none of this: no directory is
+ * made and nothing is read.
+ *
+ * Node writes the entries of newly compiled modules when its environment
+ * ends. A normal return ends it (ni_stop_atexit), and so does process.exit()
+ * called by island code; process.exit() from native code ends the process
+ * with Node still running, so that exit writes them first
+ * (ni_process_exit), after the 'exit' listeners and the program's output.
+ * The bootstrap also writes them once, a moment after Node started, for a
+ * program that only ever ends by a signal (scr_node_island_host.cjs). A
+ * write with nothing new touches no file.
+ *
+ * SCRIPTC_NODE_ISLANDS_TRACE=compile-cache prints the decision and each
+ * write on stderr. */
+static char ni_compile_cache[4352] = "";
+/* Whether Node has a compile cache: the runtime's or NODE_COMPILE_CACHE's. */
+static bool ni_compile_cache_on = false;
+
+static bool ni_cache_tracing(void) {
+  static int tracing = -1;
+  if (tracing < 0) {
+    const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+    tracing = trace != NULL && strstr(trace, "compile-cache") != NULL;
+  }
+  return tracing == 1;
+}
+
+/* The island runs without a compile cache of the runtime's. */
+static void ni_compile_cache_none(const char *why) {
+  if (ni_cache_tracing()) fprintf(stderr, "[node-islands] compile cache: none (%s)\n", why);
+}
+
+/* Decides the island's compile cache once its tree is in place. `islands`
+ * is the open islands directory with the cache home's path in `base`, or -1
+ * when the tree is not installed there (beside the executable): the
+ * directory is then opened only if the runtime's own cache is wanted. */
+static void ni_compile_cache_open(int islands, const char *base) {
+  const char *user = getenv("NODE_COMPILE_CACHE");
+  if (getenv("NODE_DISABLE_COMPILE_CACHE") != NULL) {
+    ni_compile_cache_none("NODE_DISABLE_COMPILE_CACHE is set");
+    return;
+  }
+  if (getuid() != geteuid() || getgid() != getegid()) {
+    ni_compile_cache_none("the process's real and effective user or group differ");
+    return;
+  }
+  if (user != NULL && user[0] != '\0') {
+    ni_compile_cache_on = true;
+    if (ni_cache_tracing()) fprintf(stderr, "[node-islands] compile cache: NODE_COMPILE_CACHE's\n");
+    return;
+  }
+  char home[4096];
+  int opened = islands < 0 ? ni_islands_dir(home) : -1;
+  if (islands < 0) {
+    islands = opened;
+    base = home;
+  }
+  int n = islands < 0 ? 0
+                      : snprintf(ni_compile_cache, sizeof ni_compile_cache,
+                                 "%s/scriptc/node-islands/%s.compile-cache", base, ni_tree_name);
+  if (n <= 0 || (size_t)n >= sizeof ni_compile_cache) {
+    if (opened >= 0) close(opened);
+    ni_compile_cache[0] = '\0';
+    ni_compile_cache_none("this user has no private cache directory");
+    return;
+  }
+  int fd = ni_dir_at(islands, strrchr(ni_compile_cache, '/') + 1, true);
+  bool mine = ni_private_dir(fd);
+  /* Node leaves an empty temporary file behind for every entry it fails to
+   * write, at every launch: no cache while there is no room for one. */
+  struct statvfs room;
+  bool full = mine && fstatvfs(fd, &room) == 0 && room.f_bavail == 0;
+  if (fd >= 0) close(fd);
+  if (opened >= 0) close(opened);
+  ni_compile_cache_on = mine && !full;
+  if (ni_cache_tracing()) {
+    if (ni_compile_cache_on)
+      fprintf(stderr, "[node-islands] compile cache: %s\n", ni_compile_cache);
+    else
+      fprintf(stderr, "[node-islands] compile cache: none (%s %s)\n", ni_compile_cache,
+              full ? "is on a file system with no free space"
+                   : "cannot be made, or is not a directory of this user's own that no one else "
+                     "can write");
+  }
+  if (!ni_compile_cache_on) ni_compile_cache[0] = '\0';
 }
 
 /* Makes the tree available and sets ni_root; fatal when it cannot. */
@@ -1088,24 +1257,27 @@ static void ni_open_modules(void) {
     if (!absolute || n <= 0 || (size_t)n >= sizeof dir ||
         !ni_set_root(dir, ni_modules_location + sizeof origin - 1, ""))
       ni_fatal("scriptc: cannot locate this program's Node island modules\n");
+    /* The content decides, on every start (see "What a start does"). */
     int fd = open(ni_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    bool ok = fd >= 0 && ni_beside_named();
-    if (fd >= 0 && !ok) {
-      /* No name beside the modules, or another tree's: the content decides. */
+    bool ok = false;
+    if (fd >= 0) {
       ni_manifest_ready();
       ok = ni_tree_matches(fd);
+      close(fd);
     }
-    if (fd >= 0) close(fd);
     if (!ok) {
       char message[8192];
       snprintf(message, sizeof message,
                "scriptc: the Node island modules at %s do not match this program\n", ni_root);
       ni_fatal(message);
     }
+    ni_compile_cache_open(-1, NULL);
     return;
   }
-  if (!ni_cached_root(ni_tree_name) && !ni_temporary_root())
+  if (ni_cached_root(ni_tree_name)) return;
+  if (!ni_temporary_root())
     ni_fatal("scriptc: cannot write this program's Node island modules to a private directory\n");
+  ni_compile_cache_none("the module tree is this run's own temporary copy");
 }
 
 /* A path inside the tree: `<root>/<relative path>`. */
@@ -1126,16 +1298,11 @@ static char *ni_caller_path(const ScrStr *relative) {
   return ni_tree_path(relative->data, relative->len);
 }
 
-/* The bootstrap: the tree root for the host's resolution guard, then the
- * host script. +1 malloc'd. */
-static char *ni_bootstrap(void) {
-  size_t host = strlen(scr_node_island_host_js);
-  size_t cap = 64 + strlen(ni_root) * 6 + host;
-  char *out = malloc(cap);
-  if (out == NULL) ni_oom();
-  size_t n = (size_t)snprintf(out, cap, "globalThis.__scriptcNodeIslandRoot = \"");
-  for (const char *p = ni_root; *p != '\0'; p++) {
-    unsigned char c = (unsigned char)*p;
+/* Appends `text` to the bootstrap as the body of a JavaScript string
+ * literal. The caller reserved six bytes per input byte. */
+static size_t ni_js_string(char *out, size_t cap, size_t n, const char *text, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)text[i];
     if (c == '"' || c == '\\')
       n += (size_t)snprintf(out + n, cap - n, "\\%c", c);
     else if (c < 0x20)
@@ -1143,7 +1310,43 @@ static char *ni_bootstrap(void) {
     else
       out[n++] = (char)c;
   }
-  n += (size_t)snprintf(out + n, cap - n, "\";\n");
+  return n;
+}
+
+/* The bootstrap: the tree root for the host's resolution guard and the
+ * program's process state Node cannot read for itself (the command line as
+ * process.argv has it, scr_process_argv's ["scriptc", argv[0], ...], and
+ * whether the exit sequence already began), the compile cache's directory
+ * when the runtime made one, then the host script. +1 malloc'd. */
+static char *ni_bootstrap(void) {
+  size_t host = strlen(scr_node_island_host_js);
+  int argc = scr_lib_arg_count();
+  size_t argv_bytes = 0;
+  /* A malformed byte becomes U+FFFD (three bytes), and an escaped byte six. */
+  for (int i = 0; i < argc; i++) argv_bytes += strlen(scr_lib_arg(i)) * 18 + 4;
+  size_t cap = 256 + (strlen(ni_root) + strlen(ni_compile_cache)) * 6 + argv_bytes + host;
+  char *out = malloc(cap);
+  if (out == NULL) ni_oom();
+  size_t n = (size_t)snprintf(out, cap, "globalThis.__scriptcNodeIslandRoot = \"");
+  n = ni_js_string(out, cap, n, ni_root, strlen(ni_root));
+  n += (size_t)snprintf(out + n, cap - n,
+                        "\";\nglobalThis.__scriptcNodeIslandProcess = {exiting: %s, argv: [\"scriptc\",",
+                        scr_process_exiting() ? "true" : "false");
+  for (int i = 0; i < argc; i++) {
+    const char *raw = scr_lib_arg(i);
+    ScrStr *arg = scr_str_from_utf8_lossy((const uint8_t *)raw, strlen(raw));
+    out[n++] = '"';
+    n = ni_js_string(out, cap, n, arg->data, arg->len);
+    out[n++] = '"';
+    out[n++] = ',';
+    scr_str_release(arg);
+  }
+  n += (size_t)snprintf(out + n, cap - n, "]};\n");
+  if (ni_compile_cache[0] != '\0') {
+    n += (size_t)snprintf(out + n, cap - n, "globalThis.__scriptcNodeIslandCompileCache = \"");
+    n = ni_js_string(out, cap, n, ni_compile_cache, strlen(ni_compile_cache));
+    n += (size_t)snprintf(out + n, cap - n, "\";\n");
+  }
   memcpy(out + n, scr_node_island_host_js, host + 1);
   return out;
 }
@@ -1167,9 +1370,10 @@ bool scr_ni_missing_file_code(const char *code, size_t len) {
          (len == 6 && memcmp(code, "ENOENT", 6) == 0);
 }
 
-/* The last "T" outcome was a call whose module failed to load (the host
- * marks it: its function did not run). */
-static bool ni_load_failed = false;
+/* The last "T" outcome this thread read was a call whose module failed to
+ * load (the host marks it: its function did not run). Per thread: a worker
+ * thread reads the outcome of its own synchronous call (K4). */
+static SCR_TL bool ni_load_failed = false;
 
 /* Leaves the copied error of a "T" outcome pending. */
 static void ni_throw(const char *json, size_t len) {
@@ -1189,10 +1393,9 @@ static void ni_throw(const char *json, size_t len) {
      * lost is put back, for a repeat of this call when its module had not
      * loaded yet, and for every later one. */
     if (code != NULL && code->kind == SCR_DYN_STR && message != NULL &&
-        message->kind == SCR_DYN_STR &&
-        scr_ni_missing_file_code(code->v.str->data, code->v.str->len) &&
-        scr_ni_tree_named(message->v.str->data, message->v.str->len))
-      scr_ni_tree_repair();
+        message->kind == SCR_DYN_STR)
+      scr_ni_tree_lost_file(code->v.str->data, code->v.str->len, message->v.str->data,
+                            message->v.str->len, NULL, 0);
     ScrStr *empty = scr_str_new("", 0);
     scr_throw_node_coded(kind != NULL && kind->kind == SCR_DYN_NUM ? kind->v.num : 0,
                          code != NULL && code->kind == SCR_DYN_STR ? code->v.str : empty,
@@ -1262,7 +1465,12 @@ static void ni_settle(uint32_t id, const char *outcome, size_t len) {
   }
 }
 
+/* Node's own process.exit is under way (it ran Node's exit work, the
+ * compile cache's write included), or Node has stopped. */
+static bool ni_node_ending = false;
+
 static void ni_exit(int code) {
+  ni_node_ending = true;
   scr_process_exit((double)code);
   /* A code process.exit refuses: exit 1 rather than continue half-way. */
   ni_fatal("");
@@ -1315,10 +1523,228 @@ static void ni_main_stack(void) {
 }
 
 static void ni_on_node_stack(void (*job)(void *), void *arg);
+static void ni_start(void);
 static const ScrNodeBridgeHost ni_host;
 #if defined(__APPLE__)
 static void ni_pthread_hold(bool hold);
 #endif
+
+/* ── island operations on other threads ────────────────────────────────
+ * Node runs on the thread that started it: its isolate is entered under
+ * the Locker that thread holds, its stack is process-wide, and the island
+ * tables and the bridge's own state are not thread-safe. A native worker
+ * (or any other thread) that reaches island code therefore posts the
+ * operation to the island's thread — the main thread — and blocks until it
+ * has run there, exactly as Node's own workers reach the main thread.
+ * Every operation already funnels through ni_on_node_stack, so that one
+ * seam is where a foreign thread is diverted.
+ *
+ * The island's thread drains the posted operations from both loop shapes:
+ * its own runtime loop before Node starts, and Node's loop afterwards
+ * (scr_async.c asks scr_ni_remote_pending/pollfd and calls
+ * scr_ni_remote_dispatch). The wake pipe ends a sleep with no timer due,
+ * and the pending count keeps a loop that only waits for other work from
+ * stalling a caller. */
+typedef struct NiRoute {
+  struct NiRoute *next;
+  void (*job)(void *);
+  void *arg;
+  pthread_cond_t cond;
+  bool taken; /* the island's thread took it off the queue: it runs to its end */
+  bool done;
+} NiRoute;
+
+/* The operation this thread posted last did not run: the thread was asked
+ * to stop before the island's thread took it (ni_route). */
+SCR_TL bool scr_ni_unserved = false;
+
+static pthread_mutex_t ni_route_lock = PTHREAD_MUTEX_INITIALIZER;
+static NiRoute *ni_route_head = NULL, *ni_route_tail = NULL;
+static atomic_size_t ni_route_pending;
+static int ni_route_wake[2] = {-1, -1};
+
+static void ni_route_noop(void *p) { (void)p; }
+
+/* (under ni_route_lock) */
+static void ni_route_open(void) {
+  if (ni_route_wake[0] >= 0) return;
+  if (pipe(ni_route_wake) != 0) {
+    ni_route_wake[0] = ni_route_wake[1] = -1;
+    return;
+  }
+  for (int i = 0; i < 2; i++) {
+    (void)fcntl(ni_route_wake[i], F_SETFD, FD_CLOEXEC);
+    int flags = fcntl(ni_route_wake[i], F_GETFL);
+    if (flags >= 0) (void)fcntl(ni_route_wake[i], F_SETFL, flags | O_NONBLOCK);
+  }
+}
+
+/* Runs `job` on the island's thread and returns once it has.
+ *
+ * A thread that is asked to stop does not wait for an operation the
+ * island's thread has not taken. Its owner asked (worker.terminate()), or
+ * the process is ending: the main thread then joins its workers and serves
+ * nothing any more, so a worker that waited here for its answer was never
+ * joined (a worker without a reference that was still calling the island
+ * when the main thread's loop ran dry kept the process from ending). The
+ * wait therefore looks at the stop request every few milliseconds; when it
+ * is set and the operation is still queued, the operation is withdrawn, the
+ * thread's termination is made pending as at any checkpoint, and the
+ * caller gets no answer (scr_ni_unserved; its out-values keep what it
+ * initialized them to). An operation already taken runs to its end. */
+#define NI_ROUTE_STOP_POLL_NS 5000000L /* 5 ms */
+/* Only a worker thread posts, and only an executable with workers has one. */
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+#define NI_STOP_ASKED() (!scr_context_quiet())
+#define NI_STOP_PENDING() ((void)scr_context_checkpoint())
+#else
+#define NI_STOP_ASKED() false
+#define NI_STOP_PENDING() ((void)0)
+#endif
+
+static void ni_route(void (*job)(void *), void *arg) {
+  scr_ni_unserved = false;
+  if (NI_STOP_ASKED()) {
+    scr_ni_unserved = true;
+    NI_STOP_PENDING();
+    return;
+  }
+  NiRoute request = {NULL, job, arg, {0}, false, false};
+  if (pthread_cond_init(&request.cond, NULL) != 0) ni_oom();
+  pthread_mutex_lock(&ni_route_lock);
+  ni_route_open();
+  if (ni_route_tail != NULL) ni_route_tail->next = &request;
+  else ni_route_head = &request;
+  ni_route_tail = &request;
+  atomic_fetch_add_explicit(&ni_route_pending, 1, memory_order_release);
+  if (ni_route_wake[1] >= 0) {
+    char byte = 1;
+    /* A full pipe already holds a wake for the operations queued before
+     * this one. */
+    (void)write(ni_route_wake[1], &byte, 1);
+  }
+  while (!request.done) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += NI_ROUTE_STOP_POLL_NS;
+    if (until.tv_nsec >= 1000000000L) {
+      until.tv_sec++;
+      until.tv_nsec -= 1000000000L;
+    }
+    int waited = pthread_cond_timedwait(&request.cond, &ni_route_lock, &until);
+    if (waited != ETIMEDOUT || request.done || request.taken || !NI_STOP_ASKED()) continue;
+    /* Asked to stop, and still queued: withdrawn. */
+    NiRoute *before = NULL;
+    for (NiRoute *at = ni_route_head; at != NULL && at != &request; at = at->next) before = at;
+    if (before != NULL) before->next = request.next;
+    else ni_route_head = request.next;
+    if (ni_route_tail == &request) ni_route_tail = before;
+    atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+    scr_ni_unserved = true;
+    break;
+  }
+  pthread_mutex_unlock(&ni_route_lock);
+  pthread_cond_destroy(&request.cond);
+  if (scr_ni_unserved) NI_STOP_PENDING();
+}
+
+#if SCR_NI_THREADS
+static SCR_TL bool ni_route_serving = false;
+
+bool scr_ni_remote_pending(void) {
+  /* Posted operations are the island's thread's work: a worker thread's
+   * loop has none of its own to run. */
+  if (!scr_ni_main_thread()) return false;
+  return atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0;
+}
+
+int scr_ni_remote_pollfd(void) {
+  /* The wake fd belongs to the island's thread: another thread's loop has
+   * no posted work of its own to wake for. */
+  if (!scr_ni_main_thread()) return -1;
+  pthread_mutex_lock(&ni_route_lock);
+  ni_route_open();
+  int fd = ni_route_wake[0];
+  pthread_mutex_unlock(&ni_route_lock);
+  return fd;
+}
+
+/* How the island's thread shares itself with the threads that post to it.
+ * A thread it has just answered is no longer blocked, and in a run of
+ * island operations it asks again within microseconds. Leaving as soon as
+ * the queue is empty would give each such thread one operation per turn of
+ * this thread's loop: beside a main thread whose own work fills its turns,
+ * a worker's operations then take a main-thread turn each (measured: 2.8 ms
+ * an operation, and the repro of the pi crash, 300,000 calls from a worker
+ * beside a busy main thread, did not end within a minute). So the dispatch
+ * waits a moment for the next operation (NI_ROUTE_GAP_NS) and goes on
+ * serving, for at most as long as this thread spent on its own work since
+ * the dispatch before (an equal share, between NI_ROUTE_SLICE_MIN_NS and
+ * NI_ROUTE_SLICE_MAX_NS). A dispatch that finds nothing posted returns at
+ * once and reads no clock. */
+#define NI_ROUTE_GAP_NS UINT64_C(100000)         /* 100 us */
+#define NI_ROUTE_SLICE_MIN_NS UINT64_C(1000000)  /* 1 ms */
+#define NI_ROUTE_SLICE_MAX_NS UINT64_C(20000000) /* 20 ms */
+/* When the last dispatch that served an operation ended (0: none has). */
+static uint64_t ni_route_left_at = 0;
+
+/* The island's thread: starts Node if it has not started yet, then runs
+ * the posted operations (see the sharing rule above). Never re-entered (a
+ * served operation may call back into the runtime, whose loop then asks
+ * again). */
+void scr_ni_remote_dispatch(void) {
+  if (!scr_ni_main_thread() || ni_route_serving) return;
+  ni_route_serving = true;
+  int fd = scr_ni_remote_pollfd();
+  if (fd >= 0) {
+    char bytes[64];
+    while (read(fd, bytes, sizeof bytes) > 0) {
+    }
+  }
+  uint64_t slice_end = 0, gap_end = 0;
+  for (;;) {
+    NiRoute *request = NULL;
+    if (atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0) {
+      pthread_mutex_lock(&ni_route_lock);
+      request = ni_route_head;
+      if (request != NULL) {
+        ni_route_head = request->next;
+        if (ni_route_head == NULL) ni_route_tail = NULL;
+        request->taken = true;
+        atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+      }
+      pthread_mutex_unlock(&ni_route_lock);
+    }
+    if (request == NULL) {
+      if (slice_end == 0) break; /* nothing was posted */
+      /* The thread just answered may be about to ask again. */
+      uint64_t now = scr_hrtime_ns();
+      if (now >= gap_end || now >= slice_end) break;
+      continue;
+    }
+    if (slice_end == 0) {
+      uint64_t now = scr_hrtime_ns();
+      uint64_t own = ni_route_left_at != 0 && now > ni_route_left_at ? now - ni_route_left_at : 0;
+      if (own < NI_ROUTE_SLICE_MIN_NS) own = NI_ROUTE_SLICE_MIN_NS;
+      if (own > NI_ROUTE_SLICE_MAX_NS) own = NI_ROUTE_SLICE_MAX_NS;
+      slice_end = now + own;
+    }
+    /* The posted operation may be the very first island use: Node starts
+     * here, on the island's thread, before the operation runs. */
+    ni_start();
+    ni_on_node_stack(request->job, request->arg);
+    pthread_mutex_lock(&ni_route_lock);
+    request->done = true;
+    pthread_cond_signal(&request->cond);
+    pthread_mutex_unlock(&ni_route_lock);
+    uint64_t now = scr_hrtime_ns();
+    if (now >= slice_end) break; /* what is still posted waits for the next turn */
+    gap_end = now + NI_ROUTE_GAP_NS;
+  }
+  if (slice_end != 0) ni_route_left_at = scr_hrtime_ns();
+  ni_route_serving = false;
+}
+#endif /* SCR_NI_THREADS */
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
@@ -1404,6 +1830,9 @@ static uintptr_t ni_mark = 0;
 #define NI_MARK_END (ni_mark = ni_saved_mark)
 
 void scr_node_island_leave_stack(uintptr_t sp) {
+  /* Node's stack is the island thread's: another thread's frames are never
+   * on it, and the mark is that thread's to read. */
+  if (!scr_ni_main_thread()) return;
   if (ni_mark != 0 && ni_stack_has(sp) && sp < ni_mark) ni_mark = sp;
 }
 
@@ -1477,8 +1906,14 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   SCR_STACK_GUARD_SET(guard);
 }
 
-/* Runs job(arg) on Node's stack (directly when already there). */
+/* Runs job(arg) on Node's stack (directly when already there). On any
+ * thread but the island's, the job runs on that thread instead, with this
+ * one waiting for it (ni_route). */
 static void ni_on_node_stack(void (*job)(void *), void *arg) {
+  if (!scr_ni_main_thread()) {
+    ni_route(job, arg);
+    return;
+  }
   if (ni_on_stack) {
     if (ni_mark != 0 && !ni_stack_has((uintptr_t)__builtin_frame_address(0)))
       ni_on_node_stack_below_mark(job, arg);
@@ -1662,6 +2097,15 @@ static void ni_host_io(void) {
   NI_MARK_END;
 }
 
+/* V8's reaction job for a promise native code reacted to: the native
+ * reactions run inside it (scr_ni_settle_value). */
+static void ni_host_settle_value(uint32_t token, int rejected, const ScrNodeValue *value) {
+  NI_MARK_BEGIN;
+  scr_ni_settle_value(token, rejected, value);
+  scr_ni_shared_refresh();
+  NI_MARK_END;
+}
+
 static void ni_host_microtasks_done(void) {
   NI_MARK_BEGIN;
   scr_loop_hosted_microtasks_done();
@@ -1685,7 +2129,7 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_host_listen,
     &ni_stack_limit,
     &ni_stack_start,
-    &scr_ni_settle_value,
+    &ni_host_settle_value,
     &scr_ni_bytes_free,
     &scr_ni_host_export_call,
     &scr_ni_host_export_construct,
@@ -1702,6 +2146,10 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_shared_tdz,
     &scr_ni_host_export_op,
     &scr_ni_host_gc_analyze,
+    &scr_ni_host_bound,
+    &scr_ni_host_bind,
+    &scr_ni_host_holds,
+    &scr_ni_host_export_symbol,
 };
 
 typedef struct {
@@ -1734,11 +2182,22 @@ static void ni_stop_job(void *p) {
   ni_bridge->stop();
 }
 
+static void ni_h_checkpoint(int microtasks_first);
+
 /* Process end after a normal return: the 'exit' listeners of both sides
  * run while Node can still call into JavaScript (this handler runs before
  * the events unit's own, which then finds them done), then Node stops. */
 static void ni_stop_atexit(void) {
   scr_run_exit_listeners((double)scr_exit_code_hint_get());
+  /* The program ended by running dry: Node drains the microtasks the 'exit'
+   * listeners queued once, after the last listener (ticks queued while
+   * exiting were dropped when they were queued). process.exit() never gets
+   * here: it ends the process from inside the exit sequence. */
+  ni_h_checkpoint(1);
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The shared output streams' helper, after the listeners' writes. */
+  scr_ni_stdio_stop();
+#endif
   /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
    * tests: acyclic island objects the program dropped are released). */
   const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
@@ -1768,6 +2227,10 @@ static void ni_stop_atexit(void) {
             (double)stats.max_analysis_ns / 1e6, (double)stats.analysis_ns / 1e6);
   }
   ni_on_node_stack(ni_stop_job, NULL);
+  ni_node_ending = true;
+  /* Timers and immediates the 'exit' listeners armed never run: release
+   * their callbacks, as the loop's teardown released the ones before. */
+  scr_timers_teardown();
   /* Node is gone: no representative can call in again. */
   scr_ni_exports_release_all();
   scr_ni_gc_cleanup();
@@ -1860,11 +2323,50 @@ static void ni_h_checkpoint(int microtasks_first) {
 
 static ScrNodeBridge ni_hosted;
 
+/* ── process.exit() with a compile cache ──────────────────────────────── */
+
+/* process.exit() from native code ends the process without stopping Node
+ * (scr_process_exit ends in _Exit), so the entries of the modules this run
+ * compiled are written here: Node's own module.flushCompileCache, reached
+ * as the bootstrap's `scriptc:flushCompileCache` (scr_node_island_host.cjs,
+ * `load`). Installed over the events unit's exit hook when Node starts with
+ * a cache (ni_start), so it runs after the 'exit' listeners, on the main
+ * thread; the program's output goes out first. */
+static void (*ni_exit_listeners)(double code) = NULL;
+
+static void ni_process_exit(double code) {
+  if (ni_exit_listeners != NULL) ni_exit_listeners(code);
+  if (ni_node_ending || ni_bridge == NULL) return;
+  scr_stdout_settle();
+  fflush(stdout);
+  struct timespec t0 = {0, 0}, t1 = {0, 0};
+  if (ni_cache_tracing()) (void)clock_gettime(CLOCK_MONOTONIC, &t0);
+  static const char name[] = "scriptc:flushCompileCache";
+  ScrStr *path = scr_str_new(name, sizeof name - 1);
+  ScrDyn *written = scr_ni_require(path);
+  scr_str_release(path);
+  if (written != NULL) scr_dyn_release(written);
+  else if (scr_exc_pending()) scr_caught_release(scr_exc_take());
+  if (!ni_cache_tracing()) return;
+  (void)clock_gettime(CLOCK_MONOTONIC, &t1);
+  fprintf(stderr, "[node-islands] compile cache: written at process.exit in %.3f ms\n",
+          (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6);
+}
+
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
 void (*scr_ni_started_hook)(void) = NULL;
 
 static void ni_start(void) {
+  /* Another thread reads only the flag, which the island's thread sets
+   * last: the bridge pointer is that thread's until then. */
+  if (SCR_NI_THREADS && atomic_load_explicit(&ni_started, memory_order_acquire)) return;
+  if (!scr_ni_main_thread()) {
+    /* Only the island's thread may load Node: it runs ni_start itself, then
+     * the posted no-op. When this returns, ni_started is set. */
+    ni_route(ni_route_noop, NULL);
+    return;
+  }
   if (ni_bridge != NULL) return;
   /* Timers pending now keep their deadlines relative to this moment: the
    * time Node takes to load is invisible to their order. */
@@ -1934,6 +2436,10 @@ static void ni_start(void) {
    * delivery; installed before the stop handler, whose 'exit' listeners
    * run first. */
   scr_events_install();
+  if (ni_compile_cache_on) {
+    ni_exit_listeners = scr_process_exit_hook;
+    scr_process_exit_hook = &ni_process_exit;
+  }
   scr_ni_handles_install();
   scr_atexit(ni_stop_atexit);
   ni_hosted = *bridge;
@@ -1949,9 +2455,27 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+#ifdef SCR_NODE_ISLAND_STDIO
+  /* The island's process.stdout.write and process.stderr.write become the
+   * program's write slots (scr_node_island_stdio.c) before any island
+   * module runs. */
+  scr_ni_stdio_started();
+#endif
+  /* Node's `process` is the registry of the process events from here on,
+   * and process.exitCode its property (scr_node_island_events.c): the
+   * program's native listeners move over first, in their order, and a code
+   * the program already set goes with them. */
+  scr_process_events_to_node();
+  if (scr_process_has_exit_code()) {
+    double ignored;
+    (void)scr_ni_exit_code(true, scr_process_exit_code_or_zero(), &ignored);
+  }
   /* NI-7: deferred island modules evaluate now, before the operation that
    * needed Node, in their import order. */
   if (scr_ni_started_hook != NULL) scr_ni_started_hook();
+  /* Last: another thread waiting on a posted operation proceeds only once
+   * Node is fully up (the acquire load in ni_start pairs with this). */
+  atomic_store_explicit(&ni_started, true, memory_order_release);
 }
 
 const ScrNodeBridge *scr_ni_bridge(void) {
@@ -1999,14 +2523,18 @@ static char *ni_call(uint32_t id, bool sync, ScrStr *file, ScrStr *specifier, Sc
   return outcome;
 }
 
-/* Node runs on the main thread only: its isolate is entered under the
- * Locker the starting thread holds, and the loader's state and Node's
- * stack are process-wide. A call from a worker thread throws an Error. */
-static bool ni_main_thread(void) {
-  if (scr_context_is_main()) return true;
-  ScrStr *code = scr_str_new("", 0);
+/* Asynchronous island calls are still main-thread-only: the promise they
+ * settle and the pending table they register in belong to the calling
+ * thread's heap, and delivering a settlement to another thread's loop is
+ * not implemented. A call from a worker thread rejects, naming the limit,
+ * instead of settling a promise that belongs to another thread. */
+static bool ni_async_main_thread(void) {
+  if (scr_ni_main_thread()) return true;
+  static const char name[] = "ERR_SCRIPTC_ISLAND_WORKER_ASYNC";
   static const char text[] =
-      "Node islands run on the main thread only; this call came from a worker thread";
+      "asynchronous island calls from a worker thread are not supported; "
+      "call the island synchronously (@scriptc/node callSync) from the worker [SC8012]";
+  ScrStr *code = scr_str_new(name, sizeof name - 1);
   ScrStr *message = scr_str_new(text, sizeof text - 1);
   scr_throw_node_coded(0, code, message);
   scr_str_release(message);
@@ -2015,7 +2543,6 @@ static bool ni_main_thread(void) {
 }
 
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
-  if (!ni_main_thread()) return NULL;
   ScrDyn *json = ni_args_json(args);
   if (json == NULL) return NULL;
   ni_start();
@@ -2024,6 +2551,11 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
     size_t repairs = ni_repaired;
     size_t len = 0;
     char *outcome = ni_call(0, true, file, specifier, name, json, &len);
+    if (outcome == NULL && scr_ni_unserved) {
+      /* This thread was asked to stop before the call ran. */
+      scr_dyn_release(json);
+      return NULL;
+    }
     if (outcome == NULL) ni_fatal("scriptc: the libnode bridge answered no outcome\n");
     ni_load_failed = false;
     result = ni_outcome(outcome, len);
@@ -2039,7 +2571,7 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
 
 ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   ScrPromise *p = scr_promise_new();
-  if (!ni_main_thread()) {
+  if (!ni_async_main_thread()) {
     scr_promise_reject_pending(p);
     return p;
   }
@@ -2105,6 +2637,14 @@ SCR_COLD static void ni_unsupported(void) {
   fflush(stderr);
   _Exit(1);
 }
+
+/* No islands here, so nothing is ever posted (the compiler refuses them on
+ * this target; scr_async.c's island build still references the hooks). */
+#if SCR_NI_THREADS
+bool scr_ni_remote_pending(void) { return false; }
+int scr_ni_remote_pollfd(void) { return -1; }
+void scr_ni_remote_dispatch(void) {}
+#endif
 
 ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args) {
   (void)file;

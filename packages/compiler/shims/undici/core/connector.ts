@@ -135,7 +135,7 @@ export function buildConnector(options: ConnectorBuildOptions): Connector {
 
 /** undici's util.getServerName: the host without its port, or null for an
  * IP literal (no SNI). */
-function serverNameOf(host: string): string | undefined {
+export function serverNameOf(host: string): string | undefined {
   if (host === "") return undefined;
   let servername = host;
   if (servername.startsWith("[")) {

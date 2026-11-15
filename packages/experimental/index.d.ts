@@ -84,3 +84,78 @@ export declare class ThreadSlots<K extends object, V extends object> {
  * elements, frozen in scriptc builds; two reads need not give the same
  * array. Under Node.js it is the array the constructor stored. */
 export type InlineArray<T> = readonly T[];
+
+/** The typed arrays whose elements are numbers. */
+export type NumberArray =
+  | Int8Array
+  | Uint8Array
+  | Uint8ClampedArray
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Float32Array
+  | Float64Array;
+
+export interface ParallelOptions {
+  /** How many indices one chunk covers: a positive integer. The default is
+   * `Math.max(1, Math.ceil(count / 256))`. The chunks are a function of the
+   * count and the grain only, so a program computes the same result on
+   * every machine. */
+  readonly grain?: number;
+}
+
+export interface ParallelIntoOptions extends ParallelOptions {
+  /** How many elements of the target one index covers, for example the row
+   * length of a matrix: a positive integer that divides `target.length`.
+   * The default is 1. */
+  readonly stride?: number;
+}
+
+/** Fills `target` chunk by chunk. The indices `0 .. target.length / stride`
+ * are split into chunks `[start, end)`, and `body(part, start, end)` is
+ * called once per chunk, in order, where `part` is
+ * `target.subarray(start * stride, end * stride)`.
+ *
+ * In scriptc builds the calls run on several threads at once when the body
+ * writes only to `part` and to values it creates, and does nothing that is
+ * bound to one thread (see the package README). Otherwise they run one
+ * after another as under Node.js, and scriptc reports why (SC6106). The
+ * program's results are the same either way.
+ *
+ * The chunk boundaries depend on the count and the grain only, so a sum of
+ * floating-point values computed over the chunks has one value on every
+ * machine and under both runtimes. */
+export declare function parallelInto<A extends NumberArray>(
+  target: A,
+  body: (part: A, start: number, end: number) => void,
+  options?: ParallelIntoOptions,
+): void;
+
+/** Computes one value per chunk of the indices `0 .. count` and folds the
+ * values from left to right in chunk order:
+ * `combine(... combine(combine(initial, part(c0)), part(c1)) ..., part(cn))`.
+ * `combine` need not be associative or commutative.
+ *
+ * In scriptc builds the `part` calls run on several threads at once when
+ * `part` writes only to values it creates and `combine` reads and writes
+ * only its arguments; the fold always runs on the calling thread. scriptc
+ * compiles calls whose `initial` value and results are numbers. */
+export declare function parallelReduce<T>(
+  count: number,
+  initial: T,
+  part: (start: number, end: number) => T,
+  combine: (left: T, right: T) => T,
+  options?: ParallelOptions,
+): T;
+
+/** Calls `body(start, end)` once per chunk of the indices `0 .. count`, in
+ * order. In scriptc builds the calls run on several threads at once when
+ * scriptc can show that no call writes an element another call reads or
+ * writes; scriptc builds run the chunks one after another until that proof
+ * exists for the general form, which is the same result. */
+export declare function parallelFor(
+  count: number,
+  body: (start: number, end: number) => void,
+  options?: ParallelOptions,
+): void;

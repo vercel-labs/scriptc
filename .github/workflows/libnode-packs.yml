@@ -72,9 +72,9 @@ jobs:
     env:
       SCRIPTC_LIBNODE_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
 
@@ -83,7 +83,7 @@ jobs:
         run: node packages/libnode-common/scripts/cache-key.mjs --platform ${{ matrix.platform }} >> "$GITHUB_OUTPUT"
 
       - name: Restore the libnode build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .libnode-cache/${{ steps.key.outputs.path }}
           key: ${{ steps.key.outputs.key }}
@@ -139,7 +139,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the pack
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: libnode-${{ matrix.platform }}
           path: |
@@ -148,7 +148,7 @@ jobs:
           retention-days: 30
 
       - name: Upload compressed libraries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: libnode-${{ matrix.platform }}-zst
           path: .libnode-cache/compressed/${{ matrix.platform }}

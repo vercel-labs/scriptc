@@ -114,6 +114,14 @@
                   "keyedHelperName",
                   "contentDigest",
                   "lowerToIr",
+                  // The member census (builtin-module-members.ts) imports
+                  // only its generated table, never the lowering graph:
+                  // program.ts links a builtin's named imports against it.
+                  "builtinModuleHasMember",
+                  // The type mapper's crypto.constants record shape comes
+                  // from the same baked table the value lowering builds the
+                  // singleton from; crypto-tables.ts is data with no imports.
+                  "CRYPTO_CONSTANTS",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },
@@ -331,7 +339,6 @@
       "files": [
         "packages/compiler/src/frontend/npm.ts",
         "packages/compiler/src/frontend/cjs-lexer.ts",
-        "packages/compiler/src/frontend/comptime-node.ts",
         "packages/compiler/src/frontend/ts7/world-check.ts",
         "packages/compiler/src/frontend/ts7/source-parser.test.ts",
         "packages/compiler/src/frontend/jsx-source.test.ts",
@@ -370,6 +377,8 @@
         "packages/compiler/src/frontend/lowering/**",
         "packages/compiler/src/backend/llvm/**",
         "packages/compiler/src/backend/immutability.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.ts",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
         "packages/compiler/src/backend/stack-observations.test.ts",

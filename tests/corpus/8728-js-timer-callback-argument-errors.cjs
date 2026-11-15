@@ -34,6 +34,13 @@ const note = (name, value) => {
 shape("order", () => setTimeout("x", note("delay", 1), note("argument", 2)));
 console.log(order.join(","));
 
-// Functions still schedule, in order.
-shape("setTimeout function", () => setTimeout(() => console.log("timeout fired"), 2));
-shape("setImmediate function", () => setImmediate((a, b) => console.log("immediate fired", a, b), 1, 2));
+// Functions still schedule and run with their arguments. The immediate is
+// created by the timer's callback: Node does not say which of a timer and an
+// immediate created in the same turn runs first (a start that takes longer
+// than the delay lets the timer come due before the loop's first turn).
+shape("setTimeout function", () =>
+  setTimeout(() => {
+    console.log("timeout fired");
+    shape("setImmediate function", () => setImmediate((a, b) => console.log("immediate fired", a, b), 1, 2));
+  }, 2),
+);

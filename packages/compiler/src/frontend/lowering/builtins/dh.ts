@@ -103,7 +103,7 @@ function refuseAnyOutputEncoding(lowerer: Lowerer, call: ts.CallExpression, name
   lowerer.noLowering(
     `DiffieHellman.${name} with an output encoding typed any`,
     arg,
-    "type the encoding as a BinaryToTextEncoding such as 'hex', or as null or undefined for a Buffer",
+    "type the encoding as a name such as 'hex', or as null or undefined for a Buffer",
   );
 }
 

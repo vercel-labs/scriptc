@@ -5,7 +5,9 @@ import { basename, dirname, resolve } from "node:path";
 import { equivalentSourceEdit, type EquivalentSourceEdit } from "./token-equivalence.js";
 import {
   observeSourceText,
+  rewrittenSourceText,
   type SourceTextPredicate,
+  type SourceTextRewrite,
   type SourceTextSpan,
 } from "./ts7/ast-node.js";
 
@@ -47,6 +49,18 @@ export interface SourceTextReads {
   /** Plain offsets. */
   positions: number[];
   facts: SourceTextFact[];
+  /** The form the frontend compiled the file in, when that is not its text
+   * (SourceTextRewrite), with what it read of that form. Those offsets are
+   * offsets into the form; `ranges`, `positions` and `facts` beside it are
+   * the reads of the text as written. */
+  rewritten?: SourceTextRewriteReads;
+}
+
+/** A rewrite of a source file and the reads of the form it gives. */
+export interface SourceTextRewriteReads extends SourceTextRewrite {
+  ranges: number[];
+  positions: number[];
+  facts: SourceTextFact[];
 }
 
 /** One predicate's answers: `whole` over the file's text when it was asked
@@ -71,6 +85,12 @@ export interface FrontendSemanticChange {
   path: string;
   previous: string;
   current: string;
+  /** The frontend compiled the file in a form that has text of its own
+   * after the file's (the tail of a SourceTextRewrite). A source location
+   * in that form can lie past the end of `previous`, and the two texts do
+   * not say where it moves: a reader that moves locations from `previous`
+   * to `current` cannot use this match. */
+  appended?: true;
 }
 
 export interface FrontendSemanticMatch {
@@ -223,6 +243,69 @@ class TextReads {
     (result ? fact.yes : fact.no).add(range);
     return true;
   }
+}
+
+/** The form one file was compiled in (SourceTextRewrite) while its reads
+ * are collected. `text` is the form: the last syntax tree text that proved
+ * equal to it, so that the next read of the same tree compares by identity. */
+interface TextRewrite {
+  rewrite: SourceTextRewrite;
+  text: string;
+  reads: TextReads;
+}
+
+function sameRewrite(a: SourceTextRewrite, b: SourceTextRewrite): boolean {
+  return (
+    a.tail === b.tail &&
+    a.blanks.length === b.blanks.length &&
+    a.blanks.every((offset, index) => offset === b.blanks[index])
+  );
+}
+
+/** The reads `reads` collected, in their serialized form. */
+function serializedReads(reads: TextReads): {
+  ranges: number[];
+  positions: number[];
+  facts: SourceTextFact[];
+} {
+  return {
+    ranges: unpackedRanges(reads.ranges),
+    positions: [...reads.positions].sort((a, b) => a - b),
+    facts: [...reads.facts.keys()].sort().map((key) => {
+      const fact = reads.facts.get(key)!;
+      return {
+        predicate: fact.predicate,
+        ...(fact.whole === null ? {} : { whole: fact.whole }),
+        yes: unpackedRanges(fact.yes),
+        no: unpackedRanges(fact.no),
+      };
+    }),
+  };
+}
+
+/** Adds serialized reads to `reads`. False when a predicate gave both
+ * answers for one text. */
+function addSerializedReads(
+  reads: TextReads,
+  from: { ranges: number[]; positions: number[]; facts: SourceTextFact[] },
+): boolean {
+  const { ranges, positions, facts } = from;
+  for (let index = 0; index + 1 < ranges.length; index += 2)
+    reads.ranges.add(ranges[index]! * OFFSET_BOUND + ranges[index + 1]!);
+  for (const position of positions) reads.positions.add(position);
+  let consistent = true;
+  for (const fact of facts) {
+    if (fact.whole !== undefined && !reads.addFact(fact.predicate, fact.whole, null))
+      consistent = false;
+    for (const [list, result] of [
+      [fact.yes, true],
+      [fact.no, false],
+    ] as const)
+      for (let index = 0; index + 1 < list.length; index += 2)
+        if (!reads.addFact(fact.predicate, result, list[index]! * OFFSET_BOUND + list[index + 1]!))
+          consistent = false;
+  }
+  return consistent;
 }
 
 /** One SourceTextFact while it is collected, with packed ranges. */
@@ -402,6 +485,8 @@ export class FrontendInputTracker {
    * tracker read from the file: offsets into it are offsets into the
    * content the file probe digests. */
   private readonly digestedTexts = new Map<string, string>();
+  /** By resolved path, the form the file was compiled in (noteTextRewrite). */
+  private readonly rewrites = new Map<string, TextRewrite>();
 
   private textPath(fileName: string): string {
     let path = this.textPaths.get(fileName);
@@ -438,12 +523,18 @@ export class FrontendInputTracker {
    * its whole text counts as read: a reader took all of it, or `text` is
    * not the content this tracker read from the file (a rewritten or
    * synthesized source, a read made under another tracker), so offsets into
-   * it and predicates over it say nothing about the file. */
+   * it and predicates over it say nothing about the file. A `text` that is
+   * the form a recorded rewrite gives the content has reads of its own. */
   private preciseReads(fileName: string, text: string): TextReads | null {
     const path = this.textPath(fileName);
     let reads = this.texts.get(path);
     if (reads === null) return null;
     if (this.digestedTexts.get(path) !== text) {
+      const rewrite = this.rewrites.get(path);
+      if (rewrite !== undefined && rewrite.text === text) {
+        rewrite.text = text;
+        return rewrite.reads;
+      }
       // A syntax tree another process parsed (the shared checker server) is
       // of a file this tracker may not have read yet: read it now, which
       // records its content like any other read.
@@ -456,6 +547,37 @@ export class FrontendInputTracker {
     }
     if (reads === undefined) this.texts.set(path, (reads = new TextReads()));
     return reads;
+  }
+
+  /** Records that the frontend compiles the file `text` is the content of
+   * in the form `rewritten`, which `rewrite` makes from it. A file compiled
+   * in two forms, or a rewrite of a text that is not the file's content,
+   * counts as a read of the whole text. */
+  noteTextRewrite(
+    fileName: string,
+    text: string,
+    rewrite: SourceTextRewrite,
+    rewritten: string,
+  ): void {
+    if (this.preciseReads(fileName, text) === null) return;
+    const path = this.textPath(fileName);
+    const { blanks } = rewrite;
+    let at = 0;
+    for (let index = 0; index + 1 < blanks.length; index += 2) {
+      const start = blanks[index]! >> 1;
+      const end = blanks[index + 1]! >> 1;
+      if (start < at || !FrontendInputTracker.validRange(text, start, end)) {
+        this.noteText(fileName);
+        return;
+      }
+      at = end;
+    }
+    const known = this.rewrites.get(path);
+    if (known === undefined)
+      this.rewrites.set(path, { rewrite, text: rewritten, reads: new TextReads() });
+    else if (!sameRewrite(known.rewrite, rewrite)) this.noteText(fileName);
+    // A rewrite another tracker passed on came without its text.
+    else known.text = rewritten;
   }
 
   /** Whether `start` and `end` name a range of `text` that packs. */
@@ -512,21 +634,21 @@ export class FrontendInputTracker {
         probes.push({ op: "text", path });
         continue;
       }
+      const rewrite = this.rewrites.get(path);
       probes.push({
         op: "text",
         path,
         reads: {
-          ranges: unpackedRanges(reads.ranges),
-          positions: [...reads.positions].sort((a, b) => a - b),
-          facts: [...reads.facts.keys()].sort().map((key) => {
-            const fact = reads.facts.get(key)!;
-            return {
-              predicate: fact.predicate,
-              ...(fact.whole === null ? {} : { whole: fact.whole }),
-              yes: unpackedRanges(fact.yes),
-              no: unpackedRanges(fact.no),
-            };
-          }),
+          ...serializedReads(reads),
+          ...(rewrite === undefined
+            ? {}
+            : {
+                rewritten: {
+                  blanks: rewrite.rewrite.blanks,
+                  tail: rewrite.rewrite.tail,
+                  ...serializedReads(rewrite.reads),
+                },
+              }),
         },
       });
     }
@@ -543,23 +665,25 @@ export class FrontendInputTracker {
     }
     const reads = current ?? new TextReads();
     if (current === undefined) this.texts.set(probe.path, reads);
-    const { ranges, positions, facts } = probe.reads;
-    for (let index = 0; index + 1 < ranges.length; index += 2)
-      reads.ranges.add(ranges[index]! * OFFSET_BOUND + ranges[index + 1]!);
-    for (const position of positions) reads.positions.add(position);
-    let consistent = true;
-    for (const fact of facts) {
-      if (fact.whole !== undefined && !reads.addFact(fact.predicate, fact.whole, null))
-        consistent = false;
-      for (const [list, result] of [
-        [fact.yes, true],
-        [fact.no, false],
-      ] as const)
-        for (let index = 0; index + 1 < list.length; index += 2)
-          if (
-            !reads.addFact(fact.predicate, result, list[index]! * OFFSET_BOUND + list[index + 1]!)
-          )
-            consistent = false;
+    let consistent = addSerializedReads(reads, probe.reads);
+    const rewritten = probe.reads.rewritten;
+    if (rewritten !== undefined) {
+      // The other tracker's form of the file: this one's too, or a second
+      // form, which no entry describes.
+      let known = this.rewrites.get(probe.path);
+      if (known === undefined) {
+        const rewrite = { blanks: rewritten.blanks, tail: rewritten.tail };
+        const content = this.reads.get(probe.path)?.text;
+        known = {
+          rewrite,
+          // Without the content here, no read made under this tracker is
+          // taken for one of the form.
+          text: content === undefined ? "" : rewrittenSourceText(content, rewrite),
+          reads: new TextReads(),
+        };
+        this.rewrites.set(probe.path, known);
+      } else if (!sameRewrite(known.rewrite, rewritten)) consistent = false;
+      if (!addSerializedReads(known.reads, rewritten)) consistent = false;
     }
     if (!consistent) this.texts.set(probe.path, null);
   }
@@ -686,6 +810,9 @@ export function invalidateTrackedFilesystem(): void {
 observeSourceText({
   whole(fileName) {
     activeFrontendTracker()?.noteText(fileName);
+  },
+  rewrite(fileName, text, rewrite, rewritten) {
+    activeFrontendTracker()?.noteTextRewrite(fileName, text, rewrite, rewritten);
   },
   range(fileName, text, start, end, span) {
     activeFrontendTracker()?.noteTextRange(fileName, text, start, end, span);
@@ -1071,7 +1198,9 @@ export function changedFrontendInput(
  * (equivalentSourceEdit), and a file whose whole text was read admits no
  * edit. The returned snapshot holds the reads of an edited file as reads of
  * its current text, so the entry it refreshes can be compared with a later
- * edit.
+ * edit. With `positions`, the build records the line and column of tokens
+ * (debug information), and a file compiled in a rewritten form must keep
+ * the positions of the tokens that form adds, too.
  */
 export function frontendInputsSemanticallyMatch(
   snapshot: FrontendInputSnapshot,
@@ -1082,6 +1211,7 @@ export function frontendInputsSemanticallyMatch(
    * read it, the build compiled a rewritten form of it, or its edit is not
    * equivalent. */
   refused?: (path: string, why: "unread" | "rewritten" | "edit") => void,
+  positions = false,
 ): FrontendSemanticMatch | null {
   if (!validFrontendInputSnapshot(snapshot)) return null;
   const sourceProbes = new Map<string, Extract<FrontendInputProbe, { op: "file" }>>();
@@ -1146,13 +1276,19 @@ export function frontendInputsSemanticallyMatch(
         ? null
         : reads === undefined
           ? NO_READS
-          : equivalentSourceEdit(probe.path, previous, current, false, reads);
+          : equivalentSourceEdit(probe.path, previous, current, positions, reads);
     if (carried === null) {
       refused?.(probe.path, "edit");
       return null;
     }
     if (carried.reads !== undefined) carriedReads.set(probe.path, carried.reads);
-    changed.push({ path: probe.path, previous, current });
+    const tail = carried.reads?.rewritten?.tail ?? "";
+    changed.push({
+      path: probe.path,
+      previous,
+      current,
+      ...(tail === "" ? {} : { appended: true as const }),
+    });
     probes.push({ op: "file", path: probe.path, digest: currentDigest });
   }
   // The reads of an edited file are offsets into its previous text.
@@ -1167,13 +1303,27 @@ export function frontendInputsSemanticallyMatch(
   return { changed, currentSources, snapshot: adjusted };
 }
 
-function validSourceTextReads(value: unknown): value is SourceTextReads {
+function validSourceTextReads(value: unknown, form = false): value is SourceTextReads {
   if (value === null || typeof value !== "object") return false;
-  const reads = value as { ranges?: unknown; positions?: unknown; facts?: unknown };
+  const reads = value as {
+    ranges?: unknown;
+    positions?: unknown;
+    facts?: unknown;
+    rewritten?: unknown;
+    blanks?: unknown;
+    tail?: unknown;
+  };
   const offsets = (list: unknown): list is number[] =>
     Array.isArray(list) &&
     list.every((offset) => Number.isSafeInteger(offset) && offset >= 0 && offset < OFFSET_BOUND);
   const pairs = (list: unknown): boolean => offsets(list) && list.length % 2 === 0;
+  // The form's reads carry its rewrite and no form of their own.
+  if (form) {
+    if (!pairs(reads.blanks) || typeof reads.tail !== "string" || reads.rewritten !== undefined)
+      return false;
+  } else if (reads.rewritten !== undefined && !validSourceTextReads(reads.rewritten, true)) {
+    return false;
+  }
   return (
     pairs(reads.ranges) &&
     offsets(reads.positions) &&

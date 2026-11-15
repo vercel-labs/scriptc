@@ -142,7 +142,7 @@ export function lowerWrapperNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
  * `constructor` property (the interned closures `x === String` compares). */
 export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
   return (["String", "Number", "Boolean"] as const).map((name) =>
-    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc, true), DYN),
+    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc), DYN),
   );
 }
 
@@ -166,6 +166,7 @@ export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   "insp.dynS",
   "insp.dynFormatS",
 ]);
@@ -222,7 +223,9 @@ export function routeWrapperConsumers(lowerer: Lowerer, functions: IrFunction[])
       }
       if (
         expr.kind === "intrinsic" &&
-        (expr.name === "console.log" || expr.name === "console.error")
+        (expr.name === "console.log" ||
+          expr.name === "console.error" ||
+          expr.name === "console.trace")
       )
         return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.name)) };
       return expr;

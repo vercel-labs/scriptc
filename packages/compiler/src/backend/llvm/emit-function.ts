@@ -69,6 +69,7 @@ import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
 import { frameText } from "./frame-positions.js";
+import { isLazyGroupRun } from "../lazy-initializers.js";
 
 /** The function attribute of a fallback body that the LLVM helper's
  * partitioner places by its own name (isPlacedByName, partition.cpp): it
@@ -123,6 +124,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.frames = [];
   emitter.scopes = [];
   emitter.unwindCleanups.clear();
+  emitter.unwindReleases.length = 0;
+  emitter.unwindReleaseLabels.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
   emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
@@ -742,6 +745,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Shared blocks have multiple source locations. Keep the location on
   // each incoming exception check instead of assigning one to the cleanup.
   B.debugLocation = null;
+  // A throw site's shared release blocks (emitUnwind) release its values
+  // newest first; the statement's ordinary end releases them oldest first,
+  // and a function that ends there reaches the same return. LLVM would sink
+  // the two paths' release calls into shared blocks one call at a time,
+  // choosing each operand with a phi per value still to release: n values
+  // become n²/2 phi nodes, which cost it minutes at a few hundred values.
+  // Calls marked `nomerge` stay in their blocks.
+  B.unmergedCalls = true;
+  for (const release of emitter.unwindReleases) {
+    B.startBlock(release.label);
+    emitter.releaseTemps([release.value]);
+    B.br(release.next);
+  }
+  B.unmergedCalls = false;
   for (const cleanup of emitter.unwindCleanups.values()) {
     B.startBlock(cleanup.label);
     emitter.releaseScope(cleanup.entries);
@@ -787,6 +804,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // A keyed record read's inherited-method miss path (record-inherited.ts)
   // stays out of line, so the hit path keeps its own small frame.
   else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
+  // A deferred group's run (lazy-initializers.ts) is called once, from
+  // whichever guard fires first, and holds the loops that walk the group's
+  // list. Inlined into a guard it would put those loops inside every loop
+  // around a guarded read; out of line, a guard is a flag test and a call.
+  else if (isLazyGroupRun(fn.name)) attrs = `noinline cold ${attrs}`;
   // The original body of a function versioned for int32 loop bounds runs
   // only for a bound that is not an int32 (parameter-versions.ts). It stays
   // out of line, and FALLBACK_PLACEMENT_ATTR lets the helper's partitioner
@@ -815,13 +837,14 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
-    body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
+    const cloneHost = emitter.integerCloneHost();
+    body += "\n" + emitIntegerClone(fn, cloneHost, emitter.stackChecks?.has(fn.name) === true);
     if (emitter.integerClones.dispatched.has(fn.name))
       body +=
         "\n" +
         emitIntegerDispatcher(
           fn,
-          emitter,
+          cloneHost,
           `${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}`,
           int32Abi?.params ?? [],
           int32Abi?.result === true,
@@ -1539,10 +1562,11 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
  * body always completes before the call returns, which is exactly the
  * behavior of a fiber that never suspends. Excluded conservatively:
  * wasm32 (its coroutine lowering owns async bodies), module-evaluation
- * bodies (their promise caches),
- * `dyn` results (resolution may adopt a thenable), and every program
- * that uses node:test subtests — `t.test()` runs a subtest inline and
- * awaits it on the CURRENT fiber even from synchronous code. Worker
+ * bodies (their promise caches), and every program that uses node:test
+ * subtests — `t.test()` runs a subtest inline and awaits it on the CURRENT
+ * fiber even from synchronous code. A `dyn` result qualifies: its
+ * resolution settles the promise or leaves it to a reaction on the promise
+ * the result holds, and parks nothing (scr_promise_resolve_dyn). Worker
  * programs keep fibers too: their fiber epilogue owns context
  * termination (a stopping worker rejects and observes the promise), which
  * the fiberless wrapper does not reproduce. A missed suspension still

@@ -37,6 +37,19 @@ export interface SlotAdoption {
   length: number | undefined;
 }
 
+/** Whether the parameter's annotation spells `any`, by itself or inside
+ * the type it writes (`Outcome<any>`, `{ detail: any }`). */
+function spellsAny(decl: ts.ParameterDeclaration): boolean {
+  if (decl.type === undefined) return false;
+  let found = false;
+  ts.walkPreorder(decl.type, (node) => {
+    if (node.kind !== ts.SyntaxKind.AnyKeyword) return undefined;
+    found = true;
+    return "stop";
+  });
+  return found;
+}
+
 /** The adoption of `slot` by the literal `node`, whose own signature is
  * `shapes` and `funcType`; null when the literal keeps its own signature
  * and the slot's coercion adapts the value as before.
@@ -53,6 +66,9 @@ export interface SlotAdoption {
  *   record width plan), with no default or pattern anywhere in the list: a
  *   conversion at entry would otherwise interleave with the default
  *   initializers the adapter ran it before;
+ * - no parameter that converts is declared at `any` in a function-typed
+ *   destination: that literal is an untyped function behind a typed slot,
+ *   and stays one (spellsAny);
  * - the result already has the slot's type (lambdaSignature adopts the
  *   slot's result where it can), unless the slot takes the literal's own.
  * A named function expression can call itself with its own parameter list,
@@ -116,6 +132,14 @@ export function slotSignatureAdoption(
       lowerer.coercibleValue(passed, shape.type) ||
       (slot.passesAll && lowerer.widthLiftPlan(passed, shape.type) !== null);
     if (!plain(i) || !converted) return null;
+    // A parameter the literal declares at `any` where the slot names a
+    // type: the literal keeps its own signature. The slot's value can be
+    // held without the slot's type later, and such a caller reaches the
+    // function as it is declared (function-views.ts); a literal compiled
+    // at the slot's parameter type would check that caller's argument
+    // against a type the function never named. An array method's loop is
+    // the only caller of its callback.
+    if (slot.passesAll && spellsAny(decls[i]!)) return null;
     converts = true;
     adopted.push({ ...shape, slotType: passed });
   }

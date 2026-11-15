@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-plain-array-receivers.ts"
+ ],
+ "diags": []
+}

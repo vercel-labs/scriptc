@@ -1,0 +1,17 @@
+function-namespace-function-member.ts:10:19 - error SC1090: the exported generic function 'same' in the function+namespace merge 'tool' is not supported yet
+
+   9 | namespace tool {
+  10 |   export function same<T>(x: T): T {
+     |                   ^~~~
+  11 |     return x;
+
+  hint: a merged namespace's exported members are own properties of the function object, and a generic function has no single value to store there; declare 'same' outside the merged namespace
+
+function-namespace-function-member.ts:18:19 - error SC1090: the exported overloaded function 'one' in the function+namespace merge 'pick' is not supported yet
+
+  17 | namespace pick {
+  18 |   export function one(a: number): number;
+     |                   ^~~
+  19 |   export function one(a: string): string;
+
+  hint: a merged namespace's exported members are own properties of the function object, and an overloaded function has no single value to store there; declare 'one' outside the merged namespace

@@ -86,6 +86,15 @@ static inline bool scr_str_known_ascii(const ScrStr *s) { return s->ascii; }
 /* Record the UTF-16 length a string's producer counted (scr_string.c). */
 void scr_str_note_utf16_len(ScrStr *s, size_t units);
 
+/* The lazy ASCII proof of a text whose builder did not scan it
+ * (scr_string.c): scr_str_prove_ascii marks s when every byte is ASCII, s
+ * holds at least 32 bytes and owns no index facts, and says whether it did. The first .length of an
+ * unknown string asks it through scr_str_lazy_ascii, which is NULL until
+ * the builder of such texts installs the proof (scr_jb_finish), so a
+ * program that finishes no document links none. */
+bool scr_str_prove_ascii(ScrStr *s);
+extern bool (*scr_str_lazy_ascii)(ScrStr *s);
+
 /* Record a proven-ASCII fact. Immortal strings may live in read-only
  * memory and are shared across threads, so they are never written. */
 static inline void scr_str_note_ascii(ScrStr *s) {

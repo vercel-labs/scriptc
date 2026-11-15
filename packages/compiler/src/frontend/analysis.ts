@@ -51,6 +51,7 @@ export function analyzeWithFrontend(
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
+    ...(opts.define !== undefined ? { define: opts.define } : {}),
   });
   // The reload lowering may run on, once the island set is known (see
   // lowerFrontend): null when the first load already excludes every island.
@@ -168,10 +169,12 @@ export function analyzeWithFrontend(
             (name) => refused.has(name) || policy.forcedNode.has(name),
             (name) => islandPackageDir(fe, entryPath, name),
           );
-    // Coverage is whole-program by design: builds stop at what the entry
+    // Coverage is whole-program by default: builds stop at what the entry
     // reaches, but the analysis additionally lowers the unreached remainder
     // (throwaway) so the report covers everything the source declares — with
-    // the unreached share in its own group.
+    // the unreached share in its own group. `--coverage=reached` skips that
+    // pass, which is what made the analysis of large programs run out of
+    // memory; its report covers the entry path and says so.
     // The frontend lowering runs on. A package the first load compiled but a
     // build islands is not part of the compiled program: the reload's
     // islandPackages keeps its implementation out of the graph and types its
@@ -191,6 +194,9 @@ export function analyzeWithFrontend(
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
           islandPackages: new Set(packages),
+          // The reload re-reads the program: the define values still decide
+          // its branches, so the coverage report sees what the build compiles.
+          ...(opts.define !== undefined ? { define: opts.define } : {}),
         });
         lowerLoad.key = key;
       }
@@ -200,6 +206,7 @@ export function analyzeWithFrontend(
       const islandsActive = islands !== null && islands.packages.size > 0;
       return lowerFrontend(islands).lower({
         coverage: true,
+        ...(opts.coverage === "reached" ? { coverageRemainder: false } : {}),
         targetPlatform: buildPlatform,
         ...(islandsActive ? { nodeIslands: islands } : {}),
         ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
@@ -318,6 +325,7 @@ export function analyzeWithFrontend(
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),
+        ...(opts.coverage === "reached" ? { reachedOnly: true } : {}),
         ...(compiledPackages.length > 0 ? { npmStatic: compiledPackages } : {}),
         // --provenance-sources: the per-package attribution inputs (the
         // report aggregates statsByFile under each package's source dir).
@@ -335,6 +343,7 @@ export function analyzeWithFrontend(
         lowerLoad.fe === null
           ? fe.sourceTexts()
           : new Map([...fe.sourceTexts(), ...lowerLoad.fe.sourceTexts()]),
+      ...(lowered.widthCopies !== undefined ? { widthCopies: lowered.widthCopies } : {}),
     };
   } finally {
     lowerLoad.fe?.dispose();

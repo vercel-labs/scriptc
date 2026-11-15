@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/process-stream-value-fences.ts"
+ ],
+ "diags": []
+}

@@ -66,7 +66,7 @@ static void scr_box_gcfree(void *o) {
 #ifdef SCR_RC_AUDIT
   scr_live_boxes--;
 #endif
-  scr_cyc_free_inline(b);
+  scr_cyc_free_unobserved_inline(b);
 }
 
 ScrBox *scr_box_new(ScrBoxKind kind) {
@@ -119,7 +119,7 @@ static void scr_box_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
   scr_live_boxes--;
 #endif
-  scr_cyc_free_inline(b);
+  scr_cyc_free_unobserved_inline(b);
 }
 
 void scr_box_release(ScrBox *b) {

@@ -2675,10 +2675,98 @@ static bool is_line_terminator(uint32_t c)
     return (c == '\n' || c == '\r' || c == CP_LS || c == CP_PS);
 }
 
+/* scriptc: subjects stored as WTF-8 (cbuf_type 3 and 4; lre_exec() takes 3
+   and makes it 4 for a unicode pattern). The subject is well-formed UTF-8
+   in which an unpaired surrogate is its own three-byte sequence and a pair
+   is always the four-byte sequence of its code point, and the byte at
+   cbuf_end is readable and is not a continuation byte (a NUL terminator).
+   Positions are byte pointers. Type 4 reads code points, as type 2 does.
+   Type 3 reads UTF-16 code units, as type 1 does: a four-byte sequence is
+   two units, and the position between them is the address of its third
+   byte, the only position that holds a continuation byte. Either type
+   therefore gives what type 1 or 2 gives on the same text as UTF-16, with
+   each 16-bit position replaced by its byte position. */
+static inline uint32_t lre_wtf8_4(const uint8_t *p)
+{
+    return ((uint32_t)(p[0] & 0x07) << 18) | ((uint32_t)(p[1] & 0x3f) << 12) |
+        ((uint32_t)(p[2] & 0x3f) << 6) | (p[3] & 0x3f);
+}
+
+/* The two readers return the character in the low 21 bits and the number
+   of bytes the position moves in the bits above LRE_WTF8_SHIFT, so that
+   the caller's position stays in a register. */
+#define LRE_WTF8_SHIFT 24
+#define LRE_WTF8_CHAR(r) ((r) & 0x1fffff)
+#define LRE_WTF8_LEN(r) ((r) >> LRE_WTF8_SHIFT)
+
+/* a four-byte sequence, or the position inside one */
+static no_inline uint32_t lre_wtf8_next_pair(const uint8_t *p, int cbuf_type)
+{
+    uint32_t c;
+    if (p[0] < 0xc0) {
+        /* between the two units of a pair: the low surrogate */
+        return (2 << LRE_WTF8_SHIFT) |
+            (0xdc00 + ((lre_wtf8_4(p - 2) - 0x10000) & 0x3ff));
+    }
+    c = lre_wtf8_4(p);
+    if (cbuf_type == 4)
+        return (4 << LRE_WTF8_SHIFT) | c;
+    return (2 << LRE_WTF8_SHIFT) | (0xd800 + ((c - 0x10000) >> 10));
+}
+
+/* the character at p, which is not an ASCII byte */
+static inline uint32_t lre_wtf8_next(const uint8_t *p, int cbuf_type)
+{
+    uint32_t c = p[0];
+    if (c >= 0xc0 && c < 0xe0)
+        return (2 << LRE_WTF8_SHIFT) | ((c & 0x1f) << 6) | (p[1] & 0x3f);
+    if (c >= 0xe0 && c < 0xf0) {
+        return (3 << LRE_WTF8_SHIFT) | ((c & 0x0f) << 12) |
+            ((uint32_t)(p[1] & 0x3f) << 6) | (p[2] & 0x3f);
+    }
+    return lre_wtf8_next_pair(p, cbuf_type);
+}
+
+static no_inline uint32_t lre_wtf8_prev_pair(const uint8_t *p, int cbuf_type)
+{
+    uint32_t c;
+    if (p[-2] >= 0xf0) {
+        /* between the two units of a pair: the high surrogate */
+        return (2 << LRE_WTF8_SHIFT) |
+            (0xd800 + ((lre_wtf8_4(p - 2) - 0x10000) >> 10));
+    }
+    c = lre_wtf8_4(p - 4);
+    if (cbuf_type == 4)
+        return (4 << LRE_WTF8_SHIFT) | c;
+    return (2 << LRE_WTF8_SHIFT) | (0xdc00 + ((c - 0x10000) & 0x3ff));
+}
+
+/* the character before p, whose last byte is not an ASCII byte */
+static inline uint32_t lre_wtf8_prev(const uint8_t *p, int cbuf_type)
+{
+    uint32_t b = p[-2];
+    if (b >= 0xc0 && b < 0xe0)
+        return (2 << LRE_WTF8_SHIFT) | ((b & 0x1f) << 6) | (p[-1] & 0x3f);
+    if (b < 0xc0 && p[-3] >= 0xe0 && p[-3] < 0xf0) {
+        return (3 << LRE_WTF8_SHIFT) | ((uint32_t)(p[-3] & 0x0f) << 12) |
+            ((b & 0x3f) << 6) | (p[-1] & 0x3f);
+    }
+    return lre_wtf8_prev_pair(p, cbuf_type);
+}
+
 #define GET_CHAR(c, cptr, cbuf_end, cbuf_type)                          \
     do {                                                                \
         if (cbuf_type == 0) {                                           \
             c = *cptr++;                                                \
+        } else if (cbuf_type >= 3) { /* scriptc: WTF-8 */               \
+            c = *cptr;                                                  \
+            if (c < 0x80) {                                             \
+                cptr++;                                                 \
+            } else {                                                    \
+                c = lre_wtf8_next(cptr, cbuf_type);                     \
+                cptr += LRE_WTF8_LEN(c);                                \
+                c = LRE_WTF8_CHAR(c);                                   \
+            }                                                           \
         } else {                                                        \
             const uint16_t *_p = (const uint16_t *)cptr;                \
             const uint16_t *_end = (const uint16_t *)cbuf_end;          \
@@ -2696,6 +2784,10 @@ static bool is_line_terminator(uint32_t c)
     do {                                                                \
         if (cbuf_type == 0) {                                           \
             c = cptr[0];                                                \
+        } else if (cbuf_type >= 3) { /* scriptc: WTF-8 */               \
+            c = cptr[0];                                                \
+            if (c >= 0x80)                                              \
+                c = LRE_WTF8_CHAR(lre_wtf8_next(cptr, cbuf_type));      \
         } else {                                                        \
             const uint16_t *_p = (const uint16_t *)cptr;                \
             const uint16_t *_end = (const uint16_t *)cbuf_end;          \
@@ -2712,6 +2804,10 @@ static bool is_line_terminator(uint32_t c)
     do {                                                                \
         if (cbuf_type == 0) {                                           \
             c = cptr[-1];                                               \
+        } else if (cbuf_type >= 3) { /* scriptc: WTF-8 */               \
+            c = cptr[-1];                                               \
+            if (c >= 0x80)                                              \
+                c = LRE_WTF8_CHAR(lre_wtf8_prev(cptr, cbuf_type));      \
         } else {                                                        \
             const uint16_t *_p = (const uint16_t *)cptr - 1;            \
             const uint16_t *_start = (const uint16_t *)cbuf_start;      \
@@ -2729,6 +2825,15 @@ static bool is_line_terminator(uint32_t c)
         if (cbuf_type == 0) {                                           \
             cptr--;                                                     \
             c = cptr[0];                                                \
+        } else if (cbuf_type >= 3) { /* scriptc: WTF-8 */               \
+            c = cptr[-1];                                               \
+            if (c < 0x80) {                                             \
+                cptr--;                                                 \
+            } else {                                                    \
+                c = lre_wtf8_prev(cptr, cbuf_type);                     \
+                cptr -= LRE_WTF8_LEN(c);                                \
+                c = LRE_WTF8_CHAR(c);                                   \
+            }                                                           \
         } else {                                                        \
             const uint16_t *_p = (const uint16_t *)cptr - 1;            \
             const uint16_t *_start = (const uint16_t *)cbuf_start;      \
@@ -2746,6 +2851,11 @@ static bool is_line_terminator(uint32_t c)
     do {                                                                \
         if (cbuf_type == 0) {                                           \
             cptr--;                                                     \
+        } else if (cbuf_type >= 3) { /* scriptc: WTF-8 */               \
+            if (cptr[-1] < 0x80)                                        \
+                cptr--;                                                 \
+            else                                                        \
+                cptr -= LRE_WTF8_LEN(lre_wtf8_prev(cptr, cbuf_type));   \
         } else {                                                        \
             const uint16_t *_p = (const uint16_t *)cptr - 1;            \
             const uint16_t *_start = (const uint16_t *)cbuf_start;      \
@@ -2782,7 +2892,8 @@ typedef union {
 typedef struct {
     const uint8_t *cbuf;
     const uint8_t *cbuf_end;
-    /* 0 = 8 bit chars, 1 = 16 bit chars, 2 = 16 bit chars, UTF-16 */
+    /* 0 = 8 bit chars, 1 = 16 bit chars, 2 = 16 bit chars, UTF-16,
+       scriptc: 3 = WTF-8 read as 16 bit chars, 4 = WTF-8 read as code points */
     int cbuf_type;
     int capture_count;
     bool is_unicode;
@@ -2827,9 +2938,23 @@ static no_inline int stack_realloc(REExecContext *s, size_t n)
     return 0;
 }
 
+/* scriptc: the interpreter is compiled twice, once for 8 and 16 bit
+   subjects (lre_exec_backtrack) and once for WTF-8 subjects
+   (lre_exec_backtrack_wtf8), so that neither pays for the other's
+   character readers: `wtf8` is a constant in each copy, and it tells the
+   compiler which arms of the character macros can be reached. */
+#if defined(__GNUC__) || defined(__clang__)
+#define LRE_EXEC_INLINE inline __attribute__((always_inline))
+#define LRE_EXEC_SUBJECT(cond) do { if (!(cond)) __builtin_unreachable(); } while (0)
+#else
+#define LRE_EXEC_INLINE inline
+#define LRE_EXEC_SUBJECT(cond) ((void)0)
+#endif
+
 /* return 1 if match, 0 if not match or < 0 if error. */
-static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
-                                   const uint8_t *pc, const uint8_t *cptr)
+static LRE_EXEC_INLINE intptr_t lre_exec_backtrack_any(REExecContext *s, uint8_t **capture,
+                                                       const uint8_t *pc, const uint8_t *cptr,
+                                                       bool wtf8)
 {
     int opcode;
     int cbuf_type;
@@ -2840,6 +2965,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
     const uint8_t *pc_start = pc; /* TEST */
 #endif
     cbuf_type = s->cbuf_type;
+    LRE_EXEC_SUBJECT((cbuf_type >= 3) == wtf8);
     cbuf_end = s->cbuf_end;
 
     sp = s->stack_buf;
@@ -2898,7 +3024,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
 #ifdef DUMP_EXEC
         printf("%5ld %5ld %5ld %5ld %s\n",
                pc - 1 - pc_start,
-               cbuf_type == 0 ? cptr - s->cbuf : (cptr - s->cbuf) / 2,
+               cbuf_type == 0 || cbuf_type >= 3 ? cptr - s->cbuf : (cptr - s->cbuf) / 2,
                bp - s->stack_buf,
                sp - s->stack_buf,
                reopcode_info[opcode].name);
@@ -3379,9 +3505,23 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
     }
 }
 
+static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
+                                   const uint8_t *pc, const uint8_t *cptr)
+{
+    return lre_exec_backtrack_any(s, capture, pc, cptr, false);
+}
+
+static no_inline intptr_t lre_exec_backtrack_wtf8(REExecContext *s, uint8_t **capture,
+                                                  const uint8_t *pc, const uint8_t *cptr)
+{
+    return lre_exec_backtrack_any(s, capture, pc, cptr, true);
+}
+
 /* Return 1 if match, 0 if not match or < 0 if error (see LRE_RET_x). cindex is the
    starting position of the match and must be such as 0 <= cindex <=
-   clen. */
+   clen.
+   scriptc: cbuf_type 3 is a WTF-8 subject (see lre_wtf8_next()): cindex and
+   clen are byte offsets, and the captures are byte pointers. */
 int lre_exec(uint8_t **capture,
              const uint8_t *bc_buf, const uint8_t *cbuf, int cindex, int clen,
              int cbuf_type, void *opaque)
@@ -3389,15 +3529,18 @@ int lre_exec(uint8_t **capture,
     REExecContext s_s, *s = &s_s;
     int re_flags, i, ret;
     const uint8_t *cptr;
+    int shift = cbuf_type == 1; /* scriptc: only 16 bit chars take two bytes */
 
     re_flags = lre_get_flags(bc_buf);
     s->is_unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
     s->capture_count = bc_buf[RE_HEADER_CAPTURE_COUNT];
     s->cbuf = cbuf;
-    s->cbuf_end = cbuf + (clen << cbuf_type);
+    s->cbuf_end = cbuf + (clen << shift);
     s->cbuf_type = cbuf_type;
     if (s->cbuf_type == 1 && s->is_unicode)
         s->cbuf_type = 2;
+    if (s->cbuf_type == 3 && s->is_unicode)
+        s->cbuf_type = 4;
     s->interrupt_counter = INTERRUPT_COUNTER_INIT;
     s->opaque = opaque;
 
@@ -3407,15 +3550,21 @@ int lre_exec(uint8_t **capture,
     for(i = 0; i < s->capture_count * 2; i++)
         capture[i] = NULL;
 
-    cptr = cbuf + (cindex << cbuf_type);
+    cptr = cbuf + (cindex << shift);
     if (0 < cindex && cindex < clen && s->cbuf_type == 2) {
         const uint16_t *p = (const uint16_t *)cptr;
         if (is_lo_surrogate(*p) && is_hi_surrogate(p[-1])) {
             cptr = (const uint8_t *)(p - 1);
         }
     }
+    /* scriptc: the same for a start between the two units of a pair */
+    if (s->cbuf_type == 4 && cindex < clen && (*cptr & 0xc0) == 0x80)
+        cptr -= 2;
 
-    ret = lre_exec_backtrack(s, capture, bc_buf + RE_HEADER_LEN, cptr);
+    if (s->cbuf_type >= 3)
+        ret = lre_exec_backtrack_wtf8(s, capture, bc_buf + RE_HEADER_LEN, cptr);
+    else
+        ret = lre_exec_backtrack(s, capture, bc_buf + RE_HEADER_LEN, cptr);
 
     if (s->stack_buf != s->static_stack_buf)
         lre_realloc(s->opaque, s->stack_buf, 0);

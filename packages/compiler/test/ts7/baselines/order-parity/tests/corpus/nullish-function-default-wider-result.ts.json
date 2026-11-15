@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nullish-function-default-wider-result.ts"
+ ],
+ "diags": []
+}

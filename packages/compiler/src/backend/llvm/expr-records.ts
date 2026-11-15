@@ -18,6 +18,7 @@ import { regexLiteralReplacer, regexLiteralTemplate } from "./expr-primitives.js
 import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
+import { emitPointerRetype, pointerRetypeSteps } from "./pointer-retype.js";
 import { emitNumberMapSlot, emitStringMapEntry } from "./map-number-lookup.js";
 import { fusedRecordValue, rememberRecordEntry } from "./record-entry-fusion.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -89,6 +90,15 @@ export function emitUnionRetype(
         ? from.refTag === to.refTag && units
         : from.repr !== "single" && from.repr === to.repr && units;
     if (same) return host.own({ name: value.name, type: e.type });
+    // The remaining pointer conversions differ only in how they spell a
+    // unit arm (`C | null` reads `null` as NULL, `C | null | undefined`
+    // as NULLABLE_NULL): a select per differing arm, sharing the pointer.
+    const fromArms = host.unionsById.get(e.fromId)?.arms,
+      toArms = host.unionsById.get(e.unionId)?.arms;
+    const steps =
+      fromArms && toArms ? pointerRetypeSteps(from, to, fromArms, toArms, e.tags) : null;
+    if (steps)
+      return host.own({ name: emitPointerRetype(host.B, value.name, steps), type: e.type });
     return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
   }
   if (from || to) return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });

@@ -28,9 +28,14 @@ import { SyntaxKind, NodeFlags } from "./enums.js";
  * text (a node's own text, its leading trivia), the line and character of a
  * `position`, or the answer of a predicate over the text or a range of it
  * (`fact`; `start` is negative for the whole text). Every other read of the
- * text is `whole`: the reader may depend on any of it. */
+ * text is `whole`: the reader may depend on any of it.
+ *
+ * A pass that compiles a file in another form says how the form is made
+ * from the text (`rewrite`, SourceTextRewrite): `rewritten` is the form,
+ * and reads of a syntax tree that holds it are reads of that form. */
 export interface SourceTextObserver {
   whole(fileName: string): void;
+  rewrite(fileName: string, text: string, rewrite: SourceTextRewrite, rewritten: string): void;
   range(fileName: string, text: string, start: number, end: number, span: SourceTextSpan): void;
   position(fileName: string, text: string, position: number): void;
   fact(
@@ -59,6 +64,79 @@ export const FULL_SPAN: SourceTextSpan = 0;
 /** From the end of the token before a node (its `pos`) to a token's start:
  * the comments and whitespace that lead up to that token. */
 export const LEADING_SPAN: SourceTextSpan = 2;
+/** From a token's start to a later token's start: text with the comments,
+ * whitespace and separators that follow it, up to the next thing. */
+export const UP_TO_TOKEN_SPAN: SourceTextSpan = 3;
+
+/** A form of a source file that keeps every offset of its text: the text of
+ * each of `blanks` replaced by spaces (line breaks stay), and `tail`
+ * appended on lines of its own. `blanks` holds `start, end` pairs in order,
+ * apart from each other, each offset anchored as a range's are
+ * (SourceTextSpan): doubled, plus one when it is the start of a token rather
+ * than the place the token before it ended. A token-equivalent version of
+ * the file has the same form: its tokens place the blanks, and `tail` is
+ * text the rewriter made from the tokens. */
+export interface SourceTextRewrite {
+  blanks: number[];
+  tail: string;
+}
+
+/** `text` in the form `rewrite` describes (SourceTextRewrite). */
+export function rewrittenSourceText(text: string, rewrite: SourceTextRewrite): string {
+  const { blanks, tail } = rewrite;
+  let out = "";
+  let at = 0;
+  for (let index = 0; index + 1 < blanks.length; index += 2) {
+    const start = blanks[index]! >> 1;
+    const end = blanks[index + 1]! >> 1;
+    out += text.slice(at, start);
+    for (let offset = start; offset < end; offset++) {
+      const code = text.charCodeAt(offset);
+      out += code === 10 || code === 13 ? text[offset] : " ";
+    }
+    at = end;
+  }
+  out += text.slice(at);
+  return tail === "" ? out : `${out}${out.endsWith("\n") ? "" : "\n"}${tail}`;
+}
+
+/** Where the tail of `rewrite` starts in the form of `text`: after the line
+ * break that ends the text, which the form adds when the text has none. */
+export function rewrittenTailStart(text: string, rewrite: SourceTextRewrite): number {
+  return rewrite.tail === "" || text.endsWith("\n") ? text.length : text.length + 1;
+}
+
+/** One span of a rewrite's blanks, before it is anchored. */
+export interface SourceTextBlank {
+  start: number;
+  end: number;
+  span: SourceTextSpan;
+}
+
+/** The text of source file `sf` with `blanks` blanked and `tail` appended
+ * (SourceTextRewrite), reported as that rewrite instead of a read of the
+ * text: the caller takes nothing else from it. Blanks that start inside an
+ * earlier one are dropped. */
+export function sourceTextRewritten(
+  sf: AstNode,
+  blanks: readonly SourceTextBlank[],
+  tail: string,
+): string {
+  const anchored: number[] = [];
+  let at = 0;
+  for (const blank of [...blanks].sort((a, b) => a.start - b.start)) {
+    if (blank.start < at || blank.end < blank.start) continue;
+    anchored.push(blank.start * 2 + (blank.span & 1), blank.end * 2 + ((blank.span >> 1) & 1));
+    at = blank.end;
+  }
+  const rewrite: SourceTextRewrite = { blanks: anchored, tail };
+  const file = treeOf(sf);
+  const text = file === undefined ? (sf.text ?? "") : file.sourceText();
+  const rewritten = rewrittenSourceText(text, rewrite);
+  if (sourceTextObserver !== undefined && file !== undefined)
+    sourceTextObserver.rewrite(file.root.fileName, text, rewrite, rewritten);
+  return rewritten;
+}
 
 /** A question about text that can be asked again of another version of it:
  * whether it includes `needle`, or whether the regular expression `source`
@@ -937,10 +1015,10 @@ export class AstNode {
   }
 
   // BEGIN GENERATED CHILD GETTERS
-  // Generated from typescript@7.0.2; run scripts/generate-ts7-ast-schema.mjs.
+  // Generated from typescript@7.1.0-beta; run scripts/generate-ts7-ast-schema.mjs.
   get argument(): AstNode | undefined {
     switch (this.kind) {
-      case 206:
+      case 207:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -948,7 +1026,7 @@ export class AstNode {
   }
   get argumentExpression(): AstNode | undefined {
     switch (this.kind) {
-      case 213:
+      case 214:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -956,9 +1034,9 @@ export class AstNode {
   }
   get arguments(): AstNodeList | undefined {
     switch (this.kind) {
-      case 215:
+      case 216:
         return this.childListAt(2);
-      case 214:
+      case 215:
         return this.childListAt(3);
       default:
         return undefined;
@@ -966,7 +1044,7 @@ export class AstNode {
   }
   get assertsModifier(): AstNode | undefined {
     switch (this.kind) {
-      case 183:
+      case 184:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -974,11 +1052,11 @@ export class AstNode {
   }
   get asteriskToken(): AstNode | undefined {
     switch (this.kind) {
-      case 230:
+      case 231:
         return this.childNodeAt(0);
-      case 175:
-      case 219:
-      case 263:
+      case 176:
+      case 220:
+      case 264:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -986,17 +1064,18 @@ export class AstNode {
   }
   get attributes(): AstNode | AstNodeList | undefined {
     switch (this.kind) {
-      case 301:
+      case 302:
         return this.childAt(0);
-      case 206:
+      case 207:
         return this.childAt(1);
-      case 286:
+      case 269:
       case 287:
+      case 288:
         return this.childAt(2);
-      case 273:
-      case 279:
-      case 343:
-      case 346:
+      case 274:
+      case 280:
+      case 344:
+      case 347:
         return this.childAt(3);
       default:
         return undefined;
@@ -1004,8 +1083,8 @@ export class AstNode {
   }
   get awaitModifier(): AstNode | undefined {
     switch (this.kind) {
-      case 250:
       case 251:
+      case 252:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1013,7 +1092,7 @@ export class AstNode {
   }
   get block(): AstNode | undefined {
     switch (this.kind) {
-      case 300:
+      case 301:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1021,7 +1100,7 @@ export class AstNode {
   }
   get caseBlock(): AstNode | undefined {
     switch (this.kind) {
-      case 256:
+      case 257:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1029,7 +1108,7 @@ export class AstNode {
   }
   get catchClause(): AstNode | undefined {
     switch (this.kind) {
-      case 259:
+      case 260:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1037,7 +1116,7 @@ export class AstNode {
   }
   get checkType(): AstNode | undefined {
     switch (this.kind) {
-      case 195:
+      case 196:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1045,10 +1124,10 @@ export class AstNode {
   }
   get children(): AstNode | AstNodeList | undefined {
     switch (this.kind) {
-      case 344:
+      case 345:
         return this.childAt(0);
-      case 285:
-      case 289:
+      case 286:
+      case 290:
         return this.childAt(1);
       default:
         return undefined;
@@ -1056,8 +1135,8 @@ export class AstNode {
   }
   get className(): AstNode | undefined {
     switch (this.kind) {
-      case 323:
       case 324:
+      case 325:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1065,7 +1144,7 @@ export class AstNode {
   }
   get clauses(): AstNodeList | undefined {
     switch (this.kind) {
-      case 270:
+      case 271:
         return this.childListAt(0);
       default:
         return undefined;
@@ -1073,7 +1152,7 @@ export class AstNode {
   }
   get closingElement(): AstNode | undefined {
     switch (this.kind) {
-      case 285:
+      case 286:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1081,7 +1160,7 @@ export class AstNode {
   }
   get closingFragment(): AstNode | undefined {
     switch (this.kind) {
-      case 289:
+      case 290:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1089,7 +1168,7 @@ export class AstNode {
   }
   get colonToken(): AstNode | undefined {
     switch (this.kind) {
-      case 228:
+      case 229:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1097,33 +1176,33 @@ export class AstNode {
   }
   get comment(): AstNodeList | undefined {
     switch (this.kind) {
-      case 315:
+      case 316:
         return this.childListAt(0);
-      case 322:
-      case 325:
+      case 323:
       case 326:
       case 327:
       case 328:
       case 329:
       case 330:
+      case 331:
         return this.childListAt(1);
-      case 323:
       case 324:
-      case 332:
-      case 334:
+      case 325:
+      case 333:
       case 335:
       case 336:
+      case 337:
+      case 340:
+      case 342:
+      case 343:
+        return this.childListAt(2);
+      case 332:
+      case 334:
+      case 338:
       case 339:
       case 341:
-      case 342:
-        return this.childListAt(2);
-      case 331:
-      case 333:
-      case 337:
-      case 338:
-      case 340:
         return this.childListAt(3);
-      case 343:
+      case 344:
         return this.childListAt(4);
       default:
         return undefined;
@@ -1131,9 +1210,9 @@ export class AstNode {
   }
   get condition(): AstNode | undefined {
     switch (this.kind) {
-      case 228:
+      case 229:
         return this.childNodeAt(0);
-      case 249:
+      case 250:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1141,9 +1220,9 @@ export class AstNode {
   }
   get constraint(): AstNode | undefined {
     switch (this.kind) {
-      case 337:
+      case 338:
         return this.childNodeAt(1);
-      case 169:
+      case 170:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1151,7 +1230,7 @@ export class AstNode {
   }
   get declarationList(): AstNode | undefined {
     switch (this.kind) {
-      case 244:
+      case 245:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1159,7 +1238,7 @@ export class AstNode {
   }
   get declarations(): AstNodeList | undefined {
     switch (this.kind) {
-      case 262:
+      case 263:
         return this.childListAt(0);
       default:
         return undefined;
@@ -1167,7 +1246,7 @@ export class AstNode {
   }
   get defaultType(): AstNode | undefined {
     switch (this.kind) {
-      case 169:
+      case 170:
         return this.childNodeAt(4);
       default:
         return undefined;
@@ -1175,11 +1254,11 @@ export class AstNode {
   }
   get dotDotDotToken(): AstNode | undefined {
     switch (this.kind) {
-      case 203:
-      case 209:
-      case 295:
+      case 204:
+      case 210:
+      case 296:
         return this.childNodeAt(0);
-      case 170:
+      case 171:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1187,7 +1266,7 @@ export class AstNode {
   }
   get elementType(): AstNode | undefined {
     switch (this.kind) {
-      case 189:
+      case 190:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1195,12 +1274,12 @@ export class AstNode {
   }
   get elements(): AstNodeList | undefined {
     switch (this.kind) {
-      case 190:
-      case 207:
+      case 191:
       case 208:
-      case 210:
-      case 276:
-      case 280:
+      case 209:
+      case 211:
+      case 277:
+      case 281:
         return this.childListAt(0);
       default:
         return undefined;
@@ -1208,7 +1287,7 @@ export class AstNode {
   }
   get elseStatement(): AstNode | undefined {
     switch (this.kind) {
-      case 246:
+      case 247:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1216,7 +1295,7 @@ export class AstNode {
   }
   get endOfFileToken(): AstNode | undefined {
     switch (this.kind) {
-      case 307:
+      case 308:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1224,7 +1303,7 @@ export class AstNode {
   }
   get equalsGreaterThanToken(): AstNode | undefined {
     switch (this.kind) {
-      case 220:
+      case 221:
         return this.childNodeAt(4);
       default:
         return undefined;
@@ -1232,7 +1311,7 @@ export class AstNode {
   }
   get equalsToken(): AstNode | undefined {
     switch (this.kind) {
-      case 304:
+      case 305:
         return this.childNodeAt(4);
       default:
         return undefined;
@@ -1240,7 +1319,7 @@ export class AstNode {
   }
   get exclamationToken(): AstNode | undefined {
     switch (this.kind) {
-      case 261:
+      case 262:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1248,7 +1327,7 @@ export class AstNode {
   }
   get exportClause(): AstNode | undefined {
     switch (this.kind) {
-      case 279:
+      case 280:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1256,7 +1335,7 @@ export class AstNode {
   }
   get exprName(): AstNode | undefined {
     switch (this.kind) {
-      case 187:
+      case 188:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1264,48 +1343,48 @@ export class AstNode {
   }
   get expression(): AstNode | undefined {
     switch (this.kind) {
-      case 168:
-      case 171:
-      case 212:
+      case 169:
+      case 172:
       case 213:
       case 214:
       case 215:
-      case 218:
-      case 221:
+      case 216:
+      case 219:
       case 222:
       case 223:
       case 224:
-      case 231:
-      case 234:
+      case 225:
+      case 232:
       case 235:
       case 236:
-      case 239:
+      case 237:
       case 240:
-      case 245:
+      case 241:
       case 246:
-      case 248:
-      case 254:
+      case 247:
+      case 249:
       case 255:
       case 256:
-      case 258:
-      case 284:
-      case 294:
-      case 297:
-      case 298:
-      case 305:
-      case 348:
-      case 349:
-        return this.childNodeAt(0);
-      case 217:
-      case 230:
-      case 247:
+      case 257:
+      case 259:
+      case 285:
       case 295:
+      case 298:
+      case 299:
+      case 306:
+      case 349:
+      case 350:
+        return this.childNodeAt(0);
+      case 218:
+      case 231:
+      case 248:
+      case 296:
         return this.childNodeAt(1);
-      case 250:
       case 251:
-      case 278:
+      case 252:
+      case 279:
         return this.childNodeAt(2);
-      case 169:
+      case 170:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1313,7 +1392,7 @@ export class AstNode {
   }
   get extendsType(): AstNode | undefined {
     switch (this.kind) {
-      case 195:
+      case 196:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1321,7 +1400,7 @@ export class AstNode {
   }
   get falseType(): AstNode | undefined {
     switch (this.kind) {
-      case 195:
+      case 196:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1329,7 +1408,7 @@ export class AstNode {
   }
   get finallyBlock(): AstNode | undefined {
     switch (this.kind) {
-      case 259:
+      case 260:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1337,8 +1416,8 @@ export class AstNode {
   }
   get head(): AstNode | undefined {
     switch (this.kind) {
-      case 204:
-      case 229:
+      case 205:
+      case 230:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1346,9 +1425,9 @@ export class AstNode {
   }
   get heritageClauses(): AstNodeList | undefined {
     switch (this.kind) {
-      case 232:
-      case 264:
+      case 233:
       case 265:
+      case 266:
         return this.childListAt(3);
       default:
         return undefined;
@@ -1356,9 +1435,9 @@ export class AstNode {
   }
   get importClause(): AstNode | undefined {
     switch (this.kind) {
-      case 273:
-      case 343:
-      case 346:
+      case 274:
+      case 344:
+      case 347:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1366,7 +1445,7 @@ export class AstNode {
   }
   get incrementor(): AstNode | undefined {
     switch (this.kind) {
-      case 249:
+      case 250:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1374,7 +1453,7 @@ export class AstNode {
   }
   get indexType(): AstNode | undefined {
     switch (this.kind) {
-      case 200:
+      case 201:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1382,7 +1461,7 @@ export class AstNode {
   }
   get jsdocPropertyTags(): AstNode | undefined {
     switch (this.kind) {
-      case 317:
+      case 318:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1390,9 +1469,9 @@ export class AstNode {
   }
   get label(): AstNode | undefined {
     switch (this.kind) {
-      case 252:
       case 253:
-      case 257:
+      case 254:
+      case 258:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1400,10 +1479,10 @@ export class AstNode {
   }
   get literal(): AstNode | undefined {
     switch (this.kind) {
-      case 202:
+      case 203:
         return this.childNodeAt(0);
-      case 205:
-      case 240:
+      case 206:
+      case 241:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1411,15 +1490,15 @@ export class AstNode {
   }
   get members(): AstNodeList | undefined {
     switch (this.kind) {
-      case 188:
+      case 189:
         return this.childListAt(0);
-      case 267:
+      case 268:
         return this.childListAt(2);
-      case 232:
-      case 264:
+      case 233:
       case 265:
+      case 266:
         return this.childListAt(4);
-      case 201:
+      case 202:
         return this.childListAt(5);
       default:
         return undefined;
@@ -1427,7 +1506,7 @@ export class AstNode {
   }
   get moduleReference(): AstNode | undefined {
     switch (this.kind) {
-      case 272:
+      case 273:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1435,10 +1514,10 @@ export class AstNode {
   }
   get moduleSpecifier(): AstNode | undefined {
     switch (this.kind) {
-      case 273:
-      case 279:
-      case 343:
-      case 346:
+      case 274:
+      case 280:
+      case 344:
+      case 347:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1446,51 +1525,51 @@ export class AstNode {
   }
   get name(): AstNode | undefined {
     switch (this.kind) {
-      case 237:
-      case 261:
-      case 274:
+      case 238:
+      case 262:
       case 275:
-      case 281:
-      case 292:
-      case 302:
-      case 306:
-      case 309:
-      case 319:
+      case 276:
+      case 282:
+      case 293:
+      case 303:
+      case 307:
+      case 310:
       case 320:
       case 321:
+      case 322:
         return this.childNodeAt(0);
-      case 169:
-      case 172:
+      case 170:
       case 173:
       case 174:
-      case 178:
+      case 175:
       case 179:
-      case 203:
-      case 232:
-      case 264:
+      case 180:
+      case 204:
+      case 233:
       case 265:
       case 266:
       case 267:
       case 268:
-      case 271:
+      case 269:
       case 272:
-      case 277:
-      case 282:
-      case 296:
-      case 303:
+      case 273:
+      case 278:
+      case 283:
+      case 297:
       case 304:
-      case 333:
-      case 340:
-      case 345:
+      case 305:
+      case 334:
+      case 341:
+      case 346:
         return this.childNodeAt(1);
-      case 170:
-      case 175:
-      case 209:
-      case 212:
-      case 219:
-      case 263:
-      case 331:
-      case 338:
+      case 171:
+      case 176:
+      case 210:
+      case 213:
+      case 220:
+      case 264:
+      case 332:
+      case 339:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1498,7 +1577,7 @@ export class AstNode {
   }
   get nameExpression(): AstNode | undefined {
     switch (this.kind) {
-      case 339:
+      case 340:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1506,7 +1585,7 @@ export class AstNode {
   }
   get nameType(): AstNode | undefined {
     switch (this.kind) {
-      case 201:
+      case 202:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1514,7 +1593,7 @@ export class AstNode {
   }
   get namedBindings(): AstNode | undefined {
     switch (this.kind) {
-      case 274:
+      case 275:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1522,7 +1601,7 @@ export class AstNode {
   }
   get namespace(): AstNode | undefined {
     switch (this.kind) {
-      case 296:
+      case 297:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1530,7 +1609,7 @@ export class AstNode {
   }
   get objectAssignmentInitializer(): AstNode | undefined {
     switch (this.kind) {
-      case 304:
+      case 305:
         return this.childNodeAt(5);
       default:
         return undefined;
@@ -1538,7 +1617,7 @@ export class AstNode {
   }
   get objectType(): AstNode | undefined {
     switch (this.kind) {
-      case 200:
+      case 201:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1546,7 +1625,7 @@ export class AstNode {
   }
   get openingElement(): AstNode | undefined {
     switch (this.kind) {
-      case 285:
+      case 286:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1554,7 +1633,7 @@ export class AstNode {
   }
   get openingFragment(): AstNode | undefined {
     switch (this.kind) {
-      case 289:
+      case 290:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1562,7 +1641,7 @@ export class AstNode {
   }
   get operatorToken(): AstNode | undefined {
     switch (this.kind) {
-      case 227:
+      case 228:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1570,7 +1649,7 @@ export class AstNode {
   }
   get parameterName(): AstNode | undefined {
     switch (this.kind) {
-      case 183:
+      case 184:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1578,24 +1657,24 @@ export class AstNode {
   }
   get parameters(): AstNodeList | undefined {
     switch (this.kind) {
-      case 180:
       case 181:
       case 182:
-      case 185:
-      case 318:
-        return this.childListAt(1);
-      case 177:
+      case 183:
       case 186:
-      case 220:
-        return this.childListAt(2);
+      case 319:
+        return this.childListAt(1);
       case 178:
+      case 187:
+      case 221:
+        return this.childListAt(2);
       case 179:
+      case 180:
         return this.childListAt(3);
-      case 174:
-      case 219:
-      case 263:
-        return this.childListAt(4);
       case 175:
+      case 220:
+      case 264:
+        return this.childListAt(4);
+      case 176:
         return this.childListAt(5);
       default:
         return undefined;
@@ -1603,13 +1682,13 @@ export class AstNode {
   }
   get postfixToken(): AstNode | undefined {
     switch (this.kind) {
-      case 172:
       case 173:
       case 174:
-      case 303:
-      case 304:
-        return this.childNodeAt(2);
       case 175:
+      case 304:
+      case 305:
+        return this.childNodeAt(2);
+      case 176:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1617,8 +1696,8 @@ export class AstNode {
   }
   get properties(): AstNodeList | undefined {
     switch (this.kind) {
-      case 211:
-      case 293:
+      case 212:
+      case 294:
         return this.childListAt(0);
       default:
         return undefined;
@@ -1626,10 +1705,10 @@ export class AstNode {
   }
   get propertyName(): AstNode | undefined {
     switch (this.kind) {
-      case 277:
-      case 282:
+      case 278:
+      case 283:
         return this.childNodeAt(0);
-      case 209:
+      case 210:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1637,7 +1716,7 @@ export class AstNode {
   }
   get qualifier(): AstNode | undefined {
     switch (this.kind) {
-      case 206:
+      case 207:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1645,10 +1724,10 @@ export class AstNode {
   }
   get questionDotToken(): AstNode | undefined {
     switch (this.kind) {
-      case 212:
       case 213:
       case 214:
-      case 216:
+      case 215:
+      case 217:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1656,7 +1735,7 @@ export class AstNode {
   }
   get readonlyToken(): AstNode | undefined {
     switch (this.kind) {
-      case 201:
+      case 202:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1664,9 +1743,9 @@ export class AstNode {
   }
   get right(): AstNode | undefined {
     switch (this.kind) {
-      case 167:
+      case 168:
         return this.childNodeAt(1);
-      case 227:
+      case 228:
         return this.childNodeAt(4);
       default:
         return undefined;
@@ -1674,15 +1753,15 @@ export class AstNode {
   }
   get statement(): AstNode | undefined {
     switch (this.kind) {
-      case 247:
-        return this.childNodeAt(0);
       case 248:
-      case 255:
-      case 257:
-        return this.childNodeAt(1);
+        return this.childNodeAt(0);
       case 249:
+      case 256:
+      case 258:
+        return this.childNodeAt(1);
       case 250:
       case 251:
+      case 252:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1690,12 +1769,12 @@ export class AstNode {
   }
   get statements(): AstNodeList | undefined {
     switch (this.kind) {
-      case 242:
-      case 269:
-      case 307:
+      case 243:
+      case 270:
+      case 308:
         return this.childListAt(0);
-      case 297:
       case 298:
+      case 299:
         return this.childListAt(1);
       default:
         return undefined;
@@ -1703,7 +1782,7 @@ export class AstNode {
   }
   get tag(): AstNode | undefined {
     switch (this.kind) {
-      case 216:
+      case 217:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1711,10 +1790,9 @@ export class AstNode {
   }
   get tagName(): AstNode | undefined {
     switch (this.kind) {
-      case 286:
       case 287:
       case 288:
-      case 322:
+      case 289:
       case 323:
       case 324:
       case 325:
@@ -1736,6 +1814,7 @@ export class AstNode {
       case 341:
       case 342:
       case 343:
+      case 344:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1743,7 +1822,7 @@ export class AstNode {
   }
   get tags(): AstNodeList | undefined {
     switch (this.kind) {
-      case 315:
+      case 316:
         return this.childListAt(1);
       default:
         return undefined;
@@ -1751,7 +1830,7 @@ export class AstNode {
   }
   get template(): AstNode | undefined {
     switch (this.kind) {
-      case 216:
+      case 217:
         return this.childNodeAt(3);
       default:
         return undefined;
@@ -1759,8 +1838,8 @@ export class AstNode {
   }
   get templateSpans(): AstNodeList | undefined {
     switch (this.kind) {
-      case 204:
-      case 229:
+      case 205:
+      case 230:
         return this.childListAt(1);
       default:
         return undefined;
@@ -1768,7 +1847,7 @@ export class AstNode {
   }
   get thenStatement(): AstNode | undefined {
     switch (this.kind) {
-      case 246:
+      case 247:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1776,7 +1855,7 @@ export class AstNode {
   }
   get thisArg(): AstNode | undefined {
     switch (this.kind) {
-      case 349:
+      case 350:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1784,7 +1863,7 @@ export class AstNode {
   }
   get trueType(): AstNode | undefined {
     switch (this.kind) {
-      case 195:
+      case 196:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1792,7 +1871,7 @@ export class AstNode {
   }
   get tryBlock(): AstNode | undefined {
     switch (this.kind) {
-      case 259:
+      case 260:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1800,7 +1879,7 @@ export class AstNode {
   }
   get tupleNameSource(): AstNode | undefined {
     switch (this.kind) {
-      case 238:
+      case 239:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1808,52 +1887,52 @@ export class AstNode {
   }
   get type(): AstNode | undefined {
     switch (this.kind) {
-      case 191:
       case 192:
-      case 197:
-      case 199:
-      case 205:
-      case 217:
-      case 308:
-      case 311:
+      case 193:
+      case 198:
+      case 200:
+      case 206:
+      case 218:
+      case 309:
       case 312:
       case 313:
       case 314:
+      case 315:
         return this.childNodeAt(0);
-      case 235:
-      case 239:
-      case 278:
+      case 236:
+      case 240:
+      case 279:
         return this.childNodeAt(1);
-      case 180:
       case 181:
       case 182:
       case 183:
-      case 185:
-      case 227:
-      case 261:
-      case 318:
-        return this.childNodeAt(2);
-      case 172:
-      case 173:
-      case 177:
+      case 184:
       case 186:
-      case 203:
-      case 220:
-      case 266:
-      case 303:
-      case 304:
-      case 345:
-        return this.childNodeAt(3);
-      case 170:
-      case 178:
-      case 179:
-      case 201:
-        return this.childNodeAt(4);
+      case 228:
+      case 262:
+      case 319:
+        return this.childNodeAt(2);
+      case 173:
       case 174:
-      case 219:
-      case 263:
-        return this.childNodeAt(5);
+      case 178:
+      case 187:
+      case 204:
+      case 221:
+      case 267:
+      case 304:
+      case 305:
+      case 346:
+        return this.childNodeAt(3);
+      case 171:
+      case 179:
+      case 180:
+      case 202:
+        return this.childNodeAt(4);
       case 175:
+      case 220:
+      case 264:
+        return this.childNodeAt(5);
+      case 176:
         return this.childNodeAt(6);
       default:
         return undefined;
@@ -1861,17 +1940,17 @@ export class AstNode {
   }
   get typeArguments(): AstNodeList | undefined {
     switch (this.kind) {
-      case 184:
-      case 187:
-      case 215:
-      case 234:
-      case 286:
-      case 287:
-        return this.childListAt(1);
-      case 214:
+      case 185:
+      case 188:
       case 216:
+      case 235:
+      case 287:
+      case 288:
+        return this.childListAt(1);
+      case 215:
+      case 217:
         return this.childListAt(2);
-      case 206:
+      case 207:
         return this.childListAt(3);
       default:
         return undefined;
@@ -1879,17 +1958,17 @@ export class AstNode {
   }
   get typeExpression(): AstNode | undefined {
     switch (this.kind) {
-      case 331:
       case 332:
-      case 334:
+      case 333:
       case 335:
       case 336:
-      case 338:
-      case 341:
+      case 337:
+      case 339:
       case 342:
+      case 343:
         return this.childNodeAt(1);
-      case 333:
-      case 340:
+      case 334:
+      case 341:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1897,7 +1976,7 @@ export class AstNode {
   }
   get typeName(): AstNode | undefined {
     switch (this.kind) {
-      case 184:
+      case 185:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1905,9 +1984,9 @@ export class AstNode {
   }
   get typeParameter(): AstNode | undefined {
     switch (this.kind) {
-      case 196:
+      case 197:
         return this.childNodeAt(0);
-      case 201:
+      case 202:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1915,29 +1994,29 @@ export class AstNode {
   }
   get typeParameters(): AstNodeList | undefined {
     switch (this.kind) {
-      case 180:
       case 181:
-      case 185:
-      case 318:
-        return this.childListAt(0);
-      case 177:
+      case 182:
       case 186:
-      case 220:
-        return this.childListAt(1);
+      case 319:
+        return this.childListAt(0);
       case 178:
+      case 187:
+      case 221:
+        return this.childListAt(1);
       case 179:
-      case 232:
-      case 264:
+      case 180:
+      case 233:
       case 265:
       case 266:
-      case 337:
-      case 345:
+      case 267:
+      case 338:
+      case 346:
         return this.childListAt(2);
-      case 174:
-      case 219:
-      case 263:
-        return this.childListAt(3);
       case 175:
+      case 220:
+      case 264:
+        return this.childListAt(3);
+      case 176:
         return this.childListAt(4);
       default:
         return undefined;
@@ -1945,9 +2024,9 @@ export class AstNode {
   }
   get types(): AstNodeList | undefined {
     switch (this.kind) {
-      case 193:
       case 194:
-      case 299:
+      case 195:
+      case 300:
         return this.childListAt(0);
       default:
         return undefined;
@@ -1955,7 +2034,7 @@ export class AstNode {
   }
   get value(): AstNode | undefined {
     switch (this.kind) {
-      case 302:
+      case 303:
         return this.childNodeAt(1);
       default:
         return undefined;
@@ -1963,7 +2042,7 @@ export class AstNode {
   }
   get variableDeclaration(): AstNode | undefined {
     switch (this.kind) {
-      case 300:
+      case 301:
         return this.childNodeAt(0);
       default:
         return undefined;
@@ -1971,7 +2050,7 @@ export class AstNode {
   }
   get whenFalse(): AstNode | undefined {
     switch (this.kind) {
-      case 228:
+      case 229:
         return this.childNodeAt(4);
       default:
         return undefined;
@@ -1979,7 +2058,7 @@ export class AstNode {
   }
   get whenTrue(): AstNode | undefined {
     switch (this.kind) {
-      case 228:
+      case 229:
         return this.childNodeAt(2);
       default:
         return undefined;
@@ -1987,20 +2066,20 @@ export class AstNode {
   }
   private bodySlot(): number {
     switch (this.kind) {
-      case 176:
-        return 1;
-      case 268:
-        return 2;
       case 177:
-        return 4;
+        return 1;
+      case 269:
+        return 3;
       case 178:
+        return 4;
       case 179:
-      case 220:
+      case 180:
+      case 221:
         return 5;
-      case 219:
-      case 263:
+      case 220:
+      case 264:
         return 6;
-      case 175:
+      case 176:
         return 7;
       default:
         return -1;
@@ -2008,21 +2087,21 @@ export class AstNode {
   }
   private initializerSlot(): number {
     switch (this.kind) {
-      case 249:
-        return 0;
       case 250:
+        return 0;
       case 251:
-      case 292:
-      case 306:
+      case 252:
+      case 293:
+      case 307:
         return 1;
-      case 209:
-      case 261:
+      case 210:
+      case 262:
         return 3;
-      case 172:
       case 173:
-      case 303:
+      case 174:
+      case 304:
         return 4;
-      case 170:
+      case 171:
         return 5;
       default:
         return -1;
@@ -2030,9 +2109,9 @@ export class AstNode {
   }
   private leftSlot(): number {
     switch (this.kind) {
-      case 167:
+      case 168:
         return 0;
-      case 227:
+      case 228:
         return 1;
       default:
         return -1;
@@ -2040,9 +2119,8 @@ export class AstNode {
   }
   private modifiersSlot(): number {
     switch (this.kind) {
-      case 169:
       case 170:
-      case 172:
+      case 171:
       case 173:
       case 174:
       case 175:
@@ -2050,29 +2128,30 @@ export class AstNode {
       case 177:
       case 178:
       case 179:
-      case 182:
-      case 186:
-      case 219:
+      case 180:
+      case 183:
+      case 187:
       case 220:
-      case 227:
-      case 232:
-      case 244:
-      case 263:
+      case 221:
+      case 228:
+      case 233:
+      case 245:
       case 264:
       case 265:
       case 266:
       case 267:
       case 268:
-      case 271:
+      case 269:
       case 272:
       case 273:
-      case 278:
+      case 274:
       case 279:
-      case 283:
-      case 303:
+      case 280:
+      case 284:
       case 304:
-      case 345:
+      case 305:
       case 346:
+      case 347:
         return 0;
       default:
         return -1;
@@ -2080,8 +2159,8 @@ export class AstNode {
   }
   private operandSlot(): number {
     switch (this.kind) {
-      case 225:
       case 226:
+      case 227:
         return 0;
       default:
         return -1;
@@ -2089,12 +2168,12 @@ export class AstNode {
   }
   private questionTokenSlot(): number {
     switch (this.kind) {
-      case 228:
+      case 229:
         return 1;
-      case 203:
+      case 204:
         return 2;
-      case 170:
-      case 201:
+      case 171:
+      case 202:
         return 3;
       default:
         return -1;

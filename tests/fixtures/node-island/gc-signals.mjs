@@ -3,7 +3,9 @@
 // record, and drops both; then the island makes a signal per iteration and
 // the program reads it and drops it. Ten controllers stay with the program and four
 // signals with the island whatever the count, so what a run holds at its
-// end does not grow with it. Usage: gc-signals <n>
+// end does not grow with it. Usage: gc-signals <n> [collections]
+// (collections: that many full V8 collections after the last request, each
+// followed by a turn of the loop, before the kept controllers abort).
 import { requireModule } from "@scriptc/node";
 
 const lib = requireModule("./gc-signals.cjs");
@@ -33,6 +35,13 @@ for (let i = 0; i < n; i++) {
   const signal = lib.own();
   if (signal.aborted) islandAborted++;
   if (i % 500 === 499) await new Promise((resolve) => setImmediate(() => resolve(undefined)));
+}
+// What a run holds once V8 has collected is what it keeps, whenever V8 last
+// collected by itself.
+const collections = Number(process.argv[3] ?? "0");
+for (let round = 0; round < collections; round++) {
+  lib.fullGc();
+  await new Promise((resolve) => setImmediate(() => resolve(undefined)));
 }
 // The program's controllers still reach the island's listeners and the
 // signals that follow them.

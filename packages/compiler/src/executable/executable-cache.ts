@@ -74,13 +74,29 @@ export interface EarlyExecutableNativeFeatures {
   mutableBuffers: boolean;
   fsFlags?: boolean;
   fsExistsValue?: boolean;
+  moduleCompileCache?: boolean;
+  /** A function's inherited member shadowed by an own data property:
+   * SCR_FN_MEMBER_PROPS. */
+  fnMemberProps?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
+  /** A process output stream held as a value: with Node islands,
+   * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
+  stdioObject?: boolean;
+  /** The process stream object's color methods: SCR_TTY_COLORS and
+   * scr_tty_colors.c. */
+  ttyColors?: boolean;
+  /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
+  streamPipeEvents?: boolean;
+  /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
+  fsStreamSignal?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
+  /** A child output stream's flowing state: SCR_CHILD_STREAM_FLOW. */
+  childStreamFlow?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
@@ -98,6 +114,9 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  /** process.features as a value: scr_process_features.c. */
+  processFeatures?: boolean;
+  islandChild?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
@@ -107,16 +126,25 @@ export interface EarlyExecutableNativeFeatures {
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   reflectProtoTarget?: boolean;
+  classTestPrototype?: boolean;
   recordSourceDelete?: boolean;
   recordViewFrozen?: boolean;
   genBind?: boolean;
   genReceiver?: boolean;
+  /** The kept-source read of a record-to-record conversion:
+   * scr_record_source_get.c. Absent (false) otherwise. */
+  recordSourceGet?: boolean;
+  /** A join of an array of strings: scr_arr_join_str.c. Absent (false)
+   * otherwise. */
+  arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
+  utilMarkPromiseAsHandled?: boolean;
+  utilTraceSigInt?: boolean;
   dynBuffer?: boolean;
   fsPathValue?: boolean;
   builtinValues?: boolean;
@@ -138,6 +166,11 @@ export interface EarlyExecutableNativeFeatures {
   /** A computed read of the global object, or `… in globalThis`:
    * scr_global_host_absent.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic:
+   * scr_deferred_fence.c. */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -156,6 +189,7 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dnsResolve: boolean;
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;
@@ -252,8 +286,8 @@ export interface EarlyExecutableCacheOptions {
   profile?: string;
   /** Omitted without a function layout; otherwise the digest of its bytes. */
   functionLayout?: string;
-  /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
-   * tsc-ts executable's file identity. */
+  /** Omitted for the tsgo checker; otherwise the tsc-ts executable's file
+   * identity (frontend/ts7/checker-backend.ts checkerCacheIdentity). */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
@@ -264,6 +298,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted without --define; otherwise its values as JSON. */
+  define?: string;
   /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
   nodeIslands?: string;
   /** Omitted unless shape inference's overlay compiles the packages
@@ -469,6 +505,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
       : options.npmStatic === "auto"
         ? "<npm-static-auto>"
         : JSON.stringify(options.npmStatic),
+    ...(options.define !== undefined ? [`define:${options.define}`] : []),
     options.target,
     options.compiler.join("\x1f"),
     options.nativeEnvironment,
@@ -530,7 +567,9 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
           ? "<npm-static-auto>"
           : JSON.stringify(options.npmStatic),
     )
-    .update("\0")
+    .update("\0");
+  if (options.define !== undefined) hash.update(`define:${options.define}\0`);
+  hash
     .update(options.target)
     .update("\0")
     .update(options.compiler.join("\x1f"))

@@ -1,3 +1,4 @@
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
@@ -9,12 +10,14 @@ import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
   isJsonStringifyDynamicType,
+  isJsonStringifyRuntimeScalarType,
   BOOL,
   DYN,
   type IrType,
   classDynViewSupported,
   isClassOwnEnumerableFieldName,
   isDynTypedRefType,
+  isLiveDynRefType,
   type IrExpr,
   STRING,
   type SrcLoc,
@@ -182,6 +185,11 @@ export function lowerJsonMethodCall(
         value.type,
         (id) => lowerer.shapes.get(id),
         (id) => lowerer.unions.get(id),
+      ) ||
+      isJsonStringifyRuntimeScalarType(
+        value.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
       )
     ) {
       const unreadable = classFieldWithoutJsonView(lowerer, value.type, new Set());
@@ -196,14 +204,18 @@ export function lowerJsonMethodCall(
       }
       // Keep the original containers live while the runtime visits them:
       // a toJSON callback can mutate a later field, and shared/cyclic
-      // references must retain their identities throughout traversal.
+      // references must retain their identities throughout traversal. A
+      // union of scalars only (`bigint | number`, `symbol | string`) holds
+      // no container: it converts by value.
       const boxed: IrExpr =
         value.type.kind === "dyn"
           ? value
           : {
               kind: "dynFrom",
               value,
-              ...(value.type.kind === "url" ? {} : { liveRef: true }),
+              ...(isLiveDynRefType(value.type, (id) => lowerer.unions.get(id))
+                ? { liveRef: true }
+                : {}),
               type: DYN,
               loc,
             };
@@ -437,7 +449,7 @@ function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): bo
  * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
  * compile time instead of throwing when the view is built or written. */
-function classFieldWithoutJsonView(
+export function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,
@@ -518,14 +530,22 @@ function lowerJsonCallback(
   role: "replacer" | "reviver",
 ): IrExpr {
   const callback = lowerer.lowerExpr(node);
-  if (callback.type.kind === "dyn") return callback;
+  // Node passes a reviver three arguments: the key, the value and the
+  // source context, which has no native form. A reviver that names two
+  // parameters cannot tell; one that takes every argument can, whatever
+  // type its value arrives as (held untyped by a constant, or lowered
+  // against the two-parameter signature), so it takes the refusal below.
+  const context = role === "reviver" && callbackTakesEveryArgument(lowerer, node);
+  if (callback.type.kind === "dyn" && !context) return callback;
   if (
+    !context &&
     role === "replacer" &&
     callback.type.kind === "array" &&
     lowerer.dynConvertible(callback.type)
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "union" &&
     lowerer.dynConvertible(callback.type) &&
     lowerer.unions
@@ -541,6 +561,7 @@ function lowerJsonCallback(
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "func" &&
     callback.type.params.length <= 2 &&
     (role !== "reviver" || (!callback.type.rest && !callback.type.argumentsAll)) &&

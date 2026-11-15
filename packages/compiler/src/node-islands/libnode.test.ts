@@ -197,6 +197,18 @@ describe("the libnode pack identity a cached build keeps", () => {
     withoutProjectPack(libnodeCacheKey(undefined, {}, project));
   });
 
+  test("names a pack installed beside the compiler where the caller finds it", () => {
+    const name = libnodePackPackage(libnodeTarget({}));
+    if (name === null) return;
+    const project = mkdtempSync(join(tmpdir(), "scriptc-libnode-project-"));
+    const beside = pack("24.22.0");
+    const key = libnodeCacheKey(undefined, {}, project, (n) => (n === name ? beside : null));
+    expect(key).toContain(`|${beside}|`);
+    // A package without a manifest (an unbuilt workspace pack) is no pack.
+    const unbuilt = mkdtempSync(join(tmpdir(), "scriptc-libnode-unbuilt-"));
+    withoutProjectPack(libnodeCacheKey(undefined, {}, project, () => unbuilt));
+  });
+
   test("changes when the pack in the same directory is upgraded", () => {
     const dir = pack("24.22.0");
     const before = libnodeCacheKey(dir, {});

@@ -103,7 +103,8 @@ export class NarrowingStability {
     if (this.files === null) return null;
     const e = withoutParenthesesTypeWrappers(expression);
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
-      return this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e))
+      return (this.widenedType(e) !== null || this.jsWidenedRead(e)) &&
+        isNothing(this.lowerer.checker.getTypeAtLocation(e))
         ? e
         : null;
     }
@@ -121,6 +122,37 @@ export class NarrowingStability {
       }
     }
     return null;
+  }
+
+  /** A read of a JavaScript binding assigned values outside the type its
+   * initializer gives it (`let c = void 0; c = 4`: Lowerer
+   * analyzeJsWidenedBindings). The binding holds what the program stored, so
+   * the checker's type at the read does not describe the value. */
+  private jsWidenedRead(e: ts.Expression): boolean {
+    if (!ts.isIdentifier(e) || this.lowerer.jsWidenedBindings.size === 0) return false;
+    const symbol = this.lowerer.resolveValueSymbol(e);
+    return symbol !== null && symbol !== undefined && this.lowerer.jsWidenedBindings.has(symbol);
+  }
+
+  /** Whether `expression` can evaluate to the right operand of an `&&`
+   * whose left operand can be a read restoredNothingRead answers for: the
+   * checker typed that `&&` by its left operand alone. */
+  private restoredAndAnswers(expression: ts.Expression): boolean {
+    const e = withoutParenthesesTypeWrappers(expression);
+    if (ts.isConditionalExpression(e))
+      return this.restoredAndAnswers(e.whenTrue) || this.restoredAndAnswers(e.whenFalse);
+    if (!ts.isBinaryExpression(e)) return false;
+    switch (e.operatorToken.kind) {
+      case ts.SyntaxKind.AmpersandAmpersandToken:
+        return this.restoredNothingRead(e.left) !== null || this.restoredAndAnswers(e.right);
+      case ts.SyntaxKind.BarBarToken:
+      case ts.SyntaxKind.QuestionQuestionToken:
+        return this.restoredAndAnswers(e.left) || this.restoredAndAnswers(e.right);
+      case ts.SyntaxKind.CommaToken:
+      case ts.SyntaxKind.EqualsToken:
+        return this.restoredAndAnswers(e.right);
+    }
+    return false;
   }
 
   /** The checker narrows this reference below its declared type, and the
@@ -276,8 +308,13 @@ export class NarrowingStability {
           const read = this.restoredNothingRead(write.value);
           const restored = read === null ? null : this.widenedType(read);
           if (restored === null) continue;
-          result =
-            result === null || result === restored ? restored : this.lowerer.checker.getAnyType();
+          // `read && other` stores `other` once the read holds a value, and
+          // the checker, to which the read is nothing, never looked at what
+          // `other` is: the binding holds more than the read's declared type.
+          const held = this.restoredAndAnswers(write.value)
+            ? this.lowerer.checker.getAnyType()
+            : restored;
+          result = result === null || result === held ? held : this.lowerer.checker.getAnyType();
         }
       }
     } finally {

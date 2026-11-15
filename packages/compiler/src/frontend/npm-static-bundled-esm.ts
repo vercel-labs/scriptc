@@ -937,7 +937,12 @@ function hoistInitClasses(
     const clause = cls.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword);
     if (clause === undefined) return true;
     const type = clause.types.nodes[0];
-    if (type === undefined || clause.types.nodes.length !== 1 || type.typeArguments !== undefined)
+    if (
+      type === undefined ||
+      !ts.isExpressionWithTypeArguments(type) ||
+      clause.types.nodes.length !== 1 ||
+      type.typeArguments !== undefined
+    )
       return false;
     let root: ts.Expression = type.expression;
     while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) root = root.expression;

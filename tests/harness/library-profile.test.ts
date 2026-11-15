@@ -582,9 +582,13 @@ describe("library profile fences", () => {
     expect(processIds).toContain("node-builtin.process.isTTY");
     expect(r.profile.fences[1]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
     // The user-timing timeline reads the same clock (mark() and measure()
-    // default to performance.now()), and so do the event-loop metrics, so
-    // they join the perf_hooks family.
+    // default to performance.now(), and so does a new PerformanceMark's
+    // startTime), the PerformanceObserver delivers that timeline's entries,
+    // and the event-loop metrics read the clock too, so they all join the
+    // perf_hooks family.
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
+      "node-builtin.perf_hooks.PerformanceMark",
+      "node-builtin.perf_hooks.PerformanceObserver",
       "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",

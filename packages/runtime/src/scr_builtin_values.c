@@ -670,7 +670,7 @@ static bool scr_bv_append(ScrJsonBuf *b, const ScrDyn *value) {
 static ScrDyn *scr_bv_object_member(const ScrDyn *object, const char *key, size_t key_len) {
   if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
   ScrStr *name = scr_str_new(key, key_len);
-  ScrDyn *value = scr_dyn_typed_ref_key_get(object, name);
+  ScrDyn *value = scr_dyn_typed_ref_own_get(object, name);
   if (!value) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) {
@@ -691,7 +691,10 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
   ScrStr *type = scr_dyn_typeof(object);
   bool is_object = type->len == 6 && memcmp(type->data, "object", 6) == 0;
   scr_str_release(type);
-  if (!is_object || object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_ARR) {
+  /* Node's validateObject rejects an array, including the live capsule a
+   * compiled array crosses an untyped boundary as. */
+  if (!is_object || object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_ARR ||
+      scr_dyn_ref_is_array(object)) {
     scr_dyn_arg_type_fail("pathObject", "of type object", object);
     return NULL;
   }

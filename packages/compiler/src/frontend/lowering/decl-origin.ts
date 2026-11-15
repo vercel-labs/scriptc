@@ -30,6 +30,7 @@
 import type { IrExpr, IrModule } from "../../ir/ir.js";
 import { everyModuleNode } from "../../ir/traverse.js";
 import { trackedReadFile } from "../input-tracker.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import * as ts from "../ts7/adapter.js";
 
 export const ORIGIN_SEPARATOR = "\x1f";
@@ -51,6 +52,10 @@ export function resetDeclOriginVersions(): void {
 }
 
 function packageFileOf(fileName: string): PackageFile | null {
+  // A shipped declaration or package shim is compiler-owned code, not an
+  // installed package's: an install under node_modules must not attribute
+  // its declarations to @scriptc/cli-<platform>.
+  if (!isInstalledPackagePath(fileName)) return null;
   const path = fileName.split("\\").join("/");
   const marker = "/node_modules/";
   const at = path.lastIndexOf(marker);

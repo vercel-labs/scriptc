@@ -69,7 +69,12 @@ export function compilerOwnedFileName(file: string): string | null {
   for (const { from, to } of compilerOwnedFileRoots()) {
     if (path.startsWith(from)) return to + path.slice(from.length);
   }
-  for (const declaration of [ambientDtsPath(), overridesDtsPath(), fallbackDtsPath()]) {
+  for (const declaration of [
+    ambientDtsPath(),
+    overridesDtsPath(),
+    fallbackDtsPath(),
+    domExceptionDtsPath(),
+  ]) {
     if (path === declaration) return `scriptc:${path.slice(path.lastIndexOf("/") + 1)}`;
   }
   const modules = fallbackModuleRoot() + "/";
@@ -101,6 +106,15 @@ export function overridesDtsPath(): string {
  * would collide). */
 export function fallbackDtsPath(): string {
   return declarationPath("scriptc-node-fallback.d.ts");
+}
+
+/** Path of the shipped declaration of the DOMException global for a program
+ * whose own @types/node declares none: added beside those types when the
+ * program holds one of scriptc's package implementations (program.ts,
+ * nodeTypesSupplementRoots7). The fallback declarations carry the same
+ * declaration themselves. A standard-library file, like them. */
+export function domExceptionDtsPath(): string {
+  return declarationPath("scriptc-dom-exception.d.ts");
 }
 
 const FALLBACK_MODULE_DIRECTORY = "node-fallback";
@@ -231,10 +245,15 @@ export function isFallbackModuleDtsPath(file: string): boolean {
   return tsgoPath(file).startsWith(fallbackModuleRoot() + "/");
 }
 
-/** True for the fallback declarations: the core file and the module files. */
+/** True for the fallback declarations: the core file, the module files, and
+ * the DOMException declaration that stands beside an older @types/node. */
 export function isFallbackDtsPath(file: string): boolean {
   const path = tsgoPath(file);
-  return path === fallbackDtsPath() || path.startsWith(fallbackModuleRoot() + "/");
+  return (
+    path === fallbackDtsPath() ||
+    path === domExceptionDtsPath() ||
+    path.startsWith(fallbackModuleRoot() + "/")
+  );
 }
 
 /** True for files belonging to the adopted Node type surface: the

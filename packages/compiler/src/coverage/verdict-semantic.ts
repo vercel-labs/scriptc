@@ -14,6 +14,10 @@ export const commentOnlyReplay: SemanticReplay = (probes, sources, coverage) => 
   for (const source of sources) previous.set(source.path, source.text);
   const match = frontendInputsSemanticallyMatch(probes, previous, semanticallyEqualSource);
   if (match === null || match.changed.length === 0) return null;
+  // The verdict's locations are moved to the edited text below, which a
+  // location in what a rewrite appended to a file cannot be (see
+  // FrontendSemanticChange.appended): analyzed again.
+  if (match.changed.some((change) => change.appended === true)) return null;
   const current = new Map(previous);
   for (const [path, text] of match.currentSources) current.set(path, text);
   const rebased = rebaseSourceLocations(structuredClone(coverage), previous, current);

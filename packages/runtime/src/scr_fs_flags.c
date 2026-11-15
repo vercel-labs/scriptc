@@ -153,6 +153,28 @@ static bool scr_fs_write_flags_ok(const ScrStr *flags, const char *dflt, int *bi
   return false;
 }
 
+/* stringToFlags over the options record's flag when the call site did not
+ * pin it to a name. Node reads the flag as `options.flag || <the form's
+ * default>`, so a falsy value (0, "", NaN, false, nullish) is the default;
+ * a number goes through validateInt32 and IS the open(2) bit set; a string
+ * is one of the documented spellings; anything else throws
+ * ERR_INVALID_ARG_VALUE. False with the error thrown. */
+static bool scr_fs_write_flags_dyn(const ScrDyn *value, const char *dflt, int *bits) {
+  if (value == NULL || !scr_dyn_truthy(value)) {
+    *bits = scr_fs_write_flag_bits(dflt, strlen(dflt));
+    return true;
+  }
+  if (value->kind == SCR_DYN_STR) return scr_fs_write_flags_ok(value->v.str, dflt, bits);
+  if (value->kind == SCR_DYN_NUM) {
+    double parsed;
+    if (!scr_fs_flags_number_valid(value->v.num, &parsed)) return false;
+    *bits = (int)parsed;
+    return true;
+  }
+  scr_dyn_arg_value_fail("flags", NULL, value);
+  return false;
+}
+
 /* The open(2) write behind the options form: the flags decide whether an
  * existing file is truncated, appended to or left alone, and the creation
  * mode applies at CREATION only (umask applying) — an existing file keeps
@@ -181,41 +203,97 @@ static void scr_fs_write_bytes_at(ScrStr *path, const uint8_t *bytes, size_t len
   if (close(fd) != 0) scr_fs_throw(errno, "close", path);
 }
 
-/* The encoding name check both data kinds share: Node validates the
- * encoding option before it looks at the data, so an invalid name throws
- * even though Buffer data is written without it. An empty name is utf8. */
+/* getOptions' assertEncoding over a write's encoding name: an empty name is
+ * utf8, and "buffer" passes here too (Node's check skips it for
+ * Buffer.isEncoding's benefit) — Buffer.from rejects that name when a
+ * string has to be encoded, which happens later. */
 static bool scr_fs_write_encoding_ok(ScrStr *encoding) {
-  if (encoding->len == 0 || scr_bytes_is_encoding(encoding)) return true;
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) ||
+      (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0))
+    return true;
   ScrDyn *value = scr_dyn_new_str(encoding);
   scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
   scr_dyn_release(value);
   return false;
 }
 
-/* The string data of an options-form write, encoded with the requested
- * encoding (Node's Buffer.from(data, encoding) — "utf8" and the empty name
- * copy the bytes). An invalid name throws ERR_INVALID_ARG_VALUE before the
- * file is touched. */
-static void scr_fs_write_string(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
-                                const ScrStr *flags, const char *defaultFlag) {
-  /* Node reads the options in this order: encoding, flag, mode, and only
-   * then the path, so each invalid value reports before the next. */
-  if (!scr_fs_write_encoding_ok(encoding)) return;
-  int bits = 0;
-  if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
-  if (!scr_fs_write_mode_ok(mode)) return;
+/* Buffer.from(string, "buffer"): Node's decoder rejects the name
+ * getOptions let through, as ERR_UNKNOWN_ENCODING. */
+static void scr_fs_write_unknown_buffer(ScrStr *encoding) {
+  ScrStr *normalized = scr_bytes_normalize_encoding(encoding);
+  scr_str_release(normalized);
+}
+
+/* parseFileMode's ladder for the options record's mode when the call site
+ * did not pin it to a number: a nullish value is the 0o666 creation
+ * default, an octal string parses base 8, and a number goes through
+ * validateUint32. Node names the value "mode" here (the record's `mode` key
+ * reaches open(2)'s mode argument). False with the error thrown. */
+static bool scr_fs_write_mode_dyn(const ScrDyn *value, double *out) {
+  if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
+    *out = 0666;
+    return true;
+  }
+  if (value->kind == SCR_DYN_STR) return scr_fs_mode_octal(value->v.str, "mode", out);
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("mode", "of type number", value);
+    return false;
+  }
+  return scr_fs_mode_number_valid(value->v.num, "mode", out);
+}
+
+/* The string data of an options-form write once the mode and flags
+ * validated, encoded with the requested encoding (Node's
+ * Buffer.from(data, encoding) — "utf8" and the empty name copy the
+ * bytes). An invalid name throws ERR_INVALID_ARG_VALUE before the file is
+ * touched. */
+static void scr_fs_write_string_at(ScrStr *path, ScrStr *data, ScrStr *encoding, mode_t mode,
+                                   int bits) {
   if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) {
     char *owned;
     const char *bytes = scr_str_utf8(data, &owned);
-    scr_fs_write_bytes_at(path, (const uint8_t *)bytes, data->len, (mode_t)mode, bits);
+    scr_fs_write_bytes_at(path, (const uint8_t *)bytes, data->len, mode, bits);
     scr_str_utf8_end(owned);
     return;
   }
   ScrBytes *encoded = scr_bytes_from_str_checked(data, encoding);
   if (!encoded) return;
   scr_fs_write_bytes_at(path, encoded->data, encoded->len * scr_bytes_elem_size(encoded->elem),
-                        (mode_t)mode, bits);
+                        mode, bits);
   scr_bytes_release(encoded);
+}
+
+static void scr_fs_write_string(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                const ScrStr *flags, const char *defaultFlag) {
+  /* Node reads the options in this order: encoding, then Buffer.from(data,
+   * encoding) for string data, then openSync's getValidatedPath, flags and
+   * mode. Each invalid value reports before the next. */
+  if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) {
+    scr_fs_write_unknown_buffer(encoding);
+    return;
+  }
+  if (!scr_fs_path_ok(path, "path")) return;
+  int bits = 0;
+  if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
+  if (!scr_fs_write_mode_ok(mode)) return;
+  scr_fs_write_string_at(path, data, encoding, (mode_t)mode, bits);
+}
+
+static void scr_fs_write_string_dyn(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                    const ScrDyn *mode, const ScrDyn *flags,
+                                    const char *defaultFlag) {
+  if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) {
+    scr_fs_write_unknown_buffer(encoding);
+    return;
+  }
+  if (!scr_fs_path_ok(path, "path")) return;
+  int bits = 0;
+  if (!scr_fs_write_flags_dyn(flags, defaultFlag, &bits)) return;
+  double parsed;
+  if (!scr_fs_write_mode_dyn(mode, &parsed)) return;
+  scr_fs_write_string_at(path, data, encoding, (mode_t)parsed, bits);
 }
 
 /* The Buffer data of an options-form write: the bytes are already what
@@ -223,15 +301,33 @@ static void scr_fs_write_string(ScrStr *path, ScrStr *data, ScrStr *encoding, do
  * validated and otherwise ignored, exactly Node. The bytes are snapshotted
  * like the plain byte write's, so a shared payload reaches write() as a
  * local copy rather than as storage another thread may change. */
+static void scr_fs_write_blob_at(ScrStr *path, const ScrBytes *data, mode_t mode, int bits) {
+  SCR_BYTES_SNAPSHOT(data);
+  scr_fs_write_bytes_at(path, data->data, data->len * scr_bytes_elem_size(data->elem), mode, bits);
+}
+
 static void scr_fs_write_blob(ScrStr *path, const ScrBytes *data, ScrStr *encoding, double mode,
                               const ScrStr *flags, const char *defaultFlag) {
+  /* Byte data is never decoded, so "buffer" is just another name that
+   * passed assertEncoding; the path check precedes openSync's flags. */
   if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (!scr_fs_path_ok(path, "path")) return;
   int bits = 0;
   if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
   if (!scr_fs_write_mode_ok(mode)) return;
-  SCR_BYTES_SNAPSHOT(data);
-  scr_fs_write_bytes_at(path, data->data, data->len * scr_bytes_elem_size(data->elem), (mode_t)mode,
-                        bits);
+  scr_fs_write_blob_at(path, data, (mode_t)mode, bits);
+}
+
+static void scr_fs_write_blob_dyn(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                  const ScrDyn *mode, const ScrDyn *flags,
+                                  const char *defaultFlag) {
+  if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (!scr_fs_path_ok(path, "path")) return;
+  int bits = 0;
+  if (!scr_fs_write_flags_dyn(flags, defaultFlag, &bits)) return;
+  double parsed;
+  if (!scr_fs_write_mode_dyn(mode, &parsed)) return;
+  scr_fs_write_blob_at(path, data, (mode_t)parsed, bits);
 }
 
 /* writeFileSync(p, data, { encoding, mode, flag }) and appendFileSync's
@@ -255,6 +351,31 @@ void scr_fs_write_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr 
 void scr_fs_append_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
                                       double mode, ScrStr *flags) {
   scr_fs_write_blob(path, data, encoding, mode, flags, "a");
+}
+
+/* The same four writes with a mode and/or a flag whose static type the call
+ * site did not pin down: an octal string or open(2) bits, a nullish or falsy
+ * value that takes the form's default, or a dynamic value whose kind is
+ * checked at run time. The flag and mode validation keeps Node's order. */
+void scr_fs_write_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                        const ScrDyn *mode, const ScrDyn *flags) {
+  scr_fs_write_string_dyn(path, data, encoding, mode, flags, "w");
+}
+
+void scr_fs_append_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                         const ScrDyn *mode, const ScrDyn *flags) {
+  scr_fs_write_string_dyn(path, data, encoding, mode, flags, "a");
+}
+
+void scr_fs_write_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags) {
+  scr_fs_write_blob_dyn(path, data, encoding, mode, flags, "w");
+}
+
+void scr_fs_append_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data,
+                                               ScrStr *encoding, const ScrDyn *mode,
+                                               const ScrDyn *flags) {
+  scr_fs_write_blob_dyn(path, data, encoding, mode, flags, "a");
 }
 
 /* fs.promises.writeFile(path, data, { mode, flag }) and

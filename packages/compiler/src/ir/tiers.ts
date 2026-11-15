@@ -67,12 +67,15 @@ const JS_BOUNDARY: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
  * half of a dynamic-to-static conversion. */
 const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classValueHash",
   "dyn.classIs",
   "dyn.nativeSetIs",
   "dyn.nativeMapIs",
   "dyn.nativeUrlIs",
+  "dyn.nativeSearchParamsIs",
   "dyn.nativeDateIs",
   "dyn.nativeDateHandleIs",
   "dyn.nativeRegexIs",

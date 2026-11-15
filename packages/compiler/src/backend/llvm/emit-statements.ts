@@ -1,4 +1,5 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { isDeferredDiagnosticFence } from "../../ir/deferred-fence.js";
 import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
 import { emitLoopBytesHeaders } from "./bytes-headers.js";
 import { noteBytesReceiver } from "./expr-bytes.js";
@@ -927,7 +928,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           const pend = B.tmp();
           for (const line of emitter.pendingTestLines(pend)) B.line(line.trimStart());
           const lw = B.newLabel("rks.w");
-          B.condBr(pend, join, lw);
+          const dropped = emitter.pendingBailReleaseLines(f.type, nv);
+          if (dropped.length === 0) {
+            B.condBr(pend, join, lw);
+          } else {
+            const lp = B.newLabel("rks.p");
+            B.condBr(pend, lp, lw);
+            B.startBlock(lp);
+            for (const line of dropped) B.line(line.trimStart());
+            B.br(join);
+          }
           B.startBlock(lw);
           const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
           if (inline) {
@@ -2032,14 +2042,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "runtimeFence": {
-      // The deferred JS compile fence: throw a catchable Error naming
-      // the construct (message) with the SC code stamped on `code`,
-      // then unwind exactly like `throw`. SCR_ERR_ERROR = 0.
+      // Throw a catchable Error naming the construct (message) with the
+      // SC code stamped on `code`, then unwind exactly like `throw`.
+      // SCR_ERR_ERROR = 0. A fence that stands for a diagnostic the
+      // compiler deferred (ir/deferred-fence.ts) throws through the
+      // runtime's reporter, which names the site on stderr the first time
+      // it fires, keyed by the interned message constant: a handler that
+      // catches the Error cannot hide the refusal. A library keeps the
+      // plain throw: its archive carries no reporter, and what a library
+      // tells its host goes through the host's sink, not the process's
+      // stderr.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      emitter.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`);
-      B.line(
-        `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
-      );
+      if (
+        emitter.mod.lib === undefined &&
+        isDeferredDiagnosticFence(s.code, s.message, s.loc.file)
+      ) {
+        // A site inside its own try/catch (`guarded`) reports only under
+        // SCRIPTC_DEFERRED_REPORT=all: the build named it instead.
+        const reporter = s.guarded === true ? "scr_deferred_fence_guarded" : "scr_deferred_fence";
+        emitter.declare(`declare void @${reporter}(ptr, ${emitter.sizeType}, ptr)`);
+        B.line(
+          `call void @${reporter}(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      } else {
+        emitter.declare(
+          `declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`,
+        );
+        B.line(
+          `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      }
       emitter.emitUnwind();
       break;
     }
@@ -2608,13 +2640,15 @@ function emitVersionedLoop(
     B.startBlock(fast);
     declareAliasScopes(emitter, scoped?.scopes ?? []);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
-    // Both fast copies read the string's length the guard took.
-    const length = guard?.length;
-    if (length != null && version.unitLengths.size > 0)
-      emitter.stringLengthReads = new Map([
-        ...originalLengthReads,
-        ...[...version.unitLengths].map((node) => [node, length] as const),
-      ]);
+    // Each fast copy reads the string's length its side of the guard took.
+    const lengthReads = (length: string | null | undefined): void => {
+      if (length != null && version.unitLengths.size > 0)
+        emitter.stringLengthReads = new Map([
+          ...originalLengthReads,
+          ...[...version.unitLengths].map((node) => [node, length] as const),
+        ]);
+    };
+    lengthReads(guard?.length);
     emitter.emitStmt(s);
     B.br(done);
     if (sharedFast !== undefined) {
@@ -2639,6 +2673,7 @@ function emitVersionedLoop(
         ...originalUnitReads,
         ...[...version.stringReads].map((node) => [node, units] as const),
       ]);
+      lengthReads(guard?.unitsLength);
       emitter.emitStmt(s);
       B.br(done);
     }

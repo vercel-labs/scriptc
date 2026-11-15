@@ -3,7 +3,7 @@
 // checked conversion (`as Item`, `as { label: string }`, `as number[]`)
 // reads the members through the handle, and JSON.stringify, Object.keys
 // and object spread read the island object's own properties.
-import { makeBody, makeCounting, makeCycle, makeHidden, makeHooks, makeInherited, makeList, makeProxyList, makeSymbols, makeWithMembers } from "value-pkg";
+import { makeBody, makeCounting, makeCycle, makeHidden, makeHooks, makeInherited, makeList, makeProxyList, makeShapes, makeSymbols, makeWithMembers } from "value-pkg";
 
 interface Item {
   label: string;
@@ -113,3 +113,28 @@ console.log("symbol top", JSON.stringify(symbols.tag));
 const proxied = makeProxyList();
 const proxiedNums = proxied as number[];
 console.log("proxy array", Array.isArray(proxied), proxiedNums.length, JSON.stringify(proxied));
+
+// A discriminated union whose four string literals take the one-read
+// dispatch: the native table cannot see an island object's members, so the
+// match falls back to the literal tests, which read the discriminant
+// through the handle, and the record arm then matches.
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "triangle"; base: number; height: number }
+  | { kind: "line"; length: number };
+const shapes = makeShapes() as Shape[];
+console.log(
+  "shapes",
+  shapes
+    .map((shape) =>
+      shape.kind === "circle"
+        ? shape.radius
+        : shape.kind === "square"
+          ? shape.side
+          : shape.kind === "triangle"
+            ? shape.base + shape.height
+            : shape.length,
+    )
+    .join(","),
+);

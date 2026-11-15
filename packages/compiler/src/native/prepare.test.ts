@@ -5,10 +5,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   LINUX_ARM64_GNU_TARGET,
@@ -20,6 +21,7 @@ import { loadProgram, loadProgramWithServices } from "../frontend/program-node.j
 import { FrontendServices } from "../frontend/services.js";
 import { Ts7Api, ts7Executable } from "../frontend/ts7/rpc-api.js";
 import { deserializeModule } from "../ir/serialize.js";
+import { libnodePackPackage } from "../node-islands/libnode-pack.js";
 import { NativeCache, partsDigest } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -451,6 +453,150 @@ test("an x86-64 level is refused for targets that are not x86-64 before the fron
   }
 });
 
+/** The fixture's project with the package `tiny` in a Node island, and a
+ * frontend that passes the island set on (it reaches the frontend through
+ * its options) and counts its loads. */
+function islandFixture() {
+  const f = fixture();
+  const pkg = join(f.root, "node_modules", "tiny");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({ name: "tiny", version: "1.0.0", main: "index.js", types: "index.d.ts" }),
+  );
+  const moduleFile = join(pkg, "index.js");
+  writeFileSync(moduleFile, 'exports.greet = (name) => "hello " + name;\n');
+  writeFileSync(join(pkg, "index.d.ts"), "export declare function greet(name: string): string;\n");
+  writeFileSync(
+    join(f.root, "package.json"),
+    JSON.stringify({ type: "module", scriptc: { packages: { tiny: "node" } } }),
+  );
+  writeFileSync(f.entry, 'import { greet } from "tiny"; console.log(greet("island"));\n');
+  let loads = 0;
+  const frontend: FrontendFactory = (path, npmStatic, externalTypes, libraryNpmStatic, options) => {
+    loads++;
+    return runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+  };
+  const prepare = (extra: { outputKind?: "exe" | "ir" | "llvm"; libnode?: string } = {}) =>
+    prepareNativeExecutable(
+      f.entry,
+      { ...f.options, ...extra },
+      null,
+      fixtureToolchain(),
+      frontend,
+      f.cache,
+    );
+  return { ...f, moduleFile, prepare, loads: () => loads };
+}
+
+/** The island module data an LLVM text carries: the length the install call
+ * passes and the length of the constant it names. */
+function islandModuleData(llvm: string): { passed: number; constant: number } | null {
+  const call =
+    /call void @scr_node_island_install_modules\(ptr [^,]+, i64 \d+, ptr (@sc_node_island_modules|null), i64 (\d+), /.exec(
+      llvm,
+    );
+  const constant = /@sc_node_island_modules = private unnamed_addr constant \[(\d+) x i8\]/.exec(
+    llvm,
+  );
+  if (call === null) return null;
+  return { passed: Number(call[2]), constant: constant === null ? 0 : Number(constant[1]) };
+}
+
+test("a program with a Node island carries its island modules and loads them eagerly without a pack", () => {
+  const f = islandFixture();
+  // LLVM text needs no libnode pack: the module tree's bytes are in the
+  // text, and the install call passes them.
+  const llvm = f.prepare({ outputKind: "llvm" });
+  expect(llvm.ok).toBe(true);
+  if (!llvm.ok) return;
+  const data = islandModuleData(llvm.llvm.join(""));
+  expect(data).not.toBeNull();
+  expect(data!.passed).toBeGreaterThanOrEqual(readFileSync(f.moduleFile).length);
+  expect(data!.constant).toBe(data!.passed);
+  expect(llvm.features.nodeIsland).toBe(true);
+  expect(llvm.islands).toEqual({ packages: ["tiny"], modules: [] });
+  // IR: without a pack to probe in, every island load is the eager one.
+  const ir = f.prepare({ outputKind: "ir" });
+  expect(ir.ok).toBe(true);
+  if (!ir.ok) return;
+  const text = ir.ir!.join("");
+  expect(text).toContain('"nodeIsland.require"');
+  expect(text).not.toContain('"nodeIsland.defer"');
+});
+
+test("an executable with a Node island needs a libnode pack", () => {
+  vi.stubEnv("SCRIPTC_LIBNODE", "");
+  const f = islandFixture();
+  const result = f.prepare({ outputKind: "exe" });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  // The hint is the Node-hosted driver's: the use, then this target's
+  // install line.
+  const target = fixtureToolchain().target.name;
+  const hint = result.diagnostics[0]!.hint ?? "";
+  expect(hint).toContain(`${basename(f.entry)} uses `);
+  const pack = libnodePackPackage(target);
+  expect(hint).toContain(
+    pack === null ? "packages/libnode-common/build-pack.mjs" : `npm i ${pack}@`,
+  );
+});
+
+test("SC8005 from the native driver names a @scriptc/node call", () => {
+  // The program the libnode opt-in smoke test builds without a pack.
+  vi.stubEnv("SCRIPTC_LIBNODE", "");
+  const f = fixture();
+  mkdirSync(join(f.root, "node_modules", "@scriptc"), { recursive: true });
+  symlinkSync(
+    join(import.meta.dirname, "../../../node"),
+    join(f.root, "node_modules", "@scriptc", "node"),
+  );
+  writeFileSync(join(f.root, "island.cjs"), 'exports.answer = () => "native";\n');
+  writeFileSync(
+    f.entry,
+    'import { callSync } from "@scriptc/node";\n' +
+      'console.log(callSync<string>("./island.cjs", "answer"));\n',
+  );
+  const result = prepareNativeExecutable(
+    f.entry,
+    { ...f.options, outputKind: "exe" },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes, libraryNpmStatic, options) =>
+      runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options),
+    f.cache,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  expect(result.diagnostics[0]!.hint).toContain("main.ts uses callSync (@scriptc/node)");
+});
+
+test("a cached island build is reused only while its libnode pack is unchanged", () => {
+  const f = islandFixture();
+  const pack = join(f.root, "..", "pack");
+  mkdirSync(pack);
+  writeFileSync(join(pack, "manifest.json"), '{"nodeVersion":"24.22.1","bridgeAbi":10}');
+  vi.stubEnv("SCRIPTC_LIBNODE", pack);
+  const first = f.prepare({ outputKind: "llvm" });
+  expect(first.ok).toBe(true);
+  const lowered = f.loads();
+  const again = f.prepare({ outputKind: "llvm" });
+  expect(f.loads()).toBe(lowered);
+  expect(text(again)).toEqual(text(first));
+  // The pack is replaced in place: same directory, another manifest.
+  writeFileSync(join(pack, "manifest.json"), '{"nodeVersion":"24.22.2","bridgeAbi":10}');
+  expect(f.prepare({ outputKind: "llvm" }).ok).toBe(true);
+  expect(f.loads()).toBeGreaterThan(lowered);
+  // An edit to an island module is an edit to the executable's contents.
+  const before = f.loads();
+  writeFileSync(f.moduleFile, 'exports.greet = (name) => "hi " + name; // edited\n');
+  const edited = f.prepare({ outputKind: "llvm" });
+  expect(f.loads()).toBeGreaterThan(before);
+  expect(edited.ok && first.ok && edited.llvm.join("") !== first.llvm.join("")).toBe(true);
+});
+
 /* Every kind of edit, against a cold build. A project is built, edited and
  * built again with the same cache, and the second build's whole frontend
  * output (the LLVM text, the link features, the sources and the warnings:
@@ -814,6 +960,181 @@ test("an edit of a file a warning names runs the frontend again", () => {
   // The warning's location is offsets into the file, which the comment moves.
   const result = rebuilt(WARNED, { "hot.ts": "// Sums untyped values.\n" + HOT });
   expect(result).toEqual({ frontendRuns: 1, changed: false });
+});
+
+/* Import elision. The project's tsconfig does not set `verbatimModuleSyntax`,
+ * so an import no value use reaches is dropped as tsc drops it
+ * (import-elision.ts) and the file is compiled in a rewritten form: the
+ * dropped bindings blanked, type-only declarations after its last line. The
+ * rewrite is a recorded read of the file, so an edit of comments or
+ * whitespace is still answered from the cache, and an edit that changes
+ * what is dropped is not. */
+const SHAPES =
+  "export interface Shape {\n  sides: number;\n}\nexport const square: Shape = { sides: 4 };\n";
+const LABELS = 'export class Label {\n  text = "plain";\n}\nconsole.log("labels loaded");\n';
+const DRAW = [
+  'import { Shape, square } from "./shapes.js";',
+  'import { Label } from "./labels.js";',
+  "export function draw(label: Label | null): string {",
+  "  const shape: Shape = square;",
+  '  return `${label === null ? "none" : label.text} ${shape.sides}`;',
+  "}",
+  "",
+].join("\n");
+const ELIDED = {
+  "main.ts": 'import { draw } from "./draw.js";\nconsole.log(draw(null));\n',
+  "draw.ts": DRAW,
+  "shapes.ts": SHAPES,
+  "labels.ts": LABELS,
+};
+
+test("the edit cases below are of a program with elided imports", () => {
+  const p = project(ELIDED);
+  // The module imported only for its type is not part of the program, and
+  // the build's record of draw.ts is the file as written.
+  const first = p.build(p.root, p.cache);
+  expect(first.llvm).not.toContain("labels loaded");
+  expect(new Map(first.sources).get(join(p.root, "draw.ts"))).toBe(DRAW);
+  // Under Node's rule the same import loads the module.
+  const verbatim = project({
+    ...ELIDED,
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        types: [],
+        target: "esnext",
+        module: "nodenext",
+        verbatimModuleSyntax: true,
+      },
+    }),
+    "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }"),
+  });
+  expect(verbatim.build(verbatim.root, verbatim.cache).llvm).toContain("labels loaded");
+});
+
+test.each([
+  ["a comment appended", { "draw.ts": DRAW + "// Draws one shape.\n" }],
+  ["a comment at the top", { "draw.ts": "// Draws one shape.\n" + DRAW }],
+  [
+    "a comment inside a dropped import",
+    { "draw.ts": DRAW.replace("{ Label }", "{ /* a class */ Label }") },
+  ],
+  [
+    "a comment beside a dropped binding",
+    { "draw.ts": DRAW.replace("{ Shape, square }", "{ Shape /* a type */, square }") },
+  ],
+  [
+    "a comment between a dropped import and a kept one",
+    { "draw.ts": DRAW.replace("\nimport { Label }", "\n/* labels */\nimport { Label }") },
+  ],
+  ["blank lines and indentation", { "draw.ts": "\n\n" + DRAW.replaceAll("\n", "\n  ") + "\n" }],
+  ["a final line break removed", { "draw.ts": DRAW.slice(0, -1) }],
+  ["a comment in the module imported for its type", { "labels.ts": "// Labels.\n" + LABELS }],
+  ["a comment in the entry", { "main.ts": "/* entry */\n" + ELIDED["main.ts"] + "// end\n" }],
+])(
+  "%s of a program with elided imports is answered from the cache, as a cold build would answer",
+  (_name, edit) => {
+    expect(rebuilt(ELIDED, edit)).toEqual({ frontendRuns: 0, changed: false });
+  },
+);
+
+test.each([
+  [
+    "a value use of a binding that was dropped",
+    {
+      "draw.ts": DRAW.replace('"none"', "new Label().text"),
+    },
+    true,
+  ],
+  [
+    "a `type` modifier added to a dropped binding",
+    { "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }") },
+    false,
+  ],
+  [
+    "`import type` written for a dropped import",
+    { "draw.ts": DRAW.replace("import { Label }", "import type { Label }") },
+    false,
+  ],
+  [
+    "a side-effect import of the module that was dropped",
+    { "draw.ts": 'import "./labels.js";\n' + DRAW },
+    true,
+  ],
+  [
+    "a comment the checker reads",
+    { "draw.ts": DRAW.replace("  const shape", "  // @ts-ignore\n  const shape") },
+    false,
+  ],
+  ["a comment that turns the checker off", { "draw.ts": "// @ts-nocheck\n" + DRAW }, false],
+  ["a reference directive", { "draw.ts": '/// <reference path="./shapes.ts" />\n' + DRAW }, false],
+  [
+    "verbatimModuleSyntax set in tsconfig.json",
+    {
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          types: [],
+          target: "esnext",
+          module: "nodenext",
+          verbatimModuleSyntax: true,
+        },
+      }),
+      "draw.ts": DRAW.replace("{ Shape, square }", "{ type Shape, square }"),
+    },
+    true,
+  ],
+])(
+  "%s runs the frontend again in a program with elided imports, and matches a cold build",
+  (_name, edit, changed) => {
+    expect(rebuilt(ELIDED, edit)).toEqual({ frontendRuns: 1, changed });
+  },
+);
+
+test("a `type` modifier removed from an import runs the frontend again", () => {
+  const written = {
+    ...ELIDED,
+    "draw.ts": DRAW.replace("import { Label }", "import type { Label }"),
+  };
+  expect(rebuilt(written, { "draw.ts": DRAW })).toEqual({ frontendRuns: 1, changed: false });
+});
+
+test("a dev build of a program with elided imports keeps its output while every token stays in place", () => {
+  const dev = { optimization: "dev" as const };
+  // A comment's text within its line.
+  const noted = DRAW.replace("  const shape", "  /* one */ const shape");
+  expect(
+    rebuilt(
+      { ...ELIDED, "draw.ts": noted },
+      { "draw.ts": noted.replace("/* one */", "/* two */") },
+      dev,
+    ),
+  ).toEqual({ frontendRuns: 0, changed: false });
+  // A line after the last token moves the declarations the elision adds
+  // after the text, and they have positions too.
+  expect(rebuilt(ELIDED, { "draw.ts": DRAW + "// Draws one shape.\n" }, dev).frontendRuns).toBe(1);
+  expect(rebuilt(ELIDED, { "draw.ts": "// lead\n" + DRAW }, dev).frontendRuns).toBe(1);
+});
+
+test("an edit after an equivalent edit of a file with elided imports is compared with the edited text", () => {
+  const p = project(ELIDED);
+  const first = p.build(p.root, p.cache);
+  const moved = "// lead\n\n" + DRAW.replace("{ Label }", "{ /* a class */ Label }");
+  p.write(p.root, { "draw.ts": moved });
+  const again = p.build(p.root, p.cache);
+  expect(p.loads()).toBe(1);
+  expect(again.llvm).toBe(first.llvm);
+  expect(new Map(again.sources).get(join(p.root, "draw.ts"))).toBe(moved);
+  // A second comment edit of the moved text is still answered.
+  p.write(p.root, { "draw.ts": moved + "// end\n" });
+  p.build(p.root, p.cache);
+  expect(p.loads()).toBe(1);
+  // And a value use of the dropped binding in it is not.
+  p.write(p.root, { "draw.ts": moved.replace('"none"', "new Label().text") });
+  const used = p.build(p.root, p.cache);
+  expect(p.loads()).toBe(2);
+  expect(used).toEqual(p.build(p.root, p.cold()));
+  expect(used.llvm).toContain("labels loaded");
 });
 
 /* An enum another file can name is looked for in every file of the program

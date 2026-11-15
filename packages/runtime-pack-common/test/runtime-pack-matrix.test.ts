@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import * as packMatrix from "../runtime-pack-matrix.mjs";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const runtimeSources = fileURLToPath(new URL("../../runtime/src", import.meta.url));
@@ -29,11 +30,19 @@ function selected(
   return matches[0];
 }
 
-test("scr_events.c builds once per flavor, whatever the program's features", () => {
+test("scr_events.c builds once per flavor, and once more for the terminal color methods", () => {
   // The stdio extensions, the process extras, the typed write slot and the
   // island listeners all live in the one build; only workers needs its own.
+  // The second build is the one whose stream object asks scr_tty_colors.c
+  // for getColorDepth and hasColors: a hook in the one build would change
+  // the object every program with process events links.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_events.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "tty-colors",
+    "tty-colors-workers",
+  ]);
   const plain = { workers: false, nodeIsland: false, processExtras: false };
   expect(selected("scr_events.c", plain).defines).toEqual([]);
   // The features the other units still key on select nothing here.
@@ -45,15 +54,69 @@ test("scr_events.c builds once per flavor, whatever the program's features", () 
   ]);
 });
 
-test("web streams and Node islands select an async build that defines both", () => {
-  const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
-  expect(variant.defines).toEqual(
-    expect.arrayContaining(["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS"]),
+test("Node islands select the dynamic promise build that adopts island thenables", () => {
+  const plain = { warningReplace: false, processExtras: false, nodeIsland: false, workers: false };
+  expect(selected("scr_async_dyn.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  // Beside the unit's other builds it keeps each one's defines.
+  expect(
+    selected("scr_async_dyn.c", { ...plain, processExtras: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_async_dyn.c", {
+      ...plain,
+      warningReplace: true,
+      processExtras: true,
+      nodeIsland: true,
+    }).defines,
+  ).toEqual(["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_async_dyn.c", plain).defines).toEqual([]);
+  expect(selected("scr_async_dyn.c", { ...plain, processExtras: true }).defines).toEqual([
+    "SCR_PROCESS_EXTRAS",
+  ]);
+});
+
+test("Node islands select the invoke build that reaches an island promise's own methods", () => {
+  const plain = { jsObjectModel: false, nodeIsland: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
+test("a process stream held as a value selects the island build that shares its write", () => {
+  // The unit that joins the island's process.stdout.write to the program's
+  // links only with both features.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_node_island_stdio.c",
   );
-  // Each feature alone still selects its own build, byte for byte.
+  expect(unit.predicate).toEqual({ all: ["nodeIsland", "stdioObject"] });
+  expect(selected("scr_node_island.c", { stdioObject: true, workers: false }).defines).toEqual([
+    "SCR_NODE_ISLAND_STDIO",
+  ]);
+  // Every other program with islands keeps the default object.
+  expect(selected("scr_node_island.c", { stdioObject: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
+});
+
+test("web streams select no async build of their own: every build has native reactions", () => {
+  expect(
+    selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
   expect(
     selected("scr_async.c", { webStreams: true, nodeIsland: false, workers: false }).defines,
-  ).toEqual(["SCR_NATIVE_REACTIONS"]);
+  ).toEqual([]);
   expect(
     selected("scr_async.c", { webStreams: false, nodeIsland: true, workers: false }).defines,
   ).toEqual(["SCR_NODE_ISLANDS"]);
@@ -99,7 +162,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // build: its view slot answers NULL for a field a partial record view does
   // not have in every build.
   const variants = variantsFor("scr_json.c");
-  expect(variants.map((variant: { id: string }) => variant.id)).toEqual(["default", "js-om"]);
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+    "fn-member-props",
+    "js-om",
+    "js-om-fn-member-props",
+  ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
@@ -122,6 +190,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
   ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+  // A program that writes, defines or deletes a function's inherited member
+  // name selects the fn-member-props build, alone and beside the object
+  // model build it may also carry; a Node island adds no define to it.
+  expect(selected("scr_json.c", { workers: false, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      fnMemberProps: true,
+    }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
   // A partial record assertion selects nothing: the view slot answers NULL in
   // every build, so a program with one keeps the build its other features
   // name, alone or beside the object model build.
@@ -137,6 +222,53 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("scr_util_compare builds its object model twin for the detached-buffer check", () => {
+  // util.isDeepStrictEqual's ArrayBuffer arm asks the mutable-buffers registry
+  // whether either side is detached, and answers V8's construct TypeError when
+  // both report length 0. ScrJsBufferOps exists only in the object model build,
+  // so a program with the object model links this unit's twin and every other
+  // program keeps the default object.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_util_compare.c",
+  );
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "js-om",
+    "js-om-workers",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
+});
+
+test("the dynamic call path reads an own call/apply/bind in one build", () => {
+  // scr_dyn_invoke.c reads a function's own call/apply/bind before the
+  // native lowering, in the same build as scr_json.c's member write path
+  // (both compile with SCR_FN_MEMBER_PROPS for a fnMemberProps program).
+  const plain = { workers: false, jsObjectModel: false, fnMemberProps: false };
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  // A program that also needs the object model build keeps one object.
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
+  // And a worker program keeps its thread-state build.
+  expect(
+    selected("scr_dyn_invoke.c", { workers: true, jsObjectModel: false, fnMemberProps: true })
+      .defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_WORKERS"]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -228,6 +360,22 @@ test("reading a spawnSync result's error selects the child build with its fields
   expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
 });
 
+test("fs stream options that can hold a signal select the signal build of the fs stream unit", () => {
+  // The build applies options.signal with the event-target unit's abort
+  // listener; a program whose stream options cannot hold one keeps the
+  // default object, byte for byte.
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+  ]);
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_fs_stream.c", { workers: true, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+    "SCR_WORKERS",
+  ]);
+});
+
 test("extended spawn options beside an error read keep both child builds", () => {
   // The cwd/input/shell entries and the errnoException fields live in two
   // builds of scr_child.c; a program that passes those options and reads
@@ -302,6 +450,67 @@ test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
   expect(withoutBuild).toEqual([]);
 });
 
+test("the terminal color methods are a unit of their own behind one build of the events unit", () => {
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_tty_colors.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["events", "ttyColors"] });
+  expect(selected("scr_events.c", { ttyColors: true, workers: false }).defines).toEqual([
+    "SCR_TTY_COLORS",
+  ]);
+  // Every other program keeps the default events object.
+  expect(selected("scr_events.c", { ttyColors: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
+});
+
+test("Node's pipe lifecycle is a unit of its own and the stream unit has no build for it", () => {
+  // A program that pipes links the unit that installs the lifecycle into
+  // the stream unit; the stream unit itself builds once more only for the
+  // write-error callbacks it already had.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_stream_pipe_events.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["stream", "streamPipeEvents"] });
+  const stream = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_stream.c");
+  expect(stream.variants.some((v: { defines: string[] }) => v.defines.length > 2)).toBe(false);
+  expect(
+    stream.variants
+      .flatMap((v: { defines: string[] }) => v.defines)
+      .filter((d: string) => /PIPE/.test(d)),
+  ).toEqual([]);
+});
+
+test("pausing a child's output selects the child build with the flowing state", () => {
+  // pause(), resume(), isPaused() and readableFlowing on a child stream link
+  // the build whose stream handle keeps Node's flowing state.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: true }).defines).toEqual([
+    "SCR_CHILD_STREAM_FLOW",
+  ]);
+  // A program that only listens to a child's output keeps the default
+  // object, byte for byte.
+  expect(selected("scr_child.c", { workers: false, childStreamFlow: false }).defines).toEqual([]);
+  // The flowing state beside the other child builds is one object carrying
+  // every define, not the build with the most recent feature alone.
+  expect(
+    selected("scr_child.c", { workers: false, childOptionExt: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", { workers: false, childErrorFields: true, childStreamFlow: true })
+      .defines,
+  ).toEqual(["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+  expect(
+    selected("scr_child.c", {
+      workers: false,
+      childOptionExt: true,
+      childErrorFields: true,
+      childStreamFlow: true,
+    }).defines,
+  ).toEqual(["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"]);
+});
+
 test("the installed island table has every entry the shared units call through it", () => {
   // The shared units build once, so an island path in them is a call through
   // ScrNiDynOps (a native weak collection keyed by an island object, for
@@ -325,4 +534,52 @@ test("the installed island table has every entry the shared units call through i
     for (const match of source(name).matchAll(/\bscr_ni_dyn_ops->(\w+)\(/g)) called.add(match[1]!);
   expect([...called].filter((entry) => !installed.includes(entry))).toEqual([]);
   expect([...called]).toEqual(expect.arrayContaining(["weak_get", "weak_test", "weak_set"]));
+});
+
+test("a unit has one build for every combination of the features its builds name", () => {
+  // A program links one build of each unit: the one that carries the define
+  // of every feature it has. Two features that each add a build column to
+  // the same unit therefore need a build that carries both defines, also
+  // when the columns were added by changes that did not know of each other.
+  // A combination no program can have needs none: a feature that implies
+  // another never comes without it. The matrix names those implications in
+  // RUNTIME_FEATURE_IMPLIES when it has any; without the table every
+  // combination is possible.
+  const implies: Record<string, string[]> =
+    Reflect.get(packMatrix, "RUNTIME_FEATURE_IMPLIES") ?? {};
+  const withImplied = (feature: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(feature)) return seen;
+    seen.add(feature);
+    for (const need of implies[feature] ?? []) withImplied(need, seen);
+    return seen;
+  };
+  for (const { source } of matrix.runtime_units as { source: string }[]) {
+    const variants: { id: string; when: Record<string, boolean>; defines: string[] }[] =
+      variantsFor(source);
+    const named = (when: Record<string, boolean>): string =>
+      Object.keys(when)
+        .filter((name) => when[name])
+        .sort()
+        .join("+");
+    const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
+    // A feature's own defines: those of the smallest build a program with
+    // that feature can link, the one naming it and what it implies.
+    const alone = (feature: string): string[] => {
+      const smallest = [...withImplied(feature)].sort().join("+");
+      return variants.find((variant) => named(variant.when) === smallest)?.defines ?? [];
+    };
+    for (let mask = 0; mask < 1 << features.length; mask++) {
+      const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+      const possible = on.every((name) => (implies[name] ?? []).every((need) => on.includes(need)));
+      const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
+      expect(
+        builds.map((variant) => variant.id),
+        `${source} with ${on.join("+") || "no feature"}`,
+      ).toHaveLength(possible ? 1 : 0);
+      if (!possible) continue;
+      expect([...builds[0]!.defines].sort(), `${source} with ${on.join("+")}`).toEqual(
+        [...new Set(on.flatMap(alone))].sort(),
+      );
+    }
+  }
 });

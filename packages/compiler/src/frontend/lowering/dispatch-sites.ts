@@ -30,6 +30,9 @@ const RUNTIME_STEP_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // ReadableStream.from steps the iterable it is given, a compiled
   // generator among them.
   "webstream.from",
+  // new URLSearchParams(init) reads the iterator of a checked-dynamic init,
+  // a compiled generator among them.
+  "sp.newChecked",
 ]);
 
 /** What one function's body holds for the class dispatch pass and its
@@ -86,11 +89,12 @@ const DISPATCH_LIB_CALLS = new Set<IrLibFn>([
   "dyn.forInKeys",
   "dyn.forInKeyStrings",
   "dyn.hasKeyComputed",
+  "dyn.in",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   "dyn.defineProperty",
   "dyn.getPrototype",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classTestPrototype",
   "dyn.inheritsErrorPrototype",
   "dyn.reflectGet",
   "dyn.reflectSet",

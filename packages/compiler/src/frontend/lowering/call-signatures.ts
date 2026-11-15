@@ -521,6 +521,19 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // undefined to that branch rather than reject it at the ABI boundary.
     if (acceptsUndefined) type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
   }
+  if (
+    type.kind === "func" &&
+    !nativeExecutor &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !lowerer.bareUndefinedArmedUnion(type)
+  ) {
+    // JavaScript callers may leave any argument out, whatever its
+    // documentation says: the callee then reads undefined. A callable
+    // parameter's slot must be able to hold it, so the parameter takes the
+    // undefined arm its JSDoc type otherwise lacks (a body that calls the
+    // callback reaches the same "not a function" answer Node gives).
+    type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
+  }
   if (type.kind === "void") {
     return { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }
@@ -702,6 +715,14 @@ function defaultParameterShape(
     }
   }
   const bodyType = lowerer.stripUndefinedArm(raw);
+  // A parameter whose own type is `null` (`fallback = null` with no
+  // annotation): a null-typed binding is held in the `null | undefined`
+  // union everywhere else, and the body's binding is that union too. An
+  // omitted argument or undefined takes the default; null stays itself.
+  if (bodyType.kind === "nullT") {
+    const held = lowerer.withUndefinedArm(bodyType);
+    return { type: held, mode: "omittable", bodyType: held };
+  }
   lowerer.checkDefaultParamBodyType(param, bodyType);
   const abi =
     bodyType.kind === "union"
@@ -770,6 +791,39 @@ function lambdaSpellsCompletedAbi(
   if ((retTs.flags & ts.TypeFlags.Any) !== 0) return funcType.ret.kind === "dyn";
   const mappedRet = lowerer.mapTypeOf(retTs);
   return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
+}
+
+/** Whether `node` is the value of a property (or a method) of an object
+ * literal whose own contextual type is `any`. */
+function memberOfAnyLiteral(lowerer: Lowerer, node: ts.Node): boolean {
+  let member: ts.Node = node;
+  if (!ts.isMethodDeclaration(member)) {
+    while (member.parent !== undefined && ts.isParenthesizedExpression(member.parent))
+      member = member.parent;
+    const property = member.parent;
+    if (
+      property === undefined ||
+      !ts.isPropertyAssignment(property) ||
+      property.initializer !== member
+    )
+      return false;
+    member = property;
+  }
+  const literal = member.parent;
+  if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
+  const context = lowerer.checker.getContextualType(literal);
+  return context !== undefined && (context.flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** funcSlotAdaptable for a slot the checker types: calls through it pass
+ * its declared parameters (function-adapters.ts, THE RULE). */
+function declaredSlotAdaptable(
+  lowerer: Lowerer,
+  value: IrType & { kind: "func" },
+  slot: IrType & { kind: "func" },
+  blame: ts.Node,
+): boolean {
+  return lowerer.withDeclaredCallList(() => funcSlotAdaptable(lowerer, value, slot, locOf(blame)));
 }
 
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
@@ -848,6 +902,21 @@ export function requireExactArityValue(
   ) {
     return;
   }
+  // A member of an object literal that is itself written under an 'any'
+  // slot (an options record handed to an untyped function): the checker
+  // gives the member no contextual type, and the literal is a
+  // checked-dynamic object whose members box like the 'any' slot above.
+  if (
+    target === undefined &&
+    memberOfAnyLiteral(lowerer, contextual ?? blame) &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return;
+  }
   // An object-literal METHOD has no contextual type of its own: the
   // literal's contextual type names the member slot it fills. An
   // overloaded member's slot holds its erased function, which spells the
@@ -876,10 +945,12 @@ export function requireExactArityValue(
     // verbatim (a required narrower interface parameter where the method
     // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
     // coercion adapts the pair like any other function value.
+    // The slot is the member's declared type: calls through it pass its
+    // parameters (function-adapters.ts, THE RULE).
     if (
       slot?.kind === "func" &&
       funcType.kind === "func" &&
-      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+      declaredSlotAdaptable(lowerer, funcType, slot, blame)
     )
       return;
     // An UNCONTEXTUALIZED literal's own inferred type is what every later
@@ -941,10 +1012,13 @@ export function requireExactArityValue(
   // undefined, JavaScript's surplus-argument rule) or a parameter pair the
   // adapter converts (a required narrower interface parameter against the
   // value's `Ctx | undefined` completed slot).
+  // The slot judged here is the checker's own type for the position, a
+  // declared one; the conversion at the site the value lands in decides
+  // again, for the slot it really has.
   if (
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
-    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
+    declaredSlotAdaptable(lowerer, funcType, mappedFn, blame)
   ) {
     return;
   }
@@ -1188,10 +1262,14 @@ export function lambdaSignature(
   // A parameterless function expression forwarding its `arguments`,
   // asserted to a fixed signature: that signature is its ABI.
   if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
-    const target = typedArgumentsTarget(lowerer, node);
+    const origin = { contextual: false };
+    const target = typedArgumentsTarget(lowerer, node, origin);
     if (target) {
       const shapes = typedArgumentsShapes(target);
       lowerer.typedArgumentsLambdas.add(node);
+      // Written into a declared slot, the function is a variadic function
+      // stored under that slot's signature (function-adapters.ts, THE RULE).
+      if (origin.contextual) lowerer.noteVariadicStore(node, target);
       return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
     }
   }

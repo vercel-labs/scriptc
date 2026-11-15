@@ -124,6 +124,18 @@ try {
   if (!/LC_BUILD_VERSION[\s\S]*?platform 1[\s\S]*?minos 14\.0(?:\s|$)/.test(objectLoadCommands)) {
     throw new Error("packed helper must emit objects with the macOS 14.0 deployment target");
   }
+  // The comptime evaluator ships beside the helper, and both compilers start it.
+  if (manifest.bin?.["scriptc-comptime"] !== "bin/scriptc-comptime") {
+    throw new Error("helper manifest must expose the comptime evaluator as an npm bin");
+  }
+  const evaluator = join(root, "bin", "scriptc-comptime");
+  accessSync(evaluator, constants.X_OK);
+  const evaluatorProbe = join(work, "probe.js");
+  writeFileSync(evaluatorProbe, "typeof process + String(6 * 7);\n");
+  const evaluated = execFileSync(evaluator, [evaluatorProbe, "2000", "64"], { encoding: "utf8" });
+  if (evaluated.trim() !== '["string","undefined42"]') {
+    throw new Error(`packed comptime evaluator answered ${JSON.stringify(evaluated)}`);
+  }
   const attributes = execFileSync("xattr", [binary], { encoding: "utf8" });
   if (attributes.split("\n").includes("com.apple.quarantine")) {
     throw new Error("packed helper carries a quarantine attribute");

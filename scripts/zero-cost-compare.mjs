@@ -364,6 +364,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
+  "scr_dyn_fn_own_",
   "scr_dyn_fn_get",
   "scr_dyn_this_get",
   // Dynamic operators and coercions.
@@ -510,7 +511,11 @@ export function symbolCheck({ typed, allowed, island = false, baseline, candidat
  * bench/stream-buffered-drain, also added later, drains an object-mode
  * Readable, whose chunks are checked-dynamic values. bench/catalog-tables,
  * also added later, walks dictionaries of `object` values from JSON.parse.
- * Every other bench workload is fully typed and must link none. The gate and
+ * bench/regex-tokenizer, also added later, calls `exec` as bench/regex-logs
+ * does (regex exec metadata). bench/untyped-handoff, also added later, keeps
+ * typed records in `unknown` slots and calls their handlers through
+ * `(order: any) => number`: untyped slots are its subject. Every other bench
+ * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -524,9 +529,11 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/intern-table",
   "bench/thread-slots",
   "bench/channel-messages",
+  "bench/dynamic-class-tests",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
   "bench/dynamic-properties-json",
+  "bench/untyped-record-probes",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -540,6 +547,8 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
   "bench/catalog-tables",
+  "bench/regex-tokenizer",
+  "bench/untyped-handoff",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

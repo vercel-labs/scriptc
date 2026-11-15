@@ -1,0 +1,1 @@
+{ "name": "island-deferred-call-order", "private": true, "type": "module", "scriptc": { "packages": { "patch-pkg": "node", "reader-pkg": "node" } } }

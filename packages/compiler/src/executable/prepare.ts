@@ -3,7 +3,6 @@ import type { CompileFailure, CompileRequestOptions } from "../compile-types.js"
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
-  checkerPanicDiag,
   nodeIslandEntryMarkDiag,
   nodeIslandEntryPatchDiag,
   nodeIslandEntryReadDiag,
@@ -19,10 +18,9 @@ import {
   npmStaticRefusalDiag,
   nativePackageDiag,
   iceDiag,
-  isCheckerPanic,
-  stdioPatchAcrossIslandsDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
+import { compilerCrashDiag, isCompilerCrash } from "../diagnostics/crash-site.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
 import { validateModule } from "../ir/validate.js";
 import { checkContracts } from "../contracts/check.js";
@@ -61,6 +59,7 @@ import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
+import { withInsertedSpans } from "../frontend/js-void-initializers.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -79,10 +78,25 @@ export interface PreparedExecutableModule {
   nodeIslandUse?: { file: string; api: string };
 }
 
+/** prepareRounds, with each diagnostic and warning on a line a source shadow
+ * wrote into (frontend/js-void-initializers.ts) carrying what was inserted,
+ * so it is reported at its column in the file as written. */
+export function prepareExecutableModule(
+  ...args: Parameters<typeof prepareRounds>
+): PreparedExecutableModule | CompileFailure {
+  const result = prepareRounds(...args);
+  if (!result.ok) {
+    const diagnostics = withInsertedSpans(result.diagnostics, result.sourceTexts);
+    return diagnostics === result.diagnostics ? result : { ...result, diagnostics };
+  }
+  result.warnings = withInsertedSpans(result.warnings, result.sourceTexts);
+  return result;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
-export function prepareExecutableModule(
+function prepareRounds(
   entryPath: string,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,
@@ -100,7 +114,10 @@ export function prepareExecutableModule(
   const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
   const islandScan = loadPolicy.mode !== "off" || packageMarks.length > 0;
-  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, { islandScan });
+  let fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+    islandScan,
+    ...(opts.define !== undefined ? { define: opts.define } : {}),
+  });
   timing("frontend-load");
   // A mark that names nothing the build could act on is refused instead of
   // compiling as if the flag were not there. The program is the same on
@@ -142,6 +159,9 @@ export function prepareExecutableModule(
         ? { islandModules: new Set(islandDecision.modules.keys()) }
         : {}),
       islandScan,
+      // The reload re-reads the program: the define values still decide its
+      // branches and set its variables at startup.
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
     });
     timing("frontend-island-reload");
   }
@@ -205,16 +225,29 @@ export function prepareExecutableModule(
           lowerModules,
         );
       }
-      return fail(
-        refused.map((entry) =>
+      // The build stops here, and one attempt reports every blocker this
+      // load knows: the packages that neither compile nor run in an island,
+      // each with what the user can do about it, and the program's own
+      // preflight errors, which the next attempt would otherwise report
+      // alone after another whole load. A preflight refusal the island
+      // rules answer by themselves (an import a package's island resolves)
+      // is not a blocker and is left out.
+      const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+      const growth = growthOf();
+      const own = fe.preflight.filter(
+        (d) => growth === null || growIslandSet(growth, lowerIslands, { preflight: [d] }) === null,
+      );
+      return fail([
+        ...refused.map((entry) =>
           npmStaticRefusalDiag(
             entry.package,
             entry.detail ?? "its static compilation was refused",
             fe.npmImportSites.get(entry.package) ?? { file: entryPath, start: 0, end: 0 },
-            entry.hint,
+            refusedPackageHint(entry.package, entry.hint, policy),
           ),
         ),
-      );
+        ...own,
+      ]);
     }
     if (fe.preflight.length > 0) {
       // An import of a natively compiled package that preflight refuses
@@ -259,10 +292,11 @@ export function prepareExecutableModule(
       // The last-resort panic fence: an upstream tsgo panic that crossed a
       // checker call no statement/collection fence wrapped still becomes a
       // clean failed compile (anchored at the entry), never a crashed CLI.
-      if (!isCheckerPanic(e)) throw e;
-      return fail([
-        checkerPanicDiag(e.message.split("\n", 1)[0]!, { file: entryPath, start: 0, end: 0 }),
-      ]);
+      // An internal compiler error no fence reported takes the same exit.
+      // Both carry the innermost node the lowering had reached when one
+      // was noted (diagnostics/crash-site.ts); the entry is the last resort.
+      if (!isCompilerCrash(e)) throw e;
+      return fail([compilerCrashDiag(e, { file: entryPath, start: 0, end: 0 })]);
     }
     if (lowered.module === null) {
       // Packages whose own modules refused to lower run in Node islands
@@ -329,14 +363,6 @@ export function prepareExecutableModule(
       return fail(lowered.diagnostics);
     }
 
-    // A program that replaces a process output stream's write method has
-    // nowhere to route an island's writes: the island's process.stdout is
-    // its own object. Until islands share the native stream object (H2),
-    // refuse the combination instead of silently missing the patch.
-    if (islandDecision !== null && lowered.stdioPatches !== undefined) {
-      return fail(lowered.stdioPatches.map((p) => stdioPatchAcrossIslandsDiag(p.stream, p.loc)));
-    }
-
     const validation = validateModule(lowered.module);
     timing("ir-validate");
     if (validation.length > 0) {
@@ -364,7 +390,16 @@ export function prepareExecutableModule(
       if (checked.contracts) lowered.module.contracts = checked.contracts;
       contractWarnings = checked.warnings;
     }
-    if (retryFences) {
+    // The sure rule reads every compiling build, a fence retry's included
+    // (`retryFences` only stops the report rule from running twice): a
+    // package can meet a fence that surely fires only once a package it
+    // requires is an island, and that island may itself be the growth of
+    // this rule. A retry that did not look would compile that throw into a
+    // program that stops when it starts, while a build that held the same
+    // island from its first round (a mark, a replayed decision) islands
+    // the importer: the decision must be the same set either way. Every
+    // step adds a package, so the retries end.
+    {
       const growth = growthOf();
       fenceGrown =
         growth === null
@@ -557,6 +592,7 @@ function moduleIslands(
             : 'marked "node" in scriptc.nodeIslands.modules'
           : describe(reason),
       decision: marked === null ? "auto" : "marked",
+      ...(patches.length > 0 ? { patchesBuiltin: true as const } : {}),
     });
   }
   for (const mark of unmatched.values())
@@ -941,6 +977,31 @@ function decideNodeIslands(
   return packages.size === 0 && modules.size === 0
     ? null
     : { ...nodeIslandSet(packages, modules), notes, errors };
+}
+
+/** What to do about a package that neither compiles nor runs in a Node
+ * island, beside the selection's own hint (how to compile it anyway): the
+ * setting that would run it in Node. With islands off that is the mode; for
+ * a package marked native, the mark; under the explicit policy, a mark of
+ * its own. Under the automatic policy an unmarked package that reaches this
+ * stop has no island to offer, and the selection's hint stands alone. */
+function refusedPackageHint(
+  name: string,
+  hint: string | undefined,
+  policy: NodeIslandPolicy,
+): string | undefined {
+  let island: string | null = null;
+  if (policy.mode === "off")
+    island = `--node-islands=off is set: --node-islands=auto runs every package that does not compile in Node.js, and --node-islands=explicit with --node-island=${name} runs this one`;
+  else if (policy.forcedNative.has(name))
+    island =
+      policy.mode === "auto"
+        ? "it is marked native: without the mark it runs in a Node island"
+        : `it is marked native: --node-island=${name} in place of the mark runs it in Node.js`;
+  else if (policy.mode === "explicit")
+    island = `--node-island=${name} runs it in Node.js instead (--node-islands=auto does so for every package that does not compile)`;
+  if (island === null) return hint;
+  return hint === undefined ? island : `${hint}; ${island}`;
 }
 
 /** The installed package directory of `name` as Node resolves it from

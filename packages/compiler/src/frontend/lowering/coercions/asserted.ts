@@ -22,7 +22,12 @@ import { unionRetagHelper } from "./unions.js";
  *   structural conversion into (`result as Sub` on `Base | undefined`, Sub
  *   declaring required members Base lacks): the unit arms throw the
  *   TypeError of a lying assertion, and the one value arm takes that same
- *   checked deep conversion. */
+ *   checked deep conversion.
+ * - Several records or arrays with no unit beside them, none with a
+ *   structural conversion into T (`load as Freight` on `Letter | Parcel`,
+ *   in the instance of a generic function whose test sends only freight
+ *   down that branch): the value takes the checked deep conversion as it
+ *   stands. */
 export function assertedConversion(
   lowerer: Lowerer,
   expr: IrExpr,
@@ -42,6 +47,29 @@ export function assertedConversion(
       // the assertion) and check it into T member by member, then place
       // the result in the slot as a value of T.
       const arm = values.length === 1 ? values[0]! : null;
+      // Several records or arrays and no unit, none of which is T's (a
+      // generic function's instance asserting its parameter to the type
+      // another instance holds, in the branch only that instance takes): the
+      // value is checked into T as it stands, and whatever arm it holds
+      // throws unless it has T's members. Beside a unit the union keeps its
+      // refusal: the scan that refuses a write through the checked copy
+      // (divergences.ts, widthCopyBetween) reads a union of records only.
+      if (
+        arm === null &&
+        values.length > 1 &&
+        values.length === from.arms.length &&
+        values.every((value) => value.kind === "record" || value.kind === "array") &&
+        checkedDeepConvertible(lowerer, expr.type, asserted)
+      ) {
+        const slot = lowerer.widthLiftPlan(asserted, expected);
+        if (slot === null) return null;
+        return lowerer.applyWidthLift(
+          slot,
+          checkedDeepConversion(lowerer, expr, asserted),
+          expected,
+          loc,
+        );
+      }
       if (arm === null || (arm.kind !== "record" && arm.kind !== "array")) return null;
       if (!checkedDeepConvertible(lowerer, arm, asserted)) return null;
       // Planned before any helper is interned, so a slot T does not reach
@@ -64,7 +92,22 @@ export function assertedConversion(
       from.arms.forEach((arm, tag) => {
         if (!isUnitType(arm) && !kept.includes(arm)) trappable.add(tag);
       });
-      const helper = unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
+      // An excluded ARRAY arm the asserted type's tuple arm takes (`type as
+      // Handler | [Handler]` over `Ctor | readonly Ctor[]`) converts through
+      // the checked lane instead of trapping.
+      const destination = lowerer.unions.get(expected.unionId);
+      const checked =
+        destination !== undefined &&
+        [...trappable].some((tag) => {
+          const arm = from.arms[tag]!;
+          return (
+            arm.kind === "array" &&
+            destination.arms.filter((to) => lowerer.checkedWidthLift(arm, to) !== null).length === 1
+          );
+        });
+      const helper = checked
+        ? unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable, undefined, true)
+        : unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
       return helper ? { kind: "call", callee: helper, args: [expr], type: expected, loc } : null;
     }
     // A record or array T holds one arm's values: extract that arm (every
@@ -90,7 +133,9 @@ function checkedDeepConvertible(lowerer: Lowerer, source: IrType, expected: IrTy
   if (expected.kind === "record" && lowerer.shapes.get(expected.shapeId)?.indexValue !== undefined)
     return false;
   return (
-    lowerer.dynConvertible(source) &&
+    // A module namespace has no static conversion into a record, but its
+    // dynamic value does: the box reads the namespace's members live.
+    (lowerer.dynConvertible(source) || source.kind === "moduleNs") &&
     canDynCheckTo(
       expected,
       (id) => lowerer.shapes.get(id),

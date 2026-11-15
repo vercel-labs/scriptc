@@ -78,6 +78,8 @@ test("regex runtime: matching, substitutions, split, throws, RC accounting", asy
 // The native one-byte matcher (scr_regex_native.h) against lre_exec itself:
 // random patterns over the translated subset and its bail-outs, random ASCII
 // subjects, every start index; results and all capture slots must agree.
+// Patterns anchored at position 0 are searched with one attempt by both
+// engines, and that search must agree with the reference search too.
 const fuzzBin = join(testDir, "build", "test_regex_native");
 
 test("regex native matcher: differential fuzz against libregexp", async () => {
@@ -101,6 +103,41 @@ test("regex native matcher: differential fuzz against libregexp", async () => {
   });
   for (const seed of ["1", "2", "3"]) {
     const { stderr } = await execFileAsync(fuzzBin, ["4000", seed]);
-    expect(stderr.trim()).toMatch(/^\d+\/\d+ translated, \d+ checks$/);
+    const summary = /^\d+\/\d+ translated, (\d+) anchored, \d+ checks$/.exec(stderr.trim());
+    expect(summary, stderr).not.toBeNull();
+    expect(Number(summary![1])).toBeGreaterThan(0);
+  }
+}, 120_000);
+
+// The interpreter's WTF-8 subject type (the scriptc addition to the vendored
+// libregexp) against its 16-bit subject type: random patterns with and
+// without `u`, random subjects with characters of every width and unpaired
+// surrogates, every start index; results and all captures must agree.
+const wtf8Bin = join(testDir, "build", "test_regex_wtf8");
+
+test("regex interpreter: WTF-8 subjects agree with UTF-16 subjects", async () => {
+  await execFileAsync("clang", [
+    "-std=c11",
+    "-O1",
+    "-fsanitize=address,undefined",
+    "-fno-sanitize-recover=undefined",
+    "-I",
+    vendorDir,
+    "-o",
+    wtf8Bin,
+    join(testDir, "test_regex_wtf8.c"),
+    join(vendorDir, "libregexp.c"),
+    join(vendorDir, "libunicode.c"),
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
+  ]);
+  for (const seed of ["1", "2", "3"]) {
+    const { stderr } = await execFileAsync(wtf8Bin, ["6000", seed]);
+    const summary =
+      /^\d+ patterns, \d+ checks, (\d+) matches, (\d+) captures between the halves of a pair$/.exec(
+        stderr.trim(),
+      );
+    expect(summary, stderr).not.toBeNull();
+    expect(Number(summary![1])).toBeGreaterThan(1000);
+    expect(Number(summary![2])).toBeGreaterThan(10);
   }
 }, 120_000);

@@ -35,13 +35,14 @@ const items: [string, string][] = [
   ["icudt78l/curr/de.res", "currencies"],
   ["icudt78l/de.res", "locale"],
   ["icudt78l/ibm-1047_P100-1995.cnv", "converter"],
+  ["icudt78l/translit/de.res", "transliterators"],
   ["icudt78l/zone/de.res", "zone names"],
   ["icudt78l/zoneinfo64.res", "time zones"],
 ];
 
 test("the dropped categories match trees and root-level converters only", () => {
   const dropped = items.map(([name]) => icuDataItemDropped(name));
-  expect(dropped).toEqual([false, true, false, false, true, true, false]);
+  expect(dropped).toEqual([false, true, false, false, true, true, false, false]);
   expect(icuDataItemDropped("icudt78l/brkitr/x.cnv")).toBe(false);
 });
 
@@ -54,6 +55,7 @@ test("a filtered file keeps the accepted items' names, order and bytes", () => {
     "icudt78l/brkitr/word.brk",
     "icudt78l/curr/de.res",
     "icudt78l/de.res",
+    "icudt78l/zone/de.res",
     "icudt78l/zoneinfo64.res",
   ]);
   for (const item of kept) {

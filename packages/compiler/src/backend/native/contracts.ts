@@ -150,6 +150,11 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** process.features as a value links scr_process_features.c. */
+  processFeatures?: boolean;
+  /** Node islands and child_process together: compiles
+   * scr_node_island_child.c. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
@@ -172,6 +177,9 @@ export interface CcOptions {
   /** Reflect.getPrototypeOf's primitive-target check: compiles
    * scr_dyn_reflect_proto.c. */
   reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk: compiles
+   * scr_dyn_class_test.c. */
+  classTestPrototype?: boolean;
   /** `delete` of a key a record's type does not declare: compiles
    * scr_record_source_delete.c. */
   recordSourceDelete?: boolean;
@@ -184,6 +192,11 @@ export interface CcOptions {
   /** A generator function that reads `this` (dyn.generatorThis): compiles
    * scr_gen_receiver.c. */
   genReceiver?: boolean;
+  /** A kept-source read of a record-to-record conversion: compiles
+   * scr_record_source_get.c. */
+  recordSourceGet?: boolean;
+  /** A join of an array of strings: compiles scr_arr_join_str.c. */
+  arrJoinStr?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -202,6 +215,10 @@ export interface CcOptions {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: compiles scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: compiles scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
@@ -223,6 +240,12 @@ export interface CcOptions {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic: compiles
+   * scr_deferred_fence.c, its stderr reporter. */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: compiles
+   * scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -256,6 +279,13 @@ export interface CcOptions {
   /** fs.existsSync over a path value that may not be a string: compiles
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
+  /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
+   * data property (`fn.call = f`; that build of scr_json.c and
+   * scr_dyn_invoke.c). */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -268,9 +298,27 @@ export interface CcOptions {
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
+  /** SCR_TTY_COLORS: the process stream object has getColorDepth and
+   * hasColors on a terminal; compiles scr_tty_colors.c (a program that holds
+   * a process stream as a value and names one of them). */
+  ttyColors?: boolean;
+  /** The program pipes or unpipes a stream: compiles
+   * scr_stream_pipe_events.c (Node's pipe lifecycle). */
+  streamPipeEvents?: boolean;
+  /** SCR_FS_STREAM_SIGNAL: fs.ReadStream and fs.WriteStream apply their
+   * options' `signal` (a program whose stream options can hold one). */
+  fsStreamSignal?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;
+  /** SCR_CHILD_STREAM_FLOW: a child's output streams keep Node's flowing
+   * state (pause(), resume(), isPaused(), readableFlowing). */
+  childStreamFlow?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
@@ -360,6 +408,11 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** The program uses dns.Resolver or the resolve/reverse/setServers
+   * forms (the dnsResolve runtime feature): compiles scr_dns_resolve.c
+   * over the dgram unit, so programs that only call dns.lookup keep
+   * their exact link line. */
+  dnsResolve?: boolean;
   /** A dgram socket converts to or from an untyped value: compiles
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
@@ -497,6 +550,12 @@ export interface LibArchiveOptions {
   dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
+  /** See CcOptions.recordSourceGet: the kept-source read of a
+   * record-to-record conversion (scr_record_source_get.c). */
+  recordSourceGet?: boolean;
+  /** See CcOptions.arrJoinStr: the join of an array of strings
+   * (scr_arr_join_str.c). */
+  arrJoinStr?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
@@ -518,6 +577,11 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.fnMemberProps: the archive carries the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so an
+   * exported function that defines one of its own call/apply/bind members
+   * runs the write the way the executable lane does. */
+  fnMemberProps?: boolean;
 }
 
 export interface NativeArtifactDependency {

@@ -4,6 +4,7 @@
  * an ICE that points at source is a gift to whoever debugs it.
  */
 import { validByteNumberToken } from "./byte-numbers.js";
+import { localScopeUses } from "./local-scopes.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -35,6 +36,7 @@ import {
   ffiSourceParamTypes,
   isDirentShape,
   isDynTypedRefType,
+  isLiveDynRefType,
   isFfiCallbackParam,
   isFfiContextParam,
   isFfiReleaseParam,
@@ -1240,20 +1242,6 @@ function validateFunction(
   // the body of the optChain whose id it names.
   const activeChains = new Map<string, IrType>();
 
-  const liveDynRefEligible = (type: IrType, seen = new Set<string>()): boolean => {
-    if (
-      type.kind === "record" ||
-      type.kind === "array" ||
-      type.kind === "bytes" ||
-      isDynTypedRefType(type)
-    ) {
-      return true;
-    }
-    if (type.kind !== "union" || seen.has(type.unionId)) return false;
-    seen.add(type.unionId);
-    return unions.get(type.unionId)?.arms.some((arm) => liveDynRefEligible(arm, seen)) ?? false;
-  };
-
   function checkNullishOperands(e: IrExpr & { kind: "nullish" }): void {
     expectType(e.right, e.type, "nullish right operand");
 
@@ -1408,6 +1396,8 @@ function validateFunction(
       case "call":
       case "ffiCall":
       case "closure":
+      case "viewOf":
+      case "viewSource":
       case "callValue":
         return checkCallExpr(e);
       case "selfRef":
@@ -2810,7 +2800,9 @@ function validateFunction(
     }
   }
 
-  function checkCallExpr(e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "callValue" }): void {
+  function checkCallExpr(
+    e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "viewOf" | "viewSource" | "callValue" },
+  ): void {
     switch (e.kind) {
       case "call": {
         for (const a of e.args) checkExpr(a);
@@ -2858,6 +2850,32 @@ function validateFunction(
         }
         break;
       }
+      case "viewOf":
+      case "viewSource": {
+        checkExpr(e.value);
+        if (e.value.type.kind !== "func") {
+          err(`${e.kind} of a non-function ${e.value.type.kind}`, e.loc);
+          break;
+        }
+        if (e.kind === "viewOf" && e.type.kind !== "bool") err("viewOf must be bool-typed", e.loc);
+        if (e.adapter === null) {
+          // The checked-dynamic boundary's view holds the callable itself.
+          if (e.kind === "viewSource" && e.type.kind !== "dyn")
+            err("viewSource of a checked-dynamic view must be dyn-typed", e.loc);
+          break;
+        }
+        // The adapter's body: its first capture is the function the view
+        // forwards to, which is what viewSource reads.
+        const source = functions.get(e.adapter)?.captures?.[0]?.type;
+        if (source?.kind !== "func") {
+          err(`${e.kind}: "${e.adapter}" is not a signature adapter's body`, e.loc);
+          break;
+        }
+        if (e.kind === "viewSource" && !typeEquals(e.type, source)) {
+          err(`viewSource type ${e.type.kind} is not the type "${e.adapter}" forwards to`, e.loc);
+        }
+        break;
+      }
       case "closure": {
         const target = functions.get(e.fnName);
         if (!target) {
@@ -2869,19 +2887,26 @@ function validateFunction(
           break;
         }
         const wantCaps = target.captures ?? [];
-        if (e.adapts === true && locals.get(e.captures[0] ?? "")?.type.kind !== "func") {
-          err(`closure ${e.fnName}: an adapter's first capture must be a function`, e.loc);
+        const adapted = locals.get(e.captures[0] ?? "")?.type.kind;
+        if (e.adapts === true && adapted !== "func" && adapted !== "dyn") {
+          err(
+            `closure ${e.fnName}: an adapter's first capture must be a function or a checked-dynamic function value`,
+            e.loc,
+          );
         }
+        // An adapter reports the length of the function it adapts. Any other
+        // closure may record its own: fewer than its type's parameters (a
+        // literal lowered with a slot's parameter list) or more (a method
+        // whose class inherits a shorter slot).
         if (
           e.length !== undefined &&
           (e.adapts === true ||
-            target.captures === undefined ||
             !Number.isInteger(e.length) ||
             e.length < 0 ||
-            e.length >= e.type.params.length)
+            e.length > 0xffffffff)
         ) {
           err(
-            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            `closure ${e.fnName}: length ${e.length} must be a function length (a 32-bit count) on a closure that is not an adapter`,
             e.loc,
           );
         }
@@ -3067,6 +3092,7 @@ function validateFunction(
             source.rest !== target.rest ||
             source.restAbi !== target.restAbi ||
             source.argumentsAll !== target.argumentsAll ||
+            source.argumentsPresence !== target.argumentsPresence ||
             source.params.length !== target.params.length ||
             !source.params.every((param, i) => typeEquals(param, target.params[i]!)) ||
             source.ret.kind !== "object" ||
@@ -3585,7 +3611,7 @@ function validateFunction(
         ) {
           err(`dynFrom of non-dyn-convertible type ${vt.kind}`, e.loc);
         }
-        if (e.liveRef && !liveDynRefEligible(vt)) {
+        if (e.liveRef && !isLiveDynRefType(vt, (id) => unions.get(id))) {
           err(`live dynFrom of unsupported type ${vt.kind}`, e.loc);
         }
         break;
@@ -4105,6 +4131,65 @@ function validateFunction(
       } else if (e.type.kind !== "bool") err(`${e.name} has type bool`, e.loc);
       return;
     }
+    if (e.name === "par.into" || e.name === "par.reduce" || e.name === "par.for") {
+      for (const a of e.args) checkExpr(a);
+      // The runtime's function pointers: a closure with these exact
+      // parameters, called with the closure as its environment.
+      const callback = (index: number, params: IrType[], ret: IrType): void => {
+        const arg = e.args[index];
+        if (arg === undefined) return;
+        const type = arg.type;
+        if (
+          type.kind !== "func" ||
+          type.rest === true ||
+          type.params.length !== params.length ||
+          !type.params.every((p, i) => typeEquals(p, params[i]!)) ||
+          !typeEquals(type.ret, ret)
+        )
+          err(
+            `${e.name} argument ${index} must be ${typeKey({ kind: "func", params, ret })}`,
+            e.loc,
+          );
+      };
+      const number = (index: number): void => {
+        const arg = e.args[index];
+        if (arg !== undefined && arg.type.kind !== "f64")
+          err(`${e.name} argument ${index} must be f64`, e.loc);
+      };
+      const bytes = (index: number): void => {
+        const arg = e.args[index];
+        if (arg !== undefined && arg.type.kind !== "bytes")
+          err(`${e.name} argument ${index} must be a typed array`, e.loc);
+      };
+      if (e.name === "par.into") {
+        if (e.args.length < 6) err("par.into takes a target, four numbers and a body", e.loc);
+        else {
+          bytes(0);
+          for (const index of [1, 2, 3, 4]) number(index);
+          callback(5, [e.args[0]!.type, F64, F64], VOID);
+          for (let index = 6; index < e.args.length; index++) bytes(index);
+        }
+        if (e.type.kind !== "void") err("par.into has type void", e.loc);
+      } else if (e.name === "par.reduce") {
+        if (e.args.length !== 7)
+          err("par.reduce takes a count, three numbers, an initial value and two callbacks", e.loc);
+        else {
+          for (const index of [0, 1, 2, 3, 4]) number(index);
+          if (e.args[3]!.type.kind !== "f64") err("par.reduce initial value must be f64", e.loc);
+          callback(5, [F64, F64], F64);
+          callback(6, [F64, F64], F64);
+        }
+        if (e.type.kind !== "f64") err("par.reduce has type f64", e.loc);
+      } else {
+        if (e.args.length !== 5) err("par.for takes a count, three numbers and a body", e.loc);
+        else {
+          for (const index of [0, 1, 2, 3]) number(index);
+          callback(4, [F64, F64], VOID);
+        }
+        if (e.type.kind !== "void") err("par.for has type void", e.loc);
+      }
+      return;
+    }
     if (e.name === "threads.publish") {
       if (e.args.length !== 1) err("threads.publish takes exactly one argument", e.loc);
       for (const a of e.args) {
@@ -4356,11 +4441,25 @@ function validateFunction(
         );
       }
     }
-    if (!typeEquals(e.type, sig.result)) {
+    // The server listeners() entries answer the event's listener array,
+    // whose element signature the event (a literal at the call site)
+    // selects; their own check below requires a func array.
+    const variableResult =
+      e.fn === "net.serverListeners" ||
+      e.fn === "http.serverListeners" ||
+      // The typed encodeInto answers the call site's own { read, written }
+      // record shape.
+      e.fn === "text.encodeIntoStr";
+    if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
-      // their `bigint` option picks BigIntStats' reads over Stats'.
+      // their `bigint` option picks BigIntStats' reads over Stats'. The
+      // checked-dynamic extraction answers the handle the slot's member
+      // table reads, so it takes either table's type too.
       const statsVariant =
-        (e.fn === "fs.statSync" || e.fn === "fs.lstatSync" || e.fn === "fs.fstatSync") &&
+        (e.fn === "fs.statSync" ||
+          e.fn === "fs.lstatSync" ||
+          e.fn === "fs.fstatSync" ||
+          e.fn === "fs.statsFromDyn") &&
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
       if (!statsVariant)
@@ -4596,7 +4695,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "process.envGet") {
+    if (e.fn === "process.envGet" || e.fn === "process.envGetDyn") {
       // Result is the module's interned `string | undefined` union.
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
@@ -4790,6 +4889,18 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.clientOnInformation") {
+      // The information listener: void, no params or exactly (info: dyn).
+      const cbT = e.args[1]?.type;
+      const ok =
+        cbT?.kind === "func" &&
+        cbT.ret.kind === "void" &&
+        (cbT.params.length === 0 || (cbT.params.length === 1 && cbT.params[0]!.kind === "dyn"));
+      if (!ok) {
+        err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "http.reqOnError" || e.fn === "http.clientOnError") {
       // The error listener: void, no params or exactly (err: %Error).
       const cbT = e.args[1]?.type;
@@ -4819,6 +4930,7 @@ function validateFunction(
     if (
       e.fn === "http.serverOnUpgrade" ||
       e.fn === "http.clientOnUpgrade" ||
+      e.fn === "http.clientOnConnect" ||
       e.fn === "http.serverOnConnect"
     ) {
       // (req, socket, head) or any shorter prefix, void return. The
@@ -5098,7 +5210,29 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+    // mkdirSync's value forms answer the first directory a recursive walk
+    // created, or undefined; the lowering fills the call site's union.
+    if (
+      e.fn === "fs.mkdirObjSync" ||
+      e.fn === "fs.mkdirObjStrSync" ||
+      e.fn === "fs.mkdirDynSync" ||
+      e.fn === "fs.mkdirModeValueSync" ||
+      e.fn === "fs.mkdirModeStrValueSync"
+    ) {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "string") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) err(`libCall ${e.fn} must return the 'string | undefined' union`, e.loc);
+      return true;
+    }
+    if (
+      e.fn === "fs.statProbeSync" ||
+      e.fn === "fs.lstatProbeSync" ||
+      e.fn === "fs.statsFromDynOpt"
+    ) {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
         def &&
@@ -5350,7 +5484,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd" || e.fn === "cp.execFileOpts") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5408,11 +5542,14 @@ function validateFunction(
         const p = cbT.params[0]!;
         if (e.fn === "child.onExit" || e.fn === "child.onClose") {
           const def = p.kind === "union" ? unions.get(p.unionId) : undefined;
+          // A bare `number` code is a held listener's declared type: the
+          // adapter checks the null Node passes for a signal's end.
           ok =
-            def !== undefined &&
-            def.arms.length === 2 &&
-            def.arms[0]!.kind === "f64" &&
-            def.arms[1]!.kind === "nullT";
+            p.kind === "f64" ||
+            (def !== undefined &&
+              def.arms.length === 2 &&
+              def.arms[0]!.kind === "f64" &&
+              def.arms[1]!.kind === "nullT");
           if (ok && cbT.params.length === 2) {
             const s = cbT.params[1]!;
             const sdef = s.kind === "union" ? unions.get(s.unionId) : undefined;
@@ -5445,6 +5582,8 @@ function validateFunction(
     if (
       e.fn === "process.onExit" ||
       e.fn === "process.offExit" ||
+      e.fn === "process.onBeforeExit" ||
+      e.fn === "process.offBeforeExit" ||
       e.fn === "stdin.onData" ||
       e.fn === "stdin.onError" ||
       e.fn === "stdin.onReadable"
@@ -5570,6 +5709,19 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.childFlowing") {
+      // readableFlowing: the interned `boolean | null` union.
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "bool") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall stream.childFlowing must return the 'boolean | null' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "child.pid" || e.fn === "child.exitCode") {
       // pid: the interned `number | undefined`; exitCode: `number | null`.
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
@@ -5649,6 +5801,17 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "child.channel") {
+      // subprocess.channel is a checked-dynamic value: the Control handle,
+      // undefined without an IPC channel, or null after a disconnect.
+      if (e.type.kind !== "dyn") err("libCall child.channel must return dyn", e.loc);
+      return true;
+    }
+    if (e.fn === "child.stdioArray") {
+      // The child's cached stdio array, at the call site's own array type.
+      if (e.type.kind !== "array") err(`libCall ${e.fn} must return the stdio array type`, e.loc);
+      return true;
+    }
     return false;
   }
 
@@ -5664,7 +5827,13 @@ function validateFunction(
         err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
       return true;
     }
-    if (e.fn === "promise.allTuple") {
+    if (e.fn === "promise.entryRejected" || e.fn === "promise.entryReason") {
+      const promise = e.args[0]?.type;
+      if (promise?.kind !== "promise" || promise.inner.kind !== "void")
+        err(`libCall ${e.fn} must read a Promise<void> entry`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple") {
       const [entries, build] = e.args;
       if (
         entries?.type.kind !== "array" ||
@@ -6219,6 +6388,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||
         e.fn === "stream.decodeStrings" ||
         e.fn === "stream.optionValues" ||
@@ -6369,9 +6539,13 @@ function validateFunction(
         if (e.type.kind !== "dyn") err(`libCall emitter.names must return a dyn array`, e.loc);
         return true;
       }
-      if (e.fn === "emitter.listeners") {
+      if (
+        e.fn === "emitter.listeners" ||
+        e.fn === "net.serverListeners" ||
+        e.fn === "http.serverListeners"
+      ) {
         const ok = e.type.kind === "array" && e.type.elem.kind === "func";
-        if (!ok) err(`libCall emitter.listeners must return a func array`, e.loc);
+        if (!ok) err(`libCall ${e.fn} must return a func array`, e.loc);
         return true;
       }
       if (e.fn === "emitter.emitFlex" || e.fn === "emitter.emitAny") {
@@ -6759,11 +6933,8 @@ function validateFunction(
           err("newPromise executor must be (resolve?, reject?) => void", e.loc);
           break;
         }
-        if (e.resolves === true && (inner.kind !== "dyn" || exec.params.length === 0)) {
-          err(
-            "newPromise resolves only a checked-dynamic value, through a resolve function",
-            e.loc,
-          );
+        if (e.resolves === true && exec.params.length === 0) {
+          err("newPromise resolves only through a resolve function", e.loc);
         }
         if (exec.params.length === 2) {
           // The reject closure's shapes: (reason: %Error) => void, and the
@@ -7220,6 +7391,15 @@ function validateFunction(
   }
 
   checkStmts(fn.body);
+
+  // A local is named only inside the region that owns its value: the
+  // backend releases a reference when that region ends (ir/local-scopes.ts).
+  for (const use of localScopeUses(fn)) {
+    err(
+      `local "${use.local.name}" is used after the ${use.ended === "block" ? "statement list" : use.ended} of its declaration ended (in a ${use.owner})`,
+      use.loc,
+    );
+  }
 
   if (!typeEquals(fn.returnType, VOID) && !alwaysReturns(fn.body, unions)) {
     err(`non-void function may complete without returning`, fn.loc);

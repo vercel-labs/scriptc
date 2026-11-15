@@ -5,9 +5,11 @@ import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 import { runOnCodegenServer } from "./codegen-server.js";
 import {
+  nativeHelperFailureMessage,
   nativePartitionPaths,
   validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeHelperFailure,
 } from "./native-codegen-core.js";
 import {
   nativeProfileHelperArgs,
@@ -31,6 +33,21 @@ export function runNativeTool(
   });
 }
 
+/** The error a failed helper call throws, described the same way a build on
+ * the JavaScript host describes it: the helper's structured diagnostic when
+ * it wrote one, else how the child ended and what it printed. A killed
+ * helper otherwise leaves Node's unqualified "Command failed: <args>", which
+ * says nothing about the signal that ended it. */
+function helperFailureError(failure: NativeHelperFailure): Error {
+  const parsed = nativeHelperFailureMessage(failure);
+  const described = `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}: ${parsed.message}`;
+  const error: Error & { status?: number; signal?: string | null } = new Error(described);
+  if (typeof failure.code === "number") error.status = failure.code;
+  else if (typeof failure.status === "number") error.status = failure.status;
+  if (typeof failure.signal === "string") error.signal = failure.signal;
+  return error;
+}
+
 /** A build that has a shared code generation server sends the helper's
  * commands to it, so that the helper's libraries and target stay registered
  * between builds, and runs them as processes only when no server answers.
@@ -39,15 +56,20 @@ export function runNativeTool(
 function runHelperTool(server: string | null, executable: string, args: string[]): string {
   const result =
     server === null ? null : runOnCodegenServer(server, executable, process.cwd(), args);
-  if (result === null) return runNativeTool(executable, args);
+  if (result === null) {
+    try {
+      return runNativeTool(executable, args);
+    } catch (error) {
+      throw helperFailureError(error as NativeHelperFailure);
+    }
+  }
   if (result.status !== 0) {
-    const error: Error & { status?: number; stdout?: string; stderr?: string } = new Error(
-      `Command failed: ${executable} ${args.join(" ")}\n${result.stderr}`,
-    );
-    error.status = result.status;
-    error.stdout = result.stdout;
-    error.stderr = result.stderr;
-    throw error;
+    throw helperFailureError({
+      message: `Command failed: ${executable} ${args.join(" ")}\n${result.stderr}`,
+      code: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
   }
   return result.stdout;
 }

@@ -207,6 +207,9 @@ const UNTYPED_LISTS: Readonly<Record<string, UntypedList>> = {
     members: "names",
     why: "an array tested with includes(expr.fn)",
   },
+  "frontend/lowering/width-copies.ts#READ_ONLY_RUNTIME_CALLS": prefixes(
+    "runtime calls that read typed operands and neither write nor compare them",
+  ),
   "ir/jsval.ts#CONSUMERS": table("the jsval twin of each consuming dyn builtin"),
   "ir/jsval.ts#PRODUCERS": table("the jsval twin of each producing dyn builtin"),
   "ir/runtime-features.ts#CHILD_PROCESS_LIB_PREFIXES": prefixes(

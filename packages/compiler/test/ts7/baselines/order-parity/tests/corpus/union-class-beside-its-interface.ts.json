@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/union-class-beside-its-interface.ts"
+ ],
+ "diags": []
+}

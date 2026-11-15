@@ -143,6 +143,8 @@ export interface EarlyExecutableNativeFeatures {
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
+  utilMarkPromiseAsHandled?: boolean;
+  utilTraceSigInt?: boolean;
   dynBuffer?: boolean;
   fsPathValue?: boolean;
   builtinValues?: boolean;
@@ -187,6 +189,7 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dnsResolve: boolean;
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;

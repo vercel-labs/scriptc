@@ -70,6 +70,7 @@ const native: EarlyExecutableNativeFeatures = {
   http2: false,
   dgram: false,
   dnsPromises: false,
+  dnsResolve: false,
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,

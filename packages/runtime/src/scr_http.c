@@ -2258,6 +2258,25 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
       len = 0;
     }
     r->corked = 0;
+    if (r->head_sent && r->chunked && r->h2_stream == NULL && len == 0 && r->sock &&
+        (r->cork_len > 0 || (r->held_head_len > 0 && r->cork_wrote))) {
+      /* end() of a corked chunked message: the held head, the corked
+       * chunk and the terminator leave as one write, as Node's corked
+       * socket sends them (one writev instead of two sends). */
+      r->cork_wrote = false;
+      ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
+      r->held_head = NULL;
+      r->held_head_len = r->held_head_cap = 0;
+      char *held = r->cork_buf;
+      size_t held_len = r->cork_len;
+      r->cork_buf = NULL;
+      r->cork_len = r->cork_cap = 0;
+      scr_http_res_emit(r, head.len > 0 ? &head : NULL, held, held_len, true);
+      free(held);
+      free(head.data);
+      if (scr_exc_pending()) return;
+      goto finished;
+    }
     scr_http_res_cork_flush(r);
     if (scr_exc_pending()) return;
     if (r->finished) return; /* a teardown inside the flush */
@@ -2285,6 +2304,7 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     scr_http_res_emit(r, head.len > 0 ? &head : NULL, data, len, r->chunked);
     free(head.data);
   }
+finished:
   if (scr_http_res_expected_length(r, &expected) &&
       (double)r->strict_bytes_written != expected) {
     scr_http_res_length_mismatch(r, expected);

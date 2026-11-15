@@ -106,7 +106,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(isMuslTarget(driver) ? ["scr_musl.c"] : []),
     ...(regex ? ["scr_regex.c", "scr_glob.c", "scr_path_win32_relative.c"] : []),
     ...(opts.assert || regex || opts.symbol ? ["scr_assert.c"] : []),
-    ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c"] : []),
+    // The inspect unit reads inspect.colors from the style unit's table
+    // (scr_util_style.h), so the archive carries it with inspect.
+    ...(opts.inspect ? ["scr_inspect.c", "scr_console_native.c", "scr_util_style.c"] : []),
     ...(opts.symbol ? ["scr_symbol.c"] : []),
     ...(opts.assert && opts.bigint ? ["scr_bigint_assert.c"] : []),
     ...(opts.emitter ? ["scr_events_emitter.c", "scr_dyn_handle.c"] : []),

@@ -4,6 +4,8 @@
  *
  *   packages/compiler/surface-manifest.json          pnpm manifest
  *   internal/compatibility/generated/node-v24-internal.json
+ *   internal/compatibility/generated/node-v24-refusals.json
+ *   packages/experimental/refusals.json
  *   docs/src/generated/node-v24-compatibility.json   pnpm node-compat --local
  *
  * During a merge, rebase or cherry-pick, resolve the conflicts in source
@@ -26,6 +28,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const GENERATED = [
   "packages/compiler/surface-manifest.json",
   "internal/compatibility/generated/node-v24-internal.json",
+  "internal/compatibility/generated/node-v24-refusals.json",
+  "packages/experimental/refusals.json",
   "docs/src/generated/node-v24-compatibility.json",
 ];
 

@@ -2026,6 +2026,56 @@ export function isDirentShape(shape: IrRecordShape): boolean {
   );
 }
 
+/** The hidden field that marks the perf_hooks entry row (type-mapper's
+ * perfEntryShape). */
+export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** perf_hooks entry rows: the marker field names the shape (nothing else
+ * interns a '%perfEntry' field; user object literals with a '%' key get a
+ * shape of their own, as the spread fence assumes). A dyn conversion of
+ * this row takes the entry class prototype its entryType field names. */
+export function isPerfEntryShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_ENTRY_MARKER)
+  );
+}
+
+/** The hidden field that marks performance.nodeTiming's row (type-mapper's
+ * perfNodeTimingShape). Unlike an entry, Node keeps its fields as own
+ * enumerable properties, so key walks and spreads see them; only the class
+ * (inspect, the dyn prototype, toJSON's dropped uvMetricsInfo) is special. */
+export const PERF_NODE_TIMING_MARKER = "%perfNodeTiming";
+
+/** performance.nodeTiming's row: the marker names the shape, and a dyn
+ * conversion takes the PerformanceNodeTiming prototype. */
+export function isPerfNodeTimingShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_NODE_TIMING_MARKER)
+  );
+}
+
+/** PerformanceNodeTiming.prototype.toJSON's fields, in toJSON's order.
+ * `JSON.stringify` of the value serializes this list (the runtime's
+ * scr_dyn_perf_node_timing_to_json writes the same one, and uvMetricsInfo
+ * is in neither): Node's toJSON answers an object without the metrics. */
+export const PERF_NODE_TIMING_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "bootstrapComplete",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "idleTime",
+];
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {
@@ -2182,6 +2232,11 @@ export interface IrFunction {
    * object literal's method. Present only in modules that box function
    * values into checked values (function-names.ts). */
   displayName?: string;
+  /** The function's source text with its TypeScript syntax erased, as
+   * Function.prototype.toString prints it. Present only for a function a
+   * module boxes into a checked value while the module converts dynamic
+   * values to text (function-source-text.ts). */
+  sourceText?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -3113,8 +3168,13 @@ export type IrExpr =
    * for every program that held its numbers. */
   | { kind: "numLit"; value: number; spelling?: string; type: IrType; loc: SrcLoc }
   | { kind: "strLit"; value: string; type: IrType; loc: SrcLoc }
-  /** The singleton namespace token for one compiled or builtin module. */
-  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc }
+  /** The singleton namespace token for one compiled or builtin module.
+   * `esmNamespace` marks a builtin namespace that the ES module spelling
+   * (`import * as ns`, `await import("node:path")`) answers: the value is a
+   * module namespace OBJECT, while a require()/default-import/named-import
+   * value of the same module is its CommonJS exports object. Node brands
+   * only the former as a module namespace (util.types.isModuleNamespaceObject). */
+  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc; esmNamespace?: true }
   | { kind: "boolLit"; value: boolean; type: IrType; loc: SrcLoc }
   /** An `undefined` or `null` literal; `type` is the matching unit kind.
    * Valid ONLY as the immediate value of a `unionWrap` (the frontend's slot
@@ -4317,6 +4377,10 @@ export type IrExpr =
       name:
         | "console.log"
         | "console.error"
+        /* console.trace: the stderr line "Trace[: args]" and then the
+         * captured frames, through the same ScrLogArg protocol as
+         * console.error. Never throws; a write failure is discarded. */
+        | "console.trace"
         | "promise.race"
         | "promise.all"
         | "promise.allSettled"
@@ -4365,7 +4429,27 @@ export type IrExpr =
         | "slots.get"
         | "slots.has"
         | "slots.set"
-        | "slots.delete";
+        | "slots.delete"
+        /* Parallel loops (@scriptc/experimental; scr_parallel.c). The
+         * callbacks are closures of the calling module that the runtime
+         * calls once per chunk with the closure pointer as their
+         * environment: (env, part, start, end), (env, start, end) and
+         * (env, left, right), all of them doubles except `part`.
+         * par.into (target bytes, stride f64, grainGiven f64, grain f64,
+         * parallel f64, body func, …reads bytes) → void fills the target;
+         * par.reduce (count, grainGiven, grain, initial, parallel, part,
+         * combine) → f64 folds one value per chunk left to right in chunk
+         * order; par.for (count, grainGiven, grain, parallel, body) → void
+         * calls the body once per chunk. `grainGiven` is 1 when the source
+         * passed `grain` (the runtime tells an absent option from 0), and
+         * `parallel` is 0 when the compiler resolved the call to the
+         * sequential loop. The chunk views `par.into` builds carry no
+         * owner and are only ever passed to the body. Entry checks throw
+         * the RangeError the Node.js implementation throws, before the
+         * first chunk. */
+        | "par.into"
+        | "par.reduce"
+        | "par.for";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

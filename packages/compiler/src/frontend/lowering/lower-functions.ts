@@ -52,6 +52,7 @@ import { slotSignatureAdoption } from "./slot-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 import { noteObjectMethodName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -747,6 +748,9 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
+    // What the function prints as when the module boxes it into a checked
+    // value (function-source-text.ts).
+    noteFunctionSourceNode(lowerer, lifted, node);
     // In TypeScript a parameter default, an object-assignment shorthand and
     // an assignment to an identifier name an anonymous definition as in
     // JavaScript, but its stack-frame name (sourceName) stays as it was, so
@@ -925,6 +929,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     if (sig.isAsync) fn.async = true;
     if (sig.generator !== undefined)
       fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
+    noteFunctionSourceNode(lowerer, fn, decl);
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT

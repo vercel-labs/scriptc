@@ -172,7 +172,11 @@ Never hand-edit these files:
 
 - `packages/compiler/surface-manifest.json`
 - `internal/compatibility/generated/node-v24-internal.json`
+- `internal/compatibility/generated/node-v24-refusals.json`
+- `packages/experimental/refusals.json`
 - `docs/src/generated/node-v24-compatibility.json`
+
+The refusal table and its published copy are written by the compatibility generator.
 
 Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes. `pnpm node-compat --local` reclassifies the committed ledger without fetching Node's docs; it writes the same files as `pnpm node-compat` while the Node pin is unchanged.
 

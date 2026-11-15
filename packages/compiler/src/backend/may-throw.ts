@@ -298,6 +298,11 @@ export function computeMayThrow(
             rec.args[1]?.type.kind === "array"
           )
             f.throws = true;
+          // The parallel loops' entry checks throw the RangeError the Node.js
+          // implementation throws (count, grain, stride), and a detached
+          // target throws the TypeError subarray throws.
+          if (rec.name === "par.into" || rec.name === "par.reduce" || rec.name === "par.for")
+            f.throws = true;
           break;
         case "yieldExpr":
           // A consumer .throw() surfaces at the yield (and .return()'s

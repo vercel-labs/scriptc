@@ -6,6 +6,8 @@ import { isJsSourceFile } from "../../program.js";
 import {
   BOOL,
   DYN,
+  canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
   type IrExpr,
   type IrLocal,
   type IrParam,
@@ -396,18 +398,86 @@ function promisifyMaker(lowerer: Lowerer, shape: CallbackShape, loc: SrcLoc): st
     ],
     loc,
   });
+  // Node answers a truthy `original[util.promisify.custom]` itself instead of
+  // building the wrapper, and marks the wrapper with the same key. Both need
+  // the function as a dyn value: the original to read the custom symbol off,
+  // the wrapper to define it on. A signature outside the dyn function
+  // domains keeps the plain closure, unmarked.
+  const getRecord = (id: string) => lowerer.shapes.get(id);
+  const getUnion = (id: string) => lowerer.unions.get(id);
+  const boxed = canBoxFuncIntoDyn(fnT, getRecord, getUnion);
+  const customCheckable = boxed && canAdaptDynFuncTo(resultT, getRecord, getUnion);
+  const wrapper: IrExpr = {
+    kind: "closure",
+    fnName: `${base}.impl`,
+    captures: ["f.0"],
+    type: resultT,
+    loc,
+  };
+  const body: IrStmt[] = [];
+  const locals: IrLocal[] = [boxedLocal("f.0", fnT)];
+  if (customCheckable) {
+    locals.push(plainLocal("custom.0", DYN));
+    body.push({
+      kind: "varDecl",
+      localId: "custom.0",
+      init: {
+        kind: "libCall",
+        fn: "util.promisifyCustom",
+        args: [{ kind: "dynFrom", value: varRef("f.0", fnT, loc), type: DYN, loc }],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
+    body.push({
+      kind: "if",
+      cond: {
+        kind: "dynTest",
+        test: "truthy",
+        value: varRef("custom.0", DYN, loc),
+        type: BOOL,
+        loc,
+      },
+      then: [
+        {
+          kind: "return",
+          value: { kind: "dynCheck", value: varRef("custom.0", DYN, loc), type: resultT, loc },
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    });
+  }
+  if (boxed) {
+    locals.push(plainLocal("wrapper.0", resultT), plainLocal("marked.0", DYN));
+    body.push({ kind: "varDecl", localId: "wrapper.0", init: wrapper, loc });
+    body.push({
+      kind: "varDecl",
+      localId: "marked.0",
+      init: {
+        kind: "libCall",
+        fn: "util.promisifyMark",
+        args: [
+          { kind: "dynFrom", value: varRef("wrapper.0", resultT, loc), type: DYN, loc },
+          { kind: "dynFrom", value: varRef("f.0", fnT, loc), type: DYN, loc },
+        ],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
+    body.push({ kind: "return", value: varRef("wrapper.0", resultT, loc), loc });
+  } else {
+    body.push({ kind: "return", value: wrapper, loc });
+  }
   lowerer.liftedFns.push({
     name: base,
     params: [captureParam("f.0", fnT)],
     returnType: resultT,
-    locals: [boxedLocal("f.0", fnT)],
-    body: [
-      {
-        kind: "return",
-        value: { kind: "closure", fnName: `${base}.impl`, captures: ["f.0"], type: resultT, loc },
-        loc,
-      },
-    ],
+    locals,
+    body,
     loc,
   });
   return base;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-rsa-option-coercion.ts"
+ ],
+ "diags": []
+}

@@ -726,6 +726,23 @@ function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodec
   return { cls: name, ctor };
 }
 
+/** Whether `type` is the `{ read, written }` record the typed encodeInto
+ * entry fills: two number fields and nothing else. */
+function encodeIntoResultShape(
+  lowerer: Lowerer,
+  type: IrType,
+): type is IrType & { kind: "record" } {
+  if (type.kind !== "record") return false;
+  const shape = lowerer.shapes.get(type.shapeId);
+  if (shape === undefined || shape.indexValue || shape.tuple === true) return false;
+  if (shape.fields.length !== 2) return false;
+  return (
+    shape.fields.every((field) => field.type.kind === "f64") &&
+    shape.fields.some((field) => field.name === "read") &&
+    shape.fields.some((field) => field.name === "written")
+  );
+}
+
 /** Inline codec calls avoid allocating a receiver; stored receivers use
  * the owned record path above. decode is the runtime's WHATWG
  * decode for every recognized static label (with BOM handling for the
@@ -749,6 +766,50 @@ export function lowerTextCodecCall(
       lowerer.noLowering("TextEncoder.encodeInto with this argument shape", call);
     const loc = locOf(call);
     const receiver = lowerer.lowerExpr(access.expression);
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!type) lowerer.badType(call, lowerer.typeOf(call));
+    // A statically typed string into a statically typed Uint8Array takes
+    // the runtime's typed entry (scr_text_encode_into_str): neither operand
+    // is boxed as a dynamic value, and the two counts are written into the
+    // { read, written } record the call site expects instead of a dynamic
+    // object the compiler then re-checks field by field. Anything less
+    // exact — an `any` operand, a Buffer or another view, another result
+    // type — keeps the checked-dynamic call below.
+    const [sourceNode, destinationNode] = call.arguments.nodes as [ts.Expression, ts.Expression];
+    // The types are read off the expressions that evaluate: a type-only
+    // wrapper (`x as string`) states the type the call site wants, not the
+    // one the operand produces, and the typed entry needs the operand's own
+    // representation. A wrapper whose operand is a union keeps the dynamic
+    // path, which converts it.
+    const sourceOperand = withoutParenthesesTypeWrappers(sourceNode);
+    const destinationOperand = withoutParenthesesTypeWrappers(destinationNode);
+    const sourceType = lowerer.mapTypeOf(lowerer.typeOf(sourceOperand));
+    const destinationType = lowerer.mapTypeOf(lowerer.typeOf(destinationOperand));
+    if (
+      sourceType?.kind === "string" &&
+      destinationType?.kind === "bytes" &&
+      destinationType.elem === "u8" &&
+      encodeIntoResultShape(lowerer, type)
+    ) {
+      const typed: IrExpr = {
+        kind: "libCall",
+        fn: "text.encodeIntoStr",
+        args: [
+          lowerer.lowerExprExpecting(sourceOperand, STRING),
+          lowerer.lowerExpr(destinationOperand),
+        ],
+        type,
+        loc,
+      };
+      const coerced = lowerer.coerceInto(call, typed, type);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: coerced,
+        type,
+        loc,
+      };
+    }
     const result: IrExpr = {
       kind: "libCall",
       fn: "text.encodeInto",
@@ -758,8 +819,6 @@ export function lowerTextCodecCall(
       type: DYN,
       loc,
     };
-    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (!type) lowerer.badType(call, lowerer.typeOf(call));
     const checked = lowerer.coerceInto(call, result, type);
     return {
       kind: "seqExpr",

@@ -3,6 +3,7 @@
 /* node:worker_threads — native workers use statically compiled entry points.
  * Lowering and runtime diagnostics define the supported options and methods. */
 declare module "worker_threads" {
+  import { EventEmitter } from "events";
   export const isMainThread: boolean;
   export const isInternalThread: boolean;
   export const threadId: number;
@@ -33,7 +34,11 @@ declare module "worker_threads" {
     stdin?: boolean;
     [option: string]: unknown;
   }
-  export class Worker {
+  /* A Worker extends EventEmitter, not the EventTarget shape a port has: the
+   * full EventEmitter surface (emit, eventNames, the meta events, duplicate
+   * registrations, multi-argument emit) is present, and the seeded
+   * 'newListener'/'removeListener' listeners fire. */
+  export class Worker extends EventEmitter {
     constructor(filename: string | URL, options?: WorkerOptions);
     readonly threadId: number;
     readonly resourceLimits?: ResourceLimits;
@@ -63,7 +68,9 @@ declare module "worker_threads" {
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }
-  export class MessagePort {
+  /* A port is a NodeEventTarget: its listeners live in an emitter registry
+   * shared by the EventEmitter and EventTarget spellings. */
+  export class MessagePort extends EventTarget {
     on(event: "message", listener: (value: any) => void): this;
     on(event: "close", listener: () => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
@@ -73,6 +80,11 @@ declare module "worker_threads" {
     removeListener(event: string, listener: (...args: any[]) => void): this;
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    /* The target's raw dispatch: one argument, extra arguments ignored. */
+    emit(event: string, ...args: any[]): boolean;
+    eventNames(): string[];
+    getMaxListeners(): number;
+    setMaxListeners(n: number): this;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
     start(): void;
     close(callback?: () => void): void;

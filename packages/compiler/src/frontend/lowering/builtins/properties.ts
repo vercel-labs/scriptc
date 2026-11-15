@@ -1,5 +1,5 @@
 import { isBuiltinClassInstance } from "./receiver-types.js";
-import { numLit, strLit } from "../../../ir/build.js";
+import { numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -9,14 +9,19 @@ import {
   BOOL,
   CHILDSTREAM_T,
   CHILDWRITER_T,
+  CHILD_T,
   DATE_T,
   DIR_T,
+  DYN,
   F64,
   FILEHANDLE_T,
   type IrExpr,
   type IrLibFn,
+  type IrStmt,
   type IrType,
+  NULL_T,
   STRING,
+  VOID,
 } from "../../../ir/ir.js";
 import { storedTextCodecClassOf } from "./text-codecs.js";
 import { DIR_MEMBERS, DIR_METHODS } from "./filesystem.js";
@@ -66,6 +71,23 @@ const BIGINT_STATS_FIELDS: Record<string, IrLibFn> = {
   ),
   ...NANOSECOND_FIELDS,
 };
+
+/** A Stats/BigIntStats member read off a checked-dynamic value. The stat
+ * calls' run-time options ladder answers Node's object, whose member table
+ * (number or bigint) only the `bigint` option read at the call knows, so
+ * the member reads off the object at run time — `typeof stats.size` answers
+ * "bigint" for a BigIntStats the call chose. */
+function statsDynMember(expr: ts.PropertyAccessExpression, receiver: IrExpr, name: string): IrExpr {
+  const loc = locOf(expr);
+  return {
+    kind: "dynKeyGet",
+    key: { kind: "strLit", value: name, type: STRING, loc },
+    ...(expr.questionDotToken ? { optional: true as const } : {}),
+    value: receiver,
+    type: DYN,
+    loc,
+  };
+}
 export function lowerBuiltinExtraProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -271,6 +293,139 @@ export function lowerBuiltinExtraProperty(
     };
     return lowerer.maybeNarrow(read, expr);
   }
+  // child.stdio — Node's stdio array: the piped handles at their slots
+  // (the same objects stdin/stdout/stderr answer, so repeated reads and the
+  // identity test agree) and null for every slot that is not a pipe. The
+  // array's LENGTH is the child's stdio slot count — 3 for a spawn or an
+  // exec/execFile child, 4 for a fork's IPC slot, which Node reports null —
+  // so the runtime answers it and the fourth slot is appended only there.
+  // Distinct slots have distinct declared types (a Writable is not a
+  // Readable), so each read keeps its own two-arm union and widens into the
+  // array's element union, which the equality lowering compares by tag.
+  if (kind === "child" && name === "stdio") {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    const elem = mapped?.kind === "array" ? mapped.elem : null;
+    const arms = elem?.kind === "union" ? (lowerer.unions.get(elem.unionId)?.arms ?? []) : [];
+    const slotArm = (fd: 0 | 1 | 2): IrType | null => {
+      if (lowerer.generalNodeStreams) {
+        const className = fd === 0 ? "%Writable" : "%Readable";
+        return arms.find((arm) => arm.kind === "object" && arm.className === className) ?? null;
+      }
+      const kind = fd === 0 ? "childWriter" : "childStream";
+      return arms.find((arm) => arm.kind === kind) ?? null;
+    };
+    if (
+      mapped?.kind !== "array" ||
+      mapped.elem.kind !== "union" ||
+      (slotArm(0) === null && slotArm(1) === null)
+    ) {
+      // @types/node's five-tuple declaration has no array form, and neither
+      // does a checked-dynamic stream slot: the member is refused by name,
+      // as every unlowered @types/node surface is, and `.length` on it
+      // must not fold to the declared arity.
+      lowerer.noLowering(
+        "ChildProcess.stdio",
+        expr,
+        "child.stdio is lowered for the shipped declarations' (Writable | Readable | null)[]; @types/node's five-tuple declaration and checked-dynamic stream slots have no array form",
+      );
+    }
+    // One array per child, as Node's ChildProcess keeps: the first read
+    // builds it and stores it on the child, and every later read answers
+    // that same array (so `child.stdio === child.stdio`, and an element
+    // mutation is visible through both).
+    const childLocal = lowerer.declareHiddenLocal("%stdioChild", CHILD_T);
+    const arrLocal = lowerer.declareHiddenLocal("%stdio", mapped);
+    const child = varRef(childLocal.id, CHILD_T, loc);
+    const array = varRef(arrLocal.id, mapped, loc);
+    const push = (value: IrExpr): IrStmt => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "arrIntrinsic",
+        method: "push",
+        receiver: array,
+        args: [value],
+        type: F64,
+        loc,
+      },
+      loc,
+    });
+    const slot = (fd: 0 | 1 | 2): IrExpr => {
+      const arm = slotArm(fd)!;
+      const type: IrType = { kind: "union", unionId: lowerer.unions.intern([arm, NULL_T]) };
+      const read: IrExpr = lowerer.generalNodeStreams
+        ? { kind: "libCall", fn: "child.stdioStream", args: [child, numLit(fd, loc)], type, loc }
+        : {
+            kind: "libCall",
+            fn: fd === 0 ? "child.stdin" : fd === 1 ? "child.stdout" : "child.stderr",
+            args: [child],
+            type,
+            loc,
+          };
+      return lowerer.coerceInto(expr, read, mapped.elem);
+    };
+    const nullSlot = lowerer.coerceInto(
+      expr,
+      { kind: "unitLit", unit: "null", type: NULL_T, loc },
+      mapped.elem,
+    );
+    const build: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: arrLocal.id,
+        init: { kind: "arrayLit", elems: [], type: mapped, loc },
+        loc,
+      },
+      push(slot(0)),
+      push(slot(1)),
+      push(slot(2)),
+    ];
+    // A forked child's fourth slot is its IPC channel; Node's stdio array
+    // holds null there, and its length is 4.
+    build.push({
+      kind: "if",
+      cond: {
+        kind: "bin",
+        op: ">",
+        left: { kind: "libCall", fn: "child.stdioLen", args: [child], type: F64, loc },
+        right: numLit(3, loc),
+        type: BOOL,
+        loc,
+      },
+      then: [push(nullSlot)],
+      else_: null,
+      loc,
+    });
+    build.push({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "child.stdioStore", args: [child, array], type: VOID, loc },
+      loc,
+    });
+    const read: IrExpr = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "child.stdioCached", args: [child], type: BOOL, loc },
+      then: { kind: "libCall", fn: "child.stdioArray", args: [child], type: mapped, loc },
+      else_: { kind: "seqExpr", stmts: build, result: array, type: mapped, loc },
+      type: mapped,
+      loc,
+    };
+    return lowerer.maybeNarrow(
+      {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: childLocal.id,
+            init: lowerer.lowerExpr(expr.expression),
+            loc,
+          },
+        ],
+        result: read,
+        type: mapped,
+        loc,
+      },
+      expr,
+    );
+  }
   if (kind === "child" && name === "connected") {
     return {
       kind: "libCall",
@@ -310,6 +465,7 @@ export function lowerBuiltinExtraProperty(
     kind === "stats" ? STATS_FIELDS : kind === "bigintStats" ? BIGINT_STATS_FIELDS : undefined;
   if (statsFields !== undefined && Object.hasOwn(statsFields, name)) {
     const receiver = lowerer.lowerExpr(expr.expression);
+    if (receiver.type.kind === "dyn") return statsDynMember(expr, receiver, name);
     const fn = statsFields[name]!;
     // The Date fields are the millisecond value rounded, as Node's
     // dateFromMs builds them; every other Stats number is a bigint on

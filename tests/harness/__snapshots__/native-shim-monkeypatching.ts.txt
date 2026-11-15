@@ -1,4 +1,4 @@
-native-shim-monkeypatching.ts:11:17 - error SC2007: values of type '{ (path: string | number | URL, encoding: BufferEncoding): string; (path: string | number | URL, options: { encoding: BufferEncoding; }): string; (path: string | ... 1 more ... | URL): Buffer<...>; (path: string | URL, options: unknown): string | Buffer<...>; }' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+native-shim-monkeypatching.ts:11:17 - error SC2007: values of type '{ (path: string | number | URL, encoding: BufferEncoding): string; (path: string | number | URL, options: { encoding?: null | undefined; flag?: string | number | undefined; }): Buffer<...>; (path: string | ... 1 more ... | URL, options: ...): string; (path: string | ... 1 more ... | URL): Buffer<...>; (path: string ...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
   10 | 
   11 | export function bindReadFileSync(): typeof fs.readFileSync {

@@ -107,6 +107,7 @@ void scr_zlib_codec_async_opts(const ScrBytes *data, double mode, ScrDyn *opts,
  * contribute their bytes, and other values throw Node's
  * ERR_INVALID_ARG_TYPE ("buffer", or "chunk" for the callback forms). */
 ScrBytes *scr_zlib_sync_opts_dyn(double mode, ScrDyn *data, ScrDyn *opts);
+ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback);
 void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode, ScrDyn *opts,
                                    ScrClosure *cb /* moves */, ScrZlibBytesFn fn);
 /* util.promisify over the callback one-shots: the callback forms' work,
@@ -118,6 +119,48 @@ void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode, ScrDyn *opts,
 typedef struct ScrPromise ScrPromise;
 ScrPromise *scr_zlib_codec_promise(const ScrBytes *data, double mode, ScrDyn *opts);
 ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode, ScrDyn *opts);
+/* The one-shot run over an already-parsed options value, which it drops
+ * (Node's processChunkSync): borrows data, answers +1 bytes, throws Node's
+ * errors (errno and code, ERR_BUFFER_TOO_LARGE,
+ * ERR_TRAILING_JUNK_AFTER_STREAM_END). *consumed, when non-NULL, receives
+ * the input bytes the engine consumed — the decoding stream's end, so
+ * trailing bytes after it are not counted — which is Node's bytesWritten.
+ * Exported for the stream unit's `info` forms, which pair the run with the
+ * engine object they answer. */
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o, size_t *consumed);
+/* Node's `info: true` convenience methods answer the +1 { buffer, engine }
+ * checked object in place of the Buffer. The engine object is a runtime
+ * Transform of the mode, so scr_zlib_stream.c owns it and hands it over
+ * here as an opaque state with the builder that pairs it with the run:
+ * `engine` moves in, and the builder consumes it together with the Buffer
+ * (or with a NULL Buffer, when the call ends in an error and the engine is
+ * only released). The callback forms move cb; an options or input error
+ * throws (callback form) or rejects (promise form), as the Buffer forms
+ * do. */
+typedef void (*ScrZlibDynFn)(ScrClosure *cb, ScrError *err,
+                             ScrDyn *value /* moves, NULL on error */);
+typedef ScrDyn *(*ScrZlibInfoBuildFn)(void *engine /* moves */, double bytes_written,
+                                      ScrBytes *buffer /* moves, NULL to discard */);
+void scr_zlib_info_async_submit(const ScrBytes *data, double mode, ScrDyn *opts,
+                                ScrClosure *cb /* moves */, ScrZlibDynFn fn,
+                                void *engine /* moves */, ScrZlibInfoBuildFn build);
+void scr_zlib_info_async_submit_dyn(ScrDyn *data, double mode, ScrDyn *opts,
+                                    ScrClosure *cb /* moves */, ScrZlibDynFn fn,
+                                    void *engine /* moves */, ScrZlibInfoBuildFn build);
+ScrPromise *scr_zlib_info_promise_submit(const ScrBytes *data, double mode, ScrDyn *opts,
+                                         void *engine /* moves */, ScrZlibInfoBuildFn build);
+ScrPromise *scr_zlib_info_promise_submit_dyn(ScrDyn *data, double mode, ScrDyn *opts,
+                                             void *engine /* moves */, ScrZlibInfoBuildFn build);
+/* The entry points the compiler emits (scr_zlib_stream.c): they build the
+ * engine object, then run the one-shot as the Buffer forms do. */
+ScrDyn *scr_zlib_sync_opts_info(double mode, const ScrBytes *data, ScrDyn *opts);
+ScrDyn *scr_zlib_sync_opts_info_dyn(double mode, ScrDyn *data, ScrDyn *opts);
+void scr_zlib_codec_async_opts_info(const ScrBytes *data, double mode, ScrDyn *opts,
+                                    ScrClosure *cb /* moves */, ScrZlibDynFn fn);
+void scr_zlib_codec_async_opts_info_dyn(ScrDyn *data, double mode, ScrDyn *opts,
+                                        ScrClosure *cb /* moves */, ScrZlibDynFn fn);
+ScrPromise *scr_zlib_codec_promise_info(const ScrBytes *data, double mode, ScrDyn *opts);
+ScrPromise *scr_zlib_codec_promise_info_dyn(ScrDyn *data, double mode, ScrDyn *opts);
 /* zlib.Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw and Unzip
  * (scr_zlib_stream.c — linked when the program uses both zlib and the
  * stream surface): Transform streams over the engine. mode is Node's

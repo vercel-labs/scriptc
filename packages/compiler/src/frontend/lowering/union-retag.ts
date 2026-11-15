@@ -136,7 +136,11 @@ export function planRecordUnionLift(
  * one semantic variant: refinements can coalesce recursive record layouts.
  * When both unions name the same discriminant, its values select target
  * tags, and every selected payload conversion must independently validate.
- * Planning never interns a helper or caches a recursive assumption. */
+ * `strandUnrouted` plans the CHECKED conversion for a source the destination
+ * cannot hold whole: an arm no rule above places becomes a trap, which
+ * throws at the conversion, instead of refusing the plan; the rules still
+ * decide every arm they place. Planning never interns a helper or caches a
+ * recursive assumption. */
 export function planUnionRetag(
   from: IrUnionDef,
   to: IrUnionDef,
@@ -146,6 +150,7 @@ export function planUnionRetag(
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
   siteRoutes?: ReadonlyMap<number, UnionSiteRoute>,
+  strandUnrouted = false,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -155,6 +160,12 @@ export function planUnionRetag(
   const owners = useDiscriminant ? discriminantOwners(to, shapeOf) : null;
   if (useDiscriminant && (owners === null || discriminantOwners(from, shapeOf) === null))
     return null;
+  // The CHECKED conversion (strandUnrouted) strands an arm the destination
+  // cannot hold, but only one it holds NO way: an arm several destination
+  // arms accept is ambiguous rather than unrepresentable, and keeps the
+  // fence every ambiguous conversion has.
+  const destinationAccepts = (source: IrType): boolean =>
+    to.arms.some((arm) => !isUnitType(arm) && widthLift(source, arm) !== null);
   // Large unions otherwise compare every source arm with every destination.
   // Keys narrow the search; exact ABI equality still resolves collisions.
   // Keep small conversions allocation-light and rebuild for each registry view.
@@ -220,23 +231,42 @@ export function planUnionRetag(
     if (useDiscriminant && discriminant && owners && source.kind === "record") {
       const entry = discriminant.cases.find((candidate) => candidate.tag === tag);
       const fieldType = discriminantField(shapeOf(source.shapeId), discriminant.field);
-      if (!entry || !fieldType) return null;
+      if (!entry || !fieldType) {
+        if (!strandUnrouted || destinationAccepts(source)) return null;
+        result.push({ kind: "trap" });
+        continue;
+      }
       const routes: UnionRetagRoute[] = [];
+      let stranded = false;
       for (const value of entry.values) {
         // Narrowing can remove semantic cases without changing a storage
         // arm. Retain that exact representation for omitted literals, while
         // explicit owners still select their own payload layouts.
         const destination =
           owners.get(JSON.stringify(value)) ?? (identity >= 0 ? identity : undefined);
-        if (destination === undefined) return null;
+        if (destination === undefined) {
+          if (!strandUnrouted || destinationAccepts(source)) return null;
+          stranded = true;
+          break;
+        }
         const existing = routes.find((route) => route.tag === destination);
         if (existing) {
           if (!existing.values.includes(value)) existing.values.push(value);
           continue;
         }
         const lift = widthLift(source, to.arms[destination]!);
-        if (lift === null) return null;
+        if (lift === null) {
+          if (!strandUnrouted || destinationAccepts(source)) return null;
+          stranded = true;
+          break;
+        }
         routes.push({ tag: destination, lift, values: [value] });
+      }
+      // A value the destination does not name strands the whole arm: one
+      // trap covers every value the arm can hold.
+      if (stranded) {
+        result.push({ kind: "trap" });
+        continue;
       }
       if (routes.length === 1) result.push({ kind: "direct", route: routes[0]! });
       else result.push({ kind: "discriminant", field: discriminant.field, fieldType, routes });
@@ -278,7 +308,11 @@ export function planUnionRetag(
         // The conversion's own routes (site-discriminant.ts), asked only
         // for an arm no rule above places.
         const routed = siteRoutes?.get(tag);
-        if (routed === undefined) return null;
+        if (routed === undefined) {
+          if (!strandUnrouted || ordinaryArm) return null;
+          result.push({ kind: "trap" });
+          continue;
+        }
         result.push(routed);
         continue;
       }

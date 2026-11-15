@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #if !defined(_WIN32) && !defined(__wasi__)
+#include <pthread.h>
 #include <signal.h>
 #endif
 #ifdef _WIN32
@@ -210,22 +211,60 @@ void scr_init(void) {
   if (scr_stdout_buffering && !isatty(1)) scr_stdout_buffered = true;
 #endif
 #if !defined(_WIN32) && !defined(__wasi__)
-  /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
-   * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
-   * ending the process. A process.on listener replaces the disposition
-   * while it is registered (scr_events.c), and spawned children start with
-   * both at their default actions (scr_spawn_command). */
-  signal(SIGPIPE, SIG_IGN);
-  signal(SIGXFSZ, SIG_IGN);
+  /* Node resets the signal dispositions it inherits before any program code
+   * runs (src/node.cc, ResetSignalHandlers): an ignored signal goes back to
+   * its default action, while a handler an embedder or an LD_PRELOAD
+   * installed is kept. Without this a program launched by a shell or a CI
+   * runner that ignores SIGTSTP can never suspend on Ctrl+Z — readline's
+   * kill(getpid(), SIGTSTP) is discarded — and an inherited ignored SIGPIPE
+   * or SIGXFSZ leaves the write failing instead of ending the process the
+   * way Node does. Node's bound is kMaxSignal (32: NSIG is not reliable
+   * across platforms). SIGPIPE and SIGXFSZ are then ignored again: a write
+   * to a closed pipe or past RLIMIT_FSIZE fails with EPIPE or EFBIG, on any
+   * thread, instead of ending the process. A process.on listener replaces
+   * the disposition while it is registered (scr_events.c), and spawned
+   * children start with both at their default actions (scr_spawn_command).
+   *
+   * The mask the launcher left behind goes first, as in Node: a blocked set
+   * survives exec and follows the thread that called fork, so a program
+   * started by a parent that blocked SIGTSTP never suspends on Ctrl+Z —
+   * kill(getpid(), SIGTSTP) leaves the stop pending and the process keeps
+   * running, which looks like a hung program to whoever waits for the stop.
+   * Node replaces the set with an empty one and then blocks SIGUSR1, the
+   * signal its inspector thread waits on (src/node.cc, PlatformInit, built
+   * with the inspector); scriptc has no such thread, so the inherited set is
+   * cleared and a program that wants a mask sets one itself. */
+  sigset_t inherited_mask;
+  sigemptyset(&inherited_mask);
+  (void)pthread_sigmask(SIG_SETMASK, &inherited_mask, NULL);
+  for (unsigned nr = 1; nr < 32; nr++) {
+    if (nr == SIGKILL || nr == SIGSTOP) continue;
+    struct sigaction act;
+    memset(&act, 0, sizeof act);
+    act.sa_handler = nr == SIGPIPE || nr == SIGXFSZ ? SIG_IGN : SIG_DFL;
+    if (act.sa_handler == SIG_DFL) {
+      /* Only an inherited SIG_IGN is replaced; a real handler stays. */
+      struct sigaction old;
+      if (sigaction((int)nr, NULL, &old) != 0) continue;
+      if ((old.sa_flags & SA_SIGINFO) != 0 || old.sa_handler != SIG_IGN) continue;
+    }
+    (void)sigaction((int)nr, &act, NULL);
+  }
 #endif
 #ifdef SCR_WORKERS
   }
 #endif
   /* atexit is LIFO; registration order makes exit run: library cleanup
-   * (registered later, in scr_lib_init) → cycle collection → RC audit →
-   * flush → Windows console-code-page restore. The final collection frees
-   * cycles the program dropped, so the audit (and ASan's leak check) see
-   * them as freed, not leaked. */
+   * (registered later, in scr_lib_init) → 'exit' listeners and their cleanup
+   * (registered by scr_events_install) → cycle collection → RC audit → flush
+   * → the stdin terminal-mode restore → Windows console-code-page restore.
+   * The final collection frees cycles the program dropped, so the audit (and
+   * ASan's leak check) see them as freed, not leaked. The mode restore runs
+   * after the 'exit' listeners and the flush, matching Node, where
+   * atexit(ResetStdio) runs at libc exit after the listeners, so output a
+   * listener writes still goes to the terminal in the mode the program left
+   * it in. */
+  scr_atexit(scr_process_stdin_restore_mode);
   scr_atexit(scr_flush_at_exit);
 #ifdef SCR_RC_AUDIT
   scr_atexit(scr_rc_audit_at_exit);
@@ -555,6 +594,66 @@ void scr_console_log_parts(size_t n, const ScrLogArg *args) {
 
 void scr_console_error_parts(size_t n, const ScrLogArg *args) {
   scr_console_write(2, n, args, true, true);
+}
+
+/* Whether the rendered arguments are empty. Render adds the line's final
+ * newline, so an empty message renders as that one byte. */
+static bool scr_console_message_empty(size_t n, const ScrLogArg *args) {
+  if (n == 0) return true;
+  char stack[SCR_CONSOLE_STACK_LINE];
+  size_t capacity = scr_console_capacity(n, args);
+  char *line = capacity <= sizeof stack ? stack : malloc(capacity);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  bool wide = false;
+  size_t used = scr_console_render(line, n, args, &wide);
+  if (line != stack) free(line);
+  return used <= 1;
+}
+
+/* console.trace: "Trace" with ": " and the formatted arguments on stderr,
+ * then the frames the call captured, in ONE write (Node writes the
+ * formatted Error's whole stack as one chunk). An empty message prints
+ * "Trace" alone: Node's trace is an Error whose name it prints, and an
+ * Error with an empty message renders as its name. The line goes through
+ * the public writer, so group indentation applies as it does to
+ * console.error. The frames are scriptc's own function and file text
+ * (SEMANTICS.md divergence 11) — the same text a caught Error's stack
+ * carries — so the line before them is Node's exactly and the frame block
+ * is not. The capture happens before the write, as Node captures the
+ * stack when console.trace runs: a patched write that changes
+ * Error.stackTraceLimit cannot change this call's frames. Writes swallow
+ * what a patched stream throws, as every console method does. Borrows the
+ * arguments. */
+void scr_console_trace(size_t n, const ScrLogArg *args) {
+  ScrStr *frames = scr_stack_capture();
+  bool empty = scr_console_message_empty(n, args);
+  ScrLogArg *line = malloc((n + 2) * sizeof *line);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  ScrStr *head = empty ? scr_str_new("Trace", 5) : scr_str_new("Trace: ", 7);
+  line[0] = (ScrLogArg){.tag = SCR_ARG_STR, .v.s = head};
+  for (size_t i = 0; i < n; i++) {
+    line[i + 1] = args[i];
+    /* No separator between the header and the first argument: "Trace: "
+     * ends in one, and the empty message that prints "Trace" alone must
+     * not leave a trailing space. */
+    if (i == 0) line[i + 1].tag |= SCR_ARG_GLUE;
+  }
+  size_t total = n + 1;
+  if (frames) {
+    /* The frames' text opens with the newline that separates them from an
+     * Error's header. */
+    line[total++] = (ScrLogArg){.tag = SCR_ARG_STR | SCR_ARG_GLUE, .v.s = frames};
+  }
+  scr_console_write(2, total, line, true, true);
+  scr_str_release(head);
+  scr_str_release(frames);
+  free(line);
+}
+
+/* The string-concatenation twin: the tags the caller passed carry the
+ * GLUE and SCR_ARG_NUM bits the renderer already honors. */
+void scr_console_trace_parts(size_t n, const ScrLogArg *args) {
+  scr_console_trace(n, args);
 }
 
 /* A Console instance's line on process stdout (fd 1) or stderr (fd 2):

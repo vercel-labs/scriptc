@@ -453,6 +453,11 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure 
 
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
+/* Marks both halves ended and finished without running them, the state a
+ * stream that already wrote and flushed its whole input reports
+ * (writableEnded, writableFinished and readableEnded true). zlib's `info`
+ * results hand their finished engine over this way. s is borrowed. */
+void scr_stream_mark_ended(ScrStream *s);
 /* Readable async-iterator return(): destroy with Node's AbortError payload;
  * the iterator's internal error consumer suppresses an unhandled crash when
  * no user error listener exists. Receiver +1. */

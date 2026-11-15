@@ -42,8 +42,24 @@ void scr_process_prepend_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
 double scr_process_stdin_is_raw(void);
 void scr_process_off_exit(ScrClosure *cb);
 void scr_run_exit_listeners(double code);
+/* The 'beforeExit' event: listeners run every time the loop runs out of
+ * ref'd work (Node re-emits while a listener scheduled more), receive the
+ * current exit code, and a `once` entry leaves the registry when it fires.
+ * scr_process_before_exit_hook is scr_async.c's storage (a NULL hook keeps
+ * event-free binaries free of this unit); scr_events_install points it at
+ * scr_run_before_exit_listeners. The hook answers false when no listener
+ * is registered. */
+void scr_process_on_before_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double), bool once);
+void scr_process_prepend_before_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
+void scr_process_off_before_exit(ScrClosure *cb);
+bool scr_run_before_exit_listeners(double code);
+extern SCR_TL bool (*scr_process_before_exit_hook)(double code);
 void scr_exit_thunk0(ScrClosure *cb, double code);
 void scr_exit_thunk_code(ScrClosure *cb, double code);
+/* process.finalization: the stable register/registerBeforeExit/unregister
+ * object (+1). Its callbacks run from process listeners this unit installs
+ * on the first registration for each event. */
+ScrDyn *scr_process_finalization(void);
 void scr_stdin_on_data(ScrClosure *cb, void (*fn)(ScrClosure *, ScrBytes *), bool once);
 /* A string 'data' listener (moves cb): receives each chunk decoded by the
  * stdin's setEncoding decoder; with no encoding set, a delivery throws

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-sign-async-errors.ts"
+ ],
+ "diags": []
+}

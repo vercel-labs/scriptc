@@ -256,8 +256,15 @@ export class LifetimeRegions {
    * is never counted by them. The counting path is marked unlikely: speed
    * builds inline these bodies into every use of an instance, and in
    * programs that never create a region the path is never taken, so it is
-   * laid out away from the callers' hot code. */
-  countBody(fnName: string, ret: "ptr" | "void", comment: string): string[] {
+   * laid out away from the callers' hot code.
+   *
+   * `nullSentinel` adds the module's NULLABLE_NULL sentinel to that skip
+   * test. A value of a `C | null | undefined` union spells its null arm as
+   * the sentinel, and an owned copy of it (a local, a narrowing, a widened
+   * array read) retains and releases that sentinel: it is not a region
+   * instance and has no chunk header, so masking its address would read an
+   * unrelated chunk base. */
+  countBody(fnName: string, ret: "ptr" | "void", comment: string, nullSentinel = false): string[] {
     const count = this.tag("count");
     const workers = this.host.threadLocalAlloc === true;
     this.host.declare(`@scr_region_counting = external global i8`);
@@ -273,7 +280,13 @@ export class LifetimeRegions {
       `  %on = ${flag}${this.tag("counting")}`,
       `  %idle = icmp eq i8 %on, 0`,
       `  %isnull = icmp eq ptr %o, null`,
-      `  %skip0 = or i1 %idle, %isnull`,
+      ...(nullSentinel
+        ? [
+            `  %isnullarm = icmp eq ptr %o, @sc_nullable_null`,
+            `  %nulled = or i1 %isnull, %isnullarm`,
+          ]
+        : []),
+      `  %skip0 = or i1 %idle, ${nullSentinel ? "%nulled" : "%isnull"}`,
       `  %skip = call i1 @llvm.expect.i1(i1 %skip0, i1 true)`,
       `  br i1 %skip, label %done, label %chunk`,
       `chunk:`,

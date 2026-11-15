@@ -42,6 +42,7 @@ import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
+import { NULLABLE_NULL } from "./nullable-unions.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
@@ -1328,11 +1329,23 @@ export function emitClassShapes(
     // An instance that keeps its class id in the rc word counts in the
     // low half (CLASS_ID_OFFSET).
     const count = meta.idInRc ? "i32" : host.sizeType;
+    // A lifetime-region instance has no header word to test immortality in,
+    // so a class that is the arm of a `C | null | undefined` union must skip
+    // the null sentinel explicitly; it reaches retain and release as an
+    // owned value of that union, whose unit arm the sentinel encodes.
+    const nullSentinel = lifetime && host.nullableUnions.classMayBeNullSentinel(cls.name);
     // A tree class's retain is the no-op the tree branch below emits: a
     // tree value has one owner, so nothing ever raises its count.
     if (!meta.tree)
       defs.push(
-        ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
+        ...retainBody(
+          host,
+          mangleClassRetain(cls.name),
+          `retain ${cls.name}`,
+          lifetime,
+          count,
+          nullSentinel,
+        ),
         ``,
       );
 
@@ -1470,15 +1483,29 @@ export function emitClassShapes(
                 struct,
                 refFields.map((f) => f.index),
                 "weak",
+                refFields.map((f) => host.nullableUnions.mayHoldNullSentinel(f.type)),
               )
             : destroyDefinitions(destroy, destroyBody, false, null)),
         ``,
       );
+      // A tree value of a two-unit nullable union (`C | null | undefined`)
+      // reaches this release as the immortal null sentinel, which carries no
+      // count word to recognise it by (a counted instance's -1 count is how
+      // its release skips). NULL is `undefined` in that union, so the
+      // sentinel is the only other value that is not an instance.
+      const sentinelArm = host.nullableUnions.classMayBeNullSentinel(cls.name);
       defs.push(
         `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (a tree: destroy the subtree)`,
         `entry:`,
         `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %free`,
+        `  br i1 %isnull, label %done, label %${sentinelArm ? "notunit" : "free"}`,
+        ...(sentinelArm
+          ? [
+              `notunit: ; the null arm of a two-unit nullable union`,
+              `  %isunit = icmp eq ptr %o, ${NULLABLE_NULL}`,
+              `  br i1 %isunit, label %done, label %free`,
+            ]
+          : []),
         `free:`,
         budgeted
           ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`
@@ -1653,6 +1680,7 @@ export function emitClassShapes(
               )
             : null,
           count,
+          nullSentinel,
         ),
         ``,
       );

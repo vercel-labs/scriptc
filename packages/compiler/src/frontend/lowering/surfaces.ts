@@ -1,5 +1,6 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import { isLoweredConsoleMember } from "./builtins/console.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -28,7 +29,7 @@ import {
 } from "../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
-import { V8_MEMBER_REASON } from "../builtin-modules.js";
+import { NODE_BUILTIN_MODULES_V24, V8_MEMBER_REASON } from "../builtin-modules.js";
 import { globalObjectMember } from "./global-object-names.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
@@ -1398,6 +1399,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Node's own message shape).
       realpathSync: { fn: "fs.realpathSync", params: [STRING], result: STRING },
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
+      // fs.realpath.native is Node's same realpath binding as fs.realpath
+      // (the native spelling just skips JS normalization); the callback
+      // lowering maps both onto the one dispatcher op.
+      "realpath.native": { fn: "fs.callbackCall", params: [], result: DYN },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
       // closeSync). Both forms take an optional creation mode as the third
@@ -1641,11 +1646,24 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "os.getPriority",
         params: [F64],
         result: F64,
-        valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
+        valueParams: [{ mode: "optional", type: F64, defaultValue: 0, name: "pid" }],
+        // Untyped callers' adapter: Node's default pid and validateInteger's
+        // type error, rendered from the value itself.
+        checked: { fn: "os.getPriorityChk", args: [] },
       },
       // A one-argument call is setPriority(0, priority)
-      // (lowerOsSetPriorityCall completes it).
-      setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
+      // (lowerOsSetPriorityCall completes it). Untyped callers' adapter
+      // keeps Node's one-argument shift and argument checks.
+      setPriority: {
+        fn: "os.setPriority",
+        params: [F64, F64],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: F64, name: "pid" },
+          { mode: "required", type: F64, name: "priority" },
+        ],
+        checked: { fn: "os.setPriorityChk", args: [] },
+      },
       // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
       // from one uv_cpu_info snapshot.
       cpus: { fn: "os.cpusTake", params: [], result: VOID },
@@ -1682,6 +1700,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // canonical signatures for manifest projection and fallback dispatch.
       createHash: { fn: "crypto.hashNew", params: [STRING], result: CRYPTOHASH_T },
       createHmac: { fn: "crypto.hmacNewStr", params: [STRING, STRING], result: CRYPTOHMAC_T },
+      // createMac is special-cased in lowerCryptoModuleCall (any-value
+      // key and options); this row carries its canonical signature.
+      createMac: { fn: "crypto.macNewDyn", params: [DYN, DYN, DYN], result: DYN },
+      secureHeapUsed: { fn: "crypto.secureHeapUsed", params: [], result: DYN },
       hash: { fn: "crypto.hashDigestStr", params: [STRING, STRING, STRING], result: STRING },
       timingSafeEqual: { fn: "crypto.timingSafeEqual", params: [BYTES_U8, BYTES_U8], result: BOOL },
       randomFillSync: { fn: "crypto.randomFill", params: [BYTES_U8, F64, F64], result: BYTES_U8 },
@@ -1701,12 +1723,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
-      createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
-      createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+      createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
+      createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
       generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
       sign: { fn: "crypto.signOneshot", params: [], result: DYN },
       verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+      publicEncrypt: { fn: "crypto.publicEncrypt", params: [], result: DYN },
+      privateDecrypt: { fn: "crypto.privateDecrypt", params: [], result: DYN },
+      privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
+      publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
@@ -1741,6 +1767,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Checked-dynamic arguments, the result converted to the call site's
       // type (lowerPrimeCall).
       getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
+      // Node's message and error for every engine but "dynamic".
+      setEngine: { fn: "crypto.setEngine", params: [], result: VOID },
       checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
       generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
       generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -1877,6 +1905,38 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "required", type: DYN },
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
+      },
+      // The argument is checked at runtime: a promise marks its rejection
+      // handled, anything else throws ERR_INVALID_ARG_TYPE (the lowering in
+      // the util spoke supplies the missing-argument undefined).
+      markPromiseAsHandled: {
+        fn: "util.markPromiseAsHandled",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
+      },
+      // The argument is checked at runtime and the same signal answers
+      // (a non-signal throws ERR_INVALID_ARG_TYPE); the controller is an
+      // ordinary AbortController whose signal is marked the same way.
+      transferableAbortSignal: {
+        fn: "util.transferableAbortSignal",
+        params: [DYN],
+        result: DYN,
+        valueParams: exactValueParams(DYN),
+      },
+      transferableAbortController: {
+        fn: "util.transferableAbortController",
+        params: [],
+        result: DYN,
+        valueParams: exactValueParams(),
+      },
+      // Node reads no argument and answers undefined; the argument (and any
+      // surplus) is still evaluated.
+      setTraceSigInt: {
+        fn: "util.setTraceSigInt",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
       },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
       aborted: {
@@ -2018,6 +2078,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     },
     // The util/types spoke supplies the probe name to the shared brand check.
     "util/types": {
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isAnyArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBufferView: { fn: "util.typeIs", params: [DYN], result: BOOL },
@@ -2209,9 +2271,11 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // table entries have a home, and so the "recognized module, unlowered
     // member" fence wording applies.
     net: {
-      // The process-wide happy-eyeballs attempt budget: one runtime double
-      // in the core unit (never links scr_net.c by itself), default 250ms
-      // like Node's.
+      // The process-wide autoSelectFamily setting and its attempt-timeout
+      // budget: runtime state in the core unit (never links scr_net.c by
+      // itself), true and 250ms by default like Node's.
+      getDefaultAutoSelectFamily: { fn: "net.getDefaultAutoSel", params: [], result: BOOL },
+      setDefaultAutoSelectFamily: { fn: "net.setDefaultAutoSel", params: [DYN], result: VOID },
       getDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.getAutoSelTimeout",
         params: [],
@@ -2219,7 +2283,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       },
       setDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.setAutoSelTimeout",
-        params: [F64],
+        params: [DYN],
         result: VOID,
       },
       // Node's IPv4Reg / IPv6Reg tests over String(input).
@@ -2448,8 +2512,21 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
-    // Inline numeric O_* flags use a target-neutral runtime entry point.
-    openSync: ["fs.openNumericSync"],
+    // Every flag and mode spelling the lowering selects: inline numeric O_*
+    // flags (the target-neutral mask), raw open(2) bits, the octal-string
+    // creation mode, and the forms whose flags or mode only the runtime
+    // knows.
+    openSync: [
+      "fs.openNumericSync",
+      "fs.openStrModeSync",
+      "fs.openNativeSync",
+      "fs.openDynSync",
+      "fs.openModeDynSync",
+      "fs.openNativeStrSync",
+      "fs.openNativeDynSync",
+      "fs.openNumericStrSync",
+      "fs.openNumericDynSync",
+    ],
     // The Buffer path: the typed entry point for a statically typed one
     // (fs.existsSyncBytes), and the value form when only the runtime knows
     // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
@@ -2460,6 +2537,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFileSyncBuf",
       "fs.readFileSyncBytes",
       "fs.readFileSyncDyn",
+      "fs.readFileSyncStrOpts",
+      "fs.readFileSyncBytesOpts",
       "fs.readFileEncoded",
       "fs.readFdEncoded",
       "fs.readFdSync",
@@ -2490,6 +2569,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.writeFileDataOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.writeFileDataOptionsDynModeSync",
     ],
     // The data forms (bytes, and the checked argument whose type the call
     // site did not pin down) and the { encoding, mode, flag } option-record
@@ -2500,6 +2582,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -2521,22 +2606,50 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamClose",
       "fs.fsStreamCloseCb",
     ],
-    // The utf8 string overload; the table row is the Buffer-window form.
-    writeSync: ["fs.writeStrSync"],
+    // The utf8 string overload and the run-time-checked argument forms;
+    // the table row is the Buffer-window form.
+    writeSync: ["fs.writeStrSync", "fs.writeSyncArgs"],
     // The form whose arguments Node checks at run time.
-    readSync: ["fs.readSyncDyn"],
-    // The { recursive, mode } option lowerings.
-    mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
+    readSync: ["fs.readSyncArgs"],
+    // The same run-time ladder over a descriptor the call site did not pin
+    // down.
+    readvSync: ["fs.readvSyncDyn"],
+    writevSync: ["fs.writevSyncDyn"],
+    ftruncateSync: ["fs.ftruncateSyncDyn"],
+    closeSync: ["fs.closeSyncDyn"],
+    fsyncSync: ["fs.fsyncSyncDyn"],
+    fdatasyncSync: ["fs.fdatasyncSyncDyn"],
+    fchownSync: ["fs.fchownSyncDyn"],
+    // The bare mode, the { recursive, mode } option lowerings, the forms
+    // keeping Node's first-created-directory answer, and the runtime-ladder
+    // form for an options value the compiler cannot read.
+    mkdirSync: [
+      "fs.mkdirModeSync",
+      "fs.mkdirModeStrSync",
+      "fs.mkdirRecursiveSync",
+      "fs.mkdirRecursiveModeSync",
+      "fs.mkdirObjSync",
+      "fs.mkdirObjStrSync",
+      "fs.mkdirObjVoidSync",
+      "fs.mkdirObjStrVoidSync",
+      "fs.mkdirModeValueSync",
+      "fs.mkdirModeStrValueSync",
+      "fs.mkdirDynSync",
+      "fs.mkdirDynVoidSync",
+    ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
     readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
-    // The { throwIfNoEntry } probe form.
-    statSync: ["fs.statProbeSync"],
+    // The { throwIfNoEntry } probe form and the run-time option ladder
+    // (bigint and throwIfNoEntry read off a value only the runtime knows).
+    statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
     // realpathSync and realpathSync.native read as function values.
     realpathSync: ["fs.realpathValue"],
     "realpathSync.native": ["fs.realpathValue"],
-    lstatSync: ["fs.lstatProbeSync"],
+    lstatSync: ["fs.lstatProbeSync", "fs.lstatSyncDyn"],
+    // The run-time option ladder over options the compiler cannot read.
+    fstatSync: ["fs.fstatSyncDyn"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
@@ -2545,7 +2658,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // callers fence per site); the ladder runs the REAL lchmod on APPLE,
     // so the chmod fence witnesses it — fencing one spelling fences the
     // operation.
-    chmodSync: ["fs.lchmodSyncChk"],
+    // The octal-string and run-time-checked mode forms (lowerFsModeSyncCall).
+    chmodSync: ["fs.lchmodSyncChk", "fs.chmodSyncStr", "fs.chmodSyncDyn"],
+    fchmodSync: ["fs.fchmodSyncStr", "fs.fchmodSyncDyn"],
     // The two-argument listener form.
     watch: ["fs.watchCb"],
   },
@@ -2580,6 +2695,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomBytesToString",
       "crypto.randomBytesCb",
       "crypto.randomBytesPromise",
+      // Node's own argument checks for the sizes, callbacks and surplus
+      // arguments the declared overloads do not describe.
+      "crypto.randomBytesAny",
+      "crypto.randomBytesAnyCb",
     ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
@@ -2597,8 +2716,24 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     getRandomValues: ["crypto.getRandomValuesDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
+    randomInt: [
+      "crypto.randomIntMax",
+      "crypto.randomIntCb",
+      "crypto.randomIntPromise",
+      // Node's own checks for the bounds and callback forms the declared
+      // overloads do not describe.
+      "crypto.randomIntAny",
+      "crypto.randomIntAnyCb",
+    ],
     randomUUID: ["crypto.randomUUIDOpts"],
+    // A callback only the dynamic checker can see takes the function gate
+    // before the deferred call.
+    generateKey: ["crypto.checkCallback"],
+    // A sign or verify callback of a type the checker cannot prove is a
+    // function may be undefined at run time, where Node answers
+    // synchronously; a function takes the asynchronous entry point.
+    sign: ["crypto.signOneshotCb", "crypto.signOneshotMaybe"],
+    verify: ["crypto.verifyOneshotCb", "crypto.verifyOneshotMaybe"],
   },
   tty: {
     isatty: ["process.isTTYValue"],
@@ -2618,6 +2753,11 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
+    // The untyped callers' validating adapters (the JavaScript lane and the
+    // untyped arm of the typed lane) read and set the same scheduling
+    // priority: same surface, same fence.
+    getPriority: ["os.getPriorityChk"],
+    setPriority: ["os.setPriorityChk"],
   },
 };
 
@@ -2996,10 +3136,31 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["perf.clearMeasures"],
     },
     {
+      id: "node-builtin.perf_hooks.PerformanceMark",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceMark",
+      fns: ["perf.markNew", "perf.entryIs"],
+      note: "new PerformanceMark(name, options?) and the PerformanceMark global; the mark updates the mark timings but is not added to the marks buffer",
+    },
+    {
+      id: "node-builtin.perf_hooks.PerformanceObserver",
+      kind: "node-builtin",
+      name: "perf_hooks.PerformanceObserver",
+      fns: [
+        "perf.observerNew",
+        "perf.observerObserve",
+        "perf.observerDisconnect",
+        "perf.observerTake",
+        "perf.listEntries",
+        "perf.observerIs",
+      ],
+      note: "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes",
+    },
+    {
       id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
       kind: "node-builtin",
       name: "perf_hooks.performance.eventLoopUtilization",
-      fns: ["perf.loopStart", "perf.idleTime"],
+      fns: ["perf.loopStart", "perf.loopExit", "perf.loopCount", "perf.idleTime"],
       note: "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported",
     },
     {
@@ -3023,7 +3184,16 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.env",
       kind: "node-builtin",
       name: "process.env",
-      fns: ["process.envGet", "process.envSet", "process.envUnset", "process.envPairs"],
+      fns: [
+        "process.envGet",
+        "process.envGetDyn",
+        "process.envSet",
+        "process.envSetDyn",
+        "process.envSetKeyDyn",
+        "process.envUnset",
+        "process.envUnsetDyn",
+        "process.envPairs",
+      ],
       note: "reads, writes, deletes, and enumeration of the process environment (the process global)",
     },
     {
@@ -3076,7 +3246,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
-      fns: ["process.chdir"],
+      fns: ["process.chdir", "process.chdirDyn"],
     },
     {
       id: "node-builtin.process.pid",
@@ -3115,6 +3285,48 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["process.getgroups"],
     },
     {
+      id: "node-builtin.process.setuid",
+      kind: "node-builtin",
+      name: "process.setuid",
+      fns: ["process.setuid"],
+      note: "selects the process's user id with Node's id ladder (a uint32 number or a name string, ERR_UNKNOWN_CREDENTIAL and the kernel's ErrnoException); absent on Windows",
+    },
+    {
+      id: "node-builtin.process.seteuid",
+      kind: "node-builtin",
+      name: "process.seteuid",
+      fns: ["process.seteuid"],
+      note: "selects the effective user id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setgid",
+      kind: "node-builtin",
+      name: "process.setgid",
+      fns: ["process.setgid"],
+      note: "selects the process's group id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setegid",
+      kind: "node-builtin",
+      name: "process.setegid",
+      fns: ["process.setegid"],
+      note: "selects the effective group id with Node's id ladder; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.setgroups",
+      kind: "node-builtin",
+      name: "process.setgroups",
+      fns: ["process.setgroups"],
+      note: "takes an array of ids, validates every element by index, and answers the first unknown group; absent on Windows",
+    },
+    {
+      id: "node-builtin.process.initgroups",
+      kind: "node-builtin",
+      name: "process.initgroups",
+      fns: ["process.initgroups"],
+      note: "validates the user and extra group, then calls initgroups(3); absent on Windows",
+    },
+    {
       id: "node-builtin.process.ppid",
       kind: "node-builtin",
       name: "process.ppid",
@@ -3124,7 +3336,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.title",
       kind: "node-builtin",
       name: "process.title",
-      fns: ["process.title", "process.setTitle"],
+      fns: ["process.title", "process.setTitle", "process.setTitleDyn"],
       note: "reads and writes of the process title are one surface",
     },
     {
@@ -3194,6 +3406,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.cpuUserDiff",
         "process.cpuSystemDiff",
         "process.cpuPrevValidate",
+        "process.cpuDynPrepare",
+        "process.cpuDynField",
       ],
       note: "the plain-sample and previous-value diff forms are one surface",
     },
@@ -3206,6 +3420,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.threadCpuSystem",
         "process.threadCpuUserDiff",
         "process.threadCpuSystemDiff",
+        "process.cpuDynPrepare",
+        "process.cpuDynField",
       ],
       note: "the plain-sample and previous-value diff forms are one surface",
     },
@@ -3234,28 +3450,90 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.kill",
       kind: "node-builtin",
       name: "process.kill",
-      fns: ["process.kill", "process.killNum"],
+      fns: ["process.kill", "process.killNum", "process.killSigDyn", "process.killDyn"],
       note: "the signal-name and signal-number forms are one surface",
     },
     {
       id: "node-builtin.process.umask",
       kind: "node-builtin",
       name: "process.umask",
-      fns: ["process.umask"],
+      fns: ["process.umask", "process.umaskChk", "process.umaskDyn"],
     },
     {
       id: "node-builtin.process.exit",
       kind: "node-builtin",
       name: "process.exit",
-      fns: ["process.exit", "process.exiting"],
+      fns: ["process.exit", "process.exitDyn", "process.exiting"],
       note: "process.exit and the process._exiting flag read are one surface",
+    },
+    {
+      id: "node-builtin.process.abort",
+      kind: "node-builtin",
+      name: "process.abort",
+      fns: ["process.abort"],
+      note: "flushes stdout and stderr and raises SIGABRT; without Node's native and JavaScript stack dumps",
+    },
+    {
+      id: "node-builtin.process.finalization",
+      kind: "node-builtin",
+      name: "process.finalization",
+      fns: ["process.finalization"],
+      note: "register, registerBeforeExit and unregister on one stable object; the callbacks run from process 'exit'/'beforeExit' listeners installed at the first registration",
     },
     {
       id: "node-builtin.process.exitCode",
       kind: "node-builtin",
       name: "process.exitCode",
-      fns: ["process.setExitCode", "process.setExitCodeTracked", "process.hasExitCode"],
+      fns: [
+        "process.setExitCode",
+        "process.setExitCodeDyn",
+        "process.setExitCodeTracked",
+        "process.setExitCodeDynTracked",
+        "process.hasExitCode",
+      ],
       note: "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it",
+    },
+    {
+      id: "node-builtin.process.hasUncaughtExceptionCaptureCallback",
+      kind: "node-builtin",
+      name: "process.hasUncaughtExceptionCaptureCallback",
+      fns: ["process.hasUncaughtCapture"],
+      note: "whether a capture callback is installed",
+    },
+    {
+      id: "node-builtin.process.setUncaughtExceptionCaptureCallback",
+      kind: "node-builtin",
+      name: "process.setUncaughtExceptionCaptureCallback",
+      fns: ["process.setUncaughtCapture"],
+      note: "installs a function or null; the callback takes precedence over uncaughtException listeners and a second install throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
+    },
+    {
+      id: "node-builtin.process.debugPort",
+      kind: "node-builtin",
+      name: "process.debugPort",
+      fns: ["process.debugPort", "process.setDebugPort"],
+      note: "9229 until written; writes convert with ToInt32, accept 0 or 1024 to 65535, and keep the previous value on a refused write",
+    },
+    {
+      id: "node-builtin.process.sourceMapsEnabled",
+      kind: "node-builtin",
+      name: "process.sourceMapsEnabled",
+      fns: ["process.sourceMapsEnabled", "process.setSourceMapsEnabled"],
+      note: "false until setSourceMapsEnabled stores a validated boolean",
+    },
+    {
+      id: "node-builtin.process.ref",
+      kind: "node-builtin",
+      name: "process.ref",
+      fns: ["process.ref"],
+      note: "reads the nodejs.ref symbol (else the ref member) and calls a callable with the argument as receiver",
+    },
+    {
+      id: "node-builtin.process.unref",
+      kind: "node-builtin",
+      name: "process.unref",
+      fns: ["process.unref"],
+      note: "reads the nodejs.unref symbol (else the unref member) and calls a callable with the argument as receiver",
     },
     // ── the tls CA store (lowerTlsCaCall / lowerTlsRootCertificates): the
     // host's trust anchors, read and replaced. Dedicated paths, and
@@ -3455,6 +3733,7 @@ export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefin
   writev: 4,
   readlink: 3,
   realpath: 3,
+  "realpath.native": 3,
   rename: 3,
   stat: 1,
   lstat: 1,
@@ -3515,88 +3794,6 @@ export function builtinConstLit(
   if (typeof value === "number") return { kind: "numLit", value, type: F64, loc };
   return { kind: "boolLit", value, type: BOOL, loc };
 }
-
-/** node:module's builtinModules, BAKED — Node v24's exact list (verbatim
- * order: the bare names, then the node:-prefix-only tails), pinned to
- * the compat target rather than read from the COMPILING host's Node so
- * emitted programs are host-independent (the cache-identity contract).
- * Node ships one frozen singleton; each read here mints a fresh string
- * array — a divergence only mutation could observe, and mutating Node's
- * frozen array throws anyway. */
-export const NODE_BUILTIN_MODULES_V24: readonly string[] = [
-  "_http_agent",
-  "_http_client",
-  "_http_common",
-  "_http_incoming",
-  "_http_outgoing",
-  "_http_server",
-  "_stream_duplex",
-  "_stream_passthrough",
-  "_stream_readable",
-  "_stream_transform",
-  "_stream_wrap",
-  "_stream_writable",
-  "_tls_common",
-  "_tls_wrap",
-  "assert",
-  "assert/strict",
-  "async_hooks",
-  "buffer",
-  "child_process",
-  "cluster",
-  "console",
-  "constants",
-  "crypto",
-  "dgram",
-  "diagnostics_channel",
-  "dns",
-  "dns/promises",
-  "domain",
-  "events",
-  "fs",
-  "fs/promises",
-  "http",
-  "http2",
-  "https",
-  "inspector",
-  "inspector/promises",
-  "module",
-  "net",
-  "os",
-  "path",
-  "path/posix",
-  "path/win32",
-  "perf_hooks",
-  "process",
-  "punycode",
-  "querystring",
-  "readline",
-  "readline/promises",
-  "repl",
-  "stream",
-  "stream/consumers",
-  "stream/promises",
-  "stream/web",
-  "string_decoder",
-  "sys",
-  "timers",
-  "timers/promises",
-  "tls",
-  "trace_events",
-  "tty",
-  "url",
-  "util",
-  "util/types",
-  "v8",
-  "vm",
-  "wasi",
-  "worker_threads",
-  "zlib",
-  "node:sea",
-  "node:sqlite",
-  "node:test",
-  "node:test/reporters",
-];
 
 /** The array-literal read of module.builtinModules — both value paths
  * (the named-import binding and the namespace member read) mint the
@@ -3664,14 +3861,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
-    ...Object.fromEntries(
-      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
-        m,
-        "RSA encryption has no lowering — the asymmetric crypto surface is " +
-          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
-          "createSign, createVerify, createECDH, and createDiffieHellman",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",
@@ -3721,6 +3910,39 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
   )
     return;
+  // A JavaScript read off a value the lowering BUILT as a record (os.cpus()'s
+  // rows, os.userInfo()'s record, a stdlib data interface filled field by
+  // field): the checker's property symbol is the stdlib declaration, but the
+  // value on hand is the record, so the field read the property lowering
+  // performs below is the honest one. Only a record answers here: the
+  // receiver must still be a value the checker reads as data, not a stdlib
+  // global or constructor whose members keep their fence (`globalThis.Set
+  // .prototype` is not a record field).
+  {
+    const lowered = tryLowerExpression(lowerer, recv);
+    // The checker spells a data interface whose record the lowering never
+    // materialized (os.cpus()'s rows read through a binding in JavaScript,
+    // where the value on hand is checked-dynamic): the boxed member read is
+    // the honest one, so the keyed-read claim below this fence applies
+    // exactly as for a checker-dyn receiver. The interface's shape must
+    // carry the member, which keeps stdlib globals and constructors
+    // (`globalThis.Set.prototype`) and non-record types (`any[]`'s
+    // methods) behind the fence.
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(recv));
+    const declared =
+      mapped?.kind === "record"
+        ? lowerer.shapes.get(mapped.shapeId)
+        : lowered?.type.kind === "record"
+          ? lowerer.shapes.get(lowered.type.shapeId)
+          : undefined;
+    if (
+      declared !== undefined &&
+      !declared.tuple &&
+      declared.fields.some((f) => f.name === member) &&
+      (lowered?.type.kind === "dyn" || lowered?.type.kind === "record")
+    )
+      return;
+  }
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;
@@ -3802,7 +4024,8 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     hint =
       "console.log/info/debug (stdout), console.error/warn (stderr), assert, count, " +
       "countReset, dir, dirxml, group, groupCollapsed, groupEnd, table, time, timeEnd, " +
-      "timeLog, clear, profile, profileEnd, and timeStamp are the supported console surface " +
+      "timeLog, clear, trace, profile, profileEnd, and timeStamp are the supported " +
+      "console surface " +
       "(arguments render with Node's console semantics: strings verbatim, everything else " +
       "through the static util.inspect)";
   } else if (container === "TextEncoder") {
@@ -3878,7 +4101,11 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
  * the same technique as isConsoleLog: trust declarations, not names. */
 export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const direct = lowerer.checker.getSymbolAtLocation(access.name);
-  if (direct) return lowerer.isStdlibSymbol(direct);
+  if (direct)
+    return (
+      lowerer.isStdlibSymbol(direct) ||
+      lowerer.isStdlibSymbol(jsThisAssignedBaseMember(lowerer, direct, access.name.text))
+    );
   // An IMPLICIT-ANY instance body (the checker sees an `any` receiver —
   // no member symbol resolves) or an ALIASED-TYPEOF narrow (the checker
   // sees the un-narrowed union — `val.length` on String|Number has no
@@ -3894,6 +4121,45 @@ export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpres
     return lowerer.isStdlibSymbol(viaType ?? undefined);
   }
   return false;
+}
+
+/** The base member that a JavaScript class's `this.name = v` assignments
+ * write when its base type declares `name` (`this.length = 0` in a class
+ * that extends Array). checkJs binds the assignment as a declaration of the
+ * class's own, but the write and every read reach the inherited property,
+ * as in Node. Undefined when any declaration is something else. */
+export function jsThisAssignedBaseMember(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  name: string,
+): ts.Symbol | undefined {
+  let owner: ts.ClassLikeDeclaration | undefined;
+  for (const decl of symbol.declarations ?? []) {
+    if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return undefined;
+    const target = ts.isBinaryExpression(decl) ? decl.left : decl;
+    if (
+      !(ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) ||
+      target.expression.kind !== ts.SyntaxKind.ThisKeyword
+    )
+      return undefined;
+    let node: ts.Node | undefined = target.parent;
+    while (node && !ts.isClassLikeDeclaration(node)) node = node.parent;
+    if (!node || (owner !== undefined && owner !== node)) return undefined;
+    owner = node;
+  }
+  if (!owner) return undefined;
+  const classSymbol = owner.name ? lowerer.checker.getSymbolAtLocation(owner.name) : undefined;
+  // The class layout already decided (the JS field collector): a name the
+  // class keeps as its own field is the class's member, not the base's.
+  const info = classSymbol ? lowerer.classBySymbol.get(classSymbol) : undefined;
+  if (info?.fields.has(name)) return undefined;
+  const instance = classSymbol ? lowerer.checker.getDeclaredTypeOfSymbol(classSymbol) : undefined;
+  if (!instance || (instance.flags & ts.TypeFlags.Object) === 0) return undefined;
+  for (const base of lowerer.checker.getBaseTypes(instance as ts.InterfaceType)) {
+    const inherited = lowerer.checker.getPropertyOfType(base, name);
+    if (inherited) return inherited;
+  }
+  return undefined;
 }
 
 /** The provenance check the CHILD receiver lowerings use: a stdlib

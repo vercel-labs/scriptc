@@ -1,6 +1,7 @@
 #include "scr_worker.h"
 
 #ifdef SCR_WORKERS
+#include <stdio.h>
 #include <stdlib.h>
 
 extern int sc_worker_entry(uint32_t root);
@@ -14,6 +15,10 @@ typedef struct ScrWorkerView {
   bool port;
   bool closed;
   bool referenced;
+  /* A Worker's public port carries its own ref: a 'message' listener refs
+   * it, and the thread handle's ref is unaffected (Node's
+   * setupPortReferencing). Both keep the loop alive. */
+  bool message_port_ref;
   bool started;
   bool closing;
   ScrMailEvent *queued_head;
@@ -207,11 +212,46 @@ static void scr_worker_view_release(void *ptr) {
   } else scr_cyc_released(view);
 }
 
-static void scr_worker_port_listeners(void *ptr, const ScrStr *name, bool present) {
+/** Node's setupPortReferencing on a 'message' listener: for a port the
+ * listener refs the port's own handle, starting it on the first one and
+ * unrefing it when the last one leaves. A Worker runs the same bookkeeping
+ * on its internal public port, which is a handle of its own: a 'message'
+ * listener refs that port and leaves the thread handle's own ref alone, so
+ * a Worker that was never unref()ed keeps the loop alive without listeners
+ * and one that was unref()ed stays unreferenced when a listener leaves. */
+static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
   ScrWorkerView *view = ptr;
   if (name->len != 7 || memcmp(name->data, "message", 7)) return;
-  if (present) view->started = true;
-  view->referenced = present;
+  if (view->port) {
+    view->started = present || view->started;
+    view->referenced = present;
+  } else view->message_port_ref = present;
+}
+
+/** The internal 'newListener'/'removeListener' listeners Node registers at
+ * construction: EventEmitter's Worker registers its own ref bookkeeping
+ * there, and NodeEventTarget's MessagePort keeps the DOM listener map and
+ * the EventEmitter surface in sync. They make eventNames(), listenerCount()
+ * and listeners() of a Worker or MessagePort report the meta events, as
+ * Node's do. The reference bookkeeping is the observer above, so these only
+ * have to exist. */
+static ScrDyn *scr_worker_meta_noop(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_worker_seed_meta_listeners(ScrEmitter *em) {
+  static const char *const names[] = {"newListener", "removeListener"};
+  for (size_t i = 0; i < 2; i++) {
+    ScrDyn *listener =
+      scr_dyn_new_func(scr_closure_new(NULL, 0), scr_worker_meta_noop, 1, "(name)", "");
+    ScrStr *name = scr_str_new(names[i], strlen(names[i]));
+    scr_emitter_release(scr_emitter_on_any(em, name, listener, false, false));
+    scr_str_release(name);
+    scr_dyn_release(listener);
+  }
 }
 
 static ScrWorkerView *scr_worker_view_new(bool port) {
@@ -222,7 +262,13 @@ static ScrWorkerView *scr_worker_view_new(bool port) {
   view->referenced = !port;
   view->events = scr_emitter_new();
   view->events->cls = port ? "MessagePort" : "Worker";
-  if (port) scr_emitter_observe(view->events, scr_worker_port_listeners, view);
+  scr_emitter_observe(view->events, scr_worker_message_listeners, view);
+  /* Only MessagePort is a NodeEventTarget: its seeded meta listeners never
+   * fire on add/remove, its emit is raw dispatch, and a repeated listener
+   * is a no-op. Worker extends EventEmitter, so it keeps the meta events,
+   * the duplicate registrations and emit's unhandled-'error' throw. */
+  if (port) scr_emitter_mark_plain(view->events);
+  scr_worker_seed_meta_listeners(view->events);
   scr_obj_alloc_note();
   return view;
 }
@@ -366,11 +412,18 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
   ScrWorkerView *view = ptr;
   if (method_is(method, "ref") || method_is(method, "unref")) {
     view->referenced = method_is(method, "ref");
+    /* Node's Worker ref()/unref() reach its public port as well; a port has
+     * only the one handle its listener bookkeeping already toggles. */
+    if (!view->port) view->message_port_ref = view->referenced;
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (view->port && method_is(method, "hasRef"))
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
   if (!view->port && method_is(method, "terminate")) {
+    /* Node's terminate() refs the worker before stopping the thread, so the
+     * loop stays up until the exit event settles the promise. */
+    view->referenced = true;
+    view->message_port_ref = true;
     if (!view->termination) {
       view->termination = scr_promise_new();
       if (view->closed) scr_promise_fulfill_ref(view->termination,
@@ -419,6 +472,12 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     if (scr_exc_pending()) return NULL;
     if (!argc || args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
+    /* NodeEventTarget keeps one entry per listener (Node's Set holds the
+     * original function, once() included): any second registration of the
+     * same function is a no-op. A Worker is an EventEmitter and adds the
+     * same function again. */
+    if (view->port && scr_emitter_has_listener_fn(view->events, args[0]->v.str, listener))
+      return scr_dyn_retain(self);
     scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
@@ -445,6 +504,43 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
       : scr_emitter_listener_count(view->events, args[0]->v.str));
   }
+  /* NodeEventTarget's emit/eventNames/setMaxListeners/getMaxListeners —
+   * the surface MessagePort and Worker share with EventEmitter. A port's
+   * emit is the target's raw dispatch: exactly one argument (Node's
+   * `emit(type, arg)` ignores the rest), no 'error' throw with no listener,
+   * and no meta events; typed listeners are reached through the same
+   * registry. A Worker's emit is EventEmitter's: every argument reaches
+   * the listeners, and an unhandled 'error' throws. */
+  if (method_is(method, "emit")) {
+    if (!argc || args[0]->kind != SCR_DYN_STR) {
+      char detail[64];
+      const char *received =
+        scr_dyn_specific_type(argc ? args[0] : scr_dyn_undefined(), detail, sizeof detail);
+      char msg[192];
+      int n = snprintf(msg, sizeof msg,
+                       "The \"type\" argument must be of type string. Received %s", received);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+    bool had;
+    if (view->port) {
+      /* Node's kHybridDispatch always hands the listener exactly one value. */
+      ScrDyn *arg = argc > 1 ? args[1] : scr_dyn_undefined();
+      had = scr_emitter_emit_flex(view->events, args[0]->v.str, &arg, 1);
+    } else {
+      had = scr_emitter_emit_any(view->events, args[0]->v.str, args + 1,
+                                 argc > 1 ? argc - 1 : 0);
+    }
+    return scr_exc_pending() ? NULL : scr_dyn_new_bool(had);
+  }
+  if (method_is(method, "eventNames")) return scr_emitter_event_names(view->events);
+  if (method_is(method, "setMaxListeners")) {
+    scr_emitter_release(
+      scr_emitter_set_max_chk(view->events, argc ? args[0] : scr_dyn_undefined()));
+    return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+  }
+  if (method_is(method, "getMaxListeners"))
+    return scr_dyn_new_num(scr_emitter_get_max(view->events));
   if (view->port && method_is(method, "close")) {
     if (argc && args[0]->kind != SCR_DYN_UNDEF) {
       scr_dyn_check_listener(args[0], "callback");
@@ -573,7 +669,7 @@ static bool scr_workers_pending(void) {
   /* a worker's process.stdin waiting for worker.stdin chunks */
   if (scr_stdin_fed && scr_stdin_fed_waiting && scr_stdin_fed_waiting()) return true;
   for (ScrWorkerView *view = scr_worker_views; view; view = view->next)
-    if (view->referenced) return true;
+    if (view->referenced || view->message_port_ref) return true;
   for (ScrWorkerView *view = scr_channel_ports; view; view = view->next)
     if (view->closing || (view->started && view->referenced && !view->closed && !view->detached))
       return true;
@@ -941,6 +1037,34 @@ static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
 
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
+/* The node:events helpers' NodeEventTarget accessor (scr_event_target.c
+ * accepts a Worker or MessagePort through this). */
+static ScrEmitter *scr_node_event_target_emitter_of(const ScrDyn *self) {
+  if (!self || self->kind != SCR_DYN_HANDLE) return NULL;
+  if (self->v.handle.tag != SCR_DYNH_WORKER && self->v.handle.tag != SCR_DYNH_MESSAGE_PORT)
+    return NULL;
+  return ((ScrWorkerView *)self->v.handle.ptr)->events;
+}
+
+/* events.getMaxListeners over a Worker reads the EventEmitter's
+ * `_maxListeners`; a MessagePort keeps its limit in kMaxEventTargetListeners,
+ * which the static helper does not read, so it stays at the process
+ * default. Both kinds store the limit in the emitter registry here, so only
+ * the Worker answers from it. */
+static bool scr_node_event_target_emitter_max(const ScrDyn *self, double *out) {
+  if (!self || self->kind != SCR_DYN_HANDLE) return false;
+  if (self->v.handle.tag != SCR_DYNH_WORKER) return false;
+  ScrWorkerView *view = self->v.handle.ptr;
+  if (view->port) return false;
+  *out = scr_emitter_get_max(view->events);
+  return true;
+}
+
+static const ScrNodeEventTargetOps scr_node_event_target_ops_value = {
+    scr_node_event_target_emitter_of,
+    scr_node_event_target_emitter_max,
+};
+
 static bool scr_worker_events_install(void) {
   if (scr_worker_events) return true;
   ScrMailbox *inbox = scr_worker_inbox();
@@ -960,6 +1084,7 @@ static bool scr_worker_events_install(void) {
   scr_dyn_handle_install(SCR_DYNH_WORKER, &worker_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_PORT, &port_ops);
   scr_port_ops_install();
+  scr_node_event_target_ops = &scr_node_event_target_ops_value;
   if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);

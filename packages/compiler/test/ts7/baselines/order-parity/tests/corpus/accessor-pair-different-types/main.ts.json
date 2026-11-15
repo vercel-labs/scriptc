@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/accessor-pair-different-types/untyped.js",
+  "<repo>/tests/corpus/accessor-pair-different-types/main.ts"
+ ],
+ "diags": []
+}

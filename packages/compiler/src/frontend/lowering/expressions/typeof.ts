@@ -1,6 +1,6 @@
 /* typeof expressions and the typeof tests they lower to. */
 import * as ts from "../../ts7/adapter.js";
-import { withoutParentheses } from "../../outer-expressions.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { isUnresolvedCjsExports } from "../cjs-exports-object.js";
 import type { Lowerer } from "../lowerer.js";
 import {
@@ -54,6 +54,10 @@ import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-obje
 import { staticTypeofAnswer } from "../static-typeof.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
+  return withCycleBindingRead(lowerer, expr.expression, lowerTypeofAnswer(lowerer, expr, loc), loc);
+}
+
+function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   // typeof is a READ, not a use: Node has these constructors, so the answer is
   // "function" exactly as it is for a provided class (host-global-values.ts).
   // Folded before every other guess — including the ambient `declare var` fold
@@ -562,6 +566,53 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     return { kind: "libCall", fn: "dyn.typeof", args: [operand], type: STRING, loc };
   }
   lowerer.unsupported("SC1090", expr, "typeof expressions on statically-typed values");
+}
+
+/** `answer`, a lowering of `typeof operand` or of a comparison of it,
+ * after the storage read of the binding the operand names when that is a
+ * module binding with an import-cycle initialization flag
+ * (cycle-initialization.ts). Code here can reach the binding before its
+ * declaration ran, and Node's `typeof` throws the binding's ReferenceError
+ * then. An answer the lowering takes from the binding's type (a static
+ * type, union arms that all answer alike) reads nothing, so this read is
+ * what the initialization check guards. The operand is looked at through
+ * the wrappers that leave its value alone (`(x as T)`, `x!`). */
+export function withCycleBindingRead(
+  lowerer: Lowerer,
+  operand: ts.Expression,
+  answer: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (lowerer.cycleInitFlags.size === 0) return answer;
+  const tested = withoutParenthesesTypeWrappers(operand);
+  if (!ts.isIdentifier(tested)) return answer;
+  const symbol = lowerer.resolveValueSymbol(tested);
+  const global = symbol === null ? undefined : lowerer.globalsBySymbol.get(symbol);
+  if (global === undefined || !lowerer.cycleInitFlags.has(global.id)) return answer;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: varRef(global.id, global.type, loc), loc }],
+    result: answer,
+    type: answer.type,
+    loc,
+  };
+}
+
+/** withCycleBindingRead for a comparison test whose either side may be a
+ * `typeof` (`typeof x !== "undefined"`, `"u" > typeof x`). */
+export function withTypeofTestCycleRead(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  test: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  let result = test;
+  for (const side of [expr.right, expr.left]) {
+    const operand = withoutParentheses(side);
+    if (ts.isTypeOfExpression(operand))
+      result = withCycleBindingRead(lowerer, operand.expression, result, loc);
+  }
+  return result;
 }
 
 /** `typeof e.code === "string"` / `"undefined"` (and the `!==` forms)

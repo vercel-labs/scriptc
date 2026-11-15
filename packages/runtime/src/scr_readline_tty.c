@@ -238,6 +238,8 @@ typedef struct ScrRlTty {
   bool dumb;     /* node:readline under TERM=dumb (_ttyWriteDumb) */
   bool raw_stdin; /* stdin is a TTY in raw mode */
   ScrRlInspectFn inspect; /* util.inspect for completion errors, with a completer */
+  bool resize_watched;    /* the output carries the interface's 'resize' listener */
+  ScrDyn *resize_listener; /* +1, a process.stdout output's listener; NULL for a stream */
 } ScrRlTty;
 
 static ScrRlTty *tty_of(ScrRl *rl) { return rl->tty; }
@@ -403,7 +405,10 @@ static RlPos tty_display_pos(ScrRl *rl, const uint16_t *p, size_t n) {
 static RlPos tty_cursor_pos(ScrRl *rl) {
   ScrRlTty *t = tty_of(rl);
   U16 s = {0};
-  u16_from_utf8(&s, rl->prompt->data, rl->prompt->len);
+  ScrStr *prompt = scr_rl_prompt_text_now(rl);
+  if (prompt == NULL) return (RlPos){0, 0};
+  u16_from_utf8(&s, prompt->data, prompt->len);
+  scr_str_release(prompt);
   u16_append(&s, t->line.u, t->cursor);
   RlPos pos = tty_display_pos(rl, s.u, s.n);
   u16_free(&s);
@@ -442,7 +447,10 @@ static void tty_snap(ScrRlTty *t, int dir) {
 static void tty_refresh(ScrRl *rl) {
   ScrRlTty *t = tty_of(rl);
   U16 line = {0};
-  u16_from_utf8(&line, rl->prompt->data, rl->prompt->len);
+  ScrStr *prompt = scr_rl_prompt_text_now(rl);
+  if (prompt == NULL) return;
+  u16_from_utf8(&line, prompt->data, prompt->len);
+  scr_str_release(prompt);
   size_t prompt_n = line.n;
   u16_append(&line, t->line.u, t->line.n);
   RlPos disp = tty_display_pos(rl, line.u, line.n);
@@ -480,6 +488,56 @@ static void tty_refresh(ScrRl *rl) {
   if (diff > 0) tty_move_cursor(rl, 0, -diff);
   t->prev_rows = cursor.rows;
   u16_free(&line);
+}
+
+/* ── the output's 'resize' listener ────────────────────────────────── */
+/* Node's Interface registers onresize on a terminal interface's output
+ * at construction and onSelfCloseWithTerminal removes it at close; the
+ * listener refreshes the line. A stream output carries the listener on
+ * its own 'resize' event; a process.stdout output carries a function
+ * value in the stdio stream's listener list, so it fires in the same
+ * order as the program's own listeners. */
+static ScrDyn *tty_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  double id = scr_box_get_f64(cb->caps[0]);
+  ScrRl *rl = scr_rl_find(id);
+  if (rl && rl->tty) tty_refresh(rl);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The stream output's 'resize' listener body: the stream unit owns the
+ * registration (the output's emitter), and hands this unit the function
+ * value's body through watch_resize, so the call into the interface's
+ * redraw stays in the unit a stream-only program does not link. */
+static ScrDyn *tty_stream_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  scr_rl_resize(scr_box_get_f64(cb->caps[0]));
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void tty_watch_resize(ScrRl *rl, bool on) {
+  ScrRlTty *t = rl->tty;
+  if (!t || t->resize_watched == on) return;
+  if (rl->out) {
+    if (rl->io && rl->io->watch_resize)
+      rl->io->watch_resize(rl->out, rl->id, on, &tty_stream_resize_thunk);
+  } else if (rl->out_stdout) {
+    if (on) {
+      ScrClosure *cb = scr_closure_new(NULL, 1);
+      cb->caps[0] = scr_box_new(SCR_BOX_F64);
+      scr_box_set_f64(cb->caps[0], rl->id);
+      t->resize_listener =
+          scr_dyn_new_func(cb, tty_resize_thunk, 0, "", "refreshLine");
+      scr_stdio_resize_listen(1, t->resize_listener, false);
+    } else {
+      scr_stdio_resize_listen(1, t->resize_listener, true);
+      scr_dyn_release(t->resize_listener);
+      t->resize_listener = NULL;
+    }
+  }
+  t->resize_watched = on;
 }
 
 /* kMoveCursor(dx) */
@@ -2255,7 +2313,11 @@ static void tty_prompt(ScrRl *rl, bool preserve) {
   bool dumb = term && term->len == 4 && memcmp(term->data, "dumb", 4) == 0;
   if (term) scr_str_release(term);
   if (dumb) {
-    if (scr_rl_prompt_writable(rl)) scr_rl_write_out(rl, rl->prompt);
+    if (scr_rl_prompt_writable(rl)) {
+      ScrStr *prompt = scr_rl_prompt_text_now(rl);
+      if (prompt && !scr_exc_pending()) scr_rl_write_out(rl, prompt);
+      if (prompt) scr_str_release(prompt);
+    }
     return;
   }
   if (!preserve) t->cursor = 0;
@@ -2272,6 +2334,7 @@ static void tty_write_op(ScrRl *rl, ScrStr *data) {
 }
 
 static void tty_closing(ScrRl *rl) {
+  tty_watch_resize(rl, false);
   tty_set_raw(rl, false);
   hub_detach_interface(rl);
 }
@@ -2282,6 +2345,7 @@ static void tty_clear_line_op(ScrRl *rl) { tty_clear_line(rl); }
 static void tty_free(ScrRl *rl) {
   ScrRlTty *t = rl->tty;
   if (!t) return;
+  tty_watch_resize(rl, false);
   u16_free(&t->line);
   u16_free(&t->sub);
   for (size_t i = 0; i < t->ring_n; i++) u16_free(&t->ring[i]);
@@ -2333,17 +2397,14 @@ double scr_rl_cursor_pos(double id, double which) {
   if (rl->tty) {
     pos = tty_cursor_pos(rl);
   } else {
-    if (rl->prompt_value && !scr_rl_primitive_prompt(rl->prompt_value)) {
-      static const char m[] =
-          "rl.getCursorPos() with a prompt that is an object or a symbol has no lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, m, sizeof m - 1, "SC2020");
-      return 0;
-    }
+    ScrStr *prompt = scr_rl_prompt_text_now(rl);
+    if (prompt == NULL) return 0;
     ScrRlTty probe = {0};
     probe.columns = INFINITY;
     rl->tty = &probe;
     U16 s = {0};
-    u16_from_utf8(&s, rl->prompt->data, rl->prompt->len);
+    u16_from_utf8(&s, prompt->data, prompt->len);
+    scr_str_release(prompt);
     pos = tty_display_pos(rl, s.u, s.n);
     u16_free(&s);
     rl->tty = NULL;
@@ -2351,10 +2412,12 @@ double scr_rl_cursor_pos(double id, double which) {
   return which == 0 ? pos.rows : pos.cols;
 }
 
+static void tty_resize_op(ScrRl *rl) { tty_refresh(rl); }
+
 static const ScrRlTtyOps TTY_OPS = {
     tty_feed,          tty_end,  tty_prompt,  tty_write_op,  tty_closing,
     tty_clear_line_op, tty_free, tty_line_op, tty_cursor_op, tty_write_key_op,
-    tty_resumed,
+    tty_resumed,       tty_resize_op,
 };
 
 /* ── entry points ──────────────────────────────────────────────────── */
@@ -2403,4 +2466,5 @@ void scr_rl_terminal(double id, double mode, bool on, ScrDyn *completer, bool pr
   if (rl->in) rl->io->drop_data(rl->in, rl->id);
   hub_attach_interface(rl, rl->io, rl->in);
   tty_set_raw(rl, true);
+  tty_watch_resize(rl, true);
 }

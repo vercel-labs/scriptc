@@ -269,6 +269,12 @@ console.log(widget.read());`,
     ts: "compares objects by reference",
   },
   {
+    name: "TS2810",
+    source: `new Promise((resolve) => resolve()).then((value) => console.log(value));`,
+    checkJs: "Expected 1 argument, but got 0",
+    ts: "Expected 1 arguments, but got 0",
+  },
+  {
     name: "TS2845",
     source: `console.log(0n === Infinity);`,
     // tsc's checkJs does not compare a bigint with a number in JavaScript; the

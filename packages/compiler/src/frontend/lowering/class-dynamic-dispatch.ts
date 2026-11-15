@@ -455,12 +455,25 @@ function arrayClassAnswers(lowerer: Lowerer, info: ClassInfo, name: string): boo
   });
 }
 
+/** `statements` with each class field write marked as sloppy-mode code
+ * (a write to a frozen instance is skipped, frozen-records.ts). */
+function markSloppyFieldWrites(statements: IrStmt[]): IrStmt[] {
+  return transformStmtList(statements, {
+    expr: (expr) => expr,
+    stmt: (statement) =>
+      statement.kind === "fieldSet" ? { ...statement, sloppy: true as const } : statement,
+  });
+}
+
 interface PropertyDispatch {
   name: string;
   write: boolean;
   fn: IrFunction;
   classes: Set<string>;
   reflect?: boolean;
+  /** A write whose sites are in sloppy-mode code: a field write to a frozen
+   * Array subclass instance is then skipped instead of throwing. */
+  sloppy?: boolean;
   /** The helper's fallthrough statements as created, and the same access
    * applied to the receiver itself: what the fallthrough reduces to for a
    * value that is neither a class capsule nor a function, whose bag is the
@@ -4431,6 +4444,7 @@ export class ClassDynamicDispatch {
               numericKey,
               instances: receiverIsInstance,
               probe,
+              ...(sloppyWrite ? { sloppy: true } : {}),
               operation: computedTableOperation({
                 write: !!computedWrite,
                 reflect,
@@ -4476,7 +4490,21 @@ export class ClassDynamicDispatch {
               ? write.args[1].value
               : null;
         if (name !== null) {
-          const key = JSON.stringify([name, !!write, read?.optional ?? false]);
+          // A write to a name an Array subclass answers keeps sloppy-mode
+          // sites apart: a frozen instance skips their field write and throws
+          // for strict-mode ones.
+          const sloppy =
+            !!write &&
+            isSloppyAt(lowerer, write.loc) &&
+            [...lowerer.classes.values()].some(
+              (info) => info.extendsArray !== undefined && arrayClassAnswers(lowerer, info, name),
+            );
+          const key = JSON.stringify([
+            name,
+            !!write,
+            read?.optional ?? false,
+            ...(sloppy ? [1] : []),
+          ]);
           let dispatch = this.properties.get(key);
           if (!dispatch) {
             const loc = expr.loc;
@@ -4637,6 +4665,7 @@ export class ClassDynamicDispatch {
               write: !!write,
               fn: helper,
               classes: new Set(),
+              ...(sloppy ? { sloppy: true } : {}),
               ...(name !== "constructor" && name !== "toString"
                 ? { plain: { tail: [...helper.body], access: receiverAccess } }
                 : {}),
@@ -5407,6 +5436,7 @@ export class ClassDynamicDispatch {
         let branch: IrStmt[];
         try {
           branch = this.propertyBody(lowerer, dispatch, info, varRef(local, receiver.type, loc));
+          if (plan.array && dispatch.sloppy) branch = markSloppyFieldWrites(branch);
         } catch (error) {
           if (!(error instanceof PoisonError) || !info.decl) throw error;
           const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -5432,24 +5462,22 @@ export class ClassDynamicDispatch {
         const loc = dispatch.fn.loc;
         const selected = this.propertyReceiver(plan, loc);
         if (plan.array) {
-          // A class declared `extends Array` keeps no property bag: a read
-          // whose key names one of its fields, getters or methods answers
-          // that member, and every other key (an element, a builtin array
-          // member) falls through to the read on the array itself.
-          if (dispatch.write || dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
+          // A class declared `extends Array` keeps no property bag: a key
+          // naming one of its own members (a field, getter or method for a
+          // read; a field or setter for a write) answers that member, and
+          // every other key (an element, a builtin array member) falls
+          // through to the access on the array itself.
+          if (dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
           // Only the names a string key can reach: private (`#`) and
           // compiler-owned (`%`) members are not properties of the instance.
           const names = new Set<string>();
           for (const field of info.fields.keys())
             if (isClassOwnEnumerableFieldName(field)) names.add(field);
           for (const method of info.methods.keys()) {
-            const name = method.startsWith("get:") ? method.slice(4) : method;
-            if (
-              !method.startsWith("set:") &&
-              !name.startsWith("sym:") &&
-              arrayClassAnswers(lowerer, info, name)
-            )
-              names.add(name);
+            const setter = method.startsWith("set:");
+            const name = setter || method.startsWith("get:") ? method.slice(4) : method;
+            if (setter !== dispatch.write && !(dispatch.write && info.fields.has(name))) continue;
+            if (!name.startsWith("sym:") && arrayClassAnswers(lowerer, info, name)) names.add(name);
           }
           if (names.size === 0) continue;
           const local = `receiver.${dispatch.fn.locals.length}`;
@@ -5460,20 +5488,23 @@ export class ClassDynamicDispatch {
             mutable: false,
           });
           const receiver = varRef(local, selected.receiver.type, loc);
-          const members: IrStmt[] = [...names].map((name) => ({
-            kind: "if",
-            cond: {
-              kind: "strEq",
-              negated: false,
-              left: varRef(dispatch.keyLocal, STRING, loc),
-              right: { kind: "strLit", value: name, type: STRING, loc },
-              type: BOOL,
+          const members: IrStmt[] = [...names].map((name) => {
+            const body = this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
+            return {
+              kind: "if",
+              cond: {
+                kind: "strEq",
+                negated: false,
+                left: varRef(dispatch.keyLocal, STRING, loc),
+                right: { kind: "strLit", value: name, type: STRING, loc },
+                type: BOOL,
+                loc,
+              },
+              then: dispatch.sloppy ? markSloppyFieldWrites(body) : body,
+              else_: null,
               loc,
-            },
-            then: this.propertyBody(lowerer, { ...dispatch, name }, info, receiver),
-            else_: null,
-            loc,
-          }));
+            };
+          });
           dispatch.fn.body.splice(dispatch.branchIndex, 0, {
             kind: "if",
             cond: selected.condition,
@@ -8500,7 +8531,12 @@ export class ClassDynamicDispatch {
           );
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
-          if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
+          // An Array subclass instance keeps no property bag and no prototype
+          // data behind one: its method is the class's.
+          if (
+            info.extendsArray === undefined &&
+            (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")))
+          ) {
             const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-frozen-fields-in-sloppy-code.cjs"
+ ],
+ "diags": []
+}

@@ -58,6 +58,35 @@ function byName(value, name, ...args) {
 console.log(byName(held, "describe", "k"), byName(held, "size"), byName(held, "label"), byName(held, "nope"));
 console.log(byName(held, "refresh", "r1", "r2") === held, held.join(","));
 
+// Writes through a variable key reach the field or the setter.
+function setByName(value, name, v) {
+  value[name] = v;
+}
+setByName(held, "label", "W");
+setByName(held, "size", 0);
+console.log(held.label, a.label, held.size, a.length, byName(held, "label"));
+
+// A frozen instance's fields are read-only: module code is strict, so each
+// write throws Node's TypeError and leaves the field as it was.
+const frozen = new Listy();
+Object.freeze(frozen);
+for (const write of [
+  () => {
+    [frozen][0].label = "named";
+  },
+  () => setByName(frozen, "label", "keyed"),
+  () => {
+    frozen.label = "typed";
+  },
+]) {
+  try {
+    write();
+    console.log("wrote", frozen.label);
+  } catch (e) {
+    console.log(String(e), frozen.label);
+  }
+}
+
 function callThrough(value, ...args) {
   return value.refresh(...args).length;
 }

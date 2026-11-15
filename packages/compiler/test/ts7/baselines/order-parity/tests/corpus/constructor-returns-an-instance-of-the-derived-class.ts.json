@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-returns-an-instance-of-the-derived-class.ts"
+ ],
+ "diags": []
+}

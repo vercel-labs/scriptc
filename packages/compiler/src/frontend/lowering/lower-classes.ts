@@ -42,6 +42,8 @@ import {
   constructorForeignFlag,
   constructorPrimitiveFlag,
   superIntoResultSlot,
+  rebindingBase,
+  publishReboundThis,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
@@ -10187,6 +10189,30 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     const thisLocal = lowerer.declareThis(thisType);
     const params: IrParam[] = [{ localId: thisLocal.id, name: "this", type: thisType }];
     const body: IrStmt[] = [];
+    // A base constructor that can return an existing instance rebinds this
+    // constructor's `this` (constructor-returns.ts superIntoResultSlot):
+    // `this` is a local the allocated instance initializes, and the
+    // instance the constructor ends with is published where it finishes.
+    // Every other constructor keeps `this` as its parameter.
+    const allocated: IrLocal | null =
+      rebindingBase(lowerer, info) !== null
+        ? { id: "%allocated.0", name: "%allocated", type: thisType, mutable: false }
+        : null;
+    if (allocated !== null) {
+      const loc = locOf(info.ctor ?? info.decl!);
+      lowerer.ctx.locals.push(allocated);
+      thisLocal.mutable = true;
+      params[0] = { localId: allocated.id, name: "this", type: thisType };
+      body.push({
+        kind: "varDecl",
+        localId: thisLocal.id,
+        init: varRef(allocated.id, thisType, loc),
+        loc,
+      });
+      lowerer.ctx.constructorEpilogue = () => [
+        publishReboundThis(lowerer, info, thisLocal, allocated, loc),
+      ];
+    }
     // A derived constructor that can return a primitive records the pending
     // TypeError for the construction site to raise. Drop a stale record on
     // entry: a `finally` that throws after the return abandons the
@@ -10301,6 +10327,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       }
       body.push(...lowerer.fieldInitStmts(info, thisLocal));
     }
+    if (allocated !== null) body.push(...lowerer.ctx.constructorEpilogue!());
     return {
       name: `%${className}.constructor`,
       params,
@@ -11730,6 +11757,7 @@ export function superCallStmt(
     call,
     lowerer.upcastTo({ ...thisRef }, base.def.name),
     info.ctor ?? info.decl!,
+    thisLocal.mutable ? thisLocal : null,
   );
 }
 

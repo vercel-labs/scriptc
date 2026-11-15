@@ -12,6 +12,11 @@ export interface FnCtx {
   /** Lexical this has no checker symbol and one binding per function.
    * Direct parameters and threaded captures use this same slot. */
   thisLocal: IrLocal | null;
+  /** A constructor whose `this` a base constructor's returned instance may
+   * rebind: the statements it runs where it finishes (a bare `return`
+   * included), which publish the instance it ends with
+   * (constructor-returns.ts publishReboundThis). */
+  constructorEpilogue?: () => IrStmt[];
   /** Set when a lookup of `this` returned thisLocal, from this function's
    * body or from a nested function that captures it. */
   thisRead?: true;

@@ -2674,6 +2674,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
       return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    // A constructor whose `this` may have been rebound publishes it first.
+    const epilogue = lowerer.ctx.constructorEpilogue?.();
+    if (epilogue !== undefined)
+      return {
+        kind: "block",
+        body: [...epilogue, withClearedPending({ kind: "return", value, loc: locOf(stmt) })],
+        loc: locOf(stmt),
+      };
     return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {

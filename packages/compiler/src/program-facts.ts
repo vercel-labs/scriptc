@@ -572,6 +572,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "js-widened-fields",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "jsWidenedFields",
+    source: "types",
+    scope: "shape",
+    setBy:
+      "a write of a value the checker cannot show fits the JSDoc type of a class field, in an unchecked JavaScript source",
+    gates:
+      "the field's storage is checked-dynamic for every instance of the class and every reader of its layout",
+    narrower:
+      "the write sites, where the receiver's class is known; a write the scan cannot type as a field of one class keeps the declared storage",
+    tracked: null,
+    lowererFields: ["jsWidenedFields"],
+  },
+  {
     name: "global-object-writes",
     file: `${SRC}/frontend/lowering/global-object-writes.ts`,
     symbol: "globalObjectWrites",

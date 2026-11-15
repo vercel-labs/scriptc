@@ -67,7 +67,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
-import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
+import { type AdmittedOpinion, isJsSourceFileName, jsFieldDeclaresTypeTag } from "../tsc-codes.js";
 import {
   builtinClassKind,
   builtinClassValue,
@@ -3875,6 +3875,40 @@ export class Lowerer {
    * TypeScript bindings that take the values of an open spread value's
    * enumeration as they are (analyzeOpenEnumerations). */
   readonly jsWidenedBindings = new Set<ts.Symbol>();
+  /** JavaScript class fields written values outside their JSDoc type
+   * (analyzeJsWidenedFields), by declaring class and field name: checked-
+   * dynamic storage, like the fields the checker leaves untyped. Keyed by
+   * the class declaration node and the name because the checker answers a
+   * distinct property symbol for a write through `this` and one through a
+   * typed value of the same class. */
+  readonly jsWidenedFields = new Map<ts.ClassLikeDeclaration, Set<string>>();
+
+  /** Record (or ask about) a JavaScript class field whose storage follows
+   * the values the program writes to it instead of a JSDoc annotation. */
+  markJsWidenedField(classDecl: ts.ClassLikeDeclaration, name: string): void {
+    const names = this.jsWidenedFields.get(classDecl);
+    if (names) names.add(name);
+    else this.jsWidenedFields.set(classDecl, new Set([name]));
+  }
+
+  jsFieldWidened(classDecl: ts.ClassLikeDeclaration | undefined, name: string): boolean {
+    if (classDecl === undefined) return false;
+    return this.jsWidenedFields.get(classDecl)?.has(name) === true;
+  }
+
+  /** Whether an IR type stores a value the checker's type does not admit: a
+   * class instance, a record, or a union of them with unit arms. Those are
+   * the slots a JavaScript binding or field widens to checked-dynamic
+   * storage; a scalar, array or collection slot keeps its declared lowering,
+   * which reads the value the way the checker's type describes. */
+  jsStorageHoldsForeignValues(type: IrType | null): boolean {
+    if (type === null || type.kind === "dyn") return false;
+    const arms = type.kind === "union" ? (this.unions.get(type.unionId)?.arms ?? []) : [type];
+    return (
+      arms.some((arm) => arm.kind === "object" || arm.kind === "record") &&
+      arms.every((arm) => arm.kind === "object" || arm.kind === "record" || isUnitType(arm))
+    );
+  }
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
@@ -6308,9 +6342,11 @@ export class Lowerer {
     // The inline `comptime` callbacks of a source file are its text, read
     // again when a unit replays (comptimeCallbacksOf in lower-comptime.ts).
     "comptimeCallbacks",
-    // The whole-program prepass analyzeJsWidenedBindings computes this set
-    // before lowering begins: a pure function of the program's modules.
+    // The whole-program prepasses analyzeJsWidenedFields and
+    // analyzeJsWidenedBindings compute these sets before lowering begins: a
+    // pure function of the program's modules.
     "jsWidenedBindings",
+    "jsWidenedFields",
     // Preflight's admitted opinions are a program fact computed before any
     // unit lowers.
     "admittedOpinions",
@@ -9793,12 +9829,52 @@ export class Lowerer {
     }
   }
 
+  /** A JavaScript class field whose declaration carries a JSDoc `@type`
+   * keeps its declared storage while the program's writes fit the
+   * annotation, and takes checked-dynamic storage once one does not: a
+   * field declared `Base | undefined` and written an instance of another
+   * class holds that instance, as Node does. Scalar, array and collection
+   * annotations keep their declared lowering. The class layout asks this
+   * set (lower-classes.ts), so it is computed before the program collects
+   * its classes. Checked JavaScript keeps its checker errors. */
+  analyzeJsWidenedFields(parts: FileParts[]): void {
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      if (this.checkedJsFile(sf)) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (
+          !ts.isBinaryExpression(node) ||
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !ts.isPropertyAccessExpression(node.left) ||
+          !ts.isIdentifier(node.left.name)
+        )
+          return undefined;
+        const field = this.checker.getSymbolAtLocation(node.left.name);
+        if (!field) return undefined;
+        const owner = jsFieldDeclaringClass(field);
+        if (owner === undefined || this.jsFieldWidened(owner, node.left.name.text))
+          return undefined;
+        const declared = this.checker.getTypeOfSymbol(field);
+        if (!jsTypeIsTyped(declared)) return undefined;
+        if (!this.jsStorageHoldsForeignValues(this.mapTypeOf(declared))) return undefined;
+        if (!jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.right)))
+          this.markJsWidenedField(owner, node.left.name.text);
+        return undefined;
+      });
+    }
+  }
+
   /** A JavaScript `let`/`var` binding assigned a value its declared type
    * does not admit (`let t = parseInt(s); if (isNaN(t)) t = undefined`):
    * TypeScript types the binding from its initializer and reports the
    * assignment (TS2322), which JavaScript files relax, so the binding takes
-   * checked-dynamic storage and holds whatever the program stores. JSDoc
-   * type annotations keep their declared storage.
+   * checked-dynamic storage and holds whatever the program stores. A JSDoc
+   * `@type` annotation is an annotation like any other while its values fit
+   * it; in an unchecked file a value the checker cannot show fits a class-
+   * or record-typed annotation (an `any`, or a class the annotation names
+   * no arm for) takes the same checked-dynamic storage, and an annotated
+   * `const` takes it too. Scalar and collection annotations keep their
+   * declared lowering. Checked JavaScript files keep their TS2322.
    *
    * A set accessor's unannotated parameter joins them: a JavaScript setter's
    * parameter is whatever the caller passes, and `paramShape` gives the slot
@@ -9812,6 +9888,17 @@ export class Lowerer {
   analyzeJsWidenedBindings(parts: FileParts[]): void {
     for (const { sf } of parts) {
       if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      // Checked JavaScript keeps its checker errors: a value outside the
+      // declared type is reported there, not stored. An unchecked file
+      // stores whatever the code writes, so a JSDoc annotation there is a
+      // hint for storage and not a promise about the value.
+      const checked = this.checkedJsFile(sf);
+      const widenBinding = (symbol: ts.Symbol): void => {
+        this.runtimeOptionalBindingTypes.set(symbol, DYN);
+        this.jsWidenedBindings.add(symbol);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) global.type = DYN;
+      };
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isParameter(node) &&
@@ -9824,12 +9911,35 @@ export class Lowerer {
           if (setterParam) this.jsWidenedBindings.add(setterParam);
           return undefined;
         }
+        // An annotated binding whose initializer the checker cannot show
+        // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
+        // with `v` an `any`) holds the value it is given.
+        if (
+          !checked &&
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined &&
+          hasJsTypeAnnotation(node)
+        ) {
+          const symbol = this.resolveValueSymbol(node.name);
+          if (symbol && !this.runtimeOptionalBindingTypes.has(symbol)) {
+            const declared = this.checker.getTypeOfSymbol(symbol);
+            if (
+              jsTypeIsTyped(declared) &&
+              this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) &&
+              !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.initializer))
+            )
+              widenBinding(symbol);
+          }
+          return undefined;
+        }
         if (
           !ts.isBinaryExpression(node) ||
           node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
           !ts.isIdentifier(node.left)
         )
           return undefined;
+        // The same for an annotated binding's later assignments.
         const symbol = this.resolveValueSymbol(node.left);
         if (!symbol || this.runtimeOptionalBindingTypes.has(symbol)) return undefined;
         const decl = symbol.valueDeclaration;
@@ -9838,20 +9948,24 @@ export class Lowerer {
           !ts.isVariableDeclaration(decl) ||
           !ts.isIdentifier(decl.name) ||
           !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
-          hasJsTypeAnnotation(decl) ||
           decl.parent === undefined ||
-          !ts.isVariableDeclarationList(decl.parent) ||
-          (decl.parent.flags & ts.NodeFlags.Const) !== 0
+          !ts.isVariableDeclarationList(decl.parent)
         )
           return undefined;
+        const annotated = hasJsTypeAnnotation(decl);
+        if (annotated ? checked : (decl.parent.flags & ts.NodeFlags.Const) !== 0) return undefined;
         const declared = this.checker.getTypeOfSymbol(symbol);
-        if (declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return undefined;
+        if (!jsTypeIsTyped(declared)) return undefined;
+        if (annotated && !this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)))
+          return undefined;
         const assigned = this.checker.getTypeAtLocation(node.right);
-        if (this.checker.isTypeAssignableTo(assigned, declared)) return undefined;
-        this.runtimeOptionalBindingTypes.set(symbol, DYN);
-        this.jsWidenedBindings.add(symbol);
-        const global = this.globalsBySymbol.get(symbol);
-        if (global) global.type = DYN;
+        if (
+          annotated
+            ? jsValueFits(this.checker, declared, assigned)
+            : this.checker.isTypeAssignableTo(assigned, declared)
+        )
+          return undefined;
+        widenBinding(symbol);
         return undefined;
       });
     }
@@ -13444,6 +13558,9 @@ export class Lowerer {
       for (const fp of parts) this.checker.prefetchSourceFile(fp.sf);
     }
     this.prefetchProgramSymbols(parts);
+    // Class layouts choose their field storage as they collect, so the
+    // field half of the JavaScript widening scan runs first.
+    this.speculativeTypeQueries(() => this.analyzeJsWidenedFields(parts));
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
       extendAssertedRecordMembers(
@@ -14185,6 +14302,9 @@ export class Lowerer {
     // collected halfway, so the pass ends here with it. A poison nothing
     // reported is still a bug and stays a crash.
     try {
+      // Class layouts choose their field storage as they collect, so the
+      // field half of the JavaScript widening scan runs first.
+      this.speculativeTypeQueries(() => this.analyzeJsWidenedFields(parts));
       this.collectProgram(parts);
       this.speculativeTypeQueries(() => {
         extendAssertedRecordMembers(
@@ -24637,6 +24757,36 @@ function hasJsSetterParamAnnotation(param: ts.ParameterDeclaration): boolean {
   return /@param\b/.test(
     ts.getSourceFileOfNode(accessor).text.slice(accessor.pos, ts.tokenStartOfNode(param)),
   );
+}
+
+/** The class whose layout holds a field: the class of the field's JSDoc
+ * declaration in a JavaScript source (the field itself, or the constructor
+ * assignment that declares it). A field the checker also declares in a
+ * TypeScript source keeps that class's layout. */
+function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration | undefined {
+  for (const decl of field.declarations ?? []) {
+    if (!jsFieldDeclaresTypeTag(decl)) continue;
+    let node: ts.Node | undefined = decl;
+    while (node !== undefined && !ts.isClassLikeDeclaration(node)) node = node.parent;
+    if (node !== undefined && ts.isClassLikeDeclaration(node)) return node;
+  }
+  return undefined;
+}
+
+/** Whether a type states what a value is: `any` and `unknown` state
+ * nothing, so a value of that type is no evidence about what a declared
+ * type admits. */
+function jsTypeIsTyped(type: ts.Type): boolean {
+  return (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0;
+}
+
+/** Whether the checker shows an assigned value fits a declared type. A
+ * value of type `any` or `unknown` is no such evidence, so it counts as
+ * not fitting: an unchecked JavaScript write of one to a class- or
+ * record-typed JSDoc target takes checked-dynamic storage, where the value
+ * it was given is kept. */
+function jsValueFits(checker: ts.TypeChecker, declared: ts.Type, assigned: ts.Type): boolean {
+  return jsTypeIsTyped(assigned) && checker.isTypeAssignableTo(assigned, declared);
 }
 
 /** fs.realpathSync and its .native as function values (fs.realpath stores

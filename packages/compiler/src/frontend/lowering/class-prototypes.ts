@@ -535,21 +535,88 @@ export function isErrorPrototypeValue(
   );
 }
 
-/** Whether a bare `C.prototype` read becomes the prototype of another object
- * or is only compared or inspected: the argument of `Object.create` or
- * `Object.getPrototypeOf` / `Reflect.getPrototypeOf`, the prototype argument
- * of `Object.setPrototypeOf` / `Reflect.setPrototypeOf`, an operand of
- * `===` / `!==`, or the object `in` asks about. In these positions the complete view of the
- * prototype (reflectClassPrototype) answers. Objects that inherit from it
- * run the class's methods with themselves as the receiver, which the
- * methods' receiver-independent lowering (reflectedClassMethodValue)
- * supports. Other positions, such as `Object.setPrototypeOf(C.prototype, X)`,
- * which would relink the class, keep the diagnostic. */
+/** Whether a bare `C.prototype` read is only read (readOnlyPrototypeUse):
+ * the object of a reflection that does not change it, `typeof`, an operand
+ * of `===` / `!==` / `in`, or the initializer of a `const` whose every use
+ * only reads it. In these positions the complete view of the prototype
+ * (reflectClassPrototype) answers. Objects that inherit from it run the
+ * class's methods with themselves as the receiver, which the methods'
+ * receiver-independent lowering (reflectedClassMethodValue) supports.
+ * A use that could change the prototype keeps the diagnostic. */
 function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
-  let node: ts.Node = expr;
-  let parent = node.parent;
+  return readOnlyPrototypeUse(lowerer, expr, 0);
+}
+
+/** Whether `decl` binds a class's prototype view (`const proto = C.prototype`
+ * whose every use only reads it, readOnlyPrototypeUse): its storage is the
+ * checked-dynamic prototype object rather than the class's instance type the
+ * checker gives it. */
+export function isPrototypeViewBinding(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  let init = decl.initializer;
+  while (init && ts.isParenthesizedExpression(init)) init = init.expression;
+  if (!init || !ts.isPropertyAccessExpression(init) || init.name.text !== "prototype") return false;
+  const info = exactClassOfReceiver(lowerer, init.expression);
+  return (
+    info !== null &&
+    info !== undefined &&
+    viewableClass(lowerer, info, init.expression) &&
+    readOnlyPrototypeUse(lowerer, init, 0)
+  );
+}
+
+/** Whether `node` reads a binding of a class's prototype view
+ * (isPrototypeViewBinding): its value is the prototype object, whatever
+ * instance type the checker gives it. */
+export function isPrototypeViewReference(lowerer: Lowerer, node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isIdentifier(node)) return false;
+  const declaration = lowerer.checker.getSymbolAtLocation(node)?.valueDeclaration;
+  return (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    isPrototypeViewBinding(lowerer, declaration)
+  );
+}
+
+/** `Object` and `Reflect` functions that read an object without changing
+ * it, by the argument position that takes the object. */
+const READING_OBJECT_FUNCTIONS = new Map<string, number>([
+  ["create", 0],
+  ["getPrototypeOf", 0],
+  ["setPrototypeOf", 1],
+  ["getOwnPropertyDescriptor", 0],
+  ["getOwnPropertyDescriptors", 0],
+  ["getOwnPropertyNames", 0],
+  ["getOwnPropertySymbols", 0],
+  ["keys", 0],
+  ["values", 0],
+  ["entries", 0],
+  ["isFrozen", 0],
+  ["isSealed", 0],
+  ["isExtensible", 0],
+]);
+const READING_REFLECT_FUNCTIONS = new Map<string, number>([
+  ["getPrototypeOf", 0],
+  ["setPrototypeOf", 1],
+  ["getOwnPropertyDescriptor", 0],
+  ["ownKeys", 0],
+  ["has", 0],
+  ["isExtensible", 0],
+]);
+
+/** Whether the prototype value `node` evaluates to (`C.prototype`, or a
+ * read of a `const` it initialized) is used only to read it: as the object of
+ * a reflection that does not change it (Object.create, getPrototypeOf,
+ * getOwnPropertyDescriptor, `in`, `===`, `typeof`, …), or, read through a
+ * binding, for a member it reads or calls. Such a use can see the
+ * prototype's full view: no member of it is replaced, so the compiled
+ * dispatch of the class's instances stays what the view shows. A `const`
+ * qualifies when every reference to it does. */
+function readOnlyPrototypeUse(lowerer: Lowerer, node: ts.Expression, depth: number): boolean {
+  let child: ts.Node = node;
+  let parent = child.parent;
   while (parent && ts.isParenthesizedExpression(parent)) {
-    node = parent;
+    child = parent;
     parent = parent.parent;
   }
   if (!parent) return false;
@@ -557,22 +624,75 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
     const args = parent.arguments.nodes;
     const objectMethod = lowerer.stdlibGlobalMember(parent.expression, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(parent.expression, "Reflect");
-    if (
-      objectMethod === "create" ||
-      objectMethod === "getPrototypeOf" ||
-      reflectMethod === "getPrototypeOf"
-    )
-      return args[0] === node;
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
-      return args[1] === node;
-    return false;
+    const position =
+      (objectMethod !== null ? READING_OBJECT_FUNCTIONS.get(objectMethod) : undefined) ??
+      (reflectMethod !== null ? READING_REFLECT_FUNCTIONS.get(reflectMethod) : undefined);
+    if (position !== undefined) return args[position] === child;
   }
-  return (
+  if (ts.isTypeOfExpression(parent)) return true;
+  if (
     ts.isBinaryExpression(parent) &&
     (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
       parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-      (parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === node))
+      (parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === child))
+  )
+    return true;
+  // A member read or call through a binding of the prototype; the direct
+  // `C.prototype.m` spelling lowers through the named prototype paths.
+  if (depth > 0 && ts.isPropertyAccessExpression(parent) && parent.expression === child)
+    return !isWriteTarget(parent);
+  if (
+    depth < 2 &&
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === child &&
+    ts.isIdentifier(parent.name) &&
+    (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
+  )
+    return everyReferenceReadsPrototype(lowerer, parent.name, depth + 1);
+  return false;
+}
+
+/** Whether `access` is written, deleted or updated rather than read. */
+function isWriteTarget(access: ts.Node): boolean {
+  let node = access;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  return (
+    ts.isDeleteExpression(parent) ||
+    ((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+      (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+        parent.operator === ts.SyntaxKind.MinusMinusToken))
   );
+}
+
+function everyReferenceReadsPrototype(
+  lowerer: Lowerer,
+  name: ts.Identifier,
+  depth: number,
+): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return false;
+  let ok = true;
+  let references = 0;
+  const visit = (node: ts.Node): void => {
+    if (!ok) return;
+    if (ts.isIdentifier(node) && node !== name && node.text === name.text) {
+      if (lowerer.checker.getSymbolAtLocation(node) === symbol) {
+        references++;
+        if (!readOnlyPrototypeUse(lowerer, node, depth)) ok = false;
+      }
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.getSourceFileOfNode(name));
+  return ok && references > 0;
 }
 
 /** Whether a bare `C.prototype` read is asserted to `any` or `unknown`

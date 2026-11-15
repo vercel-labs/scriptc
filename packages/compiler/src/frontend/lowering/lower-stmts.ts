@@ -301,7 +301,7 @@ import {
 } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
 import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
-import { isCompiledPrototypeMember } from "./class-prototypes.js";
+import { isCompiledPrototypeMember, isPrototypeViewBinding } from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
@@ -1393,6 +1393,8 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    // So does a binding of a class's prototype view.
+    if (isPrototypeViewBinding(lowerer, decl)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     // `let x;` is undefined once its declaration runs, so the box holds the
     // declared type's undefined-armed form: the declaration initializes it
@@ -7723,8 +7725,12 @@ export function lowerVarDecl(
       return null;
     }
     // `const files = pkg.list()`: an undeclared island object stays a
-    // handle (lower-node-island.ts), so the binding holds it as dyn.
-    if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+    // handle (lower-node-island.ts), so the binding holds it as dyn, and a
+    // binding of a class's prototype view holds the prototype object.
+    if (
+      ts.isIdentifier(decl.name) &&
+      (islandHandleBinding(lowerer, decl.name) || isPrototypeViewBinding(lowerer, decl))
+    ) {
       g.type = DYN;
       return {
         kind: "assign",
@@ -7951,7 +7957,10 @@ export function lowerVarDecl(
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
   }
 
-  if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+  if (
+    ts.isIdentifier(decl.name) &&
+    (islandHandleBinding(lowerer, decl.name) || isPrototypeViewBinding(lowerer, decl))
+  ) {
     const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
     const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };

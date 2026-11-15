@@ -301,7 +301,12 @@ import {
 } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
 import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
-import { isCompiledPrototypeMember, isPrototypeViewBinding } from "./class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  isPrototypeMadeBinding,
+  isPrototypeViewBinding,
+  prototypeMadeSource,
+} from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
@@ -1393,8 +1398,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
-    // So does a binding of a class's prototype view.
-    if (isPrototypeViewBinding(lowerer, decl)) type = DYN;
+    // So does a binding of a class's prototype view, and one of an object
+    // made from that view.
+    if (isPrototypeViewBinding(lowerer, decl) || isPrototypeMadeBinding(lowerer, decl)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     // `let x;` is undefined once its declaration runs, so the box holds the
     // declared type's undefined-armed form: the declaration initializes it
@@ -7396,6 +7402,15 @@ function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean 
   return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
 
+/** The expression a binding whose storage is checked-dynamic lowers: the
+ * Object.create call behind a prototype-made binding (`const made =
+ * Object.create(C.prototype) as C`), whose cast the checked-dynamic storage
+ * subsumes, else the initializer itself. */
+function dynamicBindingInitializer(lowerer: Lowerer, decl: ts.VariableDeclaration): ts.Expression {
+  const made = prototypeMadeSource(lowerer, decl);
+  return made !== null && isPrototypeMadeBinding(lowerer, decl) ? made : decl.initializer!;
+}
+
 export function lowerVarDecl(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -7729,13 +7744,18 @@ export function lowerVarDecl(
     // binding of a class's prototype view holds the prototype object.
     if (
       ts.isIdentifier(decl.name) &&
-      (islandHandleBinding(lowerer, decl.name) || isPrototypeViewBinding(lowerer, decl))
+      (islandHandleBinding(lowerer, decl.name) ||
+        isPrototypeViewBinding(lowerer, decl) ||
+        isPrototypeMadeBinding(lowerer, decl))
     ) {
       g.type = DYN;
       return {
         kind: "assign",
         localId: g.id,
-        value: lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN),
+        value: lowerer.coerceToExpected(
+          lowerer.lowerExpr(dynamicBindingInitializer(lowerer, decl)),
+          DYN,
+        ),
         ...(g.tdz ? { initializes: true as const } : {}),
         loc: locOf(decl),
       };
@@ -7959,9 +7979,14 @@ export function lowerVarDecl(
 
   if (
     ts.isIdentifier(decl.name) &&
-    (islandHandleBinding(lowerer, decl.name) || isPrototypeViewBinding(lowerer, decl))
+    (islandHandleBinding(lowerer, decl.name) ||
+      isPrototypeViewBinding(lowerer, decl) ||
+      isPrototypeMadeBinding(lowerer, decl))
   ) {
-    const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
+    const init = lowerer.coerceToExpected(
+      lowerer.lowerExpr(dynamicBindingInitializer(lowerer, decl)),
+      DYN,
+    );
     const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
   }

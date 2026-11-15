@@ -71,6 +71,7 @@ import {
   classPrototypeData,
   hasClassPrototypeData,
   prototypeReflectedFlag,
+  prototypeViewable,
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
@@ -8492,6 +8493,34 @@ export class ClassDynamicDispatch {
       if (accessor) {
         const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        // A name the program reflects on some class prototype: the shared
+        // prototype view may hold a replaced accessor (Object.defineProperty
+        // on the prototype), so the read runs from the view with the
+        // instance as the receiver, after the instance's own properties.
+        let prototype =
+          lowerer.prototypeMethodAccesses.has(name) && prototypeViewable(accessor.declarer)
+            ? reflectClassPrototype(
+                lowerer,
+                accessor.declarer,
+                loc,
+                lowerer.coerceToExpected(receiver, DYN),
+              )
+            : null;
+        if (prototype && accessor.declarer.prototypeReflectionRefusal !== undefined)
+          prototype = null;
+        const answer: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: DYN,
+              loc,
+            }
+          : boxed;
         return [
           {
             kind: "if",
@@ -8512,7 +8541,7 @@ export class ClassDynamicDispatch {
             else_: null,
             loc,
           },
-          { kind: "return", value: boxed, loc },
+          { kind: "return", value: answer, loc },
         ];
       }
       if (field && info.def.tracksOwnFields) {
@@ -8614,13 +8643,47 @@ export class ClassDynamicDispatch {
     if (!checkable(type)) return fence();
     const value = lowerer.coerceToExpected(varRef("p.1", DYN, loc), type);
     if (!typeEquals(value.type, type)) return fence();
+    // A name the program reflects on some class prototype: a replaced
+    // setter (or a data property the definition put there) answers through
+    // the shared prototype view, with the instance as the receiver.
+    let prototype =
+      !field &&
+      lowerer.prototypeMethodAccesses.has(name) &&
+      accessor !== null &&
+      prototypeViewable(accessor.declarer)
+        ? reflectClassPrototype(
+            lowerer,
+            accessor.declarer,
+            loc,
+            lowerer.coerceToExpected(receiver, DYN),
+          )
+        : null;
+    if (prototype && accessor && accessor.declarer.prototypeReflectionRefusal !== undefined)
+      prototype = null;
     const store: IrStmt = field
       ? { kind: "fieldSet", obj: receiver, className: info.def.name, field: name, value, loc }
-      : {
-          kind: "exprStmt",
-          expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
-          loc,
-        };
+      : prototype
+        ? {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.reflectSet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+                value,
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          }
+        : {
+            kind: "exprStmt",
+            expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
+            loc,
+          };
     return [store, { kind: "return", value: null, loc }];
   }
 

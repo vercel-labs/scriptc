@@ -555,11 +555,45 @@ export function collectClassMethodMutations(
       continue;
     }
     const receiver = call.arguments.nodes[0];
+    const receiverNode =
+      receiver !== undefined && !ts.isSpreadElement(receiver)
+        ? withoutParenthesesAssertionsNonNull(receiver)
+        : null;
+    const prototypeTarget =
+      receiverNode !== null &&
+      ts.isPropertyAccessExpression(receiverNode) &&
+      receiverNode.name.text === "prototype";
+    // Every name a definition on a class's prototype writes may replace an
+    // accessor or a method there, which the instances' compiled dispatch
+    // must observe (a read or write through the prototype view).
+    const notePrototypeKeys = (value: ts.Expression | undefined): void => {
+      if (!prototypeTarget || value === undefined) return;
+      const map = withoutParenthesesAssertionsNonNull(value);
+      if (!ts.isObjectLiteralExpression(map)) return;
+      for (const field of map.properties.nodes) {
+        if (ts.isSpreadAssignment(field) || !field.name) continue;
+        const name = field.name;
+        if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name))
+          lowerer.noteMethodAccess(
+            ts.isNumericLiteral(name) ? String(Number(name.text)) : name.text,
+            call,
+          );
+      }
+    };
+    if (single && prototypeTarget && call.arguments.nodes[1]) {
+      const key = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]);
+      if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key))
+        lowerer.noteMethodAccess(String(key.text), call);
+    }
     if (single && call.arguments.nodes[1]) markKey(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "defineProperties" && call.arguments.nodes[1])
+    else if (objectMethod === "defineProperties" && call.arguments.nodes[1]) {
+      notePrototypeKeys(call.arguments.nodes[1]);
       markFields(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "assign")
-      for (const source of call.arguments.nodes.slice(1)) markFields(source, call, receiver);
+    } else if (objectMethod === "assign")
+      for (const source of call.arguments.nodes.slice(1)) {
+        notePrototypeKeys(source);
+        markFields(source, call, receiver);
+      }
   }
   lowerer.checker.prefetchClassCollection(
     computedWrites.flatMap((write) => [

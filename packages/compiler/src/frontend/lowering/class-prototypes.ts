@@ -25,8 +25,9 @@ import {
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
-import { classMethodValue } from "./class-method-values.js";
+import { classMethodValue, runsOverDynamicReceiver } from "./class-method-values.js";
 import { iteratorPrototypeExpr } from "./iterator-prototype.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
  * separate from instance fields. Allocate lazily so inheritance and module
@@ -286,6 +287,30 @@ export function observedPrototypeMethod(
   return data !== null && info.localClass === undefined;
 }
 
+/** Whether `info`'s whole prototype can be reflected: module-level program
+ * classes on a chain that has a prototype object of its own (no generic,
+ * mixin or runtime-provided class, and no built-in chain whose prototype
+ * the runtime owns). */
+export function prototypeViewable(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base)
+    if (
+      c.decl === null ||
+      c.localClass !== undefined ||
+      c.generic !== undefined ||
+      c.genericInstance !== undefined ||
+      c.mixinInstance !== undefined ||
+      c.callableBase !== undefined ||
+      c.extendsDate !== undefined ||
+      c.def.runtime ||
+      c.builtinEmitter ||
+      c.builtinStream ||
+      c.builtinError ||
+      c.builtinEventTarget
+    )
+      return false;
+  return true;
+}
+
 export function hasClassPrototypeData(info: ClassInfo): boolean {
   return (
     info.callableBase !== undefined ||
@@ -320,6 +345,39 @@ export function prototypeReflectedFlag(lowerer: Lowerer, info: ClassInfo): strin
   });
   info.prototypeReflectedFlag = id;
   return id;
+}
+
+/** The prototype-view value of a TypeScript member that can run over a
+ * checked-dynamic receiver: the declaration lowered with `this` as that
+ * receiver (lowerLambda's checked receiver), so an object made from the
+ * class's prototype reads fields, calls methods and runs accessors with
+ * itself as `this`. Null for a JavaScript member (already
+ * receiver-independent) and for one that needs a native receiver. */
+function dynamicPrototypeMemberValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): IrExpr | null {
+  if (info.decl === null || !runsOverDynamicReceiver(lowerer, info, member)) return null;
+  const context = newFnCtx(false, null, null, DYN);
+  context.thisBoundary = true;
+  const previousClass = lowerer.currentClass;
+  lowerer.currentClass = info;
+  lowerer.fnStack.push(context);
+  const before = lowerer.diags.length;
+  try {
+    return lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
+  } catch (error) {
+    // A member whose signature cannot lower as a value (a rest parameter,
+    // for one) falls back to the compiled receiver-checked wrapper; the
+    // attempt's own diagnostic must not fail the build.
+    if (!(error instanceof PoisonError)) throw error;
+    lowerer.diags.splice(before);
+    return null;
+  } finally {
+    lowerer.fnStack.pop();
+    lowerer.currentClass = previousClass;
+  }
 }
 
 /** Populate the shared prototype view before exposing it to reflection.
@@ -457,7 +515,9 @@ export function reflectClassPrototype(
       let before = lowerer.diags.length;
       let value: IrExpr | null;
       try {
-        value = classMethodValue(lowerer, info.decl, info, method, loc);
+        value =
+          dynamicPrototypeMemberValue(lowerer, info, member) ??
+          classMethodValue(lowerer, info.decl, info, method, loc);
       } catch (error) {
         if (!(error instanceof PoisonError)) throw error;
         lowerer.diags.splice(before);
@@ -575,6 +635,82 @@ export function isPrototypeViewReference(lowerer: Lowerer, node: ts.Expression):
     declaration !== undefined &&
     ts.isVariableDeclaration(declaration) &&
     isPrototypeViewBinding(lowerer, declaration)
+  );
+}
+
+/** The `Object.create(proto)` call a variable declaration runs, with
+ * parentheses and type assertions stripped, when its prototype is a class's
+ * prototype view (`C.prototype`, or a binding of it): `const made =
+ * Object.create(proto) as C`. The created object has no instance layout, so
+ * the binding holds it checked-dynamic and every member access goes through
+ * the prototype view, as Node resolves it. Null for every other initializer
+ * (including an explicit record or array target, whose cast keeps its
+ * conversion). */
+export function prototypeMadeSource(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): ts.CallExpression | null {
+  if (!ts.isIdentifier(decl.name) || !decl.initializer) return null;
+  const call = withoutParenthesesAssertionsNonNull(decl.initializer);
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isPropertyAccessExpression(call.expression) ||
+    call.arguments.nodes.length < 1 ||
+    call.arguments.nodes.length > 2 ||
+    call.arguments.nodes.some(ts.isSpreadElement) ||
+    lowerer.stdlibGlobalMember(call.expression, "Object") !== "create"
+  )
+    return null;
+  const proto = withoutParenthesesAssertionsNonNull(call.arguments.nodes[0]!);
+  if (ts.isPropertyAccessExpression(proto) && proto.name.text === "prototype") {
+    const info = exactClassOfReceiver(lowerer, proto.expression);
+    return info && info !== null && viewableClass(lowerer, info, proto.expression) ? call : null;
+  }
+  return isPrototypeViewReference(lowerer, proto) ? call : null;
+}
+
+/** Whether `decl` binds an object made from a class's prototype
+ * (prototypeMadeSource) with a class or untyped target: its storage is
+ * checked-dynamic, because the object has no native layout. */
+export function isPrototypeMadeBinding(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  if (prototypeMadeSource(lowerer, decl) === null) return false;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+  return type === null || type.kind === "dyn" || type.kind === "object";
+}
+
+/** The program class whose prototype a prototype-made binding was created
+ * from (prototypeMadeSource), directly or through a binding of the
+ * prototype. Null when the class cannot be named there. */
+export function prototypeMadeClass(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): ClassInfo | null {
+  const call = prototypeMadeSource(lowerer, decl);
+  if (!call) return null;
+  let proto: ts.Expression = withoutParenthesesAssertionsNonNull(call.arguments.nodes[0]!);
+  if (!ts.isPropertyAccessExpression(proto)) {
+    if (!isPrototypeViewReference(lowerer, proto)) return null;
+    const declaration = lowerer.checker.getSymbolAtLocation(proto)?.valueDeclaration;
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer)
+      return null;
+    proto = withoutParenthesesAssertionsNonNull(declaration.initializer);
+    if (!ts.isPropertyAccessExpression(proto) || proto.name.text !== "prototype") return null;
+  }
+  if (proto.name.text !== "prototype") return null;
+  return exactClassOfReceiver(lowerer, proto.expression) ?? null;
+}
+
+/** Whether `node` reads a binding of an object made from a class's
+ * prototype (isPrototypeMadeBinding): its storage is the created object,
+ * which has no instance layout, so every member access is dynamic. */
+export function isPrototypeMadeReference(lowerer: Lowerer, node: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isIdentifier(node)) return false;
+  const declaration = lowerer.checker.getSymbolAtLocation(node)?.valueDeclaration;
+  return (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    isPrototypeMadeBinding(lowerer, declaration)
   );
 }
 
@@ -775,7 +911,8 @@ export function lowerClassPrototypeData(
     ts.isCallExpression(parent) &&
     parent.arguments.nodes[0] === expr &&
     ts.isPropertyAccessExpression(parent.expression) &&
-    lowerer.stdlibGlobalMember(parent.expression, "Object") === "defineProperty" &&
+    (lowerer.stdlibGlobalMember(parent.expression, "Object") === "defineProperty" ||
+      lowerer.stdlibGlobalMember(parent.expression, "Reflect") === "defineProperty") &&
     parent.arguments.nodes[1] &&
     ts.isStringLiteral(parent.arguments.nodes[1])
       ? parent.arguments.nodes[1].text
@@ -789,11 +926,22 @@ export function lowerClassPrototypeData(
           ts.isStringLiteral(parent.argumentExpression)
         ? parent.argumentExpression.text
         : descriptorKey;
-  const method =
-    name !== null && lowerer.prototypeMethodAccesses.has(name) && findMethodOn(lowerer, info, name);
+  const observed = name !== null && lowerer.prototypeMethodAccesses.has(name);
+  const method = observed && findMethodOn(lowerer, info, name);
+  // A name some class on the chain declares as an accessor: the full view
+  // carries the getter and setter, so a read or write through the prototype
+  // runs them with the prototype object as `this` (a write that finds only
+  // a setter calls it, as Node's [[Set]] does), and a definition replaces
+  // the accessor the instances' dispatch reads.
+  const accessor =
+    name !== null &&
+    (findMethodOn(lowerer, info, `get:${name}`) !== null ||
+      findMethodOn(lowerer, info, `set:${name}`) !== null);
   if (name === "constructor") {
     return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
   }
+  if (accessor && (observed || descriptorKey !== null))
+    return reflectClassPrototype(lowerer, info, locOf(expr), classValueRef(lowerer, info, expr));
   // The whole prototype of a function-local class: the shared view
   // Object.getPrototypeOf answers for its instances.
   if (name === null && info.localClass) {
@@ -916,6 +1064,14 @@ function prototypeProtectedKeys(
       for (const name of [...owner.genericMethods.keys()]) methodNames.add(name);
     for (const name of methodNames) {
       if (name.startsWith("#")) continue;
+      // An accessor the program defines through a prototype is observed by
+      // the instances' dispatch (the census marked the property), so the
+      // definition replaces it instead of being refused.
+      if (
+        (name.startsWith("get:") || name.startsWith("set:")) &&
+        lowerer.prototypeMethodAccesses.has(name.slice(4))
+      )
+        continue;
       // Error.toString uses checked native dispatch, including prototype
       // additions. A user-declared method remains protected below.
       if (owner.builtinError && name === "toString") continue;

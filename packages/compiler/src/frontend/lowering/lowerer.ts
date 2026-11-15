@@ -67,7 +67,12 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
-import { type AdmittedOpinion, isJsSourceFileName, jsFieldDeclaresTypeTag } from "../tsc-codes.js";
+import {
+  type AdmittedOpinion,
+  isJsSourceFileName,
+  jsFieldDeclaringClass,
+  jsStoresWrittenValue,
+} from "../tsc-codes.js";
 import {
   builtinClassKind,
   builtinClassValue,
@@ -3927,7 +3932,10 @@ export class Lowerer {
   /** Whether a value written to a JSDoc-typed target keeps the annotation's
    * storage because it is parsed data the annotation describes as a record. */
   jsParsedDataKeepsStorage(declared: ts.Type, value: ts.Expression): boolean {
-    return jsValueIsParsedData(value) && this.jsStorageHoldsParsedData(this.mapTypeOf(declared));
+    return (
+      jsValueIsParsedData(this.checker, value) &&
+      this.jsStorageHoldsParsedData(this.mapTypeOf(declared))
+    );
   }
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
@@ -24785,26 +24793,36 @@ function hasJsSetterParamAnnotation(param: ts.ParameterDeclaration): boolean {
   );
 }
 
-/** Whether an assignment operator stores its right side in the target: `=`,
- * `||=`, `&&=` and `??=`. A JSDoc-typed binding or field these write a value
- * outside the annotation to takes checked-dynamic storage, exactly like a
- * plain assignment. */
-function jsStoresWrittenValue(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.EqualsToken ||
-    kind === ts.SyntaxKind.BarBarEqualsToken ||
-    kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
-    kind === ts.SyntaxKind.QuestionQuestionEqualsToken
-  );
-}
-
 /** Whether a JavaScript expression's value is data a parser built: a
  * `JSON.parse` result, possibly passed through `Object.freeze`,
- * `Object.seal` or `Object.preventExtensions`, which answer the same object.
- * Such a value has no class identity to keep, and a JSDoc annotation that
- * describes it as a record holds its writes like Node's plain object. */
-function jsValueIsParsedData(expr: ts.Expression): boolean {
+ * `Object.seal` or `Object.preventExtensions`, which answer the same object,
+ * or a `const` bound to such a value, which holds it as it is. Such a value
+ * has no class identity to keep, and a JSDoc annotation that describes it as
+ * a record holds its writes like Node's plain object. */
+function jsValueIsParsedData(
+  checker: ts.TypeChecker,
+  expr: ts.Expression,
+  seen: Set<ts.Node> = new Set(),
+): boolean {
   const value = withoutParenthesesAssertionsNonNull(expr);
+  if (ts.isIdentifier(value)) {
+    // A `const` holds the value its initializer answered, so parsed data
+    // keeps its identity through it. A `let`/`var` alias may be written
+    // again, and would then be no evidence of what the binding receives.
+    const decl = checker.getSymbolAtLocation(value)?.valueDeclaration;
+    if (
+      decl === undefined ||
+      !ts.isVariableDeclaration(decl) ||
+      decl.initializer === undefined ||
+      decl.parent === undefined ||
+      !ts.isVariableDeclarationList(decl.parent) ||
+      (decl.parent.flags & ts.NodeFlags.Const) === 0 ||
+      seen.has(decl)
+    )
+      return false;
+    seen.add(decl);
+    return jsValueIsParsedData(checker, decl.initializer, seen);
+  }
   if (!ts.isCallExpression(value) || !ts.isPropertyAccessExpression(value.expression)) return false;
   const callee = value.expression;
   if (!ts.isIdentifier(callee.expression)) return false;
@@ -24816,22 +24834,8 @@ function jsValueIsParsedData(expr: ts.Expression): boolean {
       callee.name.text === "seal" ||
       callee.name.text === "preventExtensions") &&
     value.arguments.nodes.length === 1 &&
-    jsValueIsParsedData(value.arguments.nodes[0]!)
+    jsValueIsParsedData(checker, value.arguments.nodes[0]!, seen)
   );
-}
-
-/** The class whose layout holds a field: the class of the field's JSDoc
- * declaration in a JavaScript source (the field itself, or the constructor
- * assignment that declares it). A field the checker also declares in a
- * TypeScript source keeps that class's layout. */
-function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration | undefined {
-  for (const decl of field.declarations ?? []) {
-    if (!jsFieldDeclaresTypeTag(decl)) continue;
-    let node: ts.Node | undefined = decl;
-    while (node !== undefined && !ts.isClassLikeDeclaration(node)) node = node.parent;
-    if (node !== undefined && ts.isClassLikeDeclaration(node)) return node;
-  }
-  return undefined;
 }
 
 /** Whether a type states what a value is: `any` and `unknown` state

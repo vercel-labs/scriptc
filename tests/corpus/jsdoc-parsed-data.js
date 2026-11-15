@@ -1,8 +1,8 @@
 // Parsed data keeps a JSDoc annotation's record storage: an annotated
-// binding or field assigned a JSON.parse result holds the record the
-// annotation describes, so writes through typed parameters reach the
-// object, as in Node. A class annotation does not describe a plain object,
-// so a parsed value there keeps its own identity.
+// binding or field assigned a JSON.parse result, or a `const` holding one,
+// holds the record the annotation describes, so writes through typed
+// parameters reach the object, as in Node. A class annotation does not
+// describe a plain object, so a parsed value there keeps its own identity.
 
 /** @typedef {{ count: number, label: string }} Counter */
 
@@ -33,6 +33,19 @@ class StaticHolder {
 }
 StaticHolder.item = JSON.parse('{"count":4,"label":"w"}');
 console.log(bump(StaticHolder.item), StaticHolder.item.count, StaticHolder.item.label);
+
+// A `const` holds the value its initializer answered, so parsed data keeps
+// the annotation's record storage through the alias too.
+const source = JSON.parse('{"count":5,"label":"v"}');
+/** @type {Counter} */
+let aliased;
+aliased = source;
+console.log(bump(aliased), aliased.count, aliased.label);
+
+const second = JSON.parse('{"count":8,"label":"w"}');
+/** @type {Counter} */
+const held = second;
+console.log(bump(held), held.count, held.label);
 
 // A class annotation does not describe a plain object, so a parsed value
 // there keeps its own identity.

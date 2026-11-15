@@ -421,16 +421,62 @@ export const jsFieldDeclaresTypeTag = (decl: ts.Node): boolean => {
   return stmt !== undefined && jsTypeTagIn(access, stmt.pos);
 };
 
+/** Whether an assignment operator stores its right side in the target: `=`,
+ * `||=`, `&&=` and `??=`. A JSDoc-typed binding or field these write a value
+ * outside the annotation to takes checked-dynamic storage, exactly like a
+ * plain assignment. */
+export function jsStoresWrittenValue(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.EqualsToken ||
+    kind === ts.SyntaxKind.BarBarEqualsToken ||
+    kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+    kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+  );
+}
+
+/** Whether `node` is a write target the JavaScript widening scans
+ * (analyzeJsWidenedBindings and analyzeJsWidenedFields) take into account:
+ * the left side of an assignment that stores its value, or a variable
+ * declaration's initializer. A destructuring target and a `for`-of binding
+ * are writes those scans do not reach, so their storage would keep the
+ * declared type and the write would fail in the lowering. */
+const jsWideningWriteTarget = (node: ts.Node): boolean => {
+  const parent: ts.Node | undefined = node.parent;
+  if (parent === undefined) return false;
+  if (ts.isBinaryExpression(parent))
+    return parent.left === node && jsStoresWrittenValue(parent.operatorToken.kind);
+  return (
+    ts.isVariableDeclaration(parent) && parent.name === node && parent.initializer !== undefined
+  );
+};
+
+/** The class whose layout holds a field: the class of the field's JSDoc
+ * declaration in a JavaScript source (the field itself, or the constructor
+ * assignment that declares it). A field the checker also declares in a
+ * TypeScript source keeps that class's layout. */
+export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration | undefined {
+  for (const decl of field.declarations ?? []) {
+    if (!jsFieldDeclaresTypeTag(decl)) continue;
+    let node: ts.Node | undefined = decl;
+    while (node !== undefined && !ts.isClassLikeDeclaration(node)) node = node.parent;
+    if (node !== undefined && ts.isClassLikeDeclaration(node)) return node;
+  }
+  return undefined;
+}
+
 /** Whether `node` is the target of a write to a JavaScript binding or field
- * that declares its type with JSDoc. TS2739 is the elaborated form of the
- * assignability diagnostics for a class target; on such a target the value
- * is legal JavaScript and the storage follows the values the program writes
- * (analyzeJsWidenedBindings and analyzeJsWidenedFields). */
+ * that declares its type with JSDoc, at a site the widening scans handle.
+ * TS2739 is the elaborated form of the assignability diagnostics for a class
+ * target; on such a target the value is legal JavaScript and the storage
+ * follows the values the program writes (analyzeJsWidenedBindings and
+ * analyzeJsWidenedFields). A write the scans do not reach keeps the code's
+ * triage decision, which refuses it instead of failing in the lowering. */
 const jsdocTypedStorageWrite = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (!jsWideningWriteTarget(node)) return false;
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
     const symbol = checker.getSymbolAtLocation(node.name);
-    return symbol !== undefined && (symbol.declarations ?? []).some(jsFieldDeclaresTypeTag);
+    return symbol !== undefined && jsFieldDeclaringClass(symbol) !== undefined;
   }
   if (ts.isIdentifier(node)) {
     const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;

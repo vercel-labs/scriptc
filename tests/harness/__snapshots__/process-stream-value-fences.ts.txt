@@ -1,0 +1,35 @@
+process-stream-value-fences.ts:7:3 - error SC2020: 'WritableStream.on' is part of the standard library types but has no scriptc lowering yet
+
+  6 | function wire(panel: WriteStream, event: string, payload: any): void {
+  7 |   panel.on("drain", () => {});
+    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 |   panel.once("close", () => {});
+
+  hint: write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods
+
+process-stream-value-fences.ts:8:3 - error SC2020: 'WritableStream.once' is part of the standard library types but has no scriptc lowering yet
+
+  7 |   panel.on("drain", () => {});
+  8 |   panel.once("close", () => {});
+    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 |   panel.on(event, () => {});
+
+  hint: write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods
+
+process-stream-value-fences.ts:9:3 - error SC2020: 'WritableStream.on' is part of the standard library types but has no scriptc lowering yet
+
+   8 |   panel.once("close", () => {});
+   9 |   panel.on(event, () => {});
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |   panel.write(payload, () => {});
+
+  hint: write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods
+
+process-stream-value-fences.ts:10:15 - error SC2020: 'write of 'unknown' data on a stream value' is part of the standard library types but has no scriptc lowering yet
+
+   9 |   panel.on(event, () => {});
+  10 |   panel.write(payload, () => {});
+     |               ^~~~~~~
+  11 | }
+
+  hint: a string or a Uint8Array is the supported data here — narrow unions first

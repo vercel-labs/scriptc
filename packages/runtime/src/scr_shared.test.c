@@ -66,9 +66,50 @@ static void *run(void *ptr) {
   return NULL;
 }
 
+/* Large shared buffers have storage of their own rather than allocator
+ * storage (scr_shared_storage); they read zeroed, take plain and atomic
+ * accesses, serve views over the same bytes and release cleanly. */
+static void large_shared(void) {
+  const size_t sizes[] = {(size_t)1 << 20, ((size_t)1 << 20) + 1, (size_t)5 << 20};
+  for (unsigned k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
+    size_t bytes = sizes[k];
+    ScrBytes *owner = scr_bytes_new_shared(bytes, bytes);
+    assert(owner && owner->len == bytes && owner->shared);
+    for (size_t i = 0; i < bytes; i += 4096) assert(owner->data[i] == 0);
+    assert(owner->data[bytes - 1] == 0);
+    scr_bytes_set(owner, 0, 42);
+    scr_bytes_set(owner, (double)bytes - 1, 7);
+    ScrBytes *copy = scr_shared_wrap(owner->shared);
+    assert(scr_bytes_get(copy, 0) == 42);
+    assert(scr_bytes_get(copy, (double)bytes - 1) == 7);
+    ScrBytes *words = scr_bytes_buffer_view(copy, SCR_BYTES_U32, 0, true, 8);
+    assert(scr_atomics_op(words, 0, 5, 0, 4) == 42);
+    assert(scr_bytes_get(owner, 4) == 0);
+    assert(scr_atomics_op(words, 0, 1, 0, 4) == 47);
+    scr_bytes_release(words);
+    scr_bytes_release(copy);
+    scr_bytes_release(owner);
+  }
+}
+
+/* The reserved bytes past the length read zero, and the owner still holds
+ * the mapping when a short shared buffer is allocated over a longer one. */
+static void short_shared(void) {
+  size_t bytes = 3, capacity = (size_t)5 << 20;
+  ScrBytes *owner = scr_bytes_new_shared(bytes, capacity);
+  assert(owner && owner->len == bytes && owner->shared);
+  for (size_t i = 0; i < capacity; i += 4096) assert(owner->data[i] == 0);
+  scr_bytes_set(owner, 2, 9);
+  assert(scr_bytes_get(owner, 2) == 9);
+  assert(owner->data[3] == 0 && owner->data[capacity - 1] == 0);
+  scr_bytes_release(owner);
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
+  large_shared();
+  short_shared();
   ScrBytes *storage = scr_bytes_new(SCR_BYTES_U8, 16);
   scr_bytes_make_shared(storage);
   ScrBytes *values = scr_bytes_buffer_view(storage, SCR_BYTES_I32, 4, true, 2);

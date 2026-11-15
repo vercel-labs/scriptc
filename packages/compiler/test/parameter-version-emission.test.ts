@@ -87,6 +87,27 @@ console.log(fact.join(" "));
   expect(loopBodies("fillFact_int32Params\\.i32")).toBe(1);
 });
 
+test("a loop that writes record fields is versioned on its bound", async () => {
+  // `p.v -= dt` lowers to a sequence expression around a record write, and
+  // `p.x = ...` to a record write statement.
+  const llvm = await emitLlvm(`
+interface Particle { x: number; v: number }
+function step(particles: Particle[], n: number, dt: number): void {
+  for (let i = 0; i < n; i++) {
+    const p = particles[i]!;
+    p.v -= dt * p.x;
+    p.x = p.x + p.v * dt;
+  }
+}
+const particles: Particle[] = [{ x: 0, v: 1 }, { x: 1, v: 2 }];
+step(particles, Number(process.argv.length > 5 ? "1.5" : "2"), 0.5);
+console.log(particles[0]!.x, particles[1]!.v);
+`);
+  expect(versions(llvm)).toEqual(["step"]);
+  // The version takes the bound as an i32 and the step as a double.
+  expect(llvm).toMatch(/^define [^@]*@sc_\w+_step_int32Params\.i32\([^)]*\bi32 [^)]*\bdouble /m);
+});
+
 test("a module that reads stacks keeps a single body", async () => {
   const llvm = await emitLlvm(`${loops}\nconsole.log(typeof new Error("x").stack);\n`);
   expect(versions(llvm)).toEqual([]);

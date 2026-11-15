@@ -70,6 +70,8 @@ try {
     nullableUnions,
     inlineUnions,
     unionNoneRef: () => { needsUnionNone = true; return "@sc_union_none"; },
+    // Mirrors the emitter: the optional-dyn ABSENT marker is one immortal.
+    dynAbsentRef: () => "@sc_dyn_absent",
     recordCloneShapes: new Set(request.clones),
     rcHelpers: null,
     unitInstanceRef: (union, tag) => {

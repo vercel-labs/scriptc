@@ -411,6 +411,50 @@ function withRangeReader<T>(path: string | null, use: (read: RangeReader) => T):
   }
 }
 
+/** The compilation-unit header of a metadata line, and the file it names. */
+const COMPILE_UNIT_UNIT = /^(!\d+ = distinct !DICompileUnit\(.*?\bfile: )!(\d+)(,)/;
+/** A metadata line that defines a file, split around its quoted name. */
+const DI_FILE = /^!\d+ = (!DIFile\(.*?\bfilename: ")((?:[^"\\]|\\.)*)(".*)$/;
+
+/** The module trailer a shard carries, with the compilation units it holds
+ * named after the shard.
+ *
+ * A Darwin link's debug map ties an object's symbols to the source its
+ * compilation units name. Objects compiled from shards of one program
+ * otherwise hold units that all name the program's source path, so a debugger
+ * cannot tell which object a symbol came from and attributes the later
+ * objects' symbols to the first. Each shard therefore points its units at a
+ * copy of the unit's file whose name includes the shard. Functions, variables
+ * and source locations keep the original file, so line information still
+ * names the source. */
+function shardDebugUnits(trailer: readonly string[], shard: string): string[] {
+  const lines = [...trailer];
+  let next = 0;
+  for (const line of lines) {
+    const id = /^!(\d+) = /.exec(line);
+    if (id !== null) next = Math.max(next, Number(id[1]) + 1);
+  }
+  // One copy per file and shard, so units of one file share it.
+  const copies = new Map<number, number>();
+  const added: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const unit = COMPILE_UNIT_UNIT.exec(lines[i]!);
+    if (unit === null) continue;
+    const file = Number(unit[2]);
+    let copy = copies.get(file);
+    if (copy === undefined) {
+      const line = lines.find((candidate) => candidate.startsWith(`!${file} = `));
+      const named = line === undefined ? null : DI_FILE.exec(line);
+      if (named === null) continue;
+      copy = next++;
+      copies.set(file, copy);
+      added.push(`!${copy} = ${named[1]}${named[2]}.scriptc-${shard}${named[3]}`);
+    }
+    lines[i] = lines[i]!.replace(COMPILE_UNIT_UNIT, `$1!${copy}$3`);
+  }
+  return [...lines, ...added];
+}
+
 function shardModule(
   parts: ModuleParts,
   sourceBytes: number,
@@ -423,34 +467,36 @@ function shardModule(
   const globalDecls = globals.flatMap((global) =>
     global.declaration === null ? [] : [global.declaration],
   );
+  // Each shard names the compilation units it carries after itself.
+  const tail = (shard: string): string =>
+    trailer.length === 0 ? "" : `\n${shardDebugUnits(trailer, shard).join("\n")}`;
   // Every shard repeats declarations and metadata. Bound that shared text
   // before materializing sources: function size alone can otherwise turn a
   // large debug module into many times its original size. Coarsen stable
   // power-of-two buckets, retaining the canonical path when even two would
   // exceed the budget. Small modules allow one target-sized shared budget.
   const sharedBytes =
-    [...preamble, ...globalDecls, ...trailer].reduce(
-      (bytes, line) => bytes + Buffer.byteLength(line) + 1,
-      0,
-    ) + functions.reduce((bytes, fn) => bytes + Buffer.byteLength(fn.declaration) + 1, 0);
+    [...preamble, ...globalDecls].reduce((bytes, line) => bytes + Buffer.byteLength(line) + 1, 0) +
+    Buffer.byteLength(tail("program-globals.ll")) +
+    functions.reduce((bytes, fn) => bytes + Buffer.byteLength(fn.declaration) + 1, 0);
   const bucketLimit = Math.floor(Math.max(sourceBytes, DEFAULT_TARGET_BYTES) / sharedBytes) - 1;
   if (bucketLimit < 2) return null;
   const chunks = chunksOf(functions, targetBytes, 2 ** Math.floor(Math.log2(bucketLimit)));
   if (chunks.length < 2) return null;
-  const tail = trailer.length === 0 ? "" : `\n${trailer.join("\n")}`;
   // A shard's source is assembled when it is read; a module split from a
   // file reads its function bodies from there each time.
   const functionShards = chunks.map(({ bucket, functions: chunk }): LlvmProgramShard => {
     const owned = new Set(chunk);
+    const name = `program-f${bucket.toString().padStart(3, "0")}.ll`;
     return {
-      name: `program-f${bucket.toString().padStart(3, "0")}.ll`,
+      name,
       source: () => {
         const declarations = functions.filter((fn) => !owned.has(fn)).map((fn) => fn.declaration);
         return withRangeReader(path, (read) =>
           [
             [...preamble, ...globalDecls, ...declarations, ""].join("\n"),
             ...chunk.map((fn) => fn.text(read)),
-            tail,
+            tail(name),
           ].join("\n"),
         );
       },
@@ -465,7 +511,7 @@ function shardModule(
       [
         [...preamble, ...functions.map((fn) => fn.declaration), ""].join("\n"),
         ...globals.map((global) => global.line),
-        tail,
+        tail("program-globals.ll"),
       ].join("\n"),
   };
   return {

@@ -13,8 +13,9 @@
  * instead of `any` (the self-reference makes the checker give up). `??`
  * is the same. Anything else keeps the original text. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
-import { applyEdits, unparen, type Edit } from "./npm-static-bundled-chunks.js";
+import { applyEdits, type Edit } from "./npm-static-bundled-chunks.js";
 
 /** Names a CommonJS module's wrapper function defines before its first
  * statement: its parameters and its arguments object. `var exports =
@@ -46,14 +47,14 @@ export function rewriteNamespaceDefaults(sf: ts.SourceFile): string | null {
     for (const decl of list.declarations.nodes) {
       if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) continue;
       const name = decl.name.text;
-      const init = unparen(decl.initializer);
+      const init = withoutParentheses(decl.initializer);
       if (
         !ts.isBinaryExpression(init) ||
         (init.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
           init.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken)
       )
         continue;
-      const left = unparen(init.left);
+      const left = withoutParentheses(init.left);
       if (!ts.isIdentifier(left) || left.text !== name) continue;
       if (COMMONJS_WRAPPER_NAMES.has(name)) continue;
       if (mentionedBefore(stmts, i, name) || writtenElsewhere(sf, name, decl)) continue;
@@ -64,8 +65,8 @@ export function rewriteNamespaceDefaults(sf: ts.SourceFile): string | null {
         // A literal stays bare: inference types `var ns = {}` from the
         // members later statements add (a parenthesized one it does not).
         text:
-          ts.isObjectLiteralExpression(unparen(right)) ||
-          ts.isArrayLiteralExpression(unparen(right))
+          ts.isObjectLiteralExpression(withoutParentheses(right)) ||
+          ts.isArrayLiteralExpression(withoutParentheses(right))
             ? sf.text.slice(tokenStartOfNode(right), right.end)
             : `(${sf.text.slice(tokenStartOfNode(right), right.end)})`,
       });
@@ -146,13 +147,13 @@ function bindsName(binding: ts.Node, name: string): boolean {
  * destructuring pattern that mentions it anywhere (over-approximated: a
  * property key of that name counts too). */
 function assignsName(target: ts.Node, name: string): boolean {
-  const t = unparen(target as ts.Expression);
+  const t = withoutParentheses(target as ts.Expression);
   if (ts.isArrayLiteralExpression(t) || ts.isObjectLiteralExpression(t)) return bindsName(t, name);
   return isName(t, name);
 }
 
 function isName(node: ts.Node, name: string): boolean {
-  const n = unparen(node as ts.Expression);
+  const n = withoutParentheses(node as ts.Expression);
   return ts.isIdentifier(n) && n.text === name;
 }
 

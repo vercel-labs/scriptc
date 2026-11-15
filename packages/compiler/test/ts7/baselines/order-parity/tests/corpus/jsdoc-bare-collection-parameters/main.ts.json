@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-bare-collection-parameters/lib.js",
+  "<repo>/tests/corpus/jsdoc-bare-collection-parameters/main.ts"
+ ],
+ "diags": []
+}

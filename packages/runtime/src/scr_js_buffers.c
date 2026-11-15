@@ -550,17 +550,21 @@ static ScrDyn *scr_js_buffer_build(ScrDyn *length_value, ScrDyn *options, bool s
       scr_dyn_release(value);
     }
   }
-  uint8_t *data = calloc(capacity ? capacity : 1, 1);
-  if (!data) {
+  ScrBytes *owner;
+  if (shared) {
+    owner = scr_bytes_new_shared(bytes, capacity);
+  } else {
+    uint8_t *data = calloc(capacity ? capacity : 1, 1);
+    owner = data ? scr_bytes_take_data(data, capacity) : NULL;
+    if (owner) owner->len = bytes; /* the reserved bytes past the length read 0 */
+  }
+  if (!owner) {
     /* Node's CreateByteDataBlock failure: a maxByteLength past what the
      * process can reserve is a RangeError, not a trap. */
     static const char message[] = "Array buffer allocation failed";
     scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
     return NULL;
   }
-  ScrBytes *owner = scr_bytes_take_data(data, capacity);
-  owner->len = bytes; /* the reserved bytes past the length read 0 */
-  if (shared) scr_bytes_make_shared(owner);
   ScrJsBufferOwner *state = scr_js_buffer_owner_state(owner, true);
   state->capacity = capacity;
   state->resizable = resizable;

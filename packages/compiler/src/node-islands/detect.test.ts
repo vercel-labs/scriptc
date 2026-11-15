@@ -65,7 +65,7 @@ describe("R1 runtime markers", () => {
   });
 
   test("R1.6 runtime-only globals", () => {
-    expect(markers("const r = new WeakRef(o);")).toEqual(["R1.6 weak-ref"]);
+    expect(markers("const r = new WeakRef(o);")).toEqual([]);
     expect(markers("const f = new FinalizationRegistry(cb);")).toEqual(["R1.6 weak-ref"]);
     expect(markers("if (typeof WeakRef !== 'undefined') {}")).toEqual([]);
     expect(markers("const o = { WeakRef: 1 }; o.WeakRef;")).toEqual([]);
@@ -285,6 +285,98 @@ describe("R2.5 builtin patches (H3.1)", () => {
     expect(patches("import { readFileSync } from 'node:fs'; readFileSync(p);", "mjs")).toEqual([]);
     expect(patches("const fs = { readFileSync: 1 }; fs.readFileSync = 2;")).toEqual([]);
     expect(patches("process.exitCode = 1;")).toEqual([]);
+  });
+});
+
+describe("builtin aliases follow lexical bindings (#2919)", () => {
+  /** The markers and the member each names, as `reason member` strings. */
+  function facts(source: string, ext = "cjs"): { patches: string[]; reads: string[] } {
+    const sf = parseSourceFile(`/virtual/b${serial++}.${ext}`, source, "js");
+    const scanned = scanModuleFacts(sf);
+    return {
+      patches: scanned.markers.map((m) => `${m.reason} ${m.member === undefined ? "-" : m.member}`),
+      reads: scanned.cjsReads.map((read) => read.member),
+    };
+  }
+
+  test("a parameter that reuses an alias name is the argument", () => {
+    // The Sentry SDK shape: `data` inside annotate is the call's argument,
+    // while the module-level alias is still patched by the outer write.
+    expect(
+      facts(
+        "const data = require('node:path'); function annotate(data) { data.sdkProcessingMetadata = 1; return data.sdkProcessingMetadata; } data.sdkProcessingMetadata = 1;",
+      ).patches,
+    ).toEqual(["builtin-patch path.sdkProcessingMetadata"]);
+  });
+
+  test("a block-local declaration masks the alias inside its block only", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); { const fs = require('node:path'); fs.join = f; } fs.readFileSync = f;",
+      ).patches,
+    ).toEqual(["builtin-patch path.join", "builtin-patch fs.readFileSync"]);
+  });
+
+  test("a hoisted var masks the alias for the whole function", () => {
+    expect(
+      facts("const fs = require('fs'); function f() { fs.readFileSync = g; { var fs = {}; } }")
+        .patches,
+    ).toEqual([]);
+  });
+
+  test("a nested function captures the outer alias", () => {
+    expect(
+      facts("const fs = require('fs'); function patch() { fs.readFileSync = f; }").patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+    // A default import is captured the same way.
+    expect(
+      facts("import fs from 'node:fs'; function f(fs) { fs.x = 1; } fs.readFileSync = g;", "mjs")
+        .patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("aliases created in a shadowed scope keep their own identity", () => {
+    expect(
+      facts(
+        "const path = require('path'); function f(path) { const fs = require('fs'); fs.readFileSync = g; path.join = h; } path.join = i;",
+      ).patches,
+    ).toEqual(["builtin-patch fs.readFileSync", "builtin-patch path.join"]);
+  });
+
+  test("createRequire results follow their binding when captured or shadowed", () => {
+    expect(
+      facts(
+        "const r = createRequire(import.meta.url); const fs = r('node:fs'); function patch(r) { const fs = r('node:path'); fs.join = g; } fs.readFileSync = f;",
+        "mjs",
+      ).patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("an uninitialized var redeclaration keeps the alias it shares a scope with", () => {
+    expect(
+      facts("var fs = require('fs'); var fs; fs.readFileSync = g; fs.readFileSync(p);"),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: ["fs.readFileSync"] });
+  });
+
+  test("a catch parameter masks the alias inside its block only", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch (fs) { fs.readFileSync(p); } fs.readFileSync = g;",
+      ),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: [] });
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch ({ fs }) { fs.readFileSync(p); } fs.readFileSync(p);",
+      ),
+    ).toEqual({ patches: [], reads: ["fs.readFileSync"] });
+  });
+
+  test("patch forms and reads through a shadowed name stay local", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); function f(fs) { Object.assign(fs, { readFileSync: g }); delete fs.readFileSync; fs.readFileSync(p); } fs.readFileSync(p);",
+      ),
+    ).toEqual({ patches: [], reads: ["fs.readFileSync"] });
   });
 });
 

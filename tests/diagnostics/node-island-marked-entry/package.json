@@ -1,0 +1,10 @@
+{
+  "name": "node-island-marked-entry",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "nodeIslands": {
+      "modules": ["main.ts"]
+    }
+  }
+}

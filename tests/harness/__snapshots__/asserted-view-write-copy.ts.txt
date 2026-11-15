@@ -1,52 +1,43 @@
-asserted-view-write-copy.ts:12:7 - error SC1090: writing 'widened.extra' through 'widened', a copy of the 'Base' value the assertion views as '{ a: number; extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+asserted-view-write-copy.ts:16:1 - error SC1090: writing 'extra' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
 
-  11 | // File scope: the copy would live in the module binding.
-  12 | const widened = base as { a: number; extra?: string };
-     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  13 | widened.extra = "x";
+  15 | const widened = base as { a: number; extra?: string };
+  16 | widened.extra = "x";
+     | ^~~~~~~~~~~~~
+  17 | 
 
-asserted-view-write-copy.ts:17:9 - error SC1090: writing 'local.extra' through 'local', a copy of the 'Base' value the assertion views as '{ a: number; extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+asserted-view-write-copy.ts:21:3 - error SC1090: writing 'extra' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
 
-  16 | function widen(b: Base): void {
-  17 |   const local = b as { a: number; extra?: string };
-     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  18 |   local.extra = "y";
+  20 |   const local = b as { a: number; extra?: string };
+  21 |   local.extra = "y";
+     |   ^~~~~~~~~~~
+  22 | }
 
-asserted-view-write-copy.ts:18:3 - error SC2004: uses of 'local' inherit the blocker on its declaration
+asserted-view-write-copy.ts:26:9 - error SC1090: writing 'view.extra' through 'view', a copy of the 'Base | { a: number; b: number; }' value the assertion views as '{ extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
 
-  17 |   const local = b as { a: number; extra?: string };
-  18 |   local.extra = "y";
-     |   ^~~~~
-  19 | }
-
-  hint: the declaration of 'local' did not compile — fix the diagnostic reported there and these sites clear with it
-
-asserted-view-write-copy.ts:23:9 - error SC1090: writing 'view.extra' through 'view', a copy of the 'Base | { a: number; b: number; }' value the assertion views as '{ extra?: string | undefined; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
-
-  22 | function widenUnion(u: Base | { a: number; b: number }): void {
-  23 |   const view = u as { extra?: string };
+  25 | function widenUnion(u: Base | { a: number; b: number }): void {
+  26 |   const view = u as { extra?: string };
      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 |   view.extra = "z";
+  27 |   view.extra = "z";
 
-asserted-view-write-copy.ts:24:3 - error SC2004: uses of 'view' inherit the blocker on its declaration
+asserted-view-write-copy.ts:27:3 - error SC2004: uses of 'view' inherit the blocker on its declaration
 
-  23 |   const view = u as { extra?: string };
-  24 |   view.extra = "z";
+  26 |   const view = u as { extra?: string };
+  27 |   view.extra = "z";
      |   ^~~~
-  25 | }
+  28 | }
 
   hint: the declaration of 'view' did not compile — fix the diagnostic reported there and these sites clear with it
 
-asserted-view-write-copy.ts:40:7 - error SC1090: writing 'bagView.item.n' through 'bagView', a copy of the 'Bag' value the assertion views as 'WideBag' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+asserted-view-write-copy.ts:43:7 - error SC1090: writing 'bagView.item.n' through 'bagView', a copy of the 'Bag' value the assertion views as 'WideBag' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
 
-  39 | const bag: Bag = { id: 1, item: { n: 0 }, extra: "x" };
-  40 | const bagView = bag as unknown as WideBag;
+  42 | const bag: Bag = { id: 1, item: { n: 0 }, extra: "x" };
+  43 | const bagView = bag as unknown as WideBag;
      |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  41 | bagView.item.n = 2;
+  44 | bagView.item.n = 2;
 
-asserted-view-write-copy.ts:55:7 - error SC1090: writing 'holderView.tag' through 'holderView', a copy of the 'Holder' value the assertion views as 'HolderView' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+asserted-view-write-copy.ts:61:1 - error SC1090: writing 'tag' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
 
-  54 | const holder: Holder = { item: { n: 0 }, extra: "x" };
-  55 | const holderView = holder as unknown as HolderView;
-     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  56 | holderView.item.n = 3;
+  60 | holderView.item.n = 3;
+  61 | holderView.tag = "t";
+     | ^~~~~~~~~~~~~~
+  62 | 

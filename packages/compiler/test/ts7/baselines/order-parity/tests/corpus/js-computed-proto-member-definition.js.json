@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-computed-proto-member-definition.js"
+ ],
+ "diags": []
+}

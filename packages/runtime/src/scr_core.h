@@ -345,10 +345,28 @@ extern SCR_TL void (*scr_context_report_error)(void);
 extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
-void scr_context_env_free(ScrContextEnv *environment);
+/* This thread's private environment, or NULL while it reads and writes the
+ * process environment. Borrowed. */
+ScrContextEnv *scr_context_env_current(void);
+/* Environments are reference counted: a SHARE_ENV worker enters the creating
+ * thread's environment, so either thread may exit first. */
+ScrContextEnv *scr_context_env_retain(ScrContextEnv *environment);
+void scr_context_env_release(ScrContextEnv *environment);
+/* A fresh empty environment (the Worker env option) and one entry set on
+ * an environment the caller owns; both arguments are NUL-terminated UTF-8,
+ * borrowed. */
+ScrContextEnv *scr_context_env_new(void);
+void scr_context_env_assign(ScrContextEnv *environment, const char *name, const char *value);
+/* Enters the environment for this thread, taking ownership of one
+ * reference; the thread's cleanup releases it. */
 void scr_context_env_enter(ScrContextEnv *environment);
 bool scr_context_env_set(const char *name, const char *value);
 const char *scr_context_getenv(const char *name);
+/* The process environment, for the writers and walkers that reach it
+ * directly (a thread with no environment of its own): a write or a walk holds
+ * the lock across the environ access. */
+void scr_context_env_process_lock(void);
+void scr_context_env_process_unlock(void);
 struct ScrArr *scr_context_env_pairs(void);
 #define scr_atexit(fn) scr_context_atexit(fn)
 #else
@@ -382,6 +400,26 @@ uint64_t scr_context_script_end_ns(void);
 extern SCR_TL uintptr_t scr_stack_guard;
 void scr_stack_guard_init(void);
 SCR_COLD void scr_stack_overflow(void);
+/* The base of the allocator's window (scr_alloc.c), which holds the small
+ * blocks and the program-lifetime region that compressed class fields refer
+ * to (llvm/emitter.ts lowRegionTarget): a 32-bit reference is the address's
+ * offset from the base over 8, and the window lies in [base, base + 32 GiB).
+ * Linux places it in the low 32 GiB (base 0). On macOS the low 32 GiB holds
+ * the executable, the shared cache and the system allocator's zones, and the
+ * system places large anonymous reservations from 448 GiB up; the window
+ * takes 1 TiB, far above them. Every bit of that base lies above the 35 bits
+ * of an offset, so a reference is still the address over 8 truncated to 32
+ * bits, and decoding ORs the base back in. */
+#if defined(__APPLE__) && UINTPTR_MAX == UINT64_MAX
+#define SCR_WINDOW_BASE ((uint64_t)1 << 40)
+#else
+#define SCR_WINDOW_BASE ((uint64_t)0)
+#endif
+/* The address a 32-bit compact reference names; 0 is NULL. */
+static inline uint64_t scr_compact_ref_address(uint32_t ref) {
+  return (uint64_t)ref << 3 | (ref ? SCR_WINDOW_BASE : 0);
+}
+
 #if defined(SCR_WORKERS) && !defined(SCR_LIB) && defined(__APPLE__) && \
     (defined(__aarch64__) || defined(__x86_64__))
 /* Darwin worker executables: reading a thread-local variable calls its TLV

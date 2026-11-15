@@ -1,0 +1,1 @@
+{ "name": "island-closed-init-effects-open", "private": true, "type": "module", "scriptc": { "packages": { "touch-kit": "node" } } }

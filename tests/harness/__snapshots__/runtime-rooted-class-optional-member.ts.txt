@@ -1,0 +1,26 @@
+runtime-rooted-class-optional-member.ts:29:20 - error SC2002: record shapes must match exactly or width-coerce: expected '{ litres: number; stack: string | undefined }', got 'Spill'
+
+  28 | 
+  29 | console.log(traced(new Spill("spill")));
+     |                    ^~~~~~~~~~~~~~~~~~
+  30 | console.log(flowing(new Pump()));
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+runtime-rooted-class-optional-member.ts:30:21 - error SC2002: record shapes must match exactly or width-coerce: expected '{ bore: number; destroyed: boolean | undefined; readable: boolean | undefined }', got 'Pump'
+
+  29 | console.log(traced(new Spill("spill")));
+  30 | console.log(flowing(new Pump()));
+     |                     ^~~~~~~~~~
+  31 | console.log(labelled(new Valve()));
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+runtime-rooted-class-optional-member.ts:31:22 - error SC2002: record shapes must match exactly or width-coerce: expected '{ bore: number; label: string | undefined }', got 'Valve'
+
+  30 | console.log(flowing(new Pump()));
+  31 | console.log(labelled(new Valve()));
+     |                      ^~~~~~~~~~~
+  32 | 
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

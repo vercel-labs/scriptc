@@ -25,6 +25,7 @@ import { stdioIntoGeneralStream } from "../general-streams.js";
 import type { IrLibFn } from "../../../ir/builtin-signatures.js";
 import { voidizedCallback } from "../lower-server.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { processStreamMemberOf } from "./process.js";
 
 /** The ambient module declaring `d`, or null. */
 function ambientModuleOf(d: ts.Node): string | null {
@@ -150,7 +151,7 @@ function questionWithOptions(
   const type: IrType = { kind: "promise", inner: STRING };
   const queryType = query.dyn ? DYN : STRING;
   const name = `%rl.questionOptions${query.dyn ? "Dyn" : ""}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, type);
     lowerer.fnStack.push(context);
     try {
@@ -242,8 +243,7 @@ function isReadlineUiTyped(lowerer: Lowerer, node: ts.Expression): boolean {
 
 /** The process.stdout/stderr target (1/2) of `node`, or 0. */
 function processOutputOf(lowerer: Lowerer, node: ts.Expression): 0 | 1 | 2 {
-  if (!ts.isPropertyAccessExpression(node)) return 0;
-  const member = lowerer.stdlibGlobalMember(node, "process");
+  const member = processStreamMemberOf(lowerer, node);
   return member === "stdout" ? 1 : member === "stderr" ? 2 : 0;
 }
 
@@ -478,16 +478,148 @@ function lowerPromptArg(lowerer: Lowerer, node: ts.Expression): { value: IrExpr;
   return { value: lowerer.coerceInto(node, value, DYN), dyn: true };
 }
 
+/** Node's readline event a literal names, with the runtime's number. A
+ * non-literal event has no lowering. */
+function literalEvent(
+  lowerer: Lowerer,
+  member: string,
+  node: ts.Expression,
+): { name: string; id: number } {
+  const t = lowerer.typeOf(node);
+  const name = t.isStringLiteralType() ? t.value : null;
+  const id = name === null ? undefined : RL_EVENTS[name];
+  if (name === null || id === undefined) {
+    lowerer.noLowering(
+      `readline.Interface.${member}(${name === null ? "non-literal event" : `"${name}"`}, ...)`,
+      node,
+      `${RL_EVENT_LIST} are the supported readline events`,
+    );
+  }
+  return { name, id };
+}
+
+/** A listener argument for one event: checked against the event's
+ * signature, its return value discarded (Node ignores it), and a
+ * checked-dynamic value (test/common's mustCall wrapper) called through
+ * the event's signature. */
+function lowerRlListener(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  event: string,
+  loc: SrcLoc,
+): IrExpr {
+  const want =
+    event === "line"
+      ? "string"
+      : event === "error"
+        ? "error"
+        : event === "history"
+          ? "history"
+          : null;
+  let cb = lowerer.lowerExpr(node);
+  const payload: IrType[] =
+    want === "string"
+      ? [STRING]
+      : want === "history"
+        ? [arrayOf(STRING)]
+        : want === "error"
+          ? [DYN]
+          : [];
+  if (cb.type.kind === "dyn")
+    cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
+  cb = voidizedCallback(lowerer, cb, loc);
+  const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
+  const paramOk =
+    param === undefined ||
+    (want !== null && param.kind === "dyn") ||
+    (want === "string" && param.kind === "string") ||
+    (want === "error" && param.kind === "object" && param.className === "Error") ||
+    (want === "history" && param.kind === "array" && param.elem.kind === "string");
+  if (
+    cb.type.kind !== "func" ||
+    cb.type.ret.kind !== "void" ||
+    cb.type.params.length > (want === null ? 0 : 1) ||
+    !paramOk
+  ) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      want === "string"
+        ? "'line' listeners other than (input: string) => void"
+        : want === "error"
+          ? "'error' listeners other than (err: Error) => void"
+          : want === "history"
+            ? "'history' listeners other than (history: string[]) => void"
+            : `'${event}' listeners with parameters or a return value (use ())`,
+    );
+  }
+  return cb;
+}
+
+/** Evaluates the receiver first, then the arguments, in the order the
+ * call spells them (Node evaluates the callee's receiver before its
+ * arguments). */
+function lowerRlCall(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  build: (recv: IrExpr) => IrExpr,
+): IrExpr {
+  return build(lowerer.lowerExprExpecting(access.expression, F64));
+}
+
+/** The listener-management members answer the interface, so a call used
+ * as an expression (`rl.on(...).on(...)`) registers or removes the
+ * listener, evaluates the receiver once, and yields it, as Node does. */
+function lowerRlChainable(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+  build: (recv: IrExpr) => IrExpr,
+): IrExpr {
+  const recvLocal = ts.isExpressionStatement(call.parent)
+    ? undefined
+    : lowerer.declareHiddenLocal("%readlineListener", F64);
+  const saved: IrStmt[] =
+    recvLocal === undefined
+      ? []
+      : [
+          {
+            kind: "varDecl",
+            localId: recvLocal.id,
+            init: lowerer.lowerExprExpecting(access.expression, F64),
+            loc,
+          },
+        ];
+  const recv: IrExpr =
+    recvLocal === undefined
+      ? lowerer.lowerExprExpecting(access.expression, F64)
+      : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
+  const call0 = build(recv);
+  if (recvLocal === undefined) return call0;
+  return {
+    kind: "seqExpr",
+    stmts: [...saved, { kind: "exprStmt", expr: call0, loc }],
+    result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
+    type: F64,
+    loc,
+  };
+}
+
 /** Method calls on readline Interface receivers (both modules):
  * - question(query, cb) — the callback form; question(query, { signal }?)
  *   — the promise form (readline/promises);
  * - close(), pause(), resume(), prompt(preserveCursor?), setPrompt(p),
  *   getPrompt(), write(data, key?);
- * - on/once/addListener for 'line' ((input: string) or no parameters),
- *   'error' ((err: Error) or no parameters), 'history' ((history:
- *   string[]) or no parameters), and 'close'/'pause'/'resume'/'SIGINT'/
- *   'SIGTSTP'/'SIGCONT' (no parameters); as an expression the call yields
- *   the interface, so registrations chain.
+ * - on/once/addListener/prependListener/prependOnceListener for 'line'
+ *   ((input: string) or no parameters), 'error' ((err: Error) or no
+ *   parameters), 'history' ((history: string[]) or no parameters), and
+ *   'close'/'pause'/'resume'/'SIGINT'/'SIGTSTP'/'SIGCONT' (no
+ *   parameters); as an expression the call yields the interface, so
+ *   registrations chain;
+ * - removeListener/off (the last registration of the same function
+ *   leaves), removeAllListeners(event?), listenerCount(event, fn?) and
+ *   eventNames(), which answer the interface, a count or the names.
  * Everything else the lib declares fences member-qualified. Null for
  * non-Interface receivers. */
 export function lowerReadlineMethodCall(
@@ -588,7 +720,11 @@ export function lowerReadlineMethodCall(
     return { kind: "libCall", fn, args: [recv, prompt.value], type: VOID, loc };
   }
   if (name === "getPrompt" && args.length === 0) {
-    return { kind: "libCall", fn: "rl.getPrompt", args: [receiver()], type: STRING, loc };
+    // Node answers the stored prompt value itself: a number or object set
+    // through an untyped setPrompt survives with its identity, so the
+    // result is checked-dynamic. Typed code coerces it back to the
+    // declared string at the use.
+    return { kind: "libCall", fn: "rl.getPromptDyn", args: [receiver()], type: DYN, loc };
   }
   if (name === "getCursorPos" && args.length === 0) {
     // { rows, cols } of the prompt and the line before the cursor
@@ -633,98 +769,91 @@ export function lowerReadlineMethodCall(
   if (name === "write" && (args.length === 1 || args.length === 2)) {
     return lowerWriteKey(lowerer, receiver(), args[0]!, args[1], loc);
   }
-  if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
-    const evT = lowerer.typeOf(args[0]!);
-    const event = evT.isStringLiteralType() ? evT.value : null;
-    const ev = event === null ? undefined : RL_EVENTS[event];
-    if (ev === undefined) {
-      lowerer.noLowering(
-        `readline.Interface.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        args[0]!,
-        `${RL_EVENT_LIST} are the supported readline events`,
-      );
+  const prepend = name === "prependListener" || name === "prependOnceListener";
+  const register = name === "on" || name === "once" || name === "addListener" || prepend;
+  const remove = name === "removeListener" || name === "off";
+  if ((register || remove) && args.length === 2) {
+    const event = literalEvent(lowerer, name, args[0]!);
+    return lowerRlChainable(lowerer, call, access, loc, (recv) => {
+      const cb = lowerRlListener(lowerer, args[1]!, event.name, loc);
+      if (remove)
+        return {
+          kind: "libCall",
+          fn: "rl.off",
+          args: [recv, numLit(event.id, loc), cb],
+          type: VOID,
+          loc,
+        };
+      const once = name === "once" || name === "prependOnceListener";
+      return {
+        kind: "libCall",
+        fn: prepend ? "rl.onFirst" : "rl.on",
+        args: [recv, numLit(event.id, loc), cb, boolLit(once, loc)],
+        type: VOID,
+        loc,
+      };
+    });
+  }
+  if (name === "removeAllListeners" && args.length <= 1) {
+    const arg = args[0];
+    // Node removes every event only for the NO-argument call
+    // (`arguments.length === 0`); an explicit undefined (or null, keyed as
+    // "null") names an event no readline interface registers, so nothing
+    // leaves and the call answers the interface. The argument still
+    // evaluates, after the receiver and before the call returns: an
+    // expression typed undefined can be a call that throws or has side
+    // effects, and Node runs it.
+    if (arg !== undefined && isNullishArg(lowerer, arg)) {
+      const recvLocal = lowerer.declareHiddenLocal("%readlineReceiver", F64);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: recvLocal.id,
+            init: receiver(),
+            loc,
+          },
+          // A DYN slot: a null answers a wrapped unit, not a bare null.
+          { kind: "exprStmt", expr: lowerer.lowerExprExpecting(arg, DYN), loc: locOf(arg) },
+        ],
+        result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
+        type: F64,
+        loc,
+      };
     }
-    // As an expression (`rl.on("line", f).on("close", g)`), the call
-    // registers the listener and yields the interface, as Node's on() does.
-    const recvLocal = ts.isExpressionStatement(call.parent)
-      ? undefined
-      : lowerer.declareHiddenLocal("%readlineListener", F64);
-    const saved: IrStmt[] =
-      recvLocal === undefined
-        ? []
-        : [{ kind: "varDecl", localId: recvLocal.id, init: receiver(), loc }];
-    const recv: IrExpr =
-      recvLocal === undefined
-        ? receiver()
-        : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
-    let cb = lowerer.lowerExpr(args[1]!);
-    const want =
-      event === "line"
-        ? "string"
-        : event === "error"
-          ? "error"
-          : event === "history"
-            ? "history"
-            : null;
-    // A checked-dynamic listener (test/common's mustCall wrapper) is called
-    // through a dynCheck to the event's signature, and a listener's return
-    // value is discarded, as Node does.
-    const payload: IrType[] =
-      want === "string"
-        ? [STRING]
-        : want === "history"
-          ? [arrayOf(STRING)]
-          : want === "error"
-            ? [DYN]
-            : [];
-    if (cb.type.kind === "dyn")
-      cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
-    cb = voidizedCallback(lowerer, cb, loc);
-    const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
-    const paramOk =
-      param === undefined ||
-      (want !== null && param.kind === "dyn") ||
-      (want === "string" && param.kind === "string") ||
-      (want === "error" && param.kind === "object" && param.className === "Error") ||
-      (want === "history" && param.kind === "array" && param.elem.kind === "string");
-    if (
-      cb.type.kind !== "func" ||
-      cb.type.ret.kind !== "void" ||
-      cb.type.params.length > (want === null ? 0 : 1) ||
-      !paramOk
-    ) {
-      lowerer.unsupported(
-        "SC1090",
-        args[1]!,
-        want === "string"
-          ? "'line' listeners other than (input: string) => void"
-          : want === "error"
-            ? "'error' listeners other than (err: Error) => void"
-            : want === "history"
-              ? "'history' listeners other than (history: string[]) => void"
-              : `'${event}' listeners with parameters or a return value (use ())`,
-      );
-    }
-    const register: IrExpr = {
+    const event = arg === undefined ? null : literalEvent(lowerer, name, arg);
+    return lowerRlChainable(lowerer, call, access, loc, (recv) => ({
       kind: "libCall",
-      fn: "rl.on",
-      args: [recv, numLit(ev, loc), cb, boolLit(name === "once", loc)],
+      fn: "rl.offAll",
+      args: [recv, numLit(event === null ? -1 : event.id, loc)],
       type: VOID,
       loc,
-    };
-    if (recvLocal === undefined) return register;
-    return {
-      kind: "seqExpr",
-      stmts: [...saved, { kind: "exprStmt", expr: register, loc }],
-      result: { kind: "varRef", localId: recvLocal.id, type: F64, loc },
-      type: F64,
-      loc,
-    };
+    }));
+  }
+  if (name === "listenerCount" && args.length >= 1 && args.length <= 2) {
+    const event = literalEvent(lowerer, name, args[0]!);
+    const fnNode = args[1];
+    return lowerRlCall(lowerer, access, (recv) => {
+      const base = [recv, numLit(event.id, loc)];
+      if (fnNode === undefined || isNullish(fnNode))
+        return { kind: "libCall", fn: "rl.listenerCount", args: base, type: F64, loc };
+      return {
+        kind: "libCall",
+        fn: "rl.listenerCountFn",
+        args: [...base, lowerRlListener(lowerer, fnNode, event.name, loc)],
+        type: F64,
+        loc,
+      };
+    });
+  }
+  if (name === "eventNames" && args.length === 0) {
+    return { kind: "libCall", fn: "rl.eventNames", args: [receiver()], type: arrayOf(STRING), loc };
   }
   lowerer.noLowering(
     `readline.Interface.${name}`,
     call,
-    `question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, and on/once for ${RL_EVENT_LIST.replace(/"/g, "'")} are the supported Interface members`,
+    `question, close, pause, resume, prompt, setPrompt, getPrompt, write, for await, on/once and the listener-management members for ${RL_EVENT_LIST.replace(/"/g, "'")} are the supported Interface members`,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -733,6 +862,14 @@ function isNullish(node: ts.Expression): boolean {
   return (
     node.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(node) && node.text === "undefined")
   );
+}
+
+/** An argument the checker types undefined or null (the literal spellings
+ * and variables that hold them): Node keys it as an event name, and no
+ * readline interface registers "undefined" or "null". */
+function isNullishArg(lowerer: Lowerer, node: ts.Expression): boolean {
+  const t = lowerer.typeOf(node);
+  return (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0;
 }
 
 /** write(data, key): data a string, null or undefined; key an object
@@ -820,9 +957,7 @@ function lowerEmitKeypressEvents(lowerer: Lowerer, expr: ts.CallExpression, loc:
   const stmts: IrStmt[] = [];
   const streamNode = args[0]!;
   let stream: IrExpr | null = null;
-  const stdin =
-    ts.isPropertyAccessExpression(streamNode) &&
-    lowerer.stdlibGlobalMember(streamNode, "process") === "stdin";
+  const stdin = processStreamMemberOf(lowerer, streamNode) === "stdin";
   if (!stdin) {
     stream = lowerer.lowerExpr(streamNode);
     const info =
@@ -980,8 +1115,7 @@ export function lowerReadlineCursorCall(
   // the stream
   const streamNode = args[0]!;
   let target: "stdout" | "stderr" | "none" | IrExpr;
-  const proc =
-    ts.isPropertyAccessExpression(streamNode) && lowerer.stdlibGlobalMember(streamNode, "process");
+  const proc = processStreamMemberOf(lowerer, streamNode);
   if (proc === "stdout" || proc === "stderr") {
     target = proc;
   } else if (isNullish(streamNode)) {
@@ -1137,12 +1271,10 @@ function streamFromDyn(lowerer: Lowerer, node: ts.Expression, output: boolean): 
 
 /** The interface's input: process.stdin (null) or a readable stream. */
 function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
-  if (
-    ts.isPropertyAccessExpression(node) &&
-    lowerer.stdlibGlobalMember(node, "process") === "stdin"
-  ) {
-    return null;
-  }
+  // The process stdin, spelled `process.stdin` or bound by an import from
+  // node:process (`const { stdin } = require("node:process")`): the
+  // interface reads the descriptor the runtime holds.
+  if (processStreamMemberOf(lowerer, node) === "stdin") return null;
   const v = streamFromDyn(lowerer, node, false);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   const sides = streamSidesOf(lowerer, info);
@@ -1249,6 +1381,15 @@ export function lowerReadlineCreateCall(
   // false drops it)
   let terminal = null as IrExpr | null; // set in setTerminal
   let terminalFalse = false;
+  // A `terminal` value that may be undefined (`boolean | undefined`): held
+  // as its union, decided once the output is known, because an undefined
+  // value takes the default an absent option takes.
+  let terminalOptional = null as {
+    localId: string;
+    unionId: string;
+    booleanTag: number;
+    undefinedTag: number;
+  } | null;
   const pre: IrStmt[] = [];
   // Only terminal interfaces call the completer. A checked-dynamic value
   // must be callable (Node's ERR_INVALID_ARG_VALUE, after the history
@@ -1266,10 +1407,29 @@ export function lowerReadlineCreateCall(
       return;
     }
     if (!(lowerer.typeOf(value).flags & ts.TypeFlags.BooleanLike)) {
-      lowerer.noLowering(
-        "the createInterface option 'terminal' with a value that is not a boolean",
-        value,
-      );
+      const optional = lowerer.lowerExpr(value);
+      const arms =
+        optional.type.kind === "union" ? lowerer.unions.get(optional.type.unionId)?.arms : null;
+      if (
+        optional.type.kind !== "union" ||
+        arms?.length !== 2 ||
+        !arms.some((arm) => arm.kind === "bool") ||
+        !arms.some((arm) => arm.kind === "undefinedT")
+      ) {
+        lowerer.noLowering(
+          "the createInterface option 'terminal' with a value that is not a boolean",
+          value,
+        );
+      }
+      const held = lowerer.declareHiddenLocal("%rlTerminalOption", optional.type);
+      pre.push({ kind: "varDecl", localId: held.id, init: optional, loc });
+      terminalOptional = {
+        localId: held.id,
+        unionId: optional.type.unionId,
+        booleanTag: lowerer.armTag(optional.type.unionId, BOOL),
+        undefinedTag: lowerer.armTag(optional.type.unionId, UNDEFINED_T),
+      };
+      return;
     }
     const local = lowerer.declareHiddenLocal("%rlTerminal", BOOL);
     pre.push({
@@ -1422,7 +1582,50 @@ export function lowerReadlineCreateCall(
   // Node's default for an output process stream is that stream's isTTY, so
   // a direct process.stderr output passes process.isTTY(2) as the value.
   let terminalMode: number | null;
-  if (terminal !== null) {
+  if (terminalOptional !== null) {
+    // Node reads an undefined `terminal` as an absent one: the output's
+    // isTTY when there is an output, otherwise not a terminal.
+    const optionT: IrType = { kind: "union", unionId: terminalOptional.unionId };
+    const option: IrExpr = {
+      kind: "varRef",
+      localId: terminalOptional.localId,
+      type: optionT,
+      loc,
+    };
+    const ttyFd =
+      output.kind === "stdout"
+        ? 1
+        : output.kind === "stream" && output.ttyFd !== undefined
+          ? output.ttyFd
+          : null;
+    terminalMode = 0;
+    terminal = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.undefinedTag,
+        negated: false,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      then:
+        ttyFd === null
+          ? boolLit(false, loc)
+          : { kind: "libCall", fn: "process.isTTY", args: [numLit(ttyFd, loc)], type: BOOL, loc },
+      else_: {
+        kind: "unionNarrow",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.booleanTag,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  } else if (terminal !== null) {
     terminalMode = 0;
   } else if (terminalFalse) {
     terminalMode = null;

@@ -1,0 +1,22 @@
+tsconfig-commonjs-import-equals/main.ts:3:1 - error SC0016: this project's tsconfig sets "module": "commonjs", which scriptc does not follow: TypeScript files are compiled as ES modules, the format Node gives them, where 'import x = require(…)' and 'export =' do not exist (2 places in this program)
+
+  2 | // import form. The file is an ES module for Node and for scriptc.
+  3 | import path = require("path");
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  4 | import os = require("os");
+
+  hint: write 'import x from "m"' or 'import * as x from "m"', and 'export default'
+
+tsconfig-commonjs-import-equals/main.ts:3:1 - error SC1013: import = require(...) assignments are not supported yet
+
+  2 | // import form. The file is an ES module for Node and for scriptc.
+  3 | import path = require("path");
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  4 | import os = require("os");
+
+tsconfig-commonjs-import-equals/main.ts:4:1 - error SC1013: import = require(...) assignments are not supported yet
+
+  3 | import path = require("path");
+  4 | import os = require("os");
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | 

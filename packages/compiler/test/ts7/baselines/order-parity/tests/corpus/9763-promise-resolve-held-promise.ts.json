@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9763-promise-resolve-held-promise.ts"
+ ],
+ "diags": []
+}

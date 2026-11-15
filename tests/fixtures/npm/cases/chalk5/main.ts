@@ -70,3 +70,10 @@ try {
 chalk.level = 1;
 show("global after set", chalk.red.bold("x"));
 console.log("global level " + String(chalk.level));
+
+// chalk and every style chain are functions (with members): typeof says so,
+// alone and as the test that picks the function arm of a union.
+console.log("typeof " + typeof chalk + " " + typeof chalk.green + " " + typeof chalk.red.bold);
+console.log("typeof instance " + typeof new Chalk({ level: 1 }) + " " + typeof mutable.underline);
+const styled: string | typeof chalk.red = process.argv.length > 99 ? "plain" : chalk.red;
+show("union", typeof styled === "function" ? styled("u") : styled);

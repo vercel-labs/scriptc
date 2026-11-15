@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8990-js-object-proto-accessor.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/common.js",
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/schemas.js",
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/cors.js",
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/route.js",
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/index.js",
+  "<repo>/tests/corpus/cjs-lazy-require-cycle/main.js"
+ ],
+ "diags": []
+}

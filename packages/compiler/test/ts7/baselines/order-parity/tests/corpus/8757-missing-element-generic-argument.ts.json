@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8757-missing-element-generic-argument.ts"
+ ],
+ "diags": []
+}

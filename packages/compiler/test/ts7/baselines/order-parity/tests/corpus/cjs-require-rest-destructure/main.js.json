@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-require-rest-destructure/lib.js",
+  "<repo>/tests/corpus/cjs-require-rest-destructure/members.js",
+  "<repo>/tests/corpus/cjs-require-rest-destructure/main.js"
+ ],
+ "diags": []
+}

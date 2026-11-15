@@ -216,6 +216,53 @@ test("hot expression and identifier queries batch; uncommon kinds fall back once
   expect(counts).toEqual(before);
 });
 
+test("an exact type-query batch answers a node list in one request and its reads are memo hits", () => {
+  const w = buildTwoWorlds(
+    {
+      "main.ts": `
+export const first = 1;
+export const second = "two";
+export function third(value: number): number { return value; }
+export const fourth = third(first);
+`,
+    },
+    host,
+  );
+  worlds.push(w);
+  const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
+  // No whole-file sweep on a miss: only the batch can answer these nodes.
+  const facade = new CheckerFacade(proxy, { autoPrefetch: false });
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const name = (wanted: string): Node => {
+    for (const statement of sf.statements.nodes) {
+      if (statement.name?.text === wanted) return statement.name;
+      for (const node of statement.declarationList?.declarations?.nodes ?? [])
+        if (node.name?.text === wanted) return node.name;
+    }
+    throw new Error(`Missing declaration ${wanted}`);
+  };
+  const names = ["first", "second", "third", "fourth"].map(name);
+
+  const before = counts["getTypeAtLocation"] ?? 0;
+  facade.prefetchTypeQueries([]);
+  expect(counts["getTypeAtLocation"] ?? 0).toBe(before);
+  facade.prefetchTypeQueries(names);
+  expect(counts["getTypeAtLocation"] ?? 0).toBe(before + 1);
+  expect((calls["getTypeAtLocation"]!.at(-1)![0] as Node[]).length).toBe(names.length);
+  // The reads an analysis makes after the batch are its answers, not queries.
+  const types = names.map((node) => facade.getTypeAtLocation(node));
+  expect(counts["getTypeAtLocation"] ?? 0).toBe(before + 1);
+  expect(types.map((type) => facade.typeToString(type))).toEqual([
+    "1",
+    '"two"',
+    "(value: number) => number",
+    "number",
+  ]);
+  // A warm list, duplicates included, asks nothing.
+  facade.prefetchTypeQueries([...names, ...names]);
+  expect(counts["getTypeAtLocation"] ?? 0).toBe(before + 1);
+});
+
 test("memoized answers are identical objects across calls", () => {
   const { facade, w } = build();
   const nodes = collectNodes(w).filter((n) => ad.isIdentifier(n));

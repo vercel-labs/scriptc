@@ -65,3 +65,107 @@ test.each(["2970-constant-numeric-tables.ts", "2971-constant-table-modules/main.
     }
   },
 );
+
+test("a large immutable table is the array's own storage in the program image", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-static-tables-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ll");
+    const table = Array.from({ length: 20 }, (_, i) => i * 3).join(", ");
+    await writeFile(
+      entry,
+      `
+const table = [${table}];
+function lookup(i: number): number { return table[i] * 1; }
+const doubles = [${Array.from({ length: 18 }, (_, i) => i + 0.5).join(", ")}];
+function half(i: number): number { return doubles[i] * 2; }
+console.log(lookup(3), half(1));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "llvm" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const llvm = await readFile(outPath, "utf8");
+    // The elements and the header both stay in the image: no allocation, no
+    // per-element construction, no copy, and initialization stores nothing.
+    expect(llvm).toMatch(/@sc_arr_const_\d+ = internal constant \[20 x i32\] \[ i32 0, i32 3, /);
+    expect(llvm).toMatch(/@sc_arr_const_\d+ = internal constant \[18 x double\]/);
+    expect(llvm).toMatch(
+      /@sc_arr_const_\d+_h = internal global %ScrArr \{ i64 -1, i32 20, i32 20, i8 7, i8 0, i16 0, i32 20, ptr @sc_arr_const_\d+ \}/,
+    );
+    expect(llvm).toMatch(
+      /@sc_arr_const_\d+_h = internal global %ScrArr \{ i64 -1, i32 18, i32 18, i8 0, i8 0, i16 0, i32 18, ptr @sc_arr_const_\d+ \}/,
+    );
+    expect(llvm).not.toMatch(/%ScrArr zeroinitializer/);
+    expect(llvm).not.toMatch(/call double @scr_arr_push_f64\(/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("static table elements keep their exact bits in chunked emission", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-static-tables-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    // The values JSON cannot carry as numbers: NaN and the infinities
+    // become null, and negative zero becomes zero.
+    const edges = ["NaN", "Infinity", "-Infinity", "-0", "5e-324", "1e21", "0.1", "-2.5"];
+    const rest = Array.from({ length: 12 }, (_, i) => String(i + 0.5));
+    await writeFile(
+      entry,
+      `
+const table = [${[...edges, ...rest].join(", ")}];
+function at(i: number): number { return table[i] * 1; }
+console.log(at(0), at(1), at(4));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ir = await readFile(outPath, "utf8");
+    const serial = emitLlvmModule(deserializeModule(ir));
+    expect(serial).toContain(
+      "[20 x double] [ double 0x7FF8000000000000, double 0x7FF0000000000000, " +
+        "double 0xFFF0000000000000, double 0x8000000000000000, double 0x0000000000000001, ",
+    );
+    // A chunk's result crosses JSON (emit-module.ts); the emitted table is
+    // the serial text.
+    const chunked = emitLlvmModule(deserializeModule(ir), { functionChunks: 2 });
+    expect(chunked === serial).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("each static table is its own array, even with equal elements", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-static-tables-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ll");
+    const table = Array.from({ length: 18 }, (_, i) => i + 1).join(", ");
+    await writeFile(
+      entry,
+      `
+const first = [${table}];
+const second = [${table}];
+function at(i: number): number { return first[i] * second[i]; }
+console.log(at(3));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "llvm" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const llvm = await readFile(outPath, "utf8");
+    const headers = [
+      ...llvm.matchAll(
+        /@(sc_arr_const_\d+)_h = internal global %ScrArr \{ [^}]*ptr @(sc_arr_const_\d+) \}/g,
+      ),
+    ];
+    expect(headers).toHaveLength(2);
+    expect(new Set(headers.map((m) => m[1])).size).toBe(2);
+    expect(new Set(headers.map((m) => m[2])).size).toBe(2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

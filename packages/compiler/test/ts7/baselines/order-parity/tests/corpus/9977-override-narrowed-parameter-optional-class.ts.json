@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9977-override-narrowed-parameter-optional-class.ts"
+ ],
+ "diags": []
+}

@@ -38,6 +38,11 @@ console.log("computed deleted:", process.env[key] === undefined, key in process.
 delete env.SCRIPTC_HELD_NEVER;
 console.log("absent delete:", process.env.SCRIPTC_HELD_NEVER === undefined);
 
+// The VALUE form of a delete through the hold unsets the real variable and
+// answers Node's boolean.
+env.SCRIPTC_HELD_VALUE = "three";
+console.log(delete env.SCRIPTC_HELD_VALUE, process.env.SCRIPTC_HELD_VALUE === undefined);
+
 // A COPY of the hold keeps copy semantics: its writes never touch the
 // environment, and its own entries stay. The copy sees the environment as
 // it is at the spread, including writes made after the hold.

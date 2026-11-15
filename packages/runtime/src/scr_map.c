@@ -103,9 +103,19 @@ static uint64_t scr_map_slot_from_ptr(void *p) { return (uint64_t)(uintptr_t)p; 
 
 static void *scr_map_slot_to_ptr(uint64_t s) { return (void *)(uintptr_t)s; }
 
+/* A promise's key identity is the cell its adapter boxes share. The adapter
+ * comes from the map's ops, so this file links without the promise runtime:
+ * only a map that holds such a key carries it. */
+static uint64_t scr_map_promise_identity(const ScrMap *m, void *promise) {
+  const ScrMapIdentityOps *ops = (const ScrMapIdentityOps *)m->ops;
+  return scr_map_slot_from_ptr(ops->key_identity(promise));
+}
+
 /* Union boxes are a compiler representation, not JavaScript objects. Keep
  * the box as the owned key, but hash and compare its reference payload. */
 static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
+  if (m->key_kind == SCR_MAP_KEY_PROMISE)
+    return scr_map_promise_identity(m, scr_map_slot_to_ptr(key));
   if (m->key_kind == SCR_MAP_KEY_UNION_REF) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
@@ -114,6 +124,22 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
     return scr_map_slot_from_ptr(scr_closure_identity(scr_map_slot_to_ptr(key)));
   return key;
 }
+
+/* A boxed promise's key. A promise with a typed settled value enters a
+ * checked-dynamic position as another adapter promise at every boxing, and
+ * the adapters share their source's identity cell: the cell is the key, the
+ * one a typed promise key reads through its map's ops
+ * (scr_promise_map_identity) and the one strict equality compares, so two
+ * boxes of one promise hash alike as they compare equal. Only a program
+ * that links the checked-dynamic promise unit (scr_async_dyn.c) can make
+ * such an adapter, and it links this build (SCR_DYN_PROMISE_KEYS). In every
+ * other program a boxed promise has one address, which the default build
+ * hashes without the promise runtime. */
+#ifdef SCR_DYN_PROMISE_KEYS
+#define SCR_MAP_DYN_PROMISE_KEY(promise) scr_promise_map_identity(promise)
+#else
+#define SCR_MAP_DYN_PROMISE_KEY(promise) (promise)
+#endif
 
 /* Checked-dynamic keys use the JavaScript value, not the temporary box.
  * Typed capsules preserve a native object's identity across repeated
@@ -132,7 +158,7 @@ static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
   case SCR_DYN_FUNC: value = scr_map_slot_from_ptr(d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)scr_closure_identity(d->v.fn.clo)); break;
   case SCR_DYN_BYTES: value = scr_map_slot_from_ptr(d->v.bytes); break;
   case SCR_DYN_HANDLE: value = scr_map_slot_from_ptr(d->v.handle.ptr); break;
-  case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(d->v.promise); break;
+  case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(SCR_MAP_DYN_PROMISE_KEY(d->v.promise)); break;
   case SCR_DYN_OBJ: value = scr_map_slot_from_ptr(d->v.obj.source_identity ? d->v.obj.source_identity : (void *)d); break;
   case SCR_DYN_TYPED_REF:
     value = scr_map_slot_from_ptr(d->v.typed_ref.ptr);
@@ -166,6 +192,7 @@ static uint64_t scr_map_hash_union(const ScrMap *m, const ScrUnion *key) {
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return scr_key_word_hash((uint64_t)kind);
   case SCR_MAP_KEY_CLOSURE: return scr_key_word_hash(scr_map_slot_from_ptr(scr_closure_identity(scr_union_peek(key))));
+  case SCR_MAP_KEY_PROMISE: return scr_key_word_hash(scr_map_promise_identity(m, scr_union_peek(key)));
   default: return scr_key_word_hash(key->slot);
   }
 }
@@ -181,6 +208,9 @@ static bool scr_map_union_eq(const ScrMap *m, const ScrUnion *a, const ScrUnion 
   case SCR_MAP_KEY_NULL:
   case SCR_MAP_KEY_UNDEFINED: return true;
   case SCR_MAP_KEY_CLOSURE: return scr_closure_identity_equal(scr_union_peek(a), scr_union_peek(b));
+  case SCR_MAP_KEY_PROMISE:
+    return scr_map_promise_identity(m, scr_union_peek(a)) ==
+           scr_map_promise_identity(m, scr_union_peek(b));
   default: return a->slot == b->slot;
   }
 }
@@ -277,7 +307,7 @@ static inline void scr_map_kill_at(ScrMap *m, size_t e) {
 
 /* A compact value's 4-byte form and back (scr_cref_encode in scr_array.h). */
 static inline uint32_t scr_map_cref_encode(uint64_t val) { return (uint32_t)(val >> 3); }
-static inline uint64_t scr_map_cref_decode(uint32_t val) { return (uint64_t)val << 3; }
+static inline uint64_t scr_map_cref_decode(uint32_t val) { return scr_compact_ref_address(val); }
 
 /* The value of entry e as an 8-byte slot, and its store. */
 static inline uint64_t scr_map_val_at(const ScrMap *m, size_t e) {
@@ -624,6 +654,10 @@ void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length) {
   return e == SCR_MAP_EMPTY ? NULL : scr_map_val_retain(m, scr_map_val_at(m, e));
 }
 
+bool scr_map_has_span(const ScrMap *m, const char *bytes, size_t length) {
+  return scr_map_find_span(m, bytes, length) != SCR_MAP_EMPTY;
+}
+
 /* Rebuild the bucket table (size must be a power of two >= 2 * nentries):
  * only live entries are inserted, in dense order — dead markers vanish. */
 static void scr_map_rebuild_buckets(ScrMap *m, size_t nbuckets) {
@@ -845,7 +879,8 @@ static void scr_map_reserve_append(ScrMap *m) {
 
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
-         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE || kind == SCR_MAP_KEY_CLOSURE;
+         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE ||
+         kind == SCR_MAP_KEY_CLOSURE || kind == SCR_MAP_KEY_PROMISE;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {

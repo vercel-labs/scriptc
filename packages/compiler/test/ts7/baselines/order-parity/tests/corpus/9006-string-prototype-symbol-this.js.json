@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9006-string-prototype-symbol-this.js"
+ ],
+ "diags": []
+}

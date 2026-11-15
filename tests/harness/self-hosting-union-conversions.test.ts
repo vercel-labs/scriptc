@@ -14,9 +14,18 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const execFileAsync = promisify(execFile);
 const runOptions = { encoding: "utf8" as const, timeout: 60_000, maxBuffer: 32 * 1024 * 1024 };
 
+// The native stage is the whole compiler compiling the fixture under the
+// sanitizer, and the san shards run it beside the other self-hosting builds
+// (one neighbour has taken 544 s). The stage's own deadline is the one that
+// names a stalled compile, so the test's timeout sits above it; sharing the
+// 300 s default let the test report the case instead of the stage
+// (2026-11-04, Linux san shard 11/20).
+const compileTimeoutMs = 600_000;
+const timeout = compileTimeoutMs + 60_000;
+
 for (const fixture of ["ir-refinements", "union-conversions"]) {
   for (const backend of ["llvm"] as const) {
-    test(`self-hosting ${fixture} executes natively (${backend})`, async () => {
+    test(`self-hosting ${fixture} executes natively (${backend})`, { timeout }, async () => {
       const dir = mkdtempSync(
         join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-union-conversions-"),
       );
@@ -44,7 +53,7 @@ for (const fixture of ["ir-refinements", "union-conversions"]) {
             backend,
             sanitize ? "1" : "0",
           ],
-          { ...runOptions, cwd: root, timeout: 300_000 },
+          { ...runOptions, cwd: root, timeout: compileTimeoutMs },
         );
         expect(result.stderr).toBe("");
         const { stats, diagnostics, built } = JSON.parse(result.stdout) as {

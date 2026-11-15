@@ -1,14 +1,17 @@
 // `const view = value as T` where T names a member the value's own layout
-// does not hold builds a copy of the value, so a write through the binding
-// would land on that copy while Node erases the assertion and writes the
-// original object. Refused by name instead of diverging; reads of such a
-// copy are equal either way and stay allowed.
+// does not hold: a write through the binding would land on the conversion
+// while Node erases the assertion and writes the original object. Refused
+// by name instead of diverging. An assertion that only ADDS optional
+// members keeps the value's layout, so the write to the added member is
+// refused where it happens; the union operand and the reshaped view below
+// convert, and those bindings' writes are refused at the declaration.
 interface Base {
   a: number;
 }
 const base: Base = { a: 1 };
 
-// File scope: the copy would live in the module binding.
+// File scope: the binding keeps the value's layout, and the write to the
+// added member has no slot to reach.
 const widened = base as { a: number; extra?: string };
 widened.extra = "x";
 
@@ -40,8 +43,9 @@ const bag: Bag = { id: 1, item: { n: 0 }, extra: "x" };
 const bagView = bag as unknown as WideBag;
 bagView.item.n = 2;
 
-// A shared write before a write to the copy's own field does not hide the
-// latter: the refusal names the own-field write.
+// A shared write before a write to the added member does not hide the
+// latter: the nested write reaches the value's own child, and the added
+// member is refused where it is written.
 interface Holder {
   item: { n: number };
   extra: string;

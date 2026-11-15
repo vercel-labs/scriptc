@@ -1,0 +1,6 @@
+{
+  "name": "island-promise-record-view",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "later-pkg": "node" } }
+}

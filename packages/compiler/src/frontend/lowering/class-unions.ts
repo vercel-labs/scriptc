@@ -1,6 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
-import { BOOL, typeKey, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
+import { BOOL, sortArms, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -35,7 +35,7 @@ export function structuralNarrowing(
     narrowed,
     ...peers.map((className) => ({ kind: "object" as const, className })),
   ];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 

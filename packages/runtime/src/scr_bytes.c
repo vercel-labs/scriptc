@@ -91,7 +91,7 @@ bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name) {
   ScrDyn *value;
   if (options->kind == SCR_DYN_TYPED_REF) {
     /* A compiled record or class instance: its own fields, else its view. */
-    value = scr_dyn_typed_ref_key_get(options, name);
+    value = scr_dyn_typed_ref_own_get(options, name);
     if (!value && !scr_exc_pending()) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(options);
       if (!view) return false;
@@ -248,6 +248,89 @@ bool scr_bytes_elem_is_bigint(ScrBytesElem elem) {
   return elem == SCR_BYTES_I64 || elem == SCR_BYTES_U64;
 }
 #endif
+
+/* Appends Node's inspect of an ArrayBuffer at indentation level `indent`:
+ * the first 100 bytes as hex pairs, on one line when it fits the 80-column
+ * break length (reduceToSingleString), one entry per line otherwise. */
+static void scr_bytes_inspect_array_buffer(ScrJsonBuf *jb, const ScrBytes *owner, size_t indent) {
+  static const char digits[] = "0123456789abcdef";
+  size_t len = owner->len * scr_bytes_elem_size(owner->elem);
+  size_t shown = len < 100 ? len : 100;
+  ScrJsonBuf contents;
+  scr_jb_init(&contents);
+  scr_jb_puts(&contents, "[Uint8Contents]: <");
+  for (size_t i = 0; i < shown; i++) {
+    uint8_t byte;
+    scr_bytes_read(owner, i, &byte, 1);
+    if (i) scr_jb_putc(&contents, ' ');
+    scr_jb_putc(&contents, digits[byte >> 4]);
+    scr_jb_putc(&contents, digits[byte & 15]);
+  }
+  if (len > shown) {
+    char more[48];
+    snprintf(more, sizeof more, " ... %zu more byte%s", len - shown, len - shown > 1 ? "s" : "");
+    scr_jb_puts(&contents, more);
+  }
+  scr_jb_putc(&contents, '>');
+  ScrStr *first = scr_jb_finish(&contents);
+  char second[40];
+  int second_len = snprintf(second, sizeof second, "[byteLength]: %zu", len);
+  /* isBelowBreakLength with two entries, start = 2 + indentation + "ArrayBuffer {" + 10. */
+  size_t total = 2 + (2 + indent + 13 + 10) + first->len + (size_t)second_len;
+  if (total <= 80) {
+    scr_jb_puts(jb, "ArrayBuffer { ");
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ", ");
+    scr_jb_puts(jb, second);
+    scr_jb_puts(jb, " }");
+  } else {
+    scr_jb_puts(jb, "ArrayBuffer {\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_put_str(jb, first);
+    scr_jb_puts(jb, ",\n");
+    for (size_t i = 0; i < indent + 2; i++) scr_jb_putc(jb, ' ');
+    scr_jb_puts(jb, second);
+    scr_jb_putc(jb, '\n');
+    for (size_t i = 0; i < indent; i++) scr_jb_putc(jb, ' ');
+    scr_jb_putc(jb, '}');
+  }
+  scr_str_release(first);
+}
+
+/* ERR_INVALID_ARG_VALUE for an empty ArrayBufferView: Node's inspect of the
+ * view (a Buffer, an empty typed array, or a DataView with its buffer), cut
+ * to 128 characters followed by "...". The fs ladders print the same text
+ * under their own message ("...is empty and cannot be written. Received "),
+ * so this is shared. */
+ScrStr *scr_dyn_empty_view_inspect(const ScrDyn *value) {
+  const ScrBytes *view = value->v.bytes;
+  ScrJsonBuf jb;
+  scr_jb_init(&jb);
+  if (value->buffer) {
+    scr_jb_puts(&jb, "<Buffer >");
+  } else if (!view->is_data_view) {
+    scr_jb_puts(&jb, scr_bytes_elem_name(view->elem));
+    scr_jb_puts(&jb, "(0) []");
+  } else {
+    const ScrBytes *owner = view->backing ? view->backing : view;
+    char line[64];
+    snprintf(line, sizeof line, "DataView {\n  [byteLength]: 0,\n  [byteOffset]: %zu,\n  [buffer]: ",
+             (size_t)(view->data - owner->data));
+    scr_jb_puts(&jb, line);
+    scr_bytes_inspect_array_buffer(&jb, owner, 2);
+    scr_jb_puts(&jb, "\n}");
+  }
+  ScrStr *inspected = scr_jb_finish(&jb);
+  if (inspected->len <= 128) return inspected;
+  ScrJsonBuf out;
+  scr_jb_init(&out);
+  ScrStr *head = scr_str_new(inspected->data, 128);
+  scr_jb_put_str(&out, head);
+  scr_str_release(head);
+  scr_jb_puts(&out, "...");
+  scr_str_release(inspected);
+  return scr_jb_finish(&out);
+}
 
 double scr_bytes_to_u8_clamp(double value) {
   if (!(value > 0)) return 0;
@@ -779,45 +862,9 @@ void scr_bytes_shared_set(ScrBytes *b, size_t i, double v) {
   scr_bytes_store(b, i, v);
 }
 
-/* Dispatch once per bounded block, not once per element. Loads and stores
- * use memcpy so views and external storage need no stronger alignment or
- * aliasing promise. A bounded scratch block avoids a kind-pair code matrix. */
-static void scr_bytes_read_numbers(double *out, const uint8_t *src, ScrBytesElem elem, size_t count) {
-#define SCR_READ_NUMBERS(kind, type) \
-  case kind: \
-    for (size_t i = 0; i < count; i++) { \
-      type value; \
-      memcpy(&value, src + i * sizeof value, sizeof value); \
-      out[i] = (double)value; \
-    } \
-    return
-  switch (elem) {
-    case SCR_BYTES_U8C:
-    SCR_READ_NUMBERS(SCR_BYTES_U8, uint8_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I8, int8_t);
-    SCR_READ_NUMBERS(SCR_BYTES_U16, uint16_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I16, int16_t);
-    SCR_READ_NUMBERS(SCR_BYTES_U32, uint32_t);
-    SCR_READ_NUMBERS(SCR_BYTES_I32, int32_t);
-    SCR_READ_NUMBERS(SCR_BYTES_F32, float);
-    SCR_READ_NUMBERS(SCR_BYTES_F64, double);
-    case SCR_BYTES_F16:
-      for (size_t i = 0; i < count; i++) {
-        uint16_t value;
-        memcpy(&value, src + i * sizeof value, sizeof value);
-        out[i] = scr_f16_to_f64(value);
-      }
-      return;
-#ifdef SCR_JS_OBJECT_MODEL
-    case SCR_BYTES_I64: case SCR_BYTES_U64:
-      /* No double holds a BigInt element; the dynamic tier reads these one
-       * at a time through scr_bytes_get_bigint. */
-      scr_trap("scriptc: numeric read of a BigInt typed array\n");
-#endif
-  }
-#undef SCR_READ_NUMBERS
-}
-
+/* Element stores for a double value, one per destination kind. Loads and
+ * stores use memcpy so views and external storage need no stronger alignment
+ * or aliasing promise. */
 static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const double *src, size_t count) {
 #define SCR_WRITE_NUMBERS(type, expression) \
   for (size_t i = 0; i < count; i++) { \
@@ -858,21 +905,170 @@ static void scr_bytes_write_numbers(uint8_t *dst, ScrBytesElem elem, const doubl
 #undef SCR_WRITE_NUMBERS
 }
 
+/* The kinds whose conversion is an integer truncation modulo the element
+ * width. The BigInt kinds are excluded: they never convert through a double. */
+static bool scr_bytes_integer_kind(ScrBytesElem elem) {
+  switch (elem) {
+    case SCR_BYTES_U8:
+    case SCR_BYTES_U8C:
+    case SCR_BYTES_I8:
+    case SCR_BYTES_U16:
+    case SCR_BYTES_I16:
+    case SCR_BYTES_U32:
+    case SCR_BYTES_I32:
+      return true;
+    case SCR_BYTES_F16:
+    case SCR_BYTES_F32:
+    case SCR_BYTES_F64:
+      return false;
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64:
+    case SCR_BYTES_U64:
+      return false;
+#endif
+  }
+  return false;
+}
+
+/* Whether a raw byte copy of the source span produces exactly the elements
+ * the value-wise conversion stores. For an integer destination the store is
+ * the source value's ToUint32 truncated to the destination's width, and a
+ * same-width integer source already is that truncation (the read is exact
+ * and the round trip through the double reproduces the same bits). A
+ * Uint8ClampedArray destination instead clamps, which keeps a same-width
+ * source's bits only when every source value is in 0..255 already: itself
+ * and Uint8Array. An Int8Array's -1 clamps to 0 but is 0xFF as bits, and a
+ * wider source can exceed 255. */
+static bool scr_bytes_copy_kinds(ScrBytesElem dst, ScrBytesElem src) {
+  if (!scr_bytes_integer_kind(dst) || !scr_bytes_integer_kind(src)) return false;
+  if (scr_bytes_elem_size(dst) != scr_bytes_elem_size(src)) return false;
+  if (dst == SCR_BYTES_U8C) return src == SCR_BYTES_U8 || src == SCR_BYTES_U8C;
+  return true;
+}
+
+/* Uint8ClampedArray's store of an integer: every integer element kind fits
+ * an int64_t, and an integer has no fraction to round. */
+static inline uint8_t scr_bytes_clamp_integer(int64_t value) {
+  return value > 255 ? 255 : value > 0 ? (uint8_t)value : 0;
+}
+
+/* One loop per (source kind, destination kind) pair. The source element is
+ * read in its own type and the destination stored in its own type, so no
+ * double-width scratch is written and read back between them. Loads and
+ * stores are constant-width memcpy, so a view at an unaligned byteOffset and
+ * external storage need no alignment promise.
+ *
+ * A float source converts as scr_bytes_write_numbers converts a double:
+ * ToUint32 truncated to the destination's width, or Uint8ClampedArray's
+ * round-half-to-even clamp.
+ *
+ * An integer source needs neither. Its element is already an integer in
+ * [-2^31, 2^32), so ToUint32 of it is the value modulo 2^32 and the store is
+ * that modulo the destination's width: exactly C's conversion of the source
+ * integer to the unsigned type of that width (C11 6.3.1.3p2), which is also
+ * the two's-complement bit pattern of the signed kinds. A Uint8ClampedArray
+ * destination clamps the integer to 0..255; there is no fraction to round.
+ * Float destinations convert the integer as before: every source value is
+ * exact as a double. */
+#define SCR_PAIR(dst_type, dst_value) \
+  { \
+    for (size_t i = 0; i < count; i++) { \
+      src_type value; \
+      memcpy(&value, src + i * sizeof value, sizeof value); \
+      dst_type out = (dst_type)(dst_value); \
+      memcpy(dst + i * sizeof out, &out, sizeof out); \
+    } \
+    return; \
+  }
+#define SCR_WRAP_NUMBER(type, value) ((type)scr_numeric_to_u32(value))
+#define SCR_CLAMP_NUMBER(value) ((uint8_t)scr_bytes_to_u8_clamp(value))
+#define SCR_WRAP_INTEGER(type, value) ((type)(value))
+#define SCR_CLAMP_INTEGER(value) scr_bytes_clamp_integer(value)
+#define SCR_DESTS(value, WRAP, CLAMP) \
+  switch (dest_elem) { \
+    case SCR_BYTES_U8: \
+    case SCR_BYTES_I8: \
+      SCR_PAIR(uint8_t, WRAP(uint8_t, value)); \
+    case SCR_BYTES_U8C: \
+      SCR_PAIR(uint8_t, CLAMP(value)); \
+    case SCR_BYTES_U16: \
+    case SCR_BYTES_I16: \
+      SCR_PAIR(uint16_t, WRAP(uint16_t, value)); \
+    case SCR_BYTES_U32: \
+    case SCR_BYTES_I32: \
+      SCR_PAIR(uint32_t, WRAP(uint32_t, value)); \
+    case SCR_BYTES_F16: \
+      SCR_PAIR(uint16_t, scr_f16_from_f64(value)); \
+    case SCR_BYTES_F32: \
+      SCR_PAIR(float, (float)(value)); \
+    case SCR_BYTES_F64: \
+      SCR_PAIR(double, value); \
+    default: \
+      scr_trap("scriptc: numeric conversion of a BigInt typed array\n"); \
+  }
+#define SCR_INTEGER_DESTS SCR_DESTS(value, SCR_WRAP_INTEGER, SCR_CLAMP_INTEGER)
+#define SCR_NUMBER_DESTS(value) SCR_DESTS(value, SCR_WRAP_NUMBER, SCR_CLAMP_NUMBER)
 /* Caller guarantees disjoint spans, or snapshots the source before entry. */
 static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
                                     const uint8_t *src, ScrBytesElem src_elem, size_t count) {
-  size_t source_width = scr_bytes_elem_size(src_elem);
-  size_t dest_width = scr_bytes_elem_size(dest_elem);
-  double values[128];
-  while (count) {
-    size_t block = count < 128 ? count : 128;
-    scr_bytes_read_numbers(values, src, src_elem, block);
-    scr_bytes_write_numbers(dst, dest_elem, values, block);
-    src += block * source_width;
-    dst += block * dest_width;
-    count -= block;
+  if (count == 0) return;
+  if (scr_bytes_copy_kinds(dest_elem, src_elem)) {
+    memmove(dst, src, count * scr_bytes_elem_size(src_elem));
+    return;
+  }
+  switch (src_elem) {
+    case SCR_BYTES_U8:
+    case SCR_BYTES_U8C: {
+      typedef uint8_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_I8: {
+      typedef int8_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_U16: {
+      typedef uint16_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_I16: {
+      typedef int16_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_U32: {
+      typedef uint32_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_I32: {
+      typedef int32_t src_type;
+      SCR_INTEGER_DESTS;
+    }
+    case SCR_BYTES_F16: {
+      typedef uint16_t src_type;
+      SCR_NUMBER_DESTS(scr_f16_to_f64(value));
+    }
+    case SCR_BYTES_F32: {
+      typedef float src_type;
+      SCR_NUMBER_DESTS(value);
+    }
+    case SCR_BYTES_F64: {
+      typedef double src_type;
+      SCR_NUMBER_DESTS(value);
+    }
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64:
+    case SCR_BYTES_U64:
+      scr_trap("scriptc: numeric conversion of a BigInt typed array\n");
+#endif
   }
 }
+#undef SCR_NUMBER_DESTS
+#undef SCR_INTEGER_DESTS
+#undef SCR_DESTS
+#undef SCR_CLAMP_INTEGER
+#undef SCR_WRAP_INTEGER
+#undef SCR_CLAMP_NUMBER
+#undef SCR_WRAP_NUMBER
+#undef SCR_PAIR
 
 #ifdef SCR_JS_OBJECT_MODEL
 /* set()/construction between a BigInt view and a numeric one. */
@@ -1100,6 +1296,12 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
     memmove(target, src->data, src->len * width);
     return;
   }
+  if (scr_bytes_copy_kinds(dst->elem, src->elem)) {
+    /* A bit-compatible pair copies the source's bytes, so an overlapping
+     * source range (views of one buffer) needs no snapshot. */
+    memmove(target, src->data, src->len * width);
+    return;
+  }
   size_t source_bytes = src->len * scr_bytes_elem_size(src->elem);
   size_t dest_bytes = src->len * width;
   uintptr_t to = (uintptr_t)target, from = (uintptr_t)src->data;
@@ -1121,7 +1323,7 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
  * prototype/iterator keep a catchable refusal instead of losing hooks. */
 static bool scr_bytes_source_refusal(void) {
   static const char msg[] = "typed-array conversion of an opaque reference is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -2743,7 +2945,36 @@ static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t n, size_t *ip) {
 }
 
 /* encodeInto consumes complete Unicode scalars while counting UTF-16 units.
- * Borrow the destination so writes through a subarray retain their aliasing. */
+ * Borrow the destination so writes through a subarray retain their aliasing.
+ * Both entry points share this walk: the checked-dynamic one below, and the
+ * statically typed one the compiler emits for a string into a Uint8Array. */
+static void scr_text_encode_into_core(const ScrStr *text, ScrBytes *dest, size_t *read, size_t *written) {
+  size_t nread = 0, nwritten = 0;
+  size_t limit = text->len < dest->len ? text->len : dest->len;
+  while (nwritten < limit) {
+    size_t ascii = scr_bytes_ascii_prefix((const uint8_t *)text->data + nwritten, limit - nwritten);
+    nwritten += ascii;
+    nread += ascii;
+    if (nwritten == limit) break;
+    size_t end = nwritten;
+    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
+    if (end > dest->len) break;
+    nread += cp > 0xffff ? 2 : 1;
+    nwritten = end;
+  }
+  if (nwritten) {
+    uint8_t *out = dest->shared ? scr_bytes_scratch(nwritten) : dest->data;
+    memcpy(out, text->data, nwritten);
+    if (!text->ascii) scr_wtf8_to_utf8((char *)out, nwritten);
+    if (dest->shared) {
+      scr_shared_store(dest->data, out, nwritten);
+      free(out);
+    }
+  }
+  *read = nread;
+  *written = nwritten;
+}
+
 ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
   if (source->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("src", "of type string", source);
@@ -2753,34 +2984,26 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     scr_dyn_arg_type_fail("dest", "an instance of Uint8Array", destination);
     return NULL;
   }
-  const ScrStr *text = source->v.str;
-  ScrBytes *dest = destination->v.bytes;
   size_t read = 0, written = 0;
-  size_t limit = text->len < dest->len ? text->len : dest->len;
-  while (written < limit) {
-    size_t ascii = scr_bytes_ascii_prefix((const uint8_t *)text->data + written, limit - written);
-    written += ascii;
-    read += ascii;
-    if (written == limit) break;
-    size_t end = written;
-    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
-    if (end > dest->len) break;
-    read += cp > 0xffff ? 2 : 1;
-    written = end;
-  }
-  if (written) {
-    uint8_t *out = dest->shared ? scr_bytes_scratch(written) : dest->data;
-    memcpy(out, text->data, written);
-    if (!text->ascii) scr_wtf8_to_utf8((char *)out, written);
-    if (dest->shared) {
-      scr_shared_store(dest->data, out, written);
-      free(out);
-    }
-  }
+  scr_text_encode_into_core(source->v.str, destination->v.bytes, &read, &written);
   ScrDyn *result = scr_dyn_new_obj();
   scr_dyn_obj_set(result, "read", 4, scr_dyn_new_num((double)read));
   scr_dyn_obj_set(result, "written", 7, scr_dyn_new_num((double)written));
   return result;
+}
+
+/* The typed form: the call site's string and Uint8Array arrive as their own
+ * representations, so nothing is boxed into a ScrDyn and the result goes
+ * straight into the two slots the compiler allocated. */
+void scr_text_encode_into_str(const ScrStr *text, ScrBytes *dest, double *read, double *written) {
+  /* The compiler lowers this form only for a statically typed Uint8Array
+   * destination; a DataView or a narrower element type is unreachable. */
+  if (dest->elem != SCR_BYTES_U8 || dest->is_data_view)
+    scr_trap("TextEncoder.encodeInto requires a Uint8Array destination");
+  size_t nread = 0, nwritten = 0;
+  scr_text_encode_into_core(text, dest, &nread, &nwritten);
+  *read = (double)nread;
+  *written = (double)nwritten;
 }
 
 static ScrBytes *scr_buffer_validation_input(const ScrDyn *input) {
@@ -3214,8 +3437,10 @@ ScrStr *scr_bytes_normalize_encoding_empty_utf8(const ScrStr *raw) {
 }
 
 /* Buffer.byteLength's encoding read: an unknown name counts as utf8
- * instead of throwing. */
+ * instead of throwing. A NULL name — a call site whose encoding argument is
+ * known not to be a string — is the same utf8 fallback. */
 ScrStr *scr_bytes_normalize_encoding_or_utf8(const ScrStr *raw) {
+  if (raw == NULL) return scr_str_new("utf8", 4);
   const char *to = scr_enc_alias(raw);
   if (to) return scr_str_new(to, strlen(to));
   return scr_str_new("utf8", 4);
@@ -3302,16 +3527,22 @@ static const int8_t scr_b64_values[256] = {
   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 };
 
-/* Conversion destinations are private until their initialized length is set.
- * General typed-array allocation must remain zero-filled. */
 /* Where scr_bytes_encode_str writes: room bytes at `at` in the current pool
- * slab, or (at == NULL, or more than room needed) fresh private storage. */
+ * slab, or (at == NULL, or more than room needed) fresh private storage.
+ * `cap` is how many bytes the caller takes. The latin1/ascii encoder writes
+ * one byte per code unit and can stop early, so with cap < room it writes
+ * into `at` and stops after cap bytes: a truncated write neither allocates
+ * nor writes past the caller's room. Every other encoder needs room for its
+ * whole output, and callers that take everything pass cap == SIZE_MAX. */
 typedef struct {
   uint8_t *at;
   size_t room;
+  size_t cap;
   ScrBytes header; /* the temporary view handed to the encoders */
 } ScrBytesSink;
 
+/* Conversion destinations are private until their initialized length is set.
+ * General typed-array allocation must remain zero-filled. */
 static ScrBytes *scr_bytes_conversion_storage_in(ScrBytesSink *sink, size_t capacity) {
   if (sink && sink->at && capacity <= sink->room) {
     sink->header = (ScrBytes){.rc = 1, .len = 0, .elem = SCR_BYTES_U8, .data = sink->at};
@@ -3413,6 +3644,104 @@ static ScrBytes *scr_bytes_decode_b64(ScrBytesSink *sink, const uint8_t *in, siz
   return b;
 }
 
+/* The latin1/ascii encoding of string storage, written to dst: the low byte
+ * of each UTF-16 unit, in order, and the byte count is returned. `limited`
+ * caps the write at `cap` bytes; it is a literal at each call site, so a
+ * full encode carries no budget check in its loop.
+ *
+ * Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral code point
+ * contributes its two surrogates' low bytes. The ASCII prefix copies.
+ * Elsewhere eight ASCII bytes copy as one word. In eight bytes holding two
+ * or more high bytes, all of them in two-byte sequences, every continuation
+ * byte's output byte (the code point's low byte, from the continuation and
+ * its lead) is computed in one word; each byte is then stored without
+ * branches, a continuation replacing the byte its lead wrote. A lead in a
+ * word's last byte stays pending: its continuation, if the next byte is one,
+ * replaces it the same way. Any other byte decodes with scr_bytes_next_cp.
+ *
+ * Every byte written is one code unit's low byte, so a limited write stops
+ * there (Node's truncation, which can split a surrogate pair). */
+__attribute__((always_inline)) static inline size_t scr_latin1_into(uint8_t *dst,
+                                                                    const uint8_t *in, size_t n,
+                                                                    bool limited, size_t cap,
+                                                                    bool ascii) {
+  const uint64_t top = UINT64_C(0x8080808080808080);
+  /* An ASCII prefix (all of an ASCII string) is its own encoding. A limited
+   * write scans no further than its budget: the bytes past it are not
+   * written, so the scan is bounded by the caller's room, not by n. */
+  size_t scan = limited && cap < n ? cap : n;
+  size_t o = ascii ? scan : scr_bytes_ascii_prefix(in, scan);
+  if (limited && o > cap) o = cap;
+  size_t i = o;
+  memcpy(dst, in, o);
+  /* in[i - 1] is a two-byte lead (0xC2..0xDF) the word path wrote as
+   * dst[o - 1], and in[i] is not yet known to continue it. */
+  bool pending = false;
+  while (i < n) {
+    if (n - i >= 8 && (!limited || cap - o >= 8)) {
+      uint64_t w;
+      memcpy(&w, in + i, 8);
+      uint64_t high = w & top;
+      if (!high) {
+        memcpy(dst + o, &w, 8);
+        i += 8;
+        o += 8;
+        pending = false;
+        continue;
+      }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+      /* Byte k of the input is bits 8k..8k+7 of w; bit 8k+7 of w << j
+       * is bit 7 - j of byte k. */
+      uint64_t cont = w & ~(w << 1) & top;           /* 10xxxxxx */
+      uint64_t lead = w & (w << 1) & ~(w << 2) & top; /* 110xxxxx */
+      /* 0xC0 and 0xC1 (bits 4..1 clear) only begin overlong forms. */
+      uint64_t overlong = lead & ~((w << 3) | (w << 4) | (w << 5) | (w << 6));
+      if ((high & (high - 1)) && high == (cont | lead) && !overlong &&
+          cont == ((lead << 8) | (pending ? 0x80u : 0u))) {
+        uint64_t prev = (w << 8) | (pending ? in[i - 1] : 0u);
+        uint64_t low = ((prev & UINT64_C(0x0303030303030303)) << 6) |
+                       (w & UINT64_C(0x3f3f3f3f3f3f3f3f));
+        uint64_t mask = (cont >> 7) * 0xff;
+        uint64_t out = (w & ~mask) | (low & mask);
+        for (unsigned k = 0; k < 8; k++) {
+          o -= (size_t)(cont >> (8 * k + 7)) & 1;
+          dst[o++] = (uint8_t)(out >> (8 * k));
+        }
+        i += 8;
+        pending = (lead >> 63) != 0;
+        continue;
+      }
+#endif
+    }
+    unsigned c = in[i];
+    if (pending && c >> 6 == 2) {
+      /* The rest of the two-byte sequence whose lead ended a word. */
+      dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
+      i++;
+      pending = false;
+      continue;
+    }
+    pending = false;
+    if (limited && o >= cap) break;
+    if (c < 0x80) {
+      dst[o++] = (uint8_t)c;
+      i++;
+      continue;
+    }
+    uint32_t cp = scr_bytes_next_cp(in, n, &i);
+    if (cp > 0xffff) {
+      cp -= 0x10000;
+      dst[o++] = (uint8_t)(0xd800 + (cp >> 10));
+      if (limited && o >= cap) break; /* the pair's second unit is past the budget */
+      dst[o++] = (uint8_t)(0xdc00 + (cp & 0x3ff));
+    } else {
+      dst[o++] = (uint8_t)cp;
+    }
+  }
+  /* Never grows past n: multi-byte code points shrink. */
+  return o;
+}
+
 /* Encodes s into sink's pool room when its upper bound fits there, else into
  * fresh private storage. The result's len is the bytes written; a pool
  * result is &sink->header, never released. */
@@ -3420,86 +3749,16 @@ static ScrBytes *scr_bytes_encode_str(ScrBytesSink *sink, const ScrStr *s, const
   const uint8_t *in = (const uint8_t *)s->data;
   size_t n = s->len;
   if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
-    /* Node writes charCodeAt(i) & 0xFF for BOTH spellings — an astral
-     * code point contributes its two surrogates' low bytes. The ASCII
-     * prefix copies. Elsewhere eight ASCII bytes copy as one word. In eight bytes
-     * holding two or more high bytes, all of them in two-byte sequences,
-     * every continuation byte's output byte (the code point's low byte,
-     * from the continuation and its lead) is computed in one word; each
-     * byte is then stored without branches, a continuation replacing the
-     * byte its lead wrote. A lead in a word's last byte stays pending: its
-     * continuation, if the next byte is one, replaces it the same way. Any
-     * other byte decodes with scr_bytes_next_cp. */
-    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
-    /* A local copy: a byte store could otherwise change b->data. */
-    uint8_t *dst = b->data;
-    const uint64_t top = UINT64_C(0x8080808080808080);
-    /* An ASCII prefix (all of an ASCII string) is its own encoding. */
-    size_t o = s->ascii ? n : scr_bytes_ascii_prefix(in, n), i = o;
-    memcpy(dst, in, o);
-    /* in[i - 1] is a two-byte lead (0xC2..0xDF) the word path wrote as
-     * dst[o - 1], and in[i] is not yet known to continue it. */
-    bool pending = false;
-    while (i < n) {
-      if (n - i >= 8) {
-        uint64_t w;
-        memcpy(&w, in + i, 8);
-        uint64_t high = w & top;
-        if (!high) {
-          memcpy(dst + o, &w, 8);
-          i += 8;
-          o += 8;
-          pending = false;
-          continue;
-        }
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        /* Byte k of the input is bits 8k..8k+7 of w; bit 8k+7 of w << j
-         * is bit 7 - j of byte k. */
-        uint64_t cont = w & ~(w << 1) & top;           /* 10xxxxxx */
-        uint64_t lead = w & (w << 1) & ~(w << 2) & top; /* 110xxxxx */
-        /* 0xC0 and 0xC1 (bits 4..1 clear) only begin overlong forms. */
-        uint64_t overlong = lead & ~((w << 3) | (w << 4) | (w << 5) | (w << 6));
-        if ((high & (high - 1)) && high == (cont | lead) && !overlong &&
-            cont == ((lead << 8) | (pending ? 0x80u : 0u))) {
-          uint64_t prev = (w << 8) | (pending ? in[i - 1] : 0u);
-          uint64_t low = ((prev & UINT64_C(0x0303030303030303)) << 6) |
-                         (w & UINT64_C(0x3f3f3f3f3f3f3f3f));
-          uint64_t mask = (cont >> 7) * 0xff;
-          uint64_t out = (w & ~mask) | (low & mask);
-          for (unsigned k = 0; k < 8; k++) {
-            o -= (size_t)(cont >> (8 * k + 7)) & 1;
-            dst[o++] = (uint8_t)(out >> (8 * k));
-          }
-          i += 8;
-          pending = (lead >> 63) != 0;
-          continue;
-        }
-#endif
-      }
-      unsigned c = in[i];
-      if (pending && c >> 6 == 2) {
-        /* The rest of the two-byte sequence whose lead ended a word. */
-        dst[o - 1] = (uint8_t)(((in[i - 1] & 3u) << 6) | (c & 0x3f));
-        i++;
-        pending = false;
-        continue;
-      }
-      pending = false;
-      if (c < 0x80) {
-        dst[o++] = (uint8_t)c;
-        i++;
-        continue;
-      }
-      uint32_t cp = scr_bytes_next_cp(in, n, &i);
-      if (cp > 0xffff) {
-        cp -= 0x10000;
-        dst[o++] = (uint8_t)(0xd800 + (cp >> 10));
-        dst[o++] = (uint8_t)(0xdc00 + (cp & 0x3ff));
-      } else {
-        dst[o++] = (uint8_t)cp;
-      }
+    if (sink && sink->at && sink->cap < n) {
+      /* The caller has room for `cap` bytes and takes exactly those: write
+       * them in place, and stop, instead of encoding the rest. */
+      sink->header = (ScrBytes){.rc = 1, .len = 0, .elem = SCR_BYTES_U8, .data = sink->at};
+      sink->header.len = scr_latin1_into(sink->at, in, n, true, sink->cap, s->ascii);
+      return &sink->header;
     }
-    b->len = o; /* never grows past n: multi-byte cps shrink */
+    /* A local copy: a byte store could otherwise change b->data. */
+    ScrBytes *b = scr_bytes_conversion_storage_in(sink, n);
+    b->len = scr_latin1_into(b->data, in, n, false, 0, s->ascii);
     return b;
   }
   if (scr_enc_is(enc, "utf16le")) {
@@ -3813,7 +4072,8 @@ ScrBytes *scr_buffer_from_str(const ScrStr *s, const ScrStr *enc) {
     if (length >= max) return scr_buffer_from_str_unpooled(s, enc, length);
   }
   if (!scr_pool_reserve(length)) return NULL;
-  ScrBytesSink sink = {scr_pool_slab->data + scr_pool_offset, scr_pool_room()};
+  ScrBytesSink sink = {
+      .at = scr_pool_slab->data + scr_pool_offset, .room = scr_pool_room(), .cap = SIZE_MAX};
   ScrBytes *b = scr_bytes_encode_str(&sink, s, enc);
   size_t actual = b->len;
   if (b != &sink.header) {
@@ -4362,18 +4622,27 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
     }
     return (double)k;
   }
-  bool utf16 = scr_enc_is(enc, "utf16le");
-  if (utf16 || scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
-    size_t i = 0, written = 0, width = utf16 ? 2 : 1;
+  if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
+    /* Node writes the low byte of each UTF-16 unit, in order, so an astral
+     * code point contributes both surrogates' low bytes and a budget that
+     * falls inside a pair splits it. That is the encoder Buffer.from uses,
+     * with the budget as its output limit: the bytes written are the first
+     * `budget` bytes of the whole receiver's encoding, computed in place and
+     * stopping there instead of encoding the rest. */
+    ScrBytesSink sink = {.at = b->data + o, .room = budget, .cap = budget};
+    return (double)scr_bytes_encode_str(&sink, s, enc)->len;
+  }
+  if (scr_enc_is(enc, "utf16le")) {
+    size_t i = 0, written = 0;
     const uint64_t high = UINT64_C(0x8080808080808080);
-    while (i < s->len && budget - written >= width) {
+    while (i < s->len && budget - written >= 2) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
       /* utf16le of an ASCII run: zero-extend each byte to a little-endian
        * unit, sixteen per step with vector unpacks where the target has them
        * and eight per step with two word stores otherwise (the generic loop
        * below stores byte by byte, because the source and destination may
        * alias as far as the compiler knows). */
-      if (utf16) {
+      {
         uint8_t *d = b->data + o + written;
         size_t n = 0, room = (budget - written) / 16, left = (s->len - i) / 8;
         size_t steps = room < left ? room : left;
@@ -4410,23 +4679,19 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
         if (n != 0) continue;
       }
 #endif
-      /* ASCII runs encode byte-for-unit: widen (or copy) eight bytes per
-       * step while the budget holds them all, else one code point below. */
-      if (s->len - i >= 8 && budget - written >= 8 * width) {
+      /* ASCII runs encode byte-for-unit: widen eight bytes per step while
+       * the budget holds them all, else one code point below. */
+      if (s->len - i >= 8 && budget - written >= 16) {
         uint64_t w;
         memcpy(&w, s->data + i, 8);
         if (!(w & high)) {
           uint8_t *d = b->data + o + written;
-          if (utf16) {
-            for (int k = 0; k < 8; k++) {
-              d[2 * k] = (uint8_t)s->data[i + k];
-              d[2 * k + 1] = 0;
-            }
-          } else {
-            memcpy(d, s->data + i, 8);
+          for (int k = 0; k < 8; k++) {
+            d[2 * k] = (uint8_t)s->data[i + k];
+            d[2 * k + 1] = 0;
           }
           i += 8;
-          written += 8 * width;
+          written += 16;
           continue;
         }
       }
@@ -4438,10 +4703,10 @@ double scr_bytes_write_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
         second = 0xdc00 + (cp & 0x3ff);
       }
       b->data[o + written++] = (uint8_t)first;
-      if (utf16) b->data[o + written++] = (uint8_t)(first >> 8);
-      if (second && budget - written >= width) {
+      b->data[o + written++] = (uint8_t)(first >> 8);
+      if (second && budget - written >= 2) {
         b->data[o + written++] = (uint8_t)second;
-        if (utf16) b->data[o + written++] = (uint8_t)(second >> 8);
+        b->data[o + written++] = (uint8_t)(second >> 8);
       }
     }
     return (double)written;
@@ -4620,6 +4885,12 @@ ScrBytes *scr_bytes_concat(const ScrArr *list) {
  * "1e+_300"); everything else is the shortest-roundtrip number. Shared
  * with the fs/net option-ladder validators (scr_num_received). */
 size_t scr_num_received(double v, char out[48]) {
+  /* Node renders received numbers with inspect's spelling, which keeps
+   * the sign of negative zero (String(-0) would print "0"). */
+  if (v == 0 && signbit(v)) {
+    memcpy(out, "-0", 3);
+    return 2;
+  }
   char plain[32];
   size_t n = scr_f64_to_str(v, plain);
   if (!(isfinite(v) && trunc(v) == v && fabs(v) > 4294967296.0)) {
@@ -4967,4 +5238,51 @@ double scr_bytes_compare_chk(const ScrBytes *src, const ScrDyn *target,
   /* Every slot validated or defaulted above; nargs 4 revalidates the
    * now-known-good numbers (a no-op) and keeps one comparison core. */
   return scr_bytes_compare(src, t, 4, tsv, tev, ssv, sev);
+}
+
+/* One streaming step through the decoder above: decoder.write over the chunk
+ * and the packed state that follows it, from a single walk of pending+chunk.
+ * process.stdin's setEncoding (scr_events.c) threads the state across reads
+ * through this, keeping the encoding and the state as values it never
+ * unpacks. Kept at the end of the unit so the functions before it keep their
+ * constant-pool numbering. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending) {
+  SCR_BYTES_SNAPSHOT(chunk);
+  double hold = 0;
+  ScrStr *text = scr_strdec_step(enc, *pending, chunk, true, &hold);
+  *pending = hold;
+  return text;
+}
+
+/* scr_bytes.h. At the end of the unit for the same reason: only the Node
+ * island handle unit calls it, so no other program links it. */
+bool scr_bytes_storage_movable(const ScrBytes *owner) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops != NULL && (ops->owner_resizable(owner) || ops->owner_detached(owner));
+#else
+  (void)owner;
+  return false;
+#endif
+}
+
+/* scr_bytes.h. Here for the same reason: the descriptor I/O unit is built
+ * once, so it asks the build of this unit the program links. */
+bool scr_bytes_view_usable(const ScrBytes *b) {
+#ifdef SCR_JS_OBJECT_MODEL
+  return scr_js_bytes_live(b);
+#else
+  (void)b;
+  return true;
+#endif
+}
+
+bool scr_bytes_view_byte_length(const ScrBytes *b, double *length) {
+#ifdef SCR_JS_OBJECT_MODEL
+  *length = scr_js_bytes_byte_length(b);
+  return !scr_exc_pending();
+#else
+  *length = scr_bytes_byte_len(b);
+  return true;
+#endif
 }

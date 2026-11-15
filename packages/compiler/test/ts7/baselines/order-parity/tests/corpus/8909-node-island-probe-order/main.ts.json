@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8909-node-island-probe-order/between.ts",
+  "<repo>/tests/corpus/8909-node-island-probe-order/dep.ts",
+  "<repo>/tests/corpus/8909-node-island-probe-order/main.ts"
+ ],
+ "diags": []
+}

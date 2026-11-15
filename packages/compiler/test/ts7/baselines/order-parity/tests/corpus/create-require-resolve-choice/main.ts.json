@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/create-require-resolve-choice/main.ts"
+ ],
+ "diags": []
+}

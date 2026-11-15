@@ -1,0 +1,5 @@
+- **util.types:** The type predicates answer the value's internal brand, as Node.js's do.
+  `isArgumentsObject` answers true asked of `arguments` itself or of a constant holding it.
+  An arguments object that has left for an untyped slot, including one reaching a stored predicate value, is the argument list, an array, and answers false where Node.js answers true.
+  `isModuleNamespaceObject` answers true asked of an `import * as` binding, a constant holding one, an awaited `import()`, and a namespace that reached an untyped slot — a builtin's ES module namespace and a program module's namespace, whether the source is TypeScript or JavaScript.
+  Builtin sub-module members reached through another module, such as `fs.promises` and `util.types`, answer false, as in Node.js.

@@ -287,6 +287,12 @@ static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
 }
 
 static inline const ScrCycType *scr_cyc_type(const ScrCycHdr *h) { return &scr_cyc_types[h->id]; }
+/* scr_cyc_type of an object, as a call (scr_cycle.c): for code in a unit
+ * that does not name scr_cyc_types otherwise. A unit's first reference to a
+ * symbol every program links moves that symbol in the symbol table of every
+ * executable that links the unit; a reference to this function leaves no
+ * trace in an executable that drops the caller. */
+const ScrCycType *scr_cyc_type_of(const void *obj);
 static inline unsigned scr_cyc_color(const ScrCycHdr *h) { return h->color; }
 static inline void scr_cyc_set_color(ScrCycHdr *h, unsigned color) { h->color = (uint8_t)color; }
 static inline unsigned scr_cyc_gen(const ScrCycHdr *h) { return h->gen; }
@@ -370,11 +376,17 @@ void scr_cyc_free(void *obj); /* frees the block, header included */
 
 void *scr_mem_realloc(void *p, size_t n);
 void *scr_rt_calloc(size_t n); /* emitted-code entry points */
-#if defined(__linux__) && SCR_SMALL_ALLOC
+/* The targets whose compact class fields hold 32-bit references
+ * (llvm/emitter.ts lowRegionTarget): Linux and 64-bit macOS. */
+#if SCR_SMALL_ALLOC && (defined(__linux__) || defined(__APPLE__))
+#define SCR_COMPACT_REFS 1
+#endif
+#ifdef SCR_COMPACT_REFS
 /* The program-lifetime region (scr_alloc.c): compact class instances of
- * programs built for Linux without sanitizers (llvm/emitter.ts
- * lowRegionTarget), which are never freed, at 8-byte aligned addresses below
- * 32 GiB, so their fields can hold address >> 3 in 32 bits (0 is NULL).
+ * programs built for Linux or macOS without sanitizers (llvm/emitter.ts
+ * lowRegionTarget), which are never freed, at 8-byte aligned addresses in
+ * [SCR_WINDOW_BASE, SCR_WINDOW_BASE + 32 GiB), so their fields can hold the
+ * offset >> 3 in 32 bits (0 is NULL).
  * scr_plr_init reserves it before compiled code runs; scr_plr_alloc returns
  * zeroed memory. */
 void scr_plr_init(void);
@@ -593,6 +605,13 @@ void scr_sa_free_foreign(void *p);
 #endif
 #endif
 
+#if defined(SCR_MUSL) && !defined(SCR_LIB)
+/* The event loop of the calling thread is about to wait with nothing ready:
+ * the musl lane's malloc hands the blocks the thread holds for other
+ * threads to their owners (scr_musl_malloc.h). */
+void scr_musl_malloc_idle(void);
+#endif
+
 #if SCR_SMALL_ALLOC
 /* Refill miss: reserves on first use, falls back to the system allocator
  * for large blocks, n == 0, an exhausted window, or a refused reservation. */
@@ -731,12 +750,30 @@ static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
 /* scr_weak_dispose's NULL test inline, for the runtime's hot frees: the
  * hook stays NULL unless the program creates a weak collection or keeps a
  * checked record's source, so the free costs one predictable branch, not a
- * call. */
+ * call. An armed hook answers for an address no observer holds with one
+ * test of its own (scr_dispose_observers, scr_json.c): the filter that says
+ * so lives with the observers, in the unit only their programs link, and
+ * not at every free of every executable. */
 static inline void scr_weak_dispose_inline(void *obj) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
 }
 static inline void scr_cyc_free_inline(void *obj) {
   scr_weak_dispose_inline(obj);
+  scr_cyc_live--;
+  if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
+  scr_mem_free(scr_cyc_hdr(obj));
+}
+/* The free of a block that is no JS value: a capture box or a union box.
+ * No dispose observer can hold one. A weak collection or a finalization
+ * registry is keyed by what scr_weak_key derives from a value (a dynamic
+ * node, a closure, a buffer, a handle's object, or the object a typed
+ * reference wraps: a record, array, class instance, map, set or
+ * generator), and a union reaches dynamic code as its arm, never as its
+ * box; kept record sources and record links are keyed by records, the
+ * buffers registry by views and their owners. So the free does not
+ * report. (scr_json.c also ends the free of a checked-dynamic node with it,
+ * after the report it makes itself behind its filter.) */
+static inline void scr_cyc_free_unobserved_inline(void *obj) {
   scr_cyc_live--;
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));
@@ -825,6 +862,9 @@ typedef struct ScrCycBuffers {
   ScrCycBuffer roots[SCR_CYC_NGENS];
   size_t window;
   size_t alloc_trigger;
+  /* The collector's own, after everything emitted code addresses: how far
+   * the window's formula lies above the window (scr_cyc_window_update). */
+  size_t window_slack;
 } ScrCycBuffers;
 #if !defined(SCR_WORKERS) && !(defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #define SCR_CYC_INLINE_BUFFERING 1

@@ -1,0 +1,1 @@
+{"name": "island-load-reads-clock", "private": true, "scriptc": {"packages": {"stamp-kit": "node", "made-kit": "node", "tick-kit": "node", "timer-kit": "node"}}}

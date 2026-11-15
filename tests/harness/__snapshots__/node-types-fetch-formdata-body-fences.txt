@@ -1,0 +1,33 @@
+fetch-formdata-body-fences.ts:8:58 - error SC2020: 'RequestInit body 'FormData' in a static build' is typed by @types/node but has no scriptc lowering yet
+
+  7 | 
+  8 | void fetch("https://example.invalid/", { method: "POST", body: form });
+    |                                                          ^~~~~~~~~~
+  9 | const init: RequestInit = { body: form };
+
+  hint: the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement
+
+fetch-formdata-body-fences.ts:9:29 - error SC2020: 'RequestInit body 'FormData' in a static build' is typed by @types/node but has no scriptc lowering yet
+
+   8 | void fetch("https://example.invalid/", { method: "POST", body: form });
+   9 | const init: RequestInit = { body: form };
+     |                             ^~~~~~~~~~
+  10 | void fetch("https://example.invalid/", init);
+
+  hint: the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement
+
+fetch-formdata-body-fences.ts:9:35 - error SC1090: the reference to 'form' (a binding form with no lowering) is not supported yet
+
+   8 | void fetch("https://example.invalid/", { method: "POST", body: form });
+   9 | const init: RequestInit = { body: form };
+     |                                   ^~~~
+  10 | void fetch("https://example.invalid/", init);
+
+fetch-formdata-body-fences.ts:11:64 - error SC2020: 'RequestInit body 'FormData' in a static build' is typed by @types/node but has no scriptc lowering yet
+
+  10 | void fetch("https://example.invalid/", init);
+  11 | void new Request("https://example.invalid/", { method: "POST", body: form });
+     |                                                                ^~~~~~~~~~
+  12 | 
+
+  hint: the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement

@@ -48,12 +48,6 @@ function identities(array, string, bytes) {
   }
 }
 identities([], "", new Uint8Array());
-const savedIterator = Array.prototype[Symbol.iterator];
-Array.prototype[Symbol.iterator] = function () {
-  return { next() { return { done: true }; } };
-};
-console.log(JSON.stringify(copy([1, 2])));
-Array.prototype[Symbol.iterator] = savedIterator;
 
 let nextReads = 0;
 let doneReads = 0;

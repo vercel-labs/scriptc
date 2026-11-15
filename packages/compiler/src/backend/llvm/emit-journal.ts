@@ -107,6 +107,7 @@ export interface ChunkResult {
     readonly usesGenSlots: boolean;
     readonly needsUnionNone: boolean;
     readonly needsNullableAbsent: boolean;
+    readonly needsDynAbsent: boolean;
     readonly needsOom: boolean;
     readonly needsBadTag: boolean;
     readonly needsBadKey: boolean;

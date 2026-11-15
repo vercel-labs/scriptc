@@ -1,0 +1,35 @@
+delete-source-field.ts:15:13 - error SC1090: 'delete' of 'k': the operand's type '{ x: number }' does not declare 'k', but '{ k: number; x: number }' declares it (a '{ k: number; x: number }' converted to a narrower record type is copied, and the delete cannot remove that record's 'k' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  14 | const copy: Narrow = wide;
+  15 | console.log(delete (copy as Narrow & { k?: number }).k, wide.k);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | 
+
+  hint: delete 'k' through the value's own type, '{ k: number; x: number }', with the field declared optional there
+
+delete-source-field.ts:24:1 - error SC1090: 'delete' of 'q': the operand's type '{ x: number }' does not declare 'q', but '{ q: number; x: number; y: number }' declares it (a '{ q: number; x: number; y: number }' converted to a narrower record type is copied, and the delete cannot remove that record's 'q' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  23 | const least: Least = middle;
+  24 | delete (least as Least & { q?: number }).q;
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  25 | console.log(wider.q, middle.y);
+
+  hint: delete 'q' through the value's own type, '{ q: number; x: number; y: number }', with the field declared optional there
+
+delete-source-field.ts:34:1 - error SC1090: 'delete' of 'k': the operand's type '{ name: string }' does not declare 'k', but '{ k: number; name: string }' declares it (a '{ k: number; name: string }' the program passes as an untyped value can be converted back to a narrower record type, and the delete cannot remove that record's 'k' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  33 | const view = untyped as Viewed;
+  34 | delete (view as Viewed & { k?: number }).k;
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  35 | console.log(boxedWide.k, view.name);
+
+  hint: delete 'k' through the value's own type, '{ k: number; name: string }', with the field declared optional there
+
+delete-source-field.ts:44:1 - error SC1090: 'delete' of 'k': the operand's type '{ id: string }' does not declare 'k', but '{ id: string; k: number }' declares it (a '{ id: string; k: number }' the program passes as an untyped value can be converted back to a narrower record type, and the delete cannot remove that record's 'k' field through the narrower type; Node deletes the property from the one object) is not supported yet
+
+  43 | const parsedView = reboxed as ParsedView;
+  44 | delete (parsedView as ParsedView & { k?: number }).k;
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  45 | console.log(parsedWide.k, parsedView.id);
+
+  hint: delete 'k' through the value's own type, '{ id: string; k: number }', with the field declared optional there

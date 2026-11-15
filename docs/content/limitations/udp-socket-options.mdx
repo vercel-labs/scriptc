@@ -7,3 +7,4 @@ In TypeScript, `send()` with a callback, a list, or on a connected socket fails 
 JavaScript can read a socket's `on`, `once`, `addListener`, `removeListener`, `off`, `emit`, `send`, `close`, `bind`, `connect`, `disconnect`, `address`, `ref`, and `unref` as function values, for example `socket.emit.bind(socket)`; reading other members as values is refused with `SC1090`.
 Listeners registered that way, or with untyped parameters, take only the `message`, `error`, `close`, `listening`, and `connect` events.
 When a socket closes, listeners registered from TypeScript are released, so an `emit()` from JavaScript after `'close'` reaches only listeners registered from JavaScript.
+A datagram socket's `'error'` event, for example for an address in use, has Node's `message`, `code`, `errno` and `syscall`, but not the `address` and `port` properties Node also sets; the error a `send()` callback receives has all of them.

@@ -1,8 +1,9 @@
 // @deferred-fences: 1
 "use strict";
-// The same shape through a different fence: an indexed write on a RegExp
-// lowers to a runtime fence, and the unreachable statement after it passes a
-// declared function to Array#map. The closure-name table lists `square`'s
+// The same shape through a different fence: an assignment to a RegExp
+// method (SC1090, "assignment to non-variables") lowers to a runtime fence,
+// and the unreachable statement after it passes a declared function to
+// Array#map. The closure-name table lists `square`'s
 // wrapper from that statement, so the wrapper must exist even though the
 // statement is never emitted; the boxed anonymous callback is what makes the
 // emitter build the table at all.
@@ -14,7 +15,7 @@ const boxed = [1, 2].map(function (value, index, list) {
 });
 function unreachable() {
   const pattern = /x/;
-  pattern[0] = "x";
+  pattern.exec = 1;
   return [1, 2, 3].map(square).join(",");
 }
 console.log(boxed.join(","), typeof unreachable);

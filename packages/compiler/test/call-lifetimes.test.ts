@@ -74,9 +74,14 @@ function local(seed: string): string {
 }
 function nested(seed: string): () => string {
   let value = seed;
+  value += "?";
   return make(() => () => value);
 }
-console.log(local("a"), nested("b")());
+function copied(seed: string): () => string {
+  const value = seed + ".";
+  return make(() => () => value);
+}
+console.log(local("a"), nested("b")(), copied("c")());
 `);
   const llvm = emitLlvmModule(mod);
   const local = body(llvm, "sc_bf_local");
@@ -86,6 +91,14 @@ console.log(local("a"), nested("b")());
   const nested = body(llvm, "sc_bf_nested");
   expect(nested).toContain("@scr_box_new");
   expect(nested).not.toContain("alloca %ScrBox");
+  // A binding nothing rebinds has no box: the environments hold its value,
+  // the frame's one by borrowing it and the escaping one with a reference.
+  const copied = body(llvm, "sc_bf_copied");
+  expect(copied).toContain("alloca { %ScrClosure, [0 x ptr], ptr, [1 x ptr] }");
+  expect(llvm).toContain("@scr_closure_new_values");
+  expect(copied).not.toContain("@scr_box_new");
+  expect(copied).not.toContain("%ScrBox");
+  expect(copied).not.toContain("@sc_retain_box");
 });
 
 test("escaping callbacks and dependency cycles with an escape retain heap environments", async () => {
@@ -110,21 +123,32 @@ test("callback environment storage has a per-function bound and a heap fallback"
   const calls = Array.from({ length: 100 }, () => "total += invoke(() => captured);").join("\n");
   const mod = await lower(`
 function invoke(fn: () => number): number { return fn(); }
-function work(seed: number): number { const captured = seed; let total = 0; ${calls} return total; }
-console.log(work(3));
+function work(seed: number): number { let captured = seed; captured++; let total = 0; ${calls} return total; }
+function copies(seed: number): number { const captured = seed; let total = 0; ${calls} return total; }
+console.log(work(3), copies(3));
 `);
-  const work = body(emitLlvmModule(mod), "sc_f_work");
+  const llvm = emitLlvmModule(mod);
+  const work = body(llvm, "sc_f_work");
   const slots = work.match(/alloca \{ %ScrClosure, \[1 x ptr\] \}/g) ?? [];
   expect(slots.length).toBeGreaterThan(0);
   expect(slots.length * 48).toBeLessThanOrEqual(4096);
   expect(work).toContain("alloca %ScrBox");
   expect(work).toContain("@scr_closure_new");
+  // Environments that hold a copy of the value share the bound; they have
+  // one more word, and no box.
+  const copies = body(llvm, "sc_f_copies");
+  const values =
+    copies.match(/alloca \{ %ScrClosure, \[0 x ptr\], ptr, \[0 x ptr\], double \}/g) ?? [];
+  expect(values.length).toBeGreaterThan(0);
+  expect(values.length * 72).toBeLessThanOrEqual(4096);
+  expect(copies).not.toContain("%ScrBox");
+  expect(copies).toContain("@scr_closure_new_values");
 });
 
 test("capture bindings have an independent stack budget", async () => {
   const calls = Array.from(
     { length: 50 },
-    (_, i) => `const value${i} = seed; total += invoke(() => value${i});`,
+    (_, i) => `let value${i} = seed; value${i}++; total += invoke(() => value${i});`,
   ).join("\n");
   const mod = await lower(`
 function invoke(fn: () => number): number { return fn(); }
@@ -343,7 +367,7 @@ console.log(alias(new Item()).value, snapshot(new Item()).value);
   expect(snapshot).toMatch(/(%t\d+) = load ptr, ptr %sc_l_saved_0\n[^]*ret ptr \1\n/);
 });
 
-test("unchanged captured parameters are boxed when a closure first needs them", async () => {
+test("unchanged captured parameters are copied by closures and boxed only for an adapter", async () => {
   const mod = await lower(`
 function invoke(fn: (value: number) => number, value: number): number { return fn(value); }
 function framed(seed: number, label: string): number {
@@ -358,7 +382,13 @@ function rebound(count: number): () => number {
   count++;
   return read;
 }
+function wide(fn: (a: number, b: number) => number): number { return fn(1, 2); }
+function adapted(fn: (a: number) => number, skip: boolean): number {
+  if (skip) return 0;
+  return wide(fn);
+}
 console.log(framed(1, "ab"), deferred({ limit: 4 }, false)(), deferred({ limit: 4 }, true)(), rebound(5)());
+console.log(adapted((a) => a, false));
 `);
   const llvm = emitLlvmModule(mod);
   // The entry block runs on every call; the lazy box is created later.
@@ -367,14 +397,20 @@ console.log(framed(1, "ab"), deferred({ limit: 4 }, false)(), deferred({ limit: 
     return labels.length > 1 ? text.slice(0, labels[1]!.index) : text;
   };
   // Never-rebound captured parameters are borrowed, so their bodies are
-  // the direct-call entry points.
+  // the direct-call entry points. Their closures copy the value: no box.
   const framed = body(llvm, "sc_bf_framed");
-  expect(framed).toContain("alloca %ScrBox");
-  expect(framed).not.toContain("@scr_box_new");
+  expect(framed).not.toContain("%ScrBox");
   expect(framed).not.toContain("@scr_closure_new");
   const deferred = body(llvm, "sc_bf_deferred");
-  expect(deferred).toContain("lazy.box");
-  expect(entry(deferred)).not.toContain("@scr_box_new");
-  expect(deferred).toContain("@scr_box_new");
+  expect(deferred).not.toContain("@scr_box_new");
+  expect(deferred).toContain("@scr_closure_new_values");
+  // A signature adapter holds the function it forwards to in a box, which
+  // the runtime reads: that box is made when the adapter is.
+  const lazy = llvm.split(/^define /m).filter((text) => text.includes("lazy.box"));
+  expect(lazy.length).toBeGreaterThan(0);
+  for (const text of lazy) {
+    expect(entry(text)).not.toContain("@scr_box_new");
+    expect(text).toContain("@scr_box_new");
+  }
   expect(entry(body(llvm, "sc_f_rebound"))).toContain("@scr_box_new");
 });

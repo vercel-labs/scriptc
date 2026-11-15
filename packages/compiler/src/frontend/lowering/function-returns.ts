@@ -1,3 +1,4 @@
+import { untypedArrayResultType } from "./empty-array-places.js";
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -5,13 +6,17 @@ import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  BOOL,
   DYN,
+  STRING,
+  type IrExpr,
   type IrStmt,
   type IrType,
   type SrcLoc,
   VOID,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
@@ -33,6 +38,83 @@ function bodyMayFallThrough(body: readonly IrStmt[]): boolean {
       last.kind !== "rethrow" &&
       last.kind !== "runtimeFence")
   );
+}
+
+/** Whether the function `node` returns from declares the result `undefined`
+ * (not `void`). Both map to the void representation, which holds no value,
+ * so the caller of such a function reads undefined whatever the body
+ * returned: a returned value the checker could not see (`any`) has to be
+ * checked where it is dropped. An async function settles its promise with
+ * the returned value and is not answered here. */
+export function returnsDeclaredUndefined(lowerer: Lowerer, node: ts.Node): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  let fn: ts.Node | undefined = node.parent;
+  while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+  if (fn === undefined || (fn as ts.SignatureDeclaration).type === undefined) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(fn as ts.SignatureDeclaration);
+  if (signature === undefined) return false;
+  const result = lowerer.checker.getReturnTypeOfSignature(signature);
+  return (result.flags & ts.TypeFlags.Undefined) !== 0;
+}
+
+/** The check of `value`, which the checker types `any`, where it is the
+ * result of a function declared `undefined` (returnsDeclaredUndefined);
+ * null when the value needs none and lowers as it always has: the literal
+ * `undefined` behind a cast (`undefined as any`), and a value with no
+ * checked-dynamic form (a void call behind a cast). A typed value behind a
+ * cast (`5 as any`) is boxed and checked like an untyped one. */
+export function checkedUndefinedResult(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  if (value.kind === "unitLit" && value.unit === "undefined") return null;
+  if (value.type.kind === "dyn") return undefinedResultCheck(lowerer, value, loc);
+  if (value.type.kind === "void" || !lowerer.dynConvertible(value.type)) return null;
+  return undefinedResultCheck(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+}
+
+/** The statements that evaluate `value`, an untyped value returned where
+ * the result is declared `undefined`, and throw a TypeError unless it is
+ * undefined (returnsDeclaredUndefined). */
+function undefinedResultCheck(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrStmt[] {
+  const held = lowerer.declareHiddenLocal("%undefinedResult", DYN);
+  return [
+    { kind: "varDecl", localId: held.id, init: value, loc },
+    {
+      kind: "if",
+      cond: {
+        kind: "dynTest",
+        test: "undefined",
+        value: { kind: "varRef", localId: held.id, type: DYN, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [],
+      else_: [
+        {
+          kind: "throw",
+          value: {
+            kind: "libCall",
+            fn: "error.new",
+            args: [
+              {
+                kind: "strLit",
+                value:
+                  "a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)",
+                type: STRING,
+                loc,
+              },
+            ],
+            type: { kind: "object", className: "%TypeError" },
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
 }
 
 /** The BODY-facing return type of a (possibly async) function: an async
@@ -105,7 +187,13 @@ export function appendImplicitUndefinedReturn(
 /** Whether the source explicitly documents a return contract. */
 export function hasExplicitJsDocReturn(decl: ts.SignatureDeclaration): boolean {
   const sourceFile = ts.getSourceFileOfNode(decl);
-  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, ts.tokenStartOfNode(decl)));
+  return ts.sourceTextRangeMatches(
+    sourceFile,
+    decl.pos,
+    ts.tokenStartOfNode(decl),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
 }
 
 export function promiseCarriesDyn(lowerer: Lowerer, type: IrType): boolean {
@@ -221,19 +309,24 @@ export function declaredReturnType(
     (retTsType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0
   )
     return DYN;
+  // A function that returns an untyped empty array (`return o.files` over
+  // `{ files: [] }`) returns that array, at the type it was given where
+  // it was written (empty-array-places.ts).
+  {
+    const untyped = untypedArrayResultType(lowerer, decl, retTsType);
+    if (untyped !== null) return untyped;
+  }
   // A body that always throws infers `never` — as a RETURN type that is
   // void with a stronger guarantee (`() => never` is assignable to
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
-  // A JS generator whose result the checker cannot infer (mutually
-  // recursive methods returning `yield*` of each other, as in yaml's
-  // Parser) has the return type `any`: a generator over untyped values.
-  if (
-    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    decl.asteriskToken &&
-    retTsType.flags & ts.TypeFlags.Any
-  )
+  // A generator whose result the checker cannot spell — a JS method
+  // returning `yield*` of itself (yaml's Parser), or a TypeScript
+  // annotation over a package generic alias the checker reduces to `any`
+  // (`Effect.fn.Return<number, never>`) — is a generator over untyped
+  // values: the channels are checked-dynamic, as `any` is everywhere.
+  if (decl.asteriskToken && retTsType.flags & ts.TypeFlags.Any)
     return {
       kind: "generator",
       ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
@@ -243,17 +336,26 @@ export function declaredReturnType(
       retT: DYN,
       nextT: DYN,
     };
+  // An `async *` declaration spelled with one of the protocol interfaces
+  // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
+  // builds an async generator. Where the protocol type holds the
+  // checked-dynamic value (TypeMapperCtx.asyncProtocolHoldsImplementor) the
+  // value rule answers that, and the declaration takes the generator its
+  // annotation spells; elsewhere the value rule already answers with the
+  // generator, and the fallback below only fires for an annotation it does
+  // not map.
+  const asyncStar =
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
   let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (asyncStar && mappedReturn?.kind === "dyn")
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx) ?? mappedReturn;
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
-  if (
-    mappedReturn === null &&
-    decl.asteriskToken &&
-    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-  )
+  if (mappedReturn === null && asyncStar)
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -787,7 +889,7 @@ function widenReturnArms(
   if (extra.size === 0) return mapped;
   const joined = new Map<string, IrType>();
   for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
-  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...joined.values()]);
   const unionId = lowerer.unions.intern(sorted);
   lowerer.coercions.widenedReturns.add(unionId);
   return { kind: "union", unionId };

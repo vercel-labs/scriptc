@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9953-constructor-values-across-modules/probe.mjs",
+  "<repo>/tests/corpus/9953-constructor-values-across-modules/main.ts"
+ ],
+ "diags": []
+}

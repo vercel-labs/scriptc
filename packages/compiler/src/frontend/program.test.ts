@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
@@ -15,6 +15,64 @@ import {
 import * as ts from "./ts7/ast.js";
 import { AstNode } from "./ts7/ast-node.js";
 import { SemanticChecker } from "./ts7/semantic-checker.js";
+import { DECL_BOUNDARY_PREFIX } from "./decl-projection.js";
+import { elideProgramImports } from "./import-elision.js";
+
+// The elision's own function, counted: a load asks it once.
+vi.mock("./import-elision.js", async (original) => {
+  const actual = await original<typeof import("./import-elision.js")>();
+  return { ...actual, elideProgramImports: vi.fn(actual.elideProgramImports) };
+});
+
+test("a load decides tsc's import elision once: the declaration-typed world holds the files as written", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-elision-worlds-"));
+  const write = (name: string, text: string): void => {
+    mkdirSync(join(dir, name, ".."), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  };
+  write("package.json", '{"type":"module","dependencies":{"parse-kit":"1.0.0"}}');
+  // No verbatimModuleSyntax: tsc drops the import of `Options` below.
+  write(
+    "tsconfig.json",
+    '{"compilerOptions":{"target":"es2022","module":"esnext","moduleResolution":"bundler","strict":true,"allowImportingTsExtensions":true,"noEmit":true}}',
+  );
+  write(
+    "node_modules/parse-kit/package.json",
+    '{"name":"parse-kit","version":"1.0.0","type":"module","main":"./index.js","types":"./index.d.ts"}',
+  );
+  // The JavaScript types the result `any`; the declarations name it.
+  write(
+    "node_modules/parse-kit/index.js",
+    "export function read(text) {\n  return JSON.parse(text);\n}\n",
+  );
+  write(
+    "node_modules/parse-kit/index.d.ts",
+    "export interface Reading {\n  n: number;\n}\nexport declare function read(text: string): Reading;\n",
+  );
+  write("options.ts", "export interface Options {\n  scale: number;\n}\n");
+  const entry = join(dir, "main.ts");
+  write(
+    "main.ts",
+    'import { Options } from "./options.ts";\nimport { read } from "parse-kit";\nconst options: Options = { scale: 2 };\nconst reading = read(\'{"n":3}\');\nconsole.log(reading.n * options.scale);\n',
+  );
+  const decided = vi.mocked(elideProgramImports);
+  decided.mockClear();
+  const load = loadProgram(entry, { npmStatic: ["parse-kit"] });
+  try {
+    const text = load.program.getSourceFile(entry)!.text;
+    // The lowering world's file: the import tsc drops is declared type-only
+    // after the text, and the package's result is typed by its declarations.
+    // The declaration projection pairs this file with the same file of the
+    // declaration-typed world, which holds it as written.
+    expect(text).toContain('import type { Options } from "./options.ts";');
+    expect(text).toContain(DECL_BOUNDARY_PREFIX);
+    expect(decided).toHaveBeenCalledTimes(1);
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("program-root discovery does not fetch types for unrelated string calls", () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-root-queries-"));
@@ -58,6 +116,18 @@ test("ambiguous module classification bounds ancestor work on deep expressions",
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function preflightDiagnosticsFor(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-lazy-cycle-"));
+  for (const [name, source] of Object.entries(files)) writeFileSync(join(dir, name), source);
+  const load = loadProgram(join(dir, "main.cjs"));
+  try {
+    return checkPreflight(load);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function requireOrderDiagnostics(source: string, dependency = "exports.value = 'ready';\n") {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-require-order-"));
@@ -228,6 +298,28 @@ function check() { return 1; }
 function probe() { return check(); }
 `),
   ).toEqual([]);
+});
+
+test("a lazy require admits the cycle it closes at run time", () => {
+  expect(
+    preflightDiagnosticsFor({
+      "main.cjs": "const root = require('./index.cjs'); console.log(root.tag, root.check());\n",
+      "index.cjs":
+        "const common = require('./common.cjs');\nmodule.exports = { tag: 'root', check: common.check };\n",
+      "common.cjs": "exports.check = function () { return require('./schemas.cjs').value; };\n",
+      "schemas.cjs": "const root = require('./index.cjs');\nexports.value = root.tag + '!';\n",
+    }),
+  ).toEqual([]);
+});
+
+test("an eager cycle inside a lazy subtree keeps full analysis", () => {
+  const diagnostics = preflightDiagnosticsFor({
+    "main.cjs": "const common = require('./common.cjs'); console.log(common.load());\n",
+    "common.cjs": "exports.load = function () { return require('./a.cjs').value; };\n",
+    "a.cjs": "const b = require('./b.cjs');\nexports.value = b.value + 1;\n",
+    "b.cjs": "const a = require('./a.cjs');\nexports.value = a.value + 1;\n",
+  });
+  expect(diagnostics.some((diag) => diag.code === "SC1016")).toBe(true);
 });
 
 test("a require cycle whose modules export first and use each other only later is admitted", () => {

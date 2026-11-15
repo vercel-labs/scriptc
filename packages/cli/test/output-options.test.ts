@@ -50,6 +50,8 @@ describe("output option compatibility", () => {
     [{ emit: "llvm", staticLink: true }, /--static/],
     [{ emit: "obj", detachedExit: true }, /detached-exit/],
     [{ emit: "llvm", detachedExit: true }, /detached-exit/],
+    [{ emit: "obj", stdoutBuffering: true }, /stdout-buffering/],
+    [{ emit: "llvm", stdoutBuffering: true }, /stdout-buffering/],
     [{ emit: "obj", largePages: true }, /large-pages/],
     [{ emit: "llvm", largePages: true }, /large-pages/],
     [{ emit: "asm", cpuDispatch: true }, /cpu-dispatch/],

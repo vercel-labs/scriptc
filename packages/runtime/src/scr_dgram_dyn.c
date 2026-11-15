@@ -321,7 +321,7 @@ static void scr_dgram_dynh_unsupported(const char *member, const char *why) {
   int n = snprintf(msg, sizeof msg,
                    "'dgram.Socket.prototype.%s' on a dynamic value is not supported yet%s%s", member,
                    why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The message text a typed 'error' listener receives for an emitted
@@ -475,7 +475,7 @@ static ScrDyn *scr_dgram_dynh_invoke(void *h, ScrDyn *self, const char *method,
       scr_jb_puts(&b, "listening for '");
       if (a0->kind == SCR_DYN_STR) scr_jb_write(&b, a0->v.str->data, a0->v.str->len);
       scr_jb_puts(&b, "' on a dynamic dgram Socket is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     scr_dgram_dyn_on(e, ev, a1, once);

@@ -31,6 +31,7 @@
  */
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { compactRefAddressLines } from "./classes.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { LOOPS } from "./loop-state.js";
 import { mapKeyAccess } from "./shapes.js";
@@ -126,8 +127,12 @@ export function emitCompactMapSlot(host: LlvmEmitterContext, entry: string): str
     value = B.tmp();
   B.line(`${slot} = getelementptr inbounds %ScrMapCEntry, ptr ${entry}, i32 0, i32 2`);
   B.line(`${ref} = load i32, ptr ${slot}`);
-  B.line(`${wide} = zext i32 ${ref} to i64`);
-  B.line(`${addr} = shl nuw nsw i64 ${wide}, 3`);
+  if (host.compactRefBase === 0n) {
+    B.line(`${wide} = zext i32 ${ref} to i64`);
+    B.line(`${addr} = shl nuw nsw i64 ${wide}, 3`);
+  } else
+    for (const line of compactRefAddressLines(host.compactRefBase, ref, addr, `${wide}.r`))
+      B.line(line.trimStart());
   B.line(`${value} = inttoptr i64 ${addr} to ptr`);
   return value;
 }

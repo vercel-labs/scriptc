@@ -34,11 +34,14 @@
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
+import { CLASS_NORMALIZER } from "../../ir/function-references.js";
 import { inertValue } from "../../ir/js-groups.js";
-import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
+import { jsIcMethodSites, DYN_INDEX_FASTPATH, type JsIcSite } from "../../ir/js-ic.js";
+import { jsObjectModelFact } from "../../ir/runtime-features.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { classFieldBase, classFieldIndex } from "./classes.js";
+import { DYN_INDEX_SET } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
 import { dispatchesCall } from "./integer-clones.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -78,6 +81,15 @@ export function load(host: Host, type: string, base: string, offset: number): st
   const v = host.B.tmp();
   host.B.line(`${v} = load ${type}, ptr ${offset === 0 ? base : gep(host, base, offset)}`);
   return v;
+}
+
+/** The offset of an array's own length in its ScrDyn payload: the
+ * JavaScript object model build keeps `v.arr.length` one field past
+ * `v.arr.region` (+72), because a far element write or a length assignment
+ * can move it past the dense prefix `v.arr.len` (+16). A program that does
+ * not link that build reads the prefix field, which is then the length. */
+function arrLengthOffset(host: Host): number {
+  return jsObjectModelFact(host.runtimeFeatures) ? 72 : 16;
 }
 
 /** Branches to `yes` when the dyn cell `d` has kind `kind`. */
@@ -415,9 +427,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
   if (!body.some(isClassHashSwitch)) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassHashSwitch(stmt))
-      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
-    else branches.push(stmt);
+    if (isClassHashSwitch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
   }
   return branches;
 }
@@ -425,7 +439,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
 /** The switch the compiler builds over a generated class table's branches
  * (frontend/lowering/class-dynamic-dispatch.ts). */
 function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
-  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
 }
 
 /** `p = %dyn.class.normalize(p)`. */
@@ -486,7 +504,7 @@ function capsuleRead(
  * may rebox to; null when the normalization has another form. */
 function normalizationTargets(host: Host): Map<string, string[]> | null {
   const targets = new Map<string, string[]>();
-  const normalize = host.fnByName.get("%dyn.class.normalize");
+  const normalize = host.fnByName.get(CLASS_NORMALIZER);
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;
@@ -920,6 +938,10 @@ export function emitJsIcCall(
       return emitSet(host, e, callee, site.key);
     case "keyed":
       return emitKeyed(host, e, callee);
+    case "keyedSet":
+      return emitKeyedSet(host, e, callee);
+    case "namedSet":
+      return emitNamedSet(host, e, callee, site.write);
   }
 }
 
@@ -944,7 +966,7 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
     const other = B.newLabel("icg.other");
     kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
     B.startBlock(array);
-    const len = load(host, "i64", receiver.name, 16);
+    const len = load(host, "i64", receiver.name, arrLengthOffset(host));
     const count = B.tmp();
     B.line(`${count} = uitofp i64 ${len} to double`);
     incoming.push(`[ ${numberResult(host, count, e)}, %${B.currentLabel()} ]`);
@@ -1320,6 +1342,35 @@ function emitNativeNumberElement(
   B.br(join);
 }
 
+/** `xs[i]` on a receiver whose runtime keeps its own indexes (a typed array
+ * or a string): the helper answers the element at an integral index below
+ * the length (+1) and NULL for every other key or index, which the probe
+ * and the helper answer as before. The result joins `incoming` at `join`. */
+function emitIndexRead(
+  host: Host,
+  receiver: string,
+  helper: "scr_dyn_bytes_index_get" | "scr_dyn_string_index_get",
+  e: IrExpr,
+  indexIn: (next: string) => string,
+  miss: string,
+  join: string,
+  incoming: string[],
+): void {
+  const B = host.B;
+  const index = indexIn(B.newLabel("ick.idx"));
+  host.declare(`declare ptr @${helper}(ptr, double)`);
+  const cell = B.tmp();
+  B.line(`${cell} = call ptr @${helper}(ptr ${receiver}, double ${index})`);
+  const found = B.tmp();
+  B.line(`${found} = icmp ne ptr ${cell}, null`);
+  const hit = B.newLabel("ick.hit");
+  B.condBr(found, hit, miss);
+  B.startBlock(hit);
+  const out = asResult(host, cell, e, true);
+  incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
+  B.br(join);
+}
+
 function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   const B = host.B;
   const receiver = emitBorrowedInput(host, e.args[0]!);
@@ -1356,6 +1407,41 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   const other = B.newLabel("ick.other");
   kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
   B.startBlock(other);
+  if (DYN_INDEX_FASTPATH) {
+    // A typed array and a string keep their own indexes, so an integral
+    // number below their length reads the element without forming the key
+    // string. Everything else keeps the keyed path.
+    const bytes = B.newLabel("ick.bytes");
+    const notBytes = B.newLabel("ick.nbytes");
+    kindIs(host, receiver.name, DYN_KIND.BYTES, bytes, notBytes);
+    B.startBlock(bytes);
+    emitIndexRead(
+      host,
+      receiver.name,
+      "scr_dyn_bytes_index_get",
+      e,
+      indexIn,
+      probe,
+      join,
+      incoming,
+    );
+    B.startBlock(notBytes);
+    const text = B.newLabel("ick.str");
+    const notText = B.newLabel("ick.nstr");
+    kindIs(host, receiver.name, DYN_KIND.STR, text, notText);
+    B.startBlock(text);
+    emitIndexRead(
+      host,
+      receiver.name,
+      "scr_dyn_string_index_get",
+      e,
+      indexIn,
+      probe,
+      join,
+      incoming,
+    );
+    B.startBlock(notText);
+  }
   emitNativeNumberElement(host, receiver.name, e, indexIn, probe, join, incoming);
   B.startBlock(array);
   const index = indexIn(number);
@@ -1432,6 +1518,131 @@ function emitKeyed(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
   return host.own({ name: out, type: e.type });
 }
 
+/** A computed write whose receiver and key the shortcut stores an element
+ * of: a Number key on a dense array or a typed array. The runtime helper
+ * borrows both operands and answers whether it stored the element,
+ * raised while coercing the value or fencing the receiver, or left the
+ * write to the site's own helper, which every other receiver, key and
+ * rejected store reaches unchanged (so its mode decides assignment
+ * failures). */
+function emitKeyedSet(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const keyExpr = e.args[1]!;
+  const numeric = numberKey(host, keyExpr);
+  const key = numeric === null ? emitBorrowedInput(host, keyExpr) : null;
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const array = B.newLabel("iks.arr");
+  const bytes = B.newLabel("iks.bytes");
+  const slow = B.newLabel("iks.slow");
+  const join = B.newLabel("iks.j");
+  // The boxed key of the slow path when the site stores through a double;
+  // the statement's frame releases it.
+  let keySlot: string | null = null;
+  if (numeric !== null) {
+    keySlot = B.slot();
+    B.entryAllocas.push(`${keySlot} = alloca ptr`);
+    B.line(`store ptr null, ptr ${keySlot}`);
+    host.ownSlot(keySlot, DYN);
+  }
+  /** The key as a double in block `next`; other keys are the helper's. */
+  const indexIn = (next: string): string => {
+    if (numeric === null) {
+      kindIs(host, key!.name, DYN_KIND.NUM, next, slow);
+      B.startBlock(next);
+      return load(host, "double", key!.name, 16);
+    }
+    B.condBr(numeric.present, next, slow);
+    B.startBlock(next);
+    return numeric.value;
+  };
+  /** One arm of the receiver's kind: the element store, or the helper. */
+  const store = (): void => {
+    const index = indexIn(B.newLabel("iks.idx"));
+    host.declare(`declare i32 @scr_dyn_index_set(ptr, double, ptr)`);
+    const status = B.tmp();
+    B.line(
+      `${status} = call i32 @scr_dyn_index_set(ptr ${receiver.name}, double ${index}, ptr ${value.name})`,
+    );
+    const unhandled = B.tmp();
+    const failed = B.tmp();
+    B.line(`${unhandled} = icmp eq i32 ${status}, ${DYN_INDEX_SET.NOT_HANDLED}`);
+    B.line(`${failed} = icmp eq i32 ${status}, ${DYN_INDEX_SET.THREW}`);
+    const done = B.newLabel("iks.done");
+    B.condBr(unhandled, slow, done);
+    B.startBlock(done);
+    host.emitPendingCheck(undefined, false, failed);
+    B.br(join);
+  };
+  const other = B.newLabel("iks.other");
+  kindIs(host, receiver.name, DYN_KIND.ARR, array, other);
+  B.startBlock(other);
+  kindIs(host, receiver.name, DYN_KIND.BYTES, bytes, slow);
+  B.startBlock(bytes);
+  store();
+  B.startBlock(array);
+  store();
+  B.startBlock(slow);
+  let keyCell: string;
+  if (numeric === null) {
+    keyCell = key!.name;
+  } else {
+    keyCell = numeric.box();
+    B.line(`store ptr ${keyCell}, ptr ${keySlot}`);
+  }
+  helperCall(host, e, callee, [receiver, { name: keyCell, type: DYN }, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
+}
+
+/** A write under a run-time name (`receiver[name] = value`, the name a
+ * string): an ordinary object takes the helper's generic write here, with
+ * the site's borrowed operands, and every other receiver (a class
+ * instance, a class object, an array, a proxy, a primitive) calls the
+ * helper. A plain record's member is assigned through its layout by the
+ * site's own runtime entry (scr_json.c scr_dyn_key_set_record), which only
+ * these sites call, so a program without one links none of it; it throws
+ * nothing. Every other ordinary object takes the runtime entry the
+ * helper's own tail calls, the sloppy-mode one for a sloppy helper, so the
+ * assignment is the one the helper defines. */
+function emitNamedSet(
+  host: Host,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  write: IrExpr & { kind: "libCall" },
+): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const key = emitBorrowedInput(host, e.args[1]!);
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const object = B.newLabel("ins.obj");
+  const general = B.newLabel("ins.gen");
+  const slow = B.newLabel("ins.slow");
+  const join = B.newLabel("ins.j");
+  const operands = `ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name}`;
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, slow);
+  B.startBlock(object);
+  host.declare(`declare zeroext i1 @scr_dyn_key_set_record(ptr, ptr, ptr)`);
+  const assigned = B.tmp();
+  B.line(`${assigned} = call zeroext i1 @scr_dyn_key_set_record(${operands})`);
+  B.condBr(assigned, join, general);
+  B.startBlock(general);
+  const sloppy = host.sloppyDynWrites.has(
+    `${write.loc.file}\0${write.loc.start}\0${write.loc.end}`,
+  );
+  const entry = sloppy ? "scr_dyn_key_set_sloppy" : "scr_dyn_key_set";
+  host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
+  B.line(`call void @${entry}(${operands})`);
+  host.emitPendingCheck();
+  B.br(join);
+  B.startBlock(slow);
+  helperCall(host, e, callee, [receiver, key, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
+}
+
 /** One member of an object literal (ir/js-ic.ts jsIcLiteralKey) added to
  * the fresh object `obj` through the site's store cache, else with
  * scr_dyn_key_set. The key and value are borrowed. */
@@ -1462,7 +1673,9 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
   const ic = host.jsIcSite();
   const name = keyString(host, method, e);
   host.declare(`declare ptr @scr_js_load_probe(ptr, ptr, ptr)`);
-  host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
+  const prepare =
+    method === "isPrototypeOf" ? "scr_dyn_prepare_method_inherited" : "scr_dyn_prepare_method";
+  host.declare(`declare ptr @${prepare}(ptr, ptr)`);
   const object = B.newLabel("icm.obj");
   const probe = B.newLabel("icm.probe");
   const slow = B.newLabel("icm.slow");
@@ -1490,9 +1703,7 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
   B.condBr(found, join, slow);
   B.startBlock(slow);
   const prepared = B.tmp();
-  B.line(
-    `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${receiver}, ptr ${host.cstr(method)}) cold`,
-  );
+  B.line(`${prepared} = call ptr @${prepare}(ptr ${receiver}, ptr ${host.cstr(method)}) cold`);
   incoming.push(`[ ${prepared}, %${B.currentLabel()} ]`);
   B.br(join);
   B.startBlock(join);

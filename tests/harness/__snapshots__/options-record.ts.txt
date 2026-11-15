@@ -1,107 +1,107 @@
-options-record.ts:13:7 - error SC2020: 'AgentOptions' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:14:7 - error SC2020: 'AgentOptions' is part of the standard library types but has no scriptc lowering yet
 
-  12 | // LITERAL options object; a runtime options value cannot be walked.
-  13 | const agentOpts: http.AgentOptions = { maxSockets: 1 };
+  13 | // LITERAL options object; a runtime options value cannot be walked.
+  14 | const agentOpts: http.AgentOptions = { maxSockets: 1 };
      |       ^~~~~~~~~
-  14 | const agent = new http.Agent(agentOpts);
+  15 | const agent = new http.Agent(agentOpts);
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-options-record.ts:14:30 - error SC2020: 'new http.Agent with a non-literal options value' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:15:30 - error SC2020: 'new http.Agent with a non-literal options value' is part of the standard library types but has no scriptc lowering yet
 
-  13 | const agentOpts: http.AgentOptions = { maxSockets: 1 };
-  14 | const agent = new http.Agent(agentOpts);
+  14 | const agentOpts: http.AgentOptions = { maxSockets: 1 };
+  15 | const agent = new http.Agent(agentOpts);
      |                              ^~~~~~~~~
-  15 | http.get({ port: 80, agent }, () => {});
+  16 | http.get({ port: 80, agent }, () => {});
 
   hint: spell the options as an object literal at the construction site
 
-options-record.ts:20:22 - error SC2020: 'get with agent: false and a non-literal headers record' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:22:53 - error SC2020: 'get with agent: false and a non-literal headers record' is part of the standard library types but has no scriptc lowering yet
 
-  19 | const dynHeaders: Record<string, string> = { "x-a": "1" };
-  20 | http.get({ port: 80, agent: false, headers: dynHeaders }, () => {});
-     |                      ^~~~~~~~~~~~
-  21 | 
+  21 | const dynHeaders: Record<string, string> = { "x-a": "1" };
+  22 | http.get({ createConnection: () => net.connect(80), agent: false, headers: dynHeaders }, () => {});
+     |                                                     ^~~~~~~~~~~~
+  23 | 
 
   hint: agent: false lowers by injecting Connection: close into a LITERAL headers object — add connection: "close" to the record instead, or write the headers inline
 
-options-record.ts:24:22 - error SC2020: 'get option 'localAddress'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:26:22 - error SC2020: 'get option 'localAddress'' is part of the standard library types but has no scriptc lowering yet
 
-  23 | http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});
-  24 | http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
+  25 | http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});
+  26 | http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
-  25 | 
+  27 | 
 
   hint: hostname/host, port, path, method, timeout, headers, agent, signal, maxHeaderSize, and protocol are the supported options
 
-options-record.ts:29:1 - error SC2020: 'get with 3 arguments' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:31:1 - error SC2020: 'get with 3 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  28 | // trailing callback fences.
-  29 | http.get({ port: 80 }, () => {}, () => {});
+  30 | // trailing callback fences.
+  31 | http.get({ port: 80 }, () => {}, () => {});
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  30 | 
+  32 | 
 
   hint: the supported forms are get(options[, callback]) and get(url, options[, callback])
 
-options-record.ts:37:22 - error SC2020: 'the undocumented get option 'zorp' with an effectful value' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:39:22 - error SC2020: 'the undocumented get option 'zorp' with an effectful value' is part of the standard library types but has no scriptc lowering yet
 
-  36 | }
-  37 | http.get({ port: 80, zorp: effect() }, () => {});
+  38 | }
+  39 | http.get({ port: 80, zorp: effect() }, () => {});
      |                      ^~~~~~~~~~~~~~
-  38 | 
+  40 | 
 
   hint: Node ignores undocumented option keys and so does this compiler, but Node still evaluates the value — hoist it (const v = ...) or drop the entry
 
-options-record.ts:40:41 - error SC2020: 'tls.createServer option 'ciphers'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:42:41 - error SC2020: 'tls.createServer option 'ciphers'' is part of the standard library types but has no scriptc lowering yet
 
-  39 | // Documented TLS server options with no lowering fence by name.
-  40 | tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () => {});
+  41 | // Documented TLS server options with no lowering fence by name.
+  42 | tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () => {});
      |                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  41 | tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
+  43 | tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
 
   hint: cert and key (PEM strings or Buffers) are the supported options
 
-options-record.ts:41:41 - error SC2020: 'tls.createServer option 'ticketKeys'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:43:41 - error SC2020: 'tls.createServer option 'ticketKeys'' is part of the standard library types but has no scriptc lowering yet
 
-  40 | tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () => {});
-  41 | tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
+  42 | tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () => {});
+  43 | tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
      |                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  42 | 
+  44 | 
 
   hint: cert and key (PEM strings or Buffers) are the supported options
 
-options-record.ts:45:20 - error SC2020: 'fs.watch with the recursive option' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:47:20 - error SC2020: 'fs.watch with the recursive option' is part of the standard library types but has no scriptc lowering yet
 
-  44 | // stated defaults are accepted (corpus 1751).
-  45 | fs.watch("/tmp", { recursive: true }, () => {});
+  46 | // stated defaults are accepted (corpus 1751).
+  47 | fs.watch("/tmp", { recursive: true }, () => {});
      |                    ^~~~~~~~~~~~~~~
-  46 | fs.watch("/tmp", { persistent: false }, () => {});
+  48 | fs.watch("/tmp", { persistent: false }, () => {});
 
   hint: recursive watching has no lowering yet — kqueue watches the one opened path; watch each path
 
-options-record.ts:46:20 - error SC2020: 'fs.watch with persistent disabled' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:48:20 - error SC2020: 'fs.watch with persistent disabled' is part of the standard library types but has no scriptc lowering yet
 
-  45 | fs.watch("/tmp", { recursive: true }, () => {});
-  46 | fs.watch("/tmp", { persistent: false }, () => {});
+  47 | fs.watch("/tmp", { recursive: true }, () => {});
+  48 | fs.watch("/tmp", { persistent: false }, () => {});
      |                    ^~~~~~~~~~~~~~~~~
-  47 | 
+  49 | 
 
   hint: an open watcher keeps the loop alive until close() — that IS the lowering; persistent: false (a watcher the process does not wait for) has no lowering
 
-options-record.ts:52:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:54:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
 
-  51 | // These must fence instead of dropping an inherited flag or mode without a diagnostic.
-  52 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+  53 | // These must fence instead of dropping an inherited flag or mode without a diagnostic.
+  54 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
      |                                            ^~~~~~~~~~~~~~~~~~~~~~~~
-  53 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+  55 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
 
   hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered
 
-options-record.ts:53:57 - error SC2020: 'fs.promises.writeFile option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:55:57 - error SC2020: 'fs.promises.writeFile option '__proto__'' is part of the standard library types but has no scriptc lowering yet
 
-  52 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
-  53 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+  54 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+  55 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
      |                                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~
-  54 | // Both calls must terminate in the explicit prototype-options fence.
+  56 | // Both calls must terminate in the explicit prototype-options fence.
 
   hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered

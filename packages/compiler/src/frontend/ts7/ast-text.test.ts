@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { computeLineStarts, skipTrivia } from "typescript/unstable/ast";
+import { computeLineStarts, skipTrivia } from "typescript/ast";
 import { astLineOfPosition, astLineStarts, astSkipTrivia } from "./ast-text.js";
 
 test("token trivia matches the pinned scanner for every UTF-16 code unit", () => {

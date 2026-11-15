@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8793-spawnsync-stdio-union-slots.ts"
+ ],
+ "diags": []
+}

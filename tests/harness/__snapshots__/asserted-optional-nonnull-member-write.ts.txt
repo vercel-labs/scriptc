@@ -1,0 +1,6 @@
+asserted-optional-nonnull-member-write.ts:10:1 - error SC1090: writing 'icons' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+   9 | const view = item as Base & { icons?: unknown };
+  10 | view!.icons = ["z"];
+     | ^~~~~~~~~~~
+  11 | console.log(String(view.icons), JSON.stringify(item));

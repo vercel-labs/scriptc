@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/types-only-workspace-package-class-type/main.ts"
+ ],
+ "diags": []
+}

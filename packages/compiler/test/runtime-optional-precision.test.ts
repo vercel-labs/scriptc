@@ -102,6 +102,34 @@ console.log(copy.map((item) => weigh(item)).join(","));
   expect(signature(spread, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
+test("Promise.all results hold undefined only where an entry can be a hole or undefined", async () => {
+  const LOAD = `${ITEM}
+async function load(item: Item, skip: boolean): Promise<Item> {
+  if (skip) return item;
+  return new Item(item.weight + (await Promise.resolve(1)));
+}
+`;
+  const settled = await lower(`${LOAD}
+async function main(): Promise<void> {
+  let items: Item[] = [new Item(1), new Item(2)];
+  items = await Promise.all(items.map((item) => load(item, item.weight > 1)));
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(settled, "weigh")).toBe("weigh(Item): f64");
+  const missing = await lower(`${LOAD}
+async function main(): Promise<void> {
+  const pending: Promise<Item>[] = [];
+  pending[2] = load(new Item(1), false);
+  const items = await Promise.all(pending);
+  console.log(items.map((item) => weigh(item)).join(","));
+}
+void main();
+`);
+  expect(signature(missing, "weigh")).toBe("weigh(Item|undefined): f64");
+});
+
 test("holes stored through a dynamic view widen callbacks over the arrays it views", async () => {
   const viewed = await lower(`${ITEM}
 const items: Item[] = [new Item(1)];
@@ -230,7 +258,7 @@ console.log(later(0));
   expect(signature(module, "weigh")).toBe("weigh(Item|undefined): f64");
 });
 
-test("an unchanged captured parameter is borrowed and boxed only where a closure is built", async () => {
+test("an unchanged captured parameter is borrowed and copied where a closure is built", async () => {
   const module = await lower(`${ITEM}
 function heavier(item: Item, limits: number[]): boolean {
   if (limits.length === 0) return false;
@@ -248,10 +276,14 @@ console.log(heavier(new Item(3), []), heavier(new Item(3), [1]), replaced(new It
   const facts = analyzeCallLifetimes(new Map(module.functions.map((fn) => [fn.name, fn])));
   expect(facts.borrowed.get("heavier")?.has(0)).toBe(true);
   expect(facts.borrowed.get("replaced")?.has(0) ?? false).toBe(false);
-  const heavier = body(emitLlvmModule(module), "heavier");
-  expect(heavier.slice(0, heavier.indexOf("scr_closure_new"))).not.toContain("@scr_box_new");
-  // A path that built no environment skips the box release.
-  expect(heavier).toMatch(/icmp ne ptr %t\d+, null\n\s+br i1 %t\d+, label %lazy\.release/);
+  const llvm = emitLlvmModule(module);
+  // The closure holds its own reference to the item: no box on any path.
+  const heavier = body(llvm, "heavier");
+  expect(heavier).toContain("scr_closure_new_values");
+  expect(heavier).not.toContain("@scr_box_new");
+  expect(heavier).not.toContain("lazy.release");
+  // A rebound parameter keeps its box.
+  expect(body(llvm, "replaced")).toContain("@scr_box_new");
 });
 
 test("pop truncates union arrays and boxes nothing when its result is unused", async () => {
@@ -324,4 +356,114 @@ console.log(cold([1, 2, 3]), drain([4, 5]), lookup(new Map([["a", 6]])));
   const llvm = emitLlvmModule(module);
   for (const caller of ["cold", "drain", "lookup"])
     expect(body(llvm, caller)).not.toContain("@scr_union_new");
+});
+
+/** The instances of a generic function, by the element type of their
+ * first parameter, with whether the body tests an element's state. */
+function instanceReads(module: IrModule, name: string): Record<string, boolean> {
+  const reads: Record<string, boolean> = {};
+  for (const fn of module.functions) {
+    if (!fn.name.startsWith(`${name}%`)) continue;
+    const first = fn.params[0]!.type;
+    const element = first.kind === "array" ? first.elem : first;
+    const key = element.kind === "object" ? element.className : element.kind;
+    reads[key] = JSON.stringify(fn.body).includes('"kind":"arrayState"');
+  }
+  return reads;
+}
+
+test("a generic loop is judged with each instance's element type", async () => {
+  // Item arrays can hold a hole; string arrays cannot.
+  const module = await lower(`${ITEM}
+function total<T>(xs: readonly T[], measure: (x: T) => number): number {
+  let sum = 0;
+  for (const x of xs) sum += x === undefined ? 0 : measure(x);
+  return sum;
+}
+const items: Item[] = [];
+items[2] = new Item(3);
+const words: string[] = ["a", "bc"];
+console.log(total(items, weigh), total(words, (word) => word.length));
+`);
+  expect(instanceReads(module, "total")).toEqual({ Item: true, string: false });
+});
+
+test("a generic loop over arrays that never hold undefined reads elements directly", async () => {
+  const module = await lower(`${ITEM}
+function total<T>(xs: readonly T[], measure: (x: T) => number): number {
+  let sum = 0;
+  for (const x of [...xs, ...xs.slice()]) sum += measure(x);
+  const copy = xs.slice();
+  for (const x of copy) sum += measure(x);
+  return sum;
+}
+const items: Item[] = [new Item(2), new Item(3)];
+const words: string[] = ["a", "bc"];
+console.log(total(items, weigh), total(words, (word) => word.length));
+`);
+  expect(instanceReads(module, "total")).toEqual({ Item: false, string: false });
+});
+
+test("an array a generic function builds carries its argument's holes", async () => {
+  // The copy holds the holes as present undefined elements, so what visits
+  // it takes the element or undefined. An arrow written at the call is no
+  // function of the module once the loop has taken its body (nothing else
+  // reaches it), so the loop's own read tells; a named function stays, and
+  // its parameter tells.
+  const visits = (fill: string): Promise<string[]> =>
+    lower(`${ITEM}
+function clone<T>(xs: readonly T[]): T[] {
+  return [...xs];
+}
+function tally(item: Item): number {
+  return item === undefined ? 0 : weigh(item);
+}
+const items: Item[] = [];
+${fill}
+const copy = clone(items);
+let sum = 0;
+copy.forEach((item) => {
+  sum += item === undefined ? 0 : weigh(item);
+});
+console.log(sum, copy.map(tally).join(","));
+`).then((module) => [
+      signature(module, "tally"),
+      ...module.functions
+        .filter((fn) => fn.name.startsWith("%arr.loop."))
+        .map((fn) =>
+          JSON.stringify(fn.body).includes('"kind":"arrayState"')
+            ? "the loop tests the element's state"
+            : "the loop reads the element directly",
+        ),
+      ...module.functions
+        .filter(
+          (fn) =>
+            fn.params.length === 1 &&
+            fn.returnType.kind === "void" &&
+            !fn.name.startsWith("%") &&
+            !fn.name.startsWith("clone"),
+        )
+        .map((fn) => signature(module, fn.name).replace(/^[^(]*/, "callback")),
+    ]);
+  // Whichever holds the arrow's body: the loop, or the arrow itself.
+  const holed = await visits("items[2] = new Item(3);");
+  expect(holed[0]).toBe("tally(Item|undefined): f64");
+  expect(holed.slice(1)).toSatisfy(
+    (seen: string[]) =>
+      seen.length > 0 &&
+      seen.every(
+        (item) =>
+          item === "the loop tests the element's state" ||
+          item === "callback(Item|undefined): void",
+      ),
+  );
+  const dense = await visits("items.push(new Item(3));");
+  expect(dense[0]).toBe("tally(Item): f64");
+  expect(dense.slice(1)).toSatisfy(
+    (seen: string[]) =>
+      seen.length > 0 &&
+      seen.every(
+        (item) => item === "the loop reads the element directly" || item === "callback(Item): void",
+      ),
+  );
 });

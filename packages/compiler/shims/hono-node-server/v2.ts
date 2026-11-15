@@ -339,7 +339,16 @@ async function pump(
         outgoing.end();
         return;
       }
-      outgoing.write(value!);
+      // Narrowed by a test rather than `value!`: an assertion keeps the
+      // union where the destination accepts undefined, which write's
+      // `chunk: any` under @types/node does. The error is write's own for
+      // a chunk that is not bytes.
+      if (value === undefined) {
+        throw new TypeError(
+          'The "chunk" argument must be of type string or an instance of Buffer or Uint8Array. Received undefined',
+        );
+      }
+      outgoing.write(value);
       read = reader.read();
     }
   } finally {

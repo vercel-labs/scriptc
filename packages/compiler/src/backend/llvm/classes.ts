@@ -42,6 +42,7 @@ import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
+import { NULLABLE_NULL } from "./nullable-unions.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
@@ -716,16 +717,51 @@ export function compactHeaderWord(meta: LlClassMeta): number {
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
  * field into the pointer `out`. The allocator's window, which holds the
- * program-lifetime region, lies below 32 GiB (LlvmTargetOptions.lowRegion),
- * so a reference is the object's address over 8 and 0 is NULL: one shift,
- * which x86-64 folds into the address of the next load. `t` names the
- * temporaries. */
-export function compactRefLoadLines(idx: string, out: string, t: string): string[] {
+ * program-lifetime region, lies in [base, base + 32 GiB)
+ * (LlvmTargetOptions.lowRegion, compactRefBaseOf), so a reference is the
+ * object's offset over 8 and 0 is NULL. With base 0 (Linux) that is one
+ * shift, which x86-64 folds into the address of the next load. `t` names
+ * the temporaries. */
+export function compactRefLoadLines(base: bigint, idx: string, out: string, t: string): string[] {
+  if (base === 0n)
+    return [
+      `  ${t}.z = zext i32 ${idx} to i64`,
+      `  ${t}.o = shl nuw nsw i64 ${t}.z, 3`,
+      `  ${out} = inttoptr i64 ${t}.o to ptr`,
+    ];
+  return [
+    ...compactRefAddressLines(base, idx, `${t}.a`, t),
+    `  ${out} = inttoptr i64 ${t}.a to ptr`,
+  ];
+}
+
+/** Lines that decode the 32-bit reference `idx` into the i64 address `out`:
+ * 0 stays 0 (NULL); any other reference is its offset over 8 with `base`
+ * ORed in, which every offset's bits lie below. */
+export function compactRefAddressLines(
+  base: bigint,
+  idx: string,
+  out: string,
+  t: string,
+): string[] {
+  if (base === 0n)
+    return [`  ${t}.z = zext i32 ${idx} to i64`, `  ${out} = shl nuw nsw i64 ${t}.z, 3`];
   return [
     `  ${t}.z = zext i32 ${idx} to i64`,
     `  ${t}.o = shl nuw nsw i64 ${t}.z, 3`,
-    `  ${out} = inttoptr i64 ${t}.o to ptr`,
+    `  ${t}.b = or disjoint i64 ${t}.o, ${base}`,
+    `  ${t}.n = icmp eq i32 ${idx}, 0`,
+    `  ${out} = select i1 ${t}.n, i64 0, i64 ${t}.b`,
   ];
+}
+
+/** The window base 32-bit references are offsets from (scr_core.h
+ * SCR_WINDOW_BASE) for a target triple, or the host when it is empty: 0 for
+ * Linux, whose window lies in the low 32 GiB, and 1 TiB for macOS. Encoding
+ * is the same for both: the address over 8 truncated to 32 bits drops the
+ * base's bits. */
+export function compactRefBaseOf(targetTriple: string | undefined): bigint {
+  return /apple|darwin/.test(targetTriple || process.platform) ? 1n << 40n : 0n;
 }
 
 /** Lines that encode the pointer `ptr` (NULL or an object in the window)
@@ -1250,11 +1286,16 @@ export function emitClassShapes(
     // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
     // trace also visits its elements by their current element ops
     // (scr_arr_subclass_trace), so it is never acyclic.
+    // A class traced only for the weak analysis (ShapeHost.weakOnly) is
+    // never on a cycle either, whatever its fields hold: it is emitted the
+    // same way, and the weak analysis reads its trace from scr_weak_traces.
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`object:${cls.name}`);
     const acyclic =
       traced &&
       runtimePrefix === null &&
       !isStreamRooted &&
-      tracedFields.length === 0 &&
+      (tracedFields.length === 0 || weakOnly) &&
       cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
@@ -1288,11 +1329,23 @@ export function emitClassShapes(
     // An instance that keeps its class id in the rc word counts in the
     // low half (CLASS_ID_OFFSET).
     const count = meta.idInRc ? "i32" : host.sizeType;
+    // A lifetime-region instance has no header word to test immortality in,
+    // so a class that is the arm of a `C | null | undefined` union must skip
+    // the null sentinel explicitly; it reaches retain and release as an
+    // owned value of that union, whose unit arm the sentinel encodes.
+    const nullSentinel = lifetime && host.nullableUnions.classMayBeNullSentinel(cls.name);
     // A tree class's retain is the no-op the tree branch below emits: a
     // tree value has one owner, so nothing ever raises its count.
     if (!meta.tree)
       defs.push(
-        ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
+        ...retainBody(
+          host,
+          mangleClassRetain(cls.name),
+          `retain ${cls.name}`,
+          lifetime,
+          count,
+          nullSentinel,
+        ),
         ``,
       );
 
@@ -1430,15 +1483,29 @@ export function emitClassShapes(
                 struct,
                 refFields.map((f) => f.index),
                 "weak",
+                refFields.map((f) => host.nullableUnions.mayHoldNullSentinel(f.type)),
               )
             : destroyDefinitions(destroy, destroyBody, false, null)),
         ``,
       );
+      // A tree value of a two-unit nullable union (`C | null | undefined`)
+      // reaches this release as the immortal null sentinel, which carries no
+      // count word to recognise it by (a counted instance's -1 count is how
+      // its release skips). NULL is `undefined` in that union, so the
+      // sentinel is the only other value that is not an instance.
+      const sentinelArm = host.nullableUnions.classMayBeNullSentinel(cls.name);
       defs.push(
         `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (a tree: destroy the subtree)`,
         `entry:`,
         `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %free`,
+        `  br i1 %isnull, label %done, label %${sentinelArm ? "notunit" : "free"}`,
+        ...(sentinelArm
+          ? [
+              `notunit: ; the null arm of a two-unit nullable union`,
+              `  %isunit = icmp eq ptr %o, ${NULLABLE_NULL}`,
+              `  br i1 %isunit, label %done, label %free`,
+            ]
+          : []),
         `free:`,
         budgeted
           ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`
@@ -1613,6 +1680,7 @@ export function emitClassShapes(
               )
             : null,
           count,
+          nullSentinel,
         ),
         ``,
       );
@@ -1819,10 +1887,14 @@ export function emitClassShapes(
       // trace: visit exactly the cycle-capable fields; gcFree: release
       // exactly the complement, then free (the trace/teardown complement
       // contract in scr_runtime.h).
+      // An acyclic class's descriptor names no trace, so for the collector
+      // every reference is the teardown's.
       const indexed = indexedFields;
       const untracedRefFields = indexed.filter(
-        (f) => isRefCounted(f.type) && traceAdapter(host, f.type) === null,
+        (f) => isRefCounted(f.type) && (acyclic || traceAdapter(host, f.type) === null),
       );
+      if (acyclic && tracedFields.length > 0)
+        host.weakOnly!.trace(cycType, `@${mangleClassTrace(cls.name)}`);
       const tr: string[] = [
         `define internal void @${mangleClassTrace(cls.name)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; trace ${cls.name}`,
         `entry:`,

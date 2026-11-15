@@ -1,0 +1,8 @@
+record-width-alias-literal.ts:8:43 - error SC2021: storing a 'WideInner' in a 'Inner' field copies the object, and the program writes through it: the field copy is a new object, so a write through 'inner' would reach only the copy
+
+  7 | const wide: WideInner = { a: 1, b: 2 };
+  8 | const holder: { inner: Inner } = { inner: wide };
+    |                                           ^~~~
+  9 | holder.inner.a = 5;
+
+  hint: declare the stored value with the field's type ('Inner') so the literal holds that object, or make the shape a class

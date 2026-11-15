@@ -4,7 +4,7 @@ local-class-boundaries.ts:1:34 - error SC1090: function-local classes with priva
     |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   2 | class Base {}
 
-local-class-boundaries.ts:4:29 - error SC1090: function-local classes with statics, decorators, or generic members are not supported yet
+local-class-boundaries.ts:4:29 - error SC1090: function-local classes with static blocks, decorators, or generic members are not supported yet
 
   3 | function derived() { return class extends Base {}; }
   4 | function generic() { return class { read<T>(value: T): T { return value; } }; }

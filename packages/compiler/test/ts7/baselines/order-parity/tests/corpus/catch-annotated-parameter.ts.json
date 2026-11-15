@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/catch-annotated-parameter.ts"
+ ],
+ "diags": []
+}

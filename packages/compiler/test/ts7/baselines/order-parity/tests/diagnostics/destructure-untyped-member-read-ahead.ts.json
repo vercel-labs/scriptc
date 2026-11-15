@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/destructure-untyped-member-read-ahead.ts"
+ ],
+ "diags": []
+}

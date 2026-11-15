@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/stale-undefined-inferred-return.ts"
+ ],
+ "diags": []
+}

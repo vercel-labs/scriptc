@@ -245,7 +245,13 @@ export function lowerReplacerCallback(
   // A named function expression can call itself with other arguments.
   const literal =
     ts.isArrowFunction(node) || (ts.isFunctionExpression(node) && !node.name) ? node : null;
-  if (!literal || !captures) return lowerer.lowerExpr(callback);
+  if (!literal || !captures) {
+    const value = lowerer.lowerExpr(callback);
+    // JavaScript passes a replacer at least the match, its offset and the
+    // subject.
+    if (!literal) lowerer.noteLongerCall(callback, value.type, "a replacer", 3);
+    return value;
+  }
   const bound: { symbol: ts.Symbol; previous: IrType | undefined }[] = [];
   const previousImplicit = lowerer.implicitParamTypes;
   let implicit: Map<ts.Symbol, ts.Type> | null = null;
@@ -277,7 +283,7 @@ export function lowerReplacerCallback(
     const symbol = lowerer.checker.getSymbolAtLocation(param.name);
     if (
       !symbol ||
-      !bindingNeverReassigned(lowerer, symbol, param) ||
+      !bindingNeverReassigned(lowerer.bindingScope(), symbol, param) ||
       !readsFit(lowerer, literal.body, symbol, type === STRING ? "string" : "f64")
     )
       return;

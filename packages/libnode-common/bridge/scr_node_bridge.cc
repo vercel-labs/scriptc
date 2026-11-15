@@ -78,6 +78,7 @@ using v8::Value;
 
 const ScrNodeBridgeHost *g_host = nullptr;
 void DropAllHandles();
+void ResetPairHelpers();
 void DropAllExports();
 void FlushReleasedExports();
 bool StartCollector(v8::Isolate *isolate);
@@ -93,6 +94,22 @@ Global<Function> g_set_timer, g_clear_timer, g_ref_timer, g_refresh_timer;
 Global<Function> g_set_immediate, g_clear_immediate, g_ref_immediate;
 Global<Function> g_next_tick, g_emit;
 Global<Function> g_load; // the bootstrap's module loader (NI-4)
+// The prototypes of the island classes whose objects native code adopts
+// (the bootstrap's twinPrototypes): a handle of one is flagged SCR_NVF_TWIN.
+std::vector<Global<Object>> g_twin_prototypes;
+
+// The island's intrinsic constructors a native value can stand for
+// (SCR_NVF_INTRINSIC): captured on first use, so a later assignment to the
+// global does not change which function is the intrinsic.
+const char *const kIntrinsicNames[] = {
+    "String",  "Number",  "Boolean", "BigInt",      "Symbol",            "Object",   "Array",
+    "Function", "Date",   "RegExp",  "Map",         "Set",               "WeakMap",  "WeakSet",
+    "Promise", "Error",   "Proxy",   "ArrayBuffer", "SharedArrayBuffer", "DataView",
+};
+constexpr size_t kIntrinsicCount = sizeof kIntrinsicNames / sizeof kIntrinsicNames[0];
+Global<Value> g_intrinsics[kIntrinsicCount];
+bool g_intrinsics_ready = false;
+
 Global<Function> g_shared_push; // the loader hooks' binding updates (NI-6)
 void SharedTable(const FunctionCallbackInfo<Value> &info);
 void SharedGet(const FunctionCallbackInfo<Value> &info);
@@ -355,6 +372,15 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
       !TakeFunction(isolate, context, d, "load", &g_load) ||
       !TakeFunction(isolate, context, d, "sharedPush", &g_shared_push))
     return Copy("the Node island bootstrap left an incomplete dispatcher", nullptr);
+  Local<Value> prototypes;
+  if (d->Get(context, Utf8(isolate, "twinPrototypes")).ToLocal(&prototypes) && prototypes->IsArray()) {
+    Local<v8::Array> list = prototypes.As<v8::Array>();
+    for (uint32_t i = 0; i < list->Length(); i++) {
+      Local<Value> prototype;
+      if (list->Get(context, i).ToLocal(&prototype) && prototype->IsObject())
+        g_twin_prototypes.emplace_back(isolate, prototype.As<Object>());
+    }
+  }
   global->Delete(context, Utf8(isolate, "__scriptcNodeIsland")).FromMaybe(false);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIslandHost")).FromMaybe(false);
   return nullptr;
@@ -704,22 +730,43 @@ int RunLoop(int continue_turn) {
   return code;
 }
 
-// An island listener of a process event: through MakeCallback, so a throw
-// is an uncaught exception as in Node's own emit.
+// An island listener of a process event. A signal listener runs through
+// MakeCallback: ticks and microtasks drain after it, and a throw is an
+// uncaught exception, as in Node's own emit. An 'exit' listener is a plain
+// call, as Node's own 'exit' emission is: process.exit() emits it from
+// JavaScript and ends the process, so nothing queued before or by the
+// listeners runs between them or after them (the runtime drains the
+// microtasks once after the last listener when the program ends by running
+// dry). The verbose TryCatch hands a throw to Node's uncaught-exception path.
+// Listener 0 names no listener: the runtime announces that the exit sequence
+// began (the bootstrap sets process._exiting).
 void Emit(uint32_t event, uint32_t listener, const char *name, int arg) {
   Enter e;
   Local<Value> argv[] = {Num(e, event), Num(e, listener), Utf8(e.isolate, name), Num(e, arg)};
+  if (event == SCR_NODE_EVENT_EXIT) {
+    TryCatch try_catch(e.isolate);
+    try_catch.SetVerbose(true);
+    (void)g_emit.Get(e.isolate)->Call(e.context, e.context->Global(), 4, argv);
+    return;
+  }
   node::MakeCallback(e.isolate, e.context->Global(), g_emit.Get(e.isolate), 4, argv,
                      node::async_context{0, 0});
 }
 
 void Stop() {
   if (!g_setup) return;
-  UnhostLoop();
   Isolate *isolate = g_setup->isolate();
+  // Node stops first: the loop iteration that closes the hosted loop's
+  // handles (UnhostLoop) would otherwise run the timers and immediates that
+  // are due, after the 'exit' listeners, when Node itself runs nothing more.
   node::Stop(g_setup->env());
+  UnhostLoop();
   g_call.Reset();
   g_load.Reset();
+  g_twin_prototypes.clear();
+  ResetPairHelpers();
+  for (Global<Value> &intrinsic : g_intrinsics) intrinsic.Reset();
+  g_intrinsics_ready = false;
   StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
@@ -788,13 +835,21 @@ int IdentityHash(Local<Value> v) {
   return 0;
 }
 
-uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingStore> store = nullptr) {
-  int hash = IdentityHash(v);
-  auto range = g_ids.equal_range(hash);
+// The id the runtime holds `v` under, or 0. *hash: its identity hash.
+uint32_t Imported(Isolate *isolate, Local<Value> v, int *hash = nullptr) {
+  int h = IdentityHash(v);
+  if (hash != nullptr) *hash = h;
+  auto range = g_ids.equal_range(h);
   for (auto it = range.first; it != range.second; ++it) {
     Slot &slot = *g_slots[it->second];
     if (slot.value.Get(isolate)->StrictEquals(v)) return it->second;
   }
+  return 0;
+}
+
+// A new entry for a value Imported did not find.
+uint32_t ImportNew(Isolate *isolate, Local<Value> v, int hash,
+                   std::shared_ptr<v8::BackingStore> store = nullptr) {
   uint32_t id;
   if (!g_free_ids.empty()) {
     id = g_free_ids.back();
@@ -821,6 +876,12 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
   return id;
 }
 
+uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingStore> store = nullptr) {
+  int hash;
+  uint32_t id = Imported(isolate, v, &hash);
+  return id != 0 ? id : ImportNew(isolate, v, hash, std::move(store));
+}
+
 [[noreturn]] void CollectedInUse(uint32_t id) {
   std::fprintf(stderr,
                "scriptc: internal error: island handle %u was used after V8 collected its "
@@ -830,7 +891,16 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
   std::abort();
 }
 
+// The runtime's views that crossed for the first time since its last
+// young_flush, kept alive and no more: most are dropped on both sides
+// before the flush, and never cost an entry of the table.
+std::vector<Global<Value>> g_young;
+
 Local<Value> HandleValue(Isolate *isolate, uint32_t id) {
+  if (id & SCR_NODE_YOUNG) {
+    size_t i = id & ~SCR_NODE_YOUNG;
+    return i < g_young.size() ? g_young[i].Get(isolate) : Local<Value>(v8::Undefined(isolate));
+  }
   if (id == 0 || id >= g_slots.size() || !g_slots[id] || !g_slots[id]->live)
     return v8::Undefined(isolate);
   Slot &slot = *g_slots[id];
@@ -1230,6 +1300,224 @@ uint32_t ElemOf(Local<v8::ArrayBufferView> view) {
   return 0; // DataView: bytes
 }
 
+// ── values paired with runtime objects: byte views and symbols ──────────
+// A typed array, Buffer, DataView or ArrayBuffer and a symbol are one
+// object on each side. The import table holds the V8 half under one id and
+// the runtime's pin table pairs that id with its own object, so each half
+// crosses as the other for as long as the runtime holds its half. The
+// bootstrap's helpers (captured before island code runs) answer what only
+// JavaScript can: the Buffer prototype, Symbol.keyFor, the well-known
+// symbols.
+Global<Object> g_buffer_prototype;
+Global<Function> g_symbol_info, g_symbol_of;
+Global<Value> g_detach_key; // of the ArrayBuffers over the runtime's memory
+bool g_pair_helpers = false;
+
+bool PairHelpers(Isolate *isolate, Local<Context> context) {
+  if (g_pair_helpers) return true;
+  Local<Value> helpers, proto;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (!g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) ||
+      !helpers->IsObject())
+    return false;
+  Local<Object> h = helpers.As<Object>();
+  if (!h->Get(context, Utf8(isolate, "bufferPrototype")).ToLocal(&proto) || !proto->IsObject() ||
+      !TakeFunction(isolate, context, h, "symbolInfo", &g_symbol_info) ||
+      !TakeFunction(isolate, context, h, "symbolOf", &g_symbol_of))
+    return false;
+  g_buffer_prototype.Reset(isolate, proto.As<Object>());
+  g_pair_helpers = true;
+  return true;
+}
+
+void ResetPairHelpers() {
+  g_young.clear();
+  g_buffer_prototype.Reset();
+  g_detach_key.Reset();
+  g_symbol_info.Reset();
+  g_symbol_of.Reset();
+  g_pair_helpers = false;
+}
+
+// Buffer.isBuffer: Buffer.prototype is on the view's prototype chain
+// (node::Buffer::HasInstance answers true for every ArrayBufferView).
+bool IsNodeBuffer(Isolate *isolate, Local<Context> context, Local<v8::ArrayBufferView> view) {
+  if (!view->IsUint8Array() || !PairHelpers(isolate, context)) return false;
+  Local<Object> buffer_proto = g_buffer_prototype.Get(isolate);
+  Local<Value> proto = view->GetPrototypeV2();
+  for (int depth = 0; depth < 64 && proto->IsObject(); depth++) {
+    if (proto == buffer_proto) return true;
+    proto = proto.As<Object>()->GetPrototypeV2();
+  }
+  return false;
+}
+
+// The young view `v` is, as its handle, or 0.
+uint32_t YoungView(Local<Value> v) {
+  for (size_t i = 0; i < g_young.size(); i++)
+    if (g_young[i] == v) return SCR_NODE_YOUNG | static_cast<uint32_t>(i);
+  return 0;
+}
+
+// The young view whose ArrayBuffer `buffer` is, as its handle, or 0: the
+// buffer made with the view of a typed array that is its own storage has
+// no handle of its own.
+uint32_t YoungBuffer(Isolate *isolate, Local<v8::ArrayBuffer> buffer) {
+  for (size_t i = 0; i < g_young.size(); i++) {
+    Local<Value> view = g_young[i].Get(isolate);
+    if (view->IsArrayBufferView() && view.As<v8::ArrayBufferView>()->Buffer() == buffer)
+      return SCR_NODE_YOUNG | static_cast<uint32_t>(i);
+  }
+  return 0;
+}
+
+// The handle of an ArrayBuffer leaving V8: its entry, the young view it
+// belongs to, or a new entry (which keeps the store).
+uint32_t BufferHandle(Isolate *isolate, Local<v8::ArrayBuffer> buffer,
+                      std::shared_ptr<v8::BackingStore> store) {
+  // Consecutive views are often of one buffer (the chunks an island cuts
+  // from a pooled Buffer): the entry answered last is tried first.
+  static uint32_t last = 0;
+  if (last != 0 && last < g_slots.size() && g_slots[last] && g_slots[last]->live &&
+      !g_slots[last]->dead && g_slots[last]->value == buffer)
+    return last;
+  int hash;
+  uint32_t id = Imported(isolate, buffer, &hash);
+  if (id == 0 && !g_young.empty()) id = YoungBuffer(isolate, buffer);
+  if (id != 0 && (id & SCR_NODE_YOUNG) == 0) last = id;
+  return id != 0 ? id : (last = ImportNew(isolate, buffer, hash, std::move(store)));
+}
+
+// Whether the runtime can hold this view as bytes of its own: fixed,
+// unshared storage, and an element kind its typed arrays have.
+bool BytesView(Local<v8::ArrayBufferView> view) {
+  return !view->IsBigInt64Array() && !view->IsBigUint64Array();
+}
+
+void FreeRuntimeBytes(void *, size_t, void *owner);
+size_t ElemSize(uint32_t elem);
+
+// The ArrayBuffer of the runtime storage a BYTES in-value names: the one
+// bound to it, or the buffer of the view bound to the storage's own typed
+// array (an owner typed array is its own storage, and its view's buffer is
+// the storage's). Else a new one over the runtime's memory (*fresh), which
+// the caller binds; *store: its backing store holds the storage.
+Local<v8::ArrayBuffer> RuntimeBuffer(Isolate *isolate, const ScrNodeValue *in, bool *fresh,
+                                     int *store) {
+  *fresh = false;
+  *store = 0;
+  uint32_t id = in->u.bytes.buffer != 0
+                    ? in->u.bytes.buffer
+                    : g_host->bound(SCR_NODE_BIND_BUFFER, in->u.bytes.root);
+  if (id != 0) {
+    Local<Value> known = HandleValue(isolate, id);
+    if (known->IsArrayBuffer()) return known.As<v8::ArrayBuffer>();
+  }
+  if (uint32_t view = g_host->bound(SCR_NODE_BIND_VIEW, in->u.bytes.root)) {
+    Local<Value> known = HandleValue(isolate, view);
+    if (known->IsArrayBufferView()) return known.As<v8::ArrayBufferView>()->Buffer();
+  }
+  *fresh = true;
+  uint8_t *base = in->u.bytes.data != nullptr ? in->u.bytes.data - in->u.bytes.offset : nullptr;
+  if (in->u.bytes.buffer_len == 0 || base == nullptr) return v8::ArrayBuffer::New(isolate, 0);
+  std::unique_ptr<v8::BackingStore> backing = v8::ArrayBuffer::NewBackingStore(
+      base, in->u.bytes.buffer_len, FreeRuntimeBytes, in->u.bytes.root);
+  Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, std::move(backing));
+  *store = 1;
+  // A compiled view is a pointer and a length: it cannot follow a detach.
+  // With a detach key, island code that transfers or detaches the buffer
+  // (structuredClone, postMessage, ArrayBuffer.prototype.transfer, a BYOB
+  // read) gets a TypeError instead of a buffer the program still uses.
+  if (g_detach_key.IsEmpty())
+    g_detach_key.Reset(isolate, v8::Symbol::New(isolate, Utf8(isolate, "scriptc.program-buffer")));
+  buffer->SetDetachKey(g_detach_key.Get(isolate));
+  return buffer;
+}
+
+// The ArrayBuffer of a runtime storage crossing as a value.
+Local<Value> RuntimeBufferValue(Isolate *isolate, const ScrNodeValue *in) {
+  bool fresh;
+  int store;
+  Local<v8::ArrayBuffer> buffer = RuntimeBuffer(isolate, in, &fresh, &store);
+  if (fresh)
+    g_host->bind(SCR_NODE_BIND_BUFFER, in->u.bytes.root,
+                 ImportNew(isolate, buffer, IdentityHash(buffer)), store);
+  return buffer;
+}
+
+// The V8 view of a runtime view crossing for the first time.
+Local<Value> RuntimeView(Isolate *isolate, const ScrNodeValue *in) {
+  if (uint32_t id = g_host->bound(SCR_NODE_BIND_VIEW, in->u.bytes.owner))
+    return HandleValue(isolate, id); // bound earlier in this same conversion
+  bool fresh;
+  int store;
+  Local<v8::ArrayBuffer> buffer = RuntimeBuffer(isolate, in, &fresh, &store);
+  // A typed array that is its own storage binds once, as the view: the
+  // runtime finds the ArrayBuffer through it (YoungBuffer, and by the
+  // store's memory once the view has a handle). Any other new buffer is
+  // bound itself.
+  bool own = fresh && store != 0 && in->u.bytes.owner == in->u.bytes.root;
+  if (fresh && !own)
+    g_host->bind(SCR_NODE_BIND_BUFFER, in->u.bytes.root,
+                 ImportNew(isolate, buffer, IdentityHash(buffer)), store);
+  size_t offset = in->u.bytes.offset;
+  size_t n = in->u.bytes.len;
+  size_t byte_len = n * ElemSize(in->u.bytes.elem);
+  Local<Value> view;
+  if (in->flags & SCR_NVF_DATAVIEW) {
+    view = v8::DataView::New(buffer, offset, byte_len);
+  } else if (in->flags & SCR_NVF_BUFFER) {
+    view = node::Buffer::New(isolate, buffer, offset, byte_len).ToLocalChecked();
+  } else {
+    switch (in->u.bytes.elem) {
+    case 1: view = v8::Uint32Array::New(buffer, offset, n); break;
+    case 2: view = v8::Float32Array::New(buffer, offset, n); break;
+    case 3: view = v8::Int32Array::New(buffer, offset, n); break;
+    case 4: view = v8::Float64Array::New(buffer, offset, n); break;
+    case 5: view = v8::Int8Array::New(buffer, offset, n); break;
+    case 6: view = v8::Uint16Array::New(buffer, offset, n); break;
+    case 7: view = v8::Int16Array::New(buffer, offset, n); break;
+    case 8: view = v8::Uint8ClampedArray::New(buffer, offset, n); break;
+    case 9: view = v8::Float16Array::New(buffer, offset, n); break;
+    default: view = v8::Uint8Array::New(buffer, offset, n); break;
+    }
+  }
+  uint32_t young = SCR_NODE_YOUNG | static_cast<uint32_t>(g_young.size());
+  g_young.emplace_back(isolate, view);
+  g_host->bind(SCR_NODE_BIND_VIEW, in->u.bytes.owner, young, own ? 1 : 0);
+  return view;
+}
+
+// The V8 symbol of a runtime symbol crossing for the first time: the
+// registry's or the well-known one where it is one, else a new symbol of
+// the same description; bound either way, so it comes back as the
+// runtime's own symbol.
+Local<Value> RuntimeSymbol(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
+  if (uint32_t id = g_host->bound(SCR_NODE_BIND_SYMBOL, in->u.sym.owner))
+    return HandleValue(isolate, id);
+  Local<Value> symbol;
+  Local<String> text = FromWtf8(isolate, in->u.sym.text != nullptr ? in->u.sym.text : "",
+                                in->u.sym.len);
+  if ((in->u.sym.kind == SCR_NODE_SYMBOL_REGISTERED ||
+       in->u.sym.kind == SCR_NODE_SYMBOL_WELL_KNOWN) &&
+      PairHelpers(isolate, context)) {
+    Local<Value> argv[] = {v8::Integer::NewFromUnsigned(isolate, in->u.sym.kind), text};
+    TryCatch try_catch(isolate);
+    if (!g_symbol_of.Get(isolate)->Call(context, v8::Undefined(isolate), 2, argv).ToLocal(&symbol) ||
+        !symbol->IsSymbol())
+      symbol = Local<Value>();
+  }
+  if (symbol.IsEmpty()) {
+    symbol = in->u.sym.kind == SCR_NODE_SYMBOL_NO_DESCRIPTION
+                 ? v8::Symbol::New(isolate)
+                 : in->u.sym.kind == SCR_NODE_SYMBOL_WELL_KNOWN
+                       ? v8::Symbol::New(isolate, String::Concat(isolate, Utf8(isolate, "Symbol."), text))
+                       : v8::Symbol::New(isolate, text);
+  }
+  g_host->bind(SCR_NODE_BIND_SYMBOL, in->u.sym.owner, Import(isolate, symbol), 0);
+  return symbol;
+}
+
 size_t ElemSize(uint32_t elem) {
   static const size_t sizes[] = {1, 4, 4, 4, 8, 1, 2, 2, 1, 2};
   return elem < 10 ? sizes[elem] : 1;
@@ -1253,6 +1541,15 @@ Global<v8::ObjectTemplate> g_export_template;
 std::unordered_map<uint32_t, Global<Object>> g_exports;
 std::unordered_map<uint32_t, Global<v8::Promise::Resolver>> g_resolvers;
 std::vector<uint32_t> g_released_exports;
+// Native errors (below, "native errors in V8"): the names installed on the
+// representative of each one at its last reconciliation, by export id, and
+// the ones that crossed into V8 during the runtime's current calls into
+// the island (Op), innermost last.
+std::unordered_map<uint32_t, std::vector<std::string>> g_error_keys;
+std::vector<uint32_t> g_crossed_errors;
+int g_op_depth = 0;
+Global<Function> g_error_stack_get, g_error_stack_set;  // the shared `stack` accessor
+void SyncNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error);
 
 Local<v8::Private> ExportKey(Isolate *isolate) {
   if (g_export_key.IsEmpty())
@@ -1292,6 +1589,7 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
     std::lock_guard<std::mutex> lock(g_gc_lock);
     g_export_gc.erase(id);
   }
+  g_error_keys.erase(id);
   g_gc_stats.freed_exports++;
   g_cycle_freed_exports++;
   for (auto p = g_proxy_ids.begin(); p != g_proxy_ids.end();) {
@@ -1387,8 +1685,46 @@ uint32_t InfoId(const v8::PropertyCallbackInfo<T> &info) {
   return HolderId(info.HolderV2());
 }
 
-void NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
-  FromV8(isolate, context, name, key);
+// Whether the symbol names the same key on both sides whether or not the
+// runtime was told of it: a Symbol.for symbol, whose registry key makes one
+// symbol per key, or a well-known one. Program code can name no other symbol
+// it did not send across, so the runtime cannot have a unique symbol this
+// side made.
+bool RuntimeSymbolKey(Isolate *isolate, Local<Context> context, Local<v8::Symbol> symbol) {
+  if (!PairHelpers(isolate, context)) return false;
+  Local<Value> argv[] = {symbol}, info;
+  TryCatch try_catch(isolate);
+  if (!g_symbol_info.Get(isolate)
+           ->Call(context, v8::Undefined(isolate), 1, argv)
+           .ToLocal(&info) ||
+      !info->IsArray())
+    return false;
+  Local<Value> kind;
+  if (!info.As<v8::Array>()->Get(context, 0).ToLocal(&kind) || !kind->IsUint32()) return false;
+  uint32_t value = kind.As<v8::Uint32>()->Value();
+  return value == SCR_NODE_SYMBOL_REGISTERED || value == SCR_NODE_SYMBOL_WELL_KNOWN;
+}
+
+// The key of a named interceptor, false for a key the runtime does not
+// answer. A symbol reaches the runtime when it names the same key on both
+// sides, registered or well-known, or when the runtime holds the native
+// symbol paired with it; a property under any other symbol is island code's
+// own and stays on the representative.
+bool NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
+  if (!name->IsSymbol()) {
+    FromV8(isolate, context, name, key);
+    return true;
+  }
+  uint32_t known = Imported(isolate, name);
+  if (known == 0 || !g_host->holds(known)) {
+    if (!RuntimeSymbolKey(isolate, context, name.As<v8::Symbol>())) return false;
+    if (known == 0) known = Import(isolate, name);
+  }
+  std::memset(key, 0, sizeof *key);
+  key->tag = SCR_NV_HANDLE;
+  key->flags = SCR_NVF_SYMBOL;
+  key->u.handle = known;
+  return true;
 }
 
 void IndexKey(uint32_t index, ScrNodeValue *key) {
@@ -1450,26 +1786,30 @@ v8::Intercepted DeleteKey(const v8::PropertyCallbackInfo<v8::Boolean> &info,
 v8::Intercepted NamedGet(Local<v8::Name> name, const v8::PropertyCallbackInfo<Value> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return GetKey(info, &key);
 }
 v8::Intercepted NamedSet(Local<v8::Name> name, Local<Value> value,
                          const v8::PropertyCallbackInfo<void> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return SetKey(info, &key, value);
 }
 v8::Intercepted NamedQuery(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Integer> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return QueryKey(info, &key);
 }
 v8::Intercepted NamedDelete(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Boolean> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return DeleteKey(info, &key);
 }
 v8::Intercepted IndexedGet(uint32_t index, const v8::PropertyCallbackInfo<Value> &info) {
@@ -1523,6 +1863,14 @@ Local<v8::Array> ExportKeys(const v8::PropertyCallbackInfo<v8::Array> &info, boo
       }
     }
   }
+  // The symbol keys of the program's object, which cross as the symbols
+  // paired with them.
+  for (uint32_t i = 0; !indices; i++) {
+    std::memset(&out, 0, sizeof out);
+    if (g_host->export_symbol(InfoId(info), i, &out) != 0) break;
+    Local<Value> symbol = ToV8(isolate, context, &out);
+    if (symbol->IsSymbol()) keep.push_back(symbol);
+  }
   return v8::Array::New(isolate, keep.data(), keep.size());
 }
 
@@ -1537,9 +1885,10 @@ Local<v8::ObjectTemplate> ExportTemplate(Isolate *isolate) {
   if (g_export_template.IsEmpty()) {
     Local<v8::ObjectTemplate> t = v8::ObjectTemplate::New(isolate);
     t->SetInternalFieldCount(1);
+    // Symbol keys included (NameKey decides which reach the runtime).
     t->SetHandler(v8::NamedPropertyHandlerConfiguration(
         NamedGet, NamedSet, NamedQuery, NamedDelete, NamedEnum, Local<Value>(),
-        v8::PropertyHandlerFlags::kOnlyInterceptStrings));
+        v8::PropertyHandlerFlags::kNone));
     t->SetHandler(v8::IndexedPropertyHandlerConfiguration(IndexedGet, IndexedSet, IndexedQuery,
                                                           IndexedDelete, IndexedEnum));
     g_export_template.Reset(isolate, t);
@@ -1770,6 +2119,37 @@ Local<Object> CollectionView(Isolate *isolate, Local<Context> context, Local<Val
   return Object::New(isolate);
 }
 
+// ── twin exports: a native object of a platform class whose island
+// receivers test its brand (an AbortSignal) is a real object of the
+// island's own class, made by the bootstrap's makeTwin from the class name.
+// The twin asks its native object through `op` (host->export_op,
+// SCR_NODE_TWIN_*). makeTwin reads no native state: startTwin does, once the
+// twin is the export's representative, so that state which names the native
+// object itself (a signal aborted with itself as the reason) finds it.
+// An export may instead adopt an island object that reached native code
+// (FromV8 flags the classes the bootstrap lists): that object becomes the
+// representative, and adoptTwin gives it its `op`.
+Local<Value> TwinHelper(Isolate *isolate, Local<Context> context, const char *name, int argc,
+                        Local<Value> *argv) {
+  TryCatch try_catch(isolate);
+  Local<Value> helpers, fn, result;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+      helpers->IsObject() &&
+      helpers.As<Object>()->Get(context, Utf8(isolate, name)).ToLocal(&fn) && fn->IsFunction() &&
+      fn.As<Function>()->Call(context, helpers, argc, argv).ToLocal(&result))
+    return result;
+  return v8::Undefined(isolate);
+}
+
+Local<Object> TwinObject(Isolate *isolate, Local<Context> context, Local<Value> data,
+                         const ScrNodeValue *in) {
+  Local<Value> argv[] = {FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len),
+                         Function::New(context, CollectionOp, data).ToLocalChecked()};
+  Local<Value> twin = TwinHelper(isolate, context, "makeTwin", 2, argv);
+  return twin->IsObject() ? twin.As<Object>() : Object::New(isolate);
+}
+
 Local<Object> ArrayProxy(Isolate *isolate, Local<Context> context, Local<Value> data) {
   Local<Object> handler = Object::New(isolate);
   struct Trap {
@@ -1849,6 +2229,35 @@ void AttachReach(Isolate *isolate, Local<Context> context, uint32_t id, Local<Ob
   ReportExternal(isolate);
 }
 
+void CaptureIntrinsics(Isolate *isolate, Local<Context> context) {
+  if (g_intrinsics_ready) return;
+  g_intrinsics_ready = true;
+  for (size_t i = 0; i < kIntrinsicCount; i++) {
+    Local<Value> value;
+    if (context->Global()->Get(context, Utf8(isolate, kIntrinsicNames[i])).ToLocal(&value) &&
+        value->IsFunction())
+      g_intrinsics[i].Reset(isolate, value);
+  }
+}
+
+// The intrinsic constructor of that name, or an empty handle.
+Local<Value> IntrinsicNamed(Isolate *isolate, Local<Context> context, const char *name,
+                            size_t len) {
+  CaptureIntrinsics(isolate, context);
+  for (size_t i = 0; i < kIntrinsicCount; i++)
+    if (strlen(kIntrinsicNames[i]) == len && memcmp(kIntrinsicNames[i], name, len) == 0 &&
+        !g_intrinsics[i].IsEmpty())
+      return g_intrinsics[i].Get(isolate);
+  return Local<Value>();
+}
+
+bool IsIntrinsicConstructor(Isolate *isolate, Local<Context> context, Local<Value> v) {
+  CaptureIntrinsics(isolate, context);
+  for (size_t i = 0; i < kIntrinsicCount; i++)
+    if (!g_intrinsics[i].IsEmpty() && g_intrinsics[i].Get(isolate)->StrictEquals(v)) return true;
+  return false;
+}
+
 Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
   uint32_t id = in->u.exp.id;
   auto found = g_exports.find(id);
@@ -1859,8 +2268,17 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     return existing;
   }
   Local<Object> obj;
+  bool adopted = false;
   Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
-  if (in->flags & SCR_NVF_FUNCTION) {
+  // A built-in constructor's representative is the island's own intrinsic
+  // (unless that already stands for another export): island code compares
+  // it with its `String`, and handing it back answers this export.
+  Local<Value> intrinsic;
+  if ((in->flags & SCR_NVF_INTRINSIC) && in->u.exp.name != nullptr)
+    intrinsic = IntrinsicNamed(isolate, context, in->u.exp.name, in->u.exp.name_len);
+  if (!intrinsic.IsEmpty() && ExportIdOf(isolate, context, intrinsic) == 0) {
+    obj = intrinsic.As<Object>();
+  } else if (in->flags & SCR_NVF_FUNCTION) {
     Local<Function> fn =
         Function::New(context, ExportCall, data, static_cast<int>(in->u.exp.length))
             .ToLocalChecked();
@@ -1882,6 +2300,12 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     obj = resolver->GetPromise();
   } else if (in->flags & (SCR_NVF_MAP | SCR_NVF_SET)) {
     obj = CollectionView(isolate, context, data, (in->flags & SCR_NVF_MAP) != 0);
+  } else if (in->flags & SCR_NVF_TWIN) {
+    // The island object the export adopts, or a twin the bootstrap makes.
+    Local<Value> island =
+        in->u.exp.length != 0 ? HandleValue(isolate, in->u.exp.length) : Local<Value>();
+    adopted = !island.IsEmpty() && island->IsObject();
+    obj = adopted ? island.As<Object>() : TwinObject(isolate, context, data, in);
   } else if (in->flags & SCR_NVF_ARRAY) {
     obj = ArrayProxy(isolate, context, data);
     g_proxy_ids.emplace(obj->GetIdentityHash(), id);
@@ -1901,6 +2325,15 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
                v8::WeakCallbackType::kParameter);
   if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  if (in->flags & SCR_NVF_TWIN) {
+    if (adopted) {
+      Local<Value> adopt_argv[] = {FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len), obj,
+                                   Function::New(context, CollectionOp, data).ToLocalChecked()};
+      TwinHelper(isolate, context, "adoptTwin", 3, adopt_argv);
+    }
+    Local<Value> argv[] = {obj};
+    TwinHelper(isolate, context, "startTwin", 1, argv);
+  }
   RefreshMirror(isolate, context, id, in->flags, obj);
   return obj;
 }
@@ -1929,6 +2362,10 @@ void DropAllExports() {
   g_resolvers.clear();
   g_released_exports.clear();
   g_proxy_ids.clear();
+  g_error_keys.clear();
+  g_crossed_errors.clear();
+  g_error_stack_get.Reset();
+  g_error_stack_set.Reset();
   g_export_template.Reset();
   g_export_key.Reset();
 }
@@ -2066,8 +2503,17 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
     out->u.str.data = Scratch(Wtf8(isolate, text), &out->u.str.len);
     return;
   }
-  if (v->IsArrayBufferView()) {
+  if (v->IsArrayBufferView() && BytesView(v.As<v8::ArrayBufferView>())) {
     Local<v8::ArrayBufferView> view = v.As<v8::ArrayBufferView>();
+    // A view the runtime holds as its own view object: its handle says all.
+    int hash;
+    uint32_t known = Imported(isolate, v, &hash);
+    if (known == 0 && !g_young.empty()) known = YoungView(v);
+    if (known != 0 && ((known & SCR_NODE_YOUNG) || g_host->holds(known))) {
+      out->tag = SCR_NV_BYTES;
+      out->u.bytes.handle = known;
+      return;
+    }
     bool dataview = view->IsDataView();
     // Buffer() moves on-heap elements off the heap: the data stays put.
     Local<v8::ArrayBuffer> buffer = view->Buffer();
@@ -2076,16 +2522,38 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
       uint32_t elem = dataview ? 0 : ElemOf(view);
       out->tag = SCR_NV_BYTES;
       out->u.bytes.elem = elem;
+      out->u.bytes.offset = view->ByteOffset();
+      out->u.bytes.buffer_len = buffer->ByteLength();
       out->u.bytes.data = static_cast<uint8_t *>(store->Data()) + view->ByteOffset();
       out->u.bytes.len = view->ByteLength() / ElemSize(elem);
-      if (node::Buffer::HasInstance(v)) out->flags |= SCR_NVF_BUFFER;
       if (dataview) out->flags |= SCR_NVF_DATAVIEW;
-      out->u.bytes.handle = Import(isolate, v, store);
+      else if (IsNodeBuffer(isolate, context, view)) out->flags |= SCR_NVF_BUFFER;
+      // The ArrayBuffer's slot keeps the store: memory the runtime aliases
+      // stays valid for as long as it holds the buffer, which its views do.
+      out->u.bytes.buffer = BufferHandle(isolate, buffer, store);
+      out->u.bytes.handle = known != 0 ? known : ImportNew(isolate, v, hash);
+      return;
+    }
+  }
+  if (v->IsArrayBuffer()) {
+    Local<v8::ArrayBuffer> buffer = v.As<v8::ArrayBuffer>();
+    std::shared_ptr<v8::BackingStore> store = buffer->GetBackingStore();
+    if (!store->IsResizableByUserJavaScript()) {
+      out->tag = SCR_NV_BYTES;
+      out->flags = SCR_NVF_ARRAYBUFFER;
+      out->u.bytes.data = static_cast<uint8_t *>(store->Data());
+      out->u.bytes.buffer_len = buffer->ByteLength();
+      out->u.bytes.buffer = BufferHandle(isolate, buffer, store);
       return;
     }
   }
   if (uint32_t export_id = ExportIdOf(isolate, context, v)) {
     Touch(export_id);
+    // A native error: what island code added to it or deleted from it goes
+    // with it (only inside a host call or an operation, whose scratch a
+    // nested host call leaves alone).
+    if (g_entry_depth > 0 && g_error_keys.count(export_id) != 0)
+      SyncNativeError(isolate, context, export_id, v.As<Object>());
     out->tag = SCR_NV_EXPORT;
     out->u.exp.id = export_id;
     return;
@@ -2096,24 +2564,338 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
   if (v->IsFunction()) {
     flags |= SCR_NVF_FUNCTION;
     if (v.As<Function>()->IsConstructor()) flags |= SCR_NVF_CONSTRUCTOR;
+    if (IsIntrinsicConstructor(isolate, context, v)) flags |= SCR_NVF_INTRINSIC;
   }
   if (v->IsNativeError()) flags |= SCR_NVF_ERROR;
-  if (v->IsArray()) flags |= SCR_NVF_ARRAY;
+  // Array.isArray follows a proxy to its target; IsArray() stops at the
+  // proxy. A revoked proxy answers false here rather than throwing.
+  {
+    Local<Value> tested = v;
+    while (tested->IsProxy()) {
+      Local<v8::Proxy> proxy = tested.As<v8::Proxy>();
+      if (proxy->IsRevoked()) break;
+      tested = proxy->GetTarget();
+      if (tested.IsEmpty()) break;
+    }
+    if (tested->IsArray()) flags |= SCR_NVF_ARRAY;
+  }
   if (v->IsPromise()) flags |= SCR_NVF_PROMISE;
+  if (!g_twin_prototypes.empty() && v->IsObject() && !v->IsFunction() && !v->IsProxy()) {
+    Local<Value> prototype = v.As<Object>()->GetPrototypeV2();
+    for (Global<Object> &twin : g_twin_prototypes) {
+      if (twin.Get(isolate)->StrictEquals(prototype)) {
+        flags |= SCR_NVF_TWIN;
+        break;
+      }
+    }
+  }
   out->flags = flags;
   out->u.handle = Import(isolate, v);
 }
 
 void FreeRuntimeBytes(void *, size_t, void *owner) {
-  if (owner != nullptr) g_host->bytes_free(owner);
+  if (owner != nullptr && g_host != nullptr) g_host->bytes_free(owner);
 }
 
 Local<Value> ErrorConstructor(Isolate *isolate, Local<Context> context, uint32_t kind) {
   static const char *const names[] = {"Error",          "TypeError", "RangeError", "SyntaxError",
-                                      "Error",          "ReferenceError", "EvalError",
-                                      "URIError"};
-  const char *name = kind < 8 ? names[kind] : "Error";
+                                      "DOMException",   "ReferenceError", "EvalError",
+                                      "URIError",       "AggregateError"};
+  const char *name = kind < 9 ? names[kind] : "Error";
   return context->Global()->Get(context, Utf8(isolate, name)).ToLocalChecked();
+}
+
+const uint32_t kDomExceptionKind = 4;
+const uint32_t kAggregateErrorKind = 8;
+
+// ── native errors in V8 ─────────────────────────────────────────────────
+// A native error crosses by reference: one V8 Error per export id, of the
+// error's intrinsic class, which is that native error again when it
+// crosses back. Each own property of the native error is an own property
+// of the V8 Error whose value lives in the native error: a native data
+// property, which JavaScript sees as a plain data property with the native
+// property's attributes, and whose reads and writes go to the runtime. So
+// the two sides read and write one set of values. Which properties exist
+// is reconciled whenever the error crosses in either direction and when the
+// runtime's call into the island returns (SyncNativeError): a property one
+// side added or deleted since is added or deleted on the other.
+
+// The runtime's attribute bits of an own property (SCR_NODE_EXPORT_OWN).
+v8::PropertyAttribute ErrorAttributes(int bits) {
+  int attrs = v8::None;
+  if (!(bits & 1)) attrs |= v8::ReadOnly;
+  if (!(bits & 2)) attrs |= v8::DontEnum;
+  if (!(bits & 4)) attrs |= v8::DontDelete;
+  return static_cast<v8::PropertyAttribute>(attrs);
+}
+
+void ErrorFieldGet(Local<v8::Name> name, const v8::PropertyCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;  // the key's text lives in the scratch this call keeps
+  ScrNodeValue key, out;
+  NameKey(isolate, context, name, &key);
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_get(ExportIdArg(info.Data()), &key, &out);
+  if (status == 2) return;  // deleted natively since: undefined
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void ErrorFieldSet(Local<v8::Name> name, Local<Value> value,
+                   const v8::PropertyCallbackInfo<void> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, v, out;
+  NameKey(isolate, context, name, &key);
+  FromV8(isolate, context, value, &v);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_set(ExportIdArg(info.Data()), &key, &v, &out) == 1)
+    isolate->ThrowException(ToV8(isolate, context, &out));
+}
+
+// `stack` is an own accessor of every V8 error, with one getter and one
+// setter function shared by all of them. A native error's representative
+// gets the same shape, with functions that read and write the native
+// error's stack: island code that rewrites `e.stack` rewrites the one the
+// program prints, and the stack is formatted only if somebody reads it.
+void ErrorStackGet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  uint32_t id = ExportIdOf(isolate, context, info.This());
+  if (id == 0) return;  // not a native error: undefined, as V8's getter answers
+  HostCall scope;
+  ScrNodeValue key, out;
+  FromV8(isolate, context, Utf8(isolate, "stack"), &key);
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_get(id, &key, &out);
+  if (status == 2) return;
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void ErrorStackSet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  uint32_t id = ExportIdOf(isolate, context, info.This());
+  if (id == 0) return;
+  HostCall scope;
+  ScrNodeValue key, v, out;
+  FromV8(isolate, context, Utf8(isolate, "stack"), &key);
+  FromV8(isolate, context, info[0], &v);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_set(id, &key, &v, &out) == 1)
+    isolate->ThrowException(ToV8(isolate, context, &out));
+}
+
+void InstallErrorStack(Isolate *isolate, Local<Context> context, Local<Object> error) {
+  if (g_error_stack_get.IsEmpty()) {
+    Local<Function> get = Function::New(context, ErrorStackGet).ToLocalChecked();
+    Local<Function> set = Function::New(context, ErrorStackSet, Local<Value>(), 1).ToLocalChecked();
+    get->SetName(Utf8(isolate, "stack"));
+    set->SetName(Utf8(isolate, "stack"));
+    g_error_stack_get.Reset(isolate, get);
+    g_error_stack_set.Reset(isolate, set);
+  }
+  error->SetAccessorProperty(Utf8(isolate, "stack"), g_error_stack_get.Get(isolate),
+                             g_error_stack_set.Get(isolate), v8::DontEnum);
+}
+
+bool InstallErrorField(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error,
+                       const std::string &name, int bits) {
+  return error
+      ->SetNativeDataProperty(context, Utf8(isolate, name.data(), name.size()), ErrorFieldGet,
+                              ErrorFieldSet, v8::Integer::NewFromUnsigned(isolate, id),
+                              ErrorAttributes(bits))
+      .FromMaybe(false);
+}
+
+// Reconciles which own properties the native error of export `id` and its
+// representative have. The runtime answers the native error's own string
+// keys in order, each with its attribute bits, then a state word (bit 0:
+// not extensible).
+//  - A native property the representative lacks is installed, unless it
+//    was installed before: then island code deleted it, and it is deleted
+//    natively.
+//  - A property of the representative the native error lacks is removed
+//    when it was installed before (deleted natively). Otherwise island code
+//    added it: a plain data property moves into the native error and
+//    becomes one of its installed properties. Anything else island code
+//    defined (an accessor, a non-enumerable or read-only property) stays the
+//    representative's own.
+// `stack` is every error's accessor (InstallErrorStack) and not part of it.
+void SyncNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error) {
+  if (!g_refreshing.insert(id).second) return;
+  struct Done {
+    uint32_t id;
+    ~Done() { g_refreshing.erase(id); }
+  } done{id};
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_op(id, SCR_NODE_EXPORT_OWN, nullptr, 0, &out) != 0) return;
+  Local<Value> answer = ToV8(isolate, context, &out);
+  if (!answer->IsArray()) return;
+  Local<v8::Array> list = answer.As<v8::Array>();
+  std::vector<std::pair<std::string, int>> native;
+  int state = 0;
+  for (uint32_t i = 0; i + 1 < list->Length(); i += 2) {
+    Local<Value> key, bits;
+    if (!list->Get(context, i).ToLocal(&key) || !list->Get(context, i + 1).ToLocal(&bits)) return;
+    native.emplace_back(ToStdString(isolate, key), bits->Int32Value(context).FromMaybe(7));
+  }
+  if (list->Length() % 2 == 1) {
+    Local<Value> word;
+    if (list->Get(context, list->Length() - 1).ToLocal(&word))
+      state = word->Int32Value(context).FromMaybe(0);
+  }
+  std::vector<std::string> &known = g_error_keys[id];
+  auto installed = [&](const std::string &name) {
+    return std::find(known.begin(), known.end(), name) != known.end();
+  };
+  auto in_native = [&](const std::string &name) {
+    for (const auto &entry : native)
+      if (entry.first == name) return true;
+    return false;
+  };
+  std::vector<std::string> next;
+  Local<v8::Array> own;
+  if (!error
+           ->GetOwnPropertyNames(context, v8::SKIP_SYMBOLS, v8::KeyConversionMode::kConvertToString)
+           .ToLocal(&own))
+    return;
+  std::unordered_set<std::string> present;
+  for (uint32_t i = 0; i < own->Length(); i++) {
+    Local<Value> key;
+    if (!own->Get(context, i).ToLocal(&key) || !key->IsString()) continue;
+    std::string name = ToStdString(isolate, key);
+    if (name == "stack") continue;
+    present.insert(name);
+    if (installed(name)) {
+      // Deleted natively since the last reconciliation.
+      if (!in_native(name)) {
+        error->Delete(context, key).FromMaybe(false);
+        present.erase(name);
+      }
+      continue;
+    }
+    // Island code added it. A plain data property becomes the native
+    // error's; its value crosses by the boundary rules.
+    Local<Value> descriptor, value;
+    if (!error->GetOwnPropertyDescriptor(context, key.As<v8::Name>()).ToLocal(&descriptor) ||
+        !descriptor->IsObject() ||
+        !descriptor.As<Object>()->Get(context, Utf8(isolate, "value")).ToLocal(&value) ||
+        !descriptor.As<Object>()
+             ->HasOwnProperty(context, Utf8(isolate, "value"))
+             .FromMaybe(false))
+      continue;
+    v8::PropertyAttribute attrs;
+    if (!error->GetRealNamedPropertyAttributes(context, key.As<v8::Name>()).To(&attrs) ||
+        attrs != v8::None)
+      continue;
+    ScrNodeValue k, v, thrown;
+    FromV8(isolate, context, key, &k);
+    FromV8(isolate, context, value, &v);
+    std::memset(&thrown, 0, sizeof thrown);
+    // A value the runtime cannot take stays the representative's own.
+    if (g_host->export_set(id, &k, &v, &thrown) != 0) continue;
+    if (!in_native(name)) native.emplace_back(name, 7);
+    if (InstallErrorField(isolate, context, id, error, name, 7)) known.push_back(name);
+  }
+  for (const auto &entry : native) {
+    const std::string &name = entry.first;
+    if (name == "stack") continue;
+    if (present.count(name) != 0) {
+      next.push_back(name);
+      continue;
+    }
+    if (installed(name)) {
+      // Island code deleted it.
+      ScrNodeValue k, thrown;
+      FromV8(isolate, context, Utf8(isolate, name.data(), name.size()), &k);
+      std::memset(&thrown, 0, sizeof thrown);
+      g_host->export_delete(id, &k, &thrown);
+      continue;
+    }
+    if (InstallErrorField(isolate, context, id, error, name, entry.second)) next.push_back(name);
+  }
+  known = std::move(next);
+  if ((state & 1) != 0) {
+    // Not extensible natively (frozen, sealed or prevented): the attributes
+    // above already say which of the three.
+    Local<Value> object, prevent;
+    if (context->Global()->Get(context, Utf8(isolate, "Object")).ToLocal(&object) &&
+        object->IsObject() &&
+        object.As<Object>()->Get(context, Utf8(isolate, "preventExtensions")).ToLocal(&prevent) &&
+        prevent->IsFunction()) {
+      Local<Value> argv[] = {error};
+      prevent.As<Function>()->Call(context, object, 1, argv).FromMaybe(Local<Value>());
+    }
+  }
+}
+
+// `error` becomes the representative of export `id`. An instance of a
+// program class also reads what its class holds (methods, accessors, the
+// class as `constructor`) from the runtime: an object with the export
+// interceptors stands where the class's prototype would, between the error
+// and its intrinsic prototype. Any other native error keeps the intrinsic
+// prototype itself, as in Node.
+void LinkNativeError(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> error,
+                     bool class_instance) {
+  Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
+  if (class_instance) {
+    Local<Object> link = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
+    link->SetInternalField(0, data);
+    link->SetPrototypeV2(context, error->GetPrototypeV2()).FromMaybe(false);
+    error->SetPrototypeV2(context, link).FromMaybe(false);
+  }
+  error->SetPrivate(context, ExportKey(isolate), data).Check();
+  AttachReach(isolate, context, id, error);
+  Global<Object> &slot = g_exports[id];
+  slot.Reset(isolate, error);
+  slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
+               v8::WeakCallbackType::kParameter);
+}
+
+// A property of the native error of export `id`, read before its
+// representative exists.
+Local<Value> NativeErrorProperty(Isolate *isolate, Local<Context> context, uint32_t id,
+                                 const char *name) {
+  HostCall scope;
+  ScrNodeValue key, out;
+  FromV8(isolate, context, Utf8(isolate, name), &key);
+  std::memset(&out, 0, sizeof out);
+  if (g_host->export_get(id, &key, &out) != 0) return v8::Undefined(isolate);
+  return ToV8(isolate, context, &out);
+}
+
+// The new representative of the native error of export `id`.
+Local<Object> NewNativeError(Isolate *isolate, Local<Context> context, uint32_t id, uint32_t kind,
+                             bool class_instance) {
+  Local<Function> ctor = ErrorConstructor(isolate, context, kind).As<Function>();
+  Local<Object> error;
+  if (kind == kDomExceptionKind) {
+    // A DOMException holds its name, message and code in internal slots its
+    // prototype's accessors read: Node's own constructor fills them.
+    Local<Value> argv[] = {NativeErrorProperty(isolate, context, id, "message"),
+                           NativeErrorProperty(isolate, context, id, "name")};
+    error = ctor->NewInstance(context, 2, argv).ToLocalChecked();
+  } else if (kind == kAggregateErrorKind) {
+    Local<Value> argv[] = {v8::Array::New(isolate, 0)};
+    error = ctor->NewInstance(context, 1, argv).ToLocalChecked();
+    // `errors` is the native error's, installed with its other properties.
+    error->Delete(context, Utf8(isolate, "errors")).FromMaybe(false);
+  } else {
+    // No argument: an error made without a message has no own `message`.
+    error = ctor->NewInstance(context).ToLocalChecked();
+  }
+  LinkNativeError(isolate, context, id, error, class_instance);
+  InstallErrorStack(isolate, context, error);
+  if (kind != kDomExceptionKind) SyncNativeError(isolate, context, id, error);
+  return error;
 }
 
 Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
@@ -2125,51 +2907,26 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
   case SCR_NV_STRING: return FromWtf8(isolate, in->u.str.data, in->u.str.len);
   case SCR_NV_BIGINT: return BigIntFromText(context, in->u.str.data, in->u.str.len);
   case SCR_NV_HANDLE: return HandleValue(isolate, in->u.handle);
-  case SCR_NV_BYTES: {
+  case SCR_NV_BYTES:
+    if (in->flags & SCR_NVF_ARRAYBUFFER) return RuntimeBufferValue(isolate, in);
     if (in->u.bytes.handle != 0) return HandleValue(isolate, in->u.bytes.handle);
-    size_t elem_size = ElemSize(in->u.bytes.elem);
-    size_t byte_len = in->u.bytes.len * elem_size;
-    Local<v8::ArrayBuffer> buffer;
-    if (byte_len == 0 || in->u.bytes.data == nullptr) {
-      buffer = v8::ArrayBuffer::New(isolate, 0);
-      if (in->u.bytes.owner != nullptr) g_host->bytes_free(in->u.bytes.owner);
-    } else {
-      std::unique_ptr<v8::BackingStore> store = v8::ArrayBuffer::NewBackingStore(
-          in->u.bytes.data, byte_len, FreeRuntimeBytes, in->u.bytes.owner);
-      buffer = v8::ArrayBuffer::New(isolate, std::move(store));
-    }
-    size_t n = in->u.bytes.len;
-    if (in->flags & SCR_NVF_DATAVIEW) return v8::DataView::New(buffer, 0, byte_len);
-    if (in->flags & SCR_NVF_BUFFER)
-      return node::Buffer::New(isolate, buffer, 0, byte_len).ToLocalChecked();
-    switch (in->u.bytes.elem) {
-    case 1: return v8::Uint32Array::New(buffer, 0, n);
-    case 2: return v8::Float32Array::New(buffer, 0, n);
-    case 3: return v8::Int32Array::New(buffer, 0, n);
-    case 4: return v8::Float64Array::New(buffer, 0, n);
-    case 5: return v8::Int8Array::New(buffer, 0, n);
-    case 6: return v8::Uint16Array::New(buffer, 0, n);
-    case 7: return v8::Int16Array::New(buffer, 0, n);
-    case 8: return v8::Uint8ClampedArray::New(buffer, 0, n);
-    case 9: return v8::Float16Array::New(buffer, 0, n);
-    default: return v8::Uint8Array::New(buffer, 0, n);
-    }
-  }
+    return RuntimeView(isolate, in);
+  case SCR_NV_SYMBOL: return RuntimeSymbol(isolate, context, in);
   case SCR_NV_ERROR: {
-    Local<Value> ctor = ErrorConstructor(isolate, context, in->u.error.kind);
-    Local<Value> argv[] = {FromWtf8(isolate, in->u.error.message, in->u.error.message_len)};
-    Local<Object> error = ctor.As<Function>()->NewInstance(context, 1, argv).ToLocalChecked();
-    std::string name(in->u.error.name, in->u.error.name_len);
-    Local<Value> default_name;
-    if (!error->Get(context, Utf8(isolate, "name")).ToLocal(&default_name) ||
-        ToStdString(isolate, default_name) != name)
-      error->Set(context, Utf8(isolate, "name"), FromWtf8(isolate, name.data(), name.size())).Check();
-    if (in->u.error.stack != nullptr)
-      error->Set(context, Utf8(isolate, "stack"),
-                 FromWtf8(isolate, in->u.error.stack, in->u.error.stack_len)).Check();
-    if (in->u.error.code != nullptr)
-      error->Set(context, Utf8(isolate, "code"),
-                 FromWtf8(isolate, in->u.error.code, in->u.error.code_len)).Check();
+    // Read before the runtime is entered again: `in` may be its scratch.
+    uint32_t id = in->u.error.export_id;
+    uint32_t kind = in->u.error.kind;
+    bool class_instance = in->u.error.class_instance != 0;
+    Local<Object> error;
+    auto found = g_exports.find(id);
+    if (found != g_exports.end()) {
+      Touch(id);
+      error = found->second.Get(isolate);
+      if (kind != kDomExceptionKind) SyncNativeError(isolate, context, id, error);
+    } else {
+      error = NewNativeError(isolate, context, id, kind, class_instance);
+    }
+    if (g_op_depth > 0 && kind != kDomExceptionKind) g_crossed_errors.push_back(id);
     return error;
   }
   case SCR_NV_EXPORT: return ExportValue(isolate, context, in);
@@ -2223,7 +2980,9 @@ void RecordArrow(Isolate *isolate, Local<Context> context, const TryCatch &try_c
 struct Op {
   Enter e;
   TryCatch try_catch;
+  size_t crossed = g_crossed_errors.size();
   Op() : try_catch(e.isolate) {
+    g_op_depth++;
     if (g_entry_depth++ == 0) {
       g_scratch.clear();
       // Representatives V8 collected since: the runtime drops their exports
@@ -2233,9 +2992,27 @@ struct Op {
       FlushReleasedExports();
     }
   }
-  ~Op() { g_entry_depth--; }
+  ~Op() {
+    g_entry_depth--;
+    g_op_depth--;
+    if (g_crossed_errors.size() > crossed) g_crossed_errors.resize(crossed);
+  }
+  // The native errors that crossed into V8 during this operation: what
+  // island code added to them or deleted from them is the native error's
+  // before the runtime runs again.
+  void SyncCrossedErrors() {
+    for (size_t i = crossed; i < g_crossed_errors.size(); i++) {
+      uint32_t id = g_crossed_errors[i];
+      auto found = g_exports.find(id);
+      if (found == g_exports.end() || g_error_keys.count(id) == 0) continue;
+      TryCatch quiet(e.isolate);
+      SyncNativeError(e.isolate, e.context, id, found->second.Get(e.isolate));
+    }
+    g_crossed_errors.resize(crossed);
+  }
   // The operation's outcome: 0 and the result, or 1 and the thrown value.
   int Finish(Local<Value> result, bool ok, ScrNodeValue *out) {
+    SyncCrossedErrors();
     if (ok) {
       FromV8(e.isolate, e.context, result, out);
       return 0;
@@ -2438,6 +3215,7 @@ void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
   Isolate *isolate = info.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
   uint32_t token = info.Data()->Uint32Value(context).FromMaybe(0);
+  HostCall scope;
   ScrNodeValue value;
   FromV8(isolate, context, info[0], &value);
   g_host->settle_value(token, rejected, &value);
@@ -2446,14 +3224,39 @@ void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
 void OnFulfilled(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 0); }
 void OnRejected(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 1); }
 
-// await of a value: PromiseResolve (a native promise is itself) and one
-// reaction, as `await` does in JavaScript.
+// Whether `await` takes promise `v` as itself: PromiseResolve does when its
+// `constructor` is the intrinsic Promise. An instance of a Promise subclass
+// (an SDK's request promise, whose constructor takes something other than
+// an executor and whose `then` starts the request) is resolved like any
+// thenable instead: its own `then` runs, from a promise job. Reading
+// `constructor` can throw; the caller reports that as the await's rejection.
+bool AwaitsAsItself(Op &op, Local<v8::Promise> v, bool *threw) {
+  Local<Value> ctor, intrinsic;
+  Local<v8::Promise::Resolver> plain;
+  if (!v->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&ctor)) {
+    *threw = true;
+    return false;
+  }
+  // The intrinsic: what a promise V8 makes itself answers.
+  if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&plain) ||
+      !plain->GetPromise()->Get(op.e.context, Utf8(op.e.isolate, "constructor")).ToLocal(&intrinsic))
+    return true;
+  return ctor->StrictEquals(intrinsic);
+}
+
+// await of a value: PromiseResolve (a promise whose constructor is the
+// intrinsic Promise is itself; anything else, a Promise subclass instance
+// included, is resolved through its `then`) and one reaction, as `await`
+// does in JavaScript.
 int Then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out) {
   Op op;
   Local<Value> v = op.V(value);
   Local<v8::Promise> promise;
-  if (v->IsPromise()) {
+  bool threw = false;
+  if (v->IsPromise() && AwaitsAsItself(op, v.As<v8::Promise>(), &threw)) {
     promise = v.As<v8::Promise>();
+  } else if (threw) {
+    return op.Finish(Local<Value>(), false, out);
   } else {
     Local<v8::Promise::Resolver> resolver;
     if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&resolver) ||
@@ -2507,6 +3310,46 @@ void ErrorInfo(uint32_t h, ScrNodeErrorInfo *out) {
   Local<Value> arrow;
   if (error->GetPrivate(op.e.context, ArrowKey(op.e.isolate)).ToLocal(&arrow) && arrow->IsString())
     out->arrow = Scratch(Wtf8(op.e.isolate, arrow.As<String>()), &out->arrow_len);
+}
+
+// What an island symbol is: registered (its key), well-known (its name on
+// Symbol), or unique (its description, if it has one).
+void SymbolInfo(uint32_t h, ScrNodeSymbolInfo *out) {
+  Op op;
+  std::memset(out, 0, sizeof *out);
+  out->kind = SCR_NODE_SYMBOL_NO_DESCRIPTION;
+  Local<Value> v = HandleValue(op.e.isolate, h);
+  if (!v->IsSymbol()) return;
+  Local<Value> info;
+  if (PairHelpers(op.e.isolate, op.e.context)) {
+    Local<Value> argv[] = {v};
+    if (!g_symbol_info.Get(op.e.isolate)
+             ->Call(op.e.context, v8::Undefined(op.e.isolate), 1, argv)
+             .ToLocal(&info))
+      op.try_catch.Reset();
+  }
+  Local<Value> kind, text;
+  if (!info.IsEmpty() && info->IsArray() &&
+      info.As<v8::Array>()->Get(op.e.context, 0).ToLocal(&kind) && kind->IsUint32() &&
+      info.As<v8::Array>()->Get(op.e.context, 1).ToLocal(&text) && text->IsString()) {
+    out->kind = kind.As<v8::Uint32>()->Value();
+  } else {
+    text = v.As<v8::Symbol>()->Description(op.e.isolate);
+    if (!text->IsString()) return;
+    out->kind = SCR_NODE_SYMBOL_UNIQUE;
+  }
+  out->text = Scratch(Wtf8(op.e.isolate, text.As<String>()), &out->len);
+}
+
+// The end of the young views: the ones the program still holds enter the
+// import table, the others are let go.
+void YoungFlush(const uint8_t *keep, size_t n, uint32_t *ids) {
+  if (!g_setup) return;
+  Isolate *isolate = g_setup->isolate();
+  HandleScope handles(isolate);
+  for (size_t i = 0; i < n; i++)
+    ids[i] = keep[i] && i < g_young.size() ? Import(isolate, g_young[i].Get(isolate)) : 0;
+  g_young.clear();
 }
 
 void DropHandle(uint32_t h) {
@@ -2604,6 +3447,8 @@ const ScrNodeBridge kBridge = {
     ExportSettle,
     SharedPush,
     GcStats,
+    SymbolInfo,
+    YoungFlush,
 };
 
 }  // namespace

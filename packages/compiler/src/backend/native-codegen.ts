@@ -49,10 +49,13 @@ import { writeTextParts } from "../text-parts.js";
 
 import {
   NativeCodegenError,
+  nativeHelperFailureMessage,
   nativePartitionPaths,
+  parseJsonObject,
   validateNativeCodegenVersion as validateHelperVersion,
   type NativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeHelperFailure,
 } from "./native-codegen-core.js";
 export {
   NATIVE_CODEGEN_PROTOCOL_VERSION,
@@ -139,28 +142,6 @@ export async function writeLlvmSource(
   await writeTextParts(path, llvm, mode);
 }
 
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function helperFailureMessage(
-  stderr: string,
-  fallback: string,
-): { code?: string; message: string } {
-  const parsed = parseJsonObject(stderr.trim());
-  return {
-    ...(typeof parsed?.["code"] === "string" ? { code: parsed["code"] } : {}),
-    message: typeof parsed?.["message"] === "string" ? parsed["message"] : fallback,
-  };
-}
-
 async function invoke(
   binaryPath: string,
   args: string[],
@@ -172,9 +153,7 @@ async function invoke(
       windowsHide: true,
     });
   } catch (error) {
-    const failure = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string };
-    const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    const parsed = helperFailureMessage(stderr, failure.message);
+    const parsed = nativeHelperFailureMessage(error as NativeHelperFailure);
     throw new NativeCodegenError(
       "SC3004",
       `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}: ${parsed.message}`,
@@ -420,6 +399,29 @@ export async function mergeNativeProfiles(
     ...(sparse ? ["--sparse"] : []),
     ...inputPaths,
   ]);
+}
+
+/** The function names an indexed profile records: the functions a
+ * `--profile-use` build may copy for CPU dispatch. Null when the helper
+ * cannot report them (an older helper, an unreadable profile), and the
+ * build then copies every function whose loop x86-64-v3 widens. */
+export async function readProfileFunctionNames(profilePath: string): Promise<string[] | null> {
+  const target = nativeCodegenTarget();
+  if (target === null) return null;
+  try {
+    const helper = await resolveHelper(target);
+    const { stdout } = await invoke(helper.binaryPath, [
+      "profile-functions",
+      "--input",
+      profilePath,
+    ]);
+    const parsed = parseJsonObject(stdout.trim());
+    const functions = parsed?.["functions"];
+    if (parsed?.["ok"] !== true || !Array.isArray(functions)) return null;
+    return functions.filter((name): name is string => typeof name === "string");
+  } catch {
+    return null;
+  }
 }
 
 export async function emitNativeArtifact(

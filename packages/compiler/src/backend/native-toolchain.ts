@@ -64,5 +64,6 @@ export {
   prepareBuildCacheRoot,
   pruneBuildCache,
   resolveBuildCacheRoot,
+  resolveCompilerStateRoot,
 } from "./build-cache.js";
 export { vendorCacheBuildIdentity, vendorCacheTargetFlavor } from "./native/vendor.js";

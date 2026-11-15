@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8919-tsc-import-elision-commonjs/registry.ts",
+  "<repo>/tests/corpus/8919-tsc-import-elision-commonjs/entry.ts",
+  "<repo>/tests/corpus/8919-tsc-import-elision-commonjs/defaults.ts",
+  "<repo>/tests/corpus/8919-tsc-import-elision-commonjs/main.ts"
+ ],
+ "diags": []
+}

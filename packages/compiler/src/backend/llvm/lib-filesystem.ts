@@ -6,7 +6,7 @@ import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
-import { emitAlwaysThrowLibCall } from "./lib-shared.js";
+import { emitAlwaysThrowLibCall, LIB_FN_SYMS } from "./lib-shared.js";
 import { emitTruncF64 } from "./trunc.js";
 import { markWrappingOperands } from "./wrapping-sums.js";
 
@@ -191,6 +191,9 @@ function watchChangeAdapter(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The value form reports DEP0187 on a next tick, so the loop runs even when
+  // nothing else in the program is asynchronous.
+  if (e.fn === "fs.existsSyncValue") host.usesTimers = true;
   const alwaysThrowSym = FS_ALWAYS_THROW_SYMS[e.fn];
   if (alwaysThrowSym !== undefined) {
     return emitAlwaysThrowLibCall(host, e, alwaysThrowSym);
@@ -266,6 +269,58 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const adapter = host.zlibBytesThunkFor(cbT);
     const sym =
       e.fn === "zlib.cbOpts" ? "scr_zlib_codec_async_opts" : "scr_zlib_codec_async_opts_dyn";
+    host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
+    B.line(
+      `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "zlib.infoSync" || e.fn === "zlib.infoSyncDyn") {
+    // (mode, data, options): the same run as syncOpts, answering the
+    // checked { buffer, engine } object; +1 dyn or NULL with a pending throw.
+    host.usesTimers = true; // the fabricated engine is a runtime stream
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoSync" ? "scr_zlib_sync_opts_info" : "scr_zlib_sync_opts_info_dyn";
+    host.declare(`declare ptr @${sym}(double, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "zlib.infoPromise" || e.fn === "zlib.infoPromiseDyn") {
+    // (mode, data, options): the promise settles with the checked object.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoPromise"
+        ? "scr_zlib_codec_promise_info"
+        : "scr_zlib_codec_promise_info_dyn";
+    host.declare(`declare ptr @${sym}(ptr, double, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "zlib.infoCb" || e.fn === "zlib.infoCbDyn") {
+    // (mode, data, options, callback): the callback's result parameter is
+    // the checked object, so the adapter passes the dyn through.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
+    host.toHeap(args[3]!);
+    const adapter = host.zlibDynThunkFor(cbT);
+    const sym =
+      e.fn === "zlib.infoCb"
+        ? "scr_zlib_codec_async_opts_info"
+        : "scr_zlib_codec_async_opts_info_dyn";
     host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
     B.line(
       `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
@@ -651,6 +706,35 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_fs_glob_free(ptr ${snap})`);
     return arrayOut;
   }
+  if (
+    e.fn === "fs.mkdirObjSync" ||
+    e.fn === "fs.mkdirObjStrSync" ||
+    e.fn === "fs.mkdirDynSync" ||
+    e.fn === "fs.mkdirModeValueSync" ||
+    e.fn === "fs.mkdirModeStrValueSync"
+  ) {
+    // `string | undefined` — the first directory a recursive walk created,
+    // or NULL when it created none (the non-recursive forms always answer
+    // NULL). The runtime answers +1, which the call site owns.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (strTag < 0 || undefTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    const decls = args.map((a) => {
+      const ty = host.llType(a.type);
+      return ty === "i1" ? "i1 zeroext" : ty;
+    });
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(${decls.join(", ")})`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(${args.map((a, i) => `${decls[i]} ${a.name}`).join(", ")})`);
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, STRING, strTag, e.type, undefTag);
+  }
   if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
     // `Stats | undefined` — the runtime answers a +1 Stats, or NULL for a
     // missing entry when throwIfNoEntry is false (other failures throw).
@@ -672,6 +756,28 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
     );
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
+  }
+  if (e.fn === "fs.statsFromDynOpt") {
+    // `Stats | undefined` — the runtime answers a +1 Stats extracted from
+    // the checked-dynamic object, or NULL for the dynamic undefined a
+    // suppressed missing entry answers (a value outside the type throws).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const value = host.emitExpr(e.args[0]!);
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(ptr ${value.name})`);
     host.emitPendingCheck();
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
@@ -749,9 +855,11 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   if (e.fn === "dir.readSync" || e.fn === "dir.read") {
     // `Dirent | null`: scr_dir_read answers the next entry's +1 name and
     // kind, or false at the end; the row is the call site's Dirent record
-    // (parentPath is the Dir's path), built only for an entry. The sync
-    // form checks a closed-Dir error first; the promise form lets
-    // settled_ref turn it into a rejection of the (null) dummy.
+    // (parentPath is the Dir's path), built only for an entry. The promise
+    // form consumes without the concurrent-operations check (its result is
+    // delivered in the Dir's operation order) and hands the entry to
+    // scr_dir_read_promise, which settles at the entry's delivery point; a
+    // closed Dir leaves the pending error for the promise to reject with.
     const promiseForm = e.fn === "dir.read";
     const unionT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
     if (unionT.kind !== "union")
@@ -765,19 +873,27 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (!recT || recT.kind !== "record" || nullTag < 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const dir = host.emitExpr(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`);
+    host.declare(
+      promiseForm
+        ? `declare zeroext i1 @scr_dir_read_async(ptr, ptr, ptr, ptr)`
+        : `declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`,
+    );
     host.declare(`declare ptr @scr_dir_path(ptr)`);
     const nameSlot = B.slot();
     const kindSlot = B.slot();
     const rowSlot = B.slot();
+    const bufferedSlot = promiseForm ? B.slot() : "";
     B.entryAllocas.push(
       `${nameSlot} = alloca ptr`,
       `${kindSlot} = alloca double`,
       `${rowSlot} = alloca ptr`,
+      ...(promiseForm ? [`${bufferedSlot} = alloca i1`] : []),
     );
     const has = B.tmp();
     B.line(
-      `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
+      promiseForm
+        ? `${has} = call zeroext i1 @scr_dir_read_async(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot}, ptr ${bufferedSlot})`
+        : `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
     );
     if (!promiseForm) host.emitPendingCheck();
     B.line(`store ptr null, ptr ${rowSlot}`);
@@ -804,11 +920,13 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const value = host.wrapNullable(raw, raw, recT, recTag, unionT, nullTag);
     if (!promiseForm) return value;
     const rc = vAdapters(host.shapeHost, unionT);
-    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_dir_read_promise(ptr, ptr, i1, ptr, ptr, ptr)`);
     host.toHeap(value);
+    const buffered = B.tmp();
+    B.line(`${buffered} = load i1, ptr ${bufferedSlot}`);
     const promise = B.tmp();
     B.line(
-      `${promise} = call ptr @scr_promise_settled_ref(ptr ${value.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
+      `${promise} = call ptr @scr_dir_read_promise(ptr ${dir.name}, ptr ${value.name}, i1 ${buffered}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
     );
     return host.own({ name: promise, type: e.type });
   }

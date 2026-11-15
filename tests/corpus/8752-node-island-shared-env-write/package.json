@@ -1,0 +1,1 @@
+{ "name": "island-shared-env-write", "private": true, "type": "module", "scriptc": { "packages": { "first-pkg": "node", "second-pkg": "node", "base-cfg": "node" } } }

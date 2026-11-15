@@ -1,0 +1,8 @@
+function-namespace-bare-write.ts:9:3 - error SC1090: assignment to 'prefix' by its bare name inside the function+namespace merge 'fmt' is not supported yet
+
+   8 |   export let prefix = "#";
+   9 |   prefix = "$";
+     |   ^~~~~~
+  10 |   console.log(prefix);
+
+  hint: the member is a property of the function object; write fmt.prefix

@@ -30,3 +30,11 @@ console.log(JSON.stringify([dropping]));
 const plain: Row = { id: 5 };
 plain["note"] = "kept";
 console.log(JSON.stringify({ plain, hooked: row }));
+
+// The hook runs with the record as its `this`, as JSON.stringify calls it.
+const fromThis: Row = { id: 6 };
+fromThis["toJSON"] = function (this: Row) {
+  return { was: this.id };
+};
+console.log(JSON.stringify({ fromThis }));
+console.log(JSON.stringify([fromThis]));

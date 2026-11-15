@@ -18922,7 +18922,7 @@ static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *val
  * leaving the member to the type-directed writer, and true once it wrote or
  * dropped the member (an exception may be pending). */
 bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const ScrStr *key,
-                                   bool *first) {
+                                   ScrDyn *receiver, bool *first) {
   ScrStr *name = scr_str_new("toJSON", 6);
   ScrDyn *hook = scr_map_get_str_ref(map, name);
   scr_str_release(name);
@@ -18933,7 +18933,9 @@ bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const 
   }
   ScrDyn *keyArg = scr_json_key_arg(key, 0);
   ScrDyn *args[] = {keyArg};
+  if (receiver) scr_dyn_this_push_dyn(receiver);
   ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  if (receiver) scr_dyn_this_pop();
   scr_dyn_release(keyArg);
   scr_dyn_release(hook);
   if (!value) return true; /* exception pending: the member is not written */
@@ -18944,7 +18946,7 @@ bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const 
 /* scr_jb_put_record_hook_member for an array slot: the hook's key is the
  * index as a string, and an undefined, function or symbol answer is the
  * slot's null. */
-bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index) {
+bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index, ScrDyn *receiver) {
   ScrStr *name = scr_str_new("toJSON", 6);
   ScrDyn *hook = scr_map_get_str_ref(map, name);
   scr_str_release(name);
@@ -18955,7 +18957,9 @@ bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index) {
   }
   ScrDyn *keyArg = scr_json_key_arg(NULL, (size_t)index);
   ScrDyn *args[] = {keyArg};
+  if (receiver) scr_dyn_this_push_dyn(receiver);
   ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  if (receiver) scr_dyn_this_pop();
   scr_dyn_release(keyArg);
   scr_dyn_release(hook);
   if (!value) return true;

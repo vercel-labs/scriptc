@@ -82,6 +82,10 @@ export interface WalkerHost extends ShapeHost {
   /** `@`-ref of the checked-dynamic converter for `t`: returns an owned
    * (+1) box of the value. */
   toDynHelper(t: IrType): string;
+  /** An owned (+1) checked-dynamic value for `t` that keeps its identity:
+   * records and arrays come back as live references, so a hook can read
+   * the value it was installed on as `this`. */
+  streamTypedRefBoxValue(B: BlockBuilder, t: IrType, value: string): string;
 }
 
 const FN_ATTRS = "#0";
@@ -1123,12 +1127,15 @@ export class LlWalkers {
         let plain: string | null = null;
         if (map !== null) {
           host.declare(
-            `declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr)`,
+            `declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr, ptr)`,
           );
+          const receiver = host.streamTypedRefBoxValue(B, arm, p);
           const handled = B.tmp();
           B.line(
-            `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${first})`,
+            `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${receiver}, ptr ${first})`,
           );
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${receiver})`);
           plain = B.newLabel("jbu.p");
           B.condBr(handled, done, plain);
           B.startBlock(plain);
@@ -1188,11 +1195,14 @@ export class LlWalkers {
         const map = this.recordHookMap(B, p, arm.shapeId);
         let plain: string | null = null;
         if (map !== null) {
-          host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double)`);
+          host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double, ptr)`);
+          const receiver = host.streamTypedRefBoxValue(B, arm, p);
           const handled = B.tmp();
           B.line(
-            `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index})`,
+            `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index}, ptr ${receiver})`,
           );
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${receiver})`);
           plain = B.newLabel("jue.p");
           B.condBr(handled, done, plain);
           B.startBlock(plain);
@@ -1244,11 +1254,16 @@ export class LlWalkers {
     const map = t.kind === "record" ? this.recordHookMap(B, v, t.shapeId) : null;
     let done: string | null = null;
     if (map !== null) {
-      host.declare(`declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr)`);
+      host.declare(
+        `declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr, ptr)`,
+      );
+      const receiver = host.streamTypedRefBoxValue(B, t, v);
       const handled = B.tmp();
       B.line(
-        `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${first})`,
+        `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${receiver}, ptr ${first})`,
       );
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${receiver})`);
       const plain = B.newLabel("jbm.plain");
       done = B.newLabel("jbm.done");
       B.condBr(handled, done, plain);
@@ -1293,11 +1308,14 @@ export class LlWalkers {
     const map = t.kind === "record" ? this.recordHookMap(B, v, t.shapeId) : null;
     let done: string | null = null;
     if (map !== null) {
-      host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double)`);
+      host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double, ptr)`);
+      const receiver = host.streamTypedRefBoxValue(B, t, v);
       const handled = B.tmp();
       B.line(
-        `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index})`,
+        `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index}, ptr ${receiver})`,
       );
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${receiver})`);
       const plain = B.newLabel("jbe.plain");
       done = B.newLabel("jbe.done");
       B.condBr(handled, done, plain);

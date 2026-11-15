@@ -2963,6 +2963,7 @@ export class LlEmitter {
       jsonClassDynWrite: (B, buf, obj, className) =>
         emitClassJsonDynWrite(this, B, buf, obj, className),
       toDynHelper: (t) => this.dyn.toDynHelper(t),
+      streamTypedRefBoxValue: (B, t, value) => this.streamTypedRefBoxValue(B, t, value),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       nodeIslands: () => this.nodeIslands,

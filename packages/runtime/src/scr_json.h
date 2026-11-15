@@ -221,12 +221,13 @@ void scr_jb_put_dyn_member(ScrJsonBuf *b, void *rec, const ScrStr *key, const Sc
  * The hook answers for the whole record, whose fields are then not written.
  * Answers false and writes nothing when the entry is absent or not
  * callable, so the caller writes the member from the type-directed writer.
+ * `receiver`, when not NULL, is the record itself as the hook's `this`.
  * May leave an exception pending. */
 bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const ScrStr *key,
-                                   bool *first);
+                                   ScrDyn *receiver, bool *first);
 /* scr_jb_put_record_hook_member for an ARRAY slot: the hook's key is the
  * index as a string, and an omitted answer is the slot's null. */
-bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index);
+bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index, ScrDyn *receiver);
 /* scr_jb_put_dyn for the ROOT value: its toJSON runs with the empty key,
  * then the result is written. An omitted result (JSON.stringify returns the
  * undefined value) is appended as the text `undefined`, the spelling

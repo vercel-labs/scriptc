@@ -3909,6 +3909,26 @@ export class Lowerer {
       arms.every((arm) => arm.kind === "object" || arm.kind === "record" || isUnitType(arm))
     );
   }
+
+  /** Whether an IR type describes parsed data: records, or a union of them
+   * with unit arms. The record lowering holds a `JSON.parse` result and its
+   * writes the way Node's plain object does, so such an annotation keeps its
+   * storage. A class arm does not describe a plain object: a parsed value
+   * there stays checked-dynamic. */
+  jsStorageHoldsParsedData(type: IrType | null): boolean {
+    if (type === null || type.kind === "dyn") return false;
+    const arms = type.kind === "union" ? (this.unions.get(type.unionId)?.arms ?? []) : [type];
+    return (
+      arms.some((arm) => arm.kind === "record") &&
+      arms.every((arm) => arm.kind === "record" || isUnitType(arm))
+    );
+  }
+
+  /** Whether a value written to a JSDoc-typed target keeps the annotation's
+   * storage because it is parsed data the annotation describes as a record. */
+  jsParsedDataKeepsStorage(declared: ts.Type, value: ts.Expression): boolean {
+    return jsValueIsParsedData(value) && this.jsStorageHoldsParsedData(this.mapTypeOf(declared));
+  }
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
@@ -9844,7 +9864,7 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (
           !ts.isBinaryExpression(node) ||
-          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !jsStoresWrittenValue(node.operatorToken.kind) ||
           !ts.isPropertyAccessExpression(node.left) ||
           !ts.isIdentifier(node.left.name)
         )
@@ -9857,7 +9877,10 @@ export class Lowerer {
         const declared = this.checker.getTypeOfSymbol(field);
         if (!jsTypeIsTyped(declared)) return undefined;
         if (!this.jsStorageHoldsForeignValues(this.mapTypeOf(declared))) return undefined;
-        if (!jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.right)))
+        if (
+          !this.jsParsedDataKeepsStorage(declared, node.right) &&
+          !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.right))
+        )
           this.markJsWidenedField(owner, node.left.name.text);
         return undefined;
       });
@@ -9927,6 +9950,7 @@ export class Lowerer {
             if (
               jsTypeIsTyped(declared) &&
               this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) &&
+              !this.jsParsedDataKeepsStorage(declared, node.initializer) &&
               !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.initializer))
             )
               widenBinding(symbol);
@@ -9935,7 +9959,7 @@ export class Lowerer {
         }
         if (
           !ts.isBinaryExpression(node) ||
-          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !jsStoresWrittenValue(node.operatorToken.kind) ||
           !ts.isIdentifier(node.left)
         )
           return undefined;
@@ -9958,6 +9982,7 @@ export class Lowerer {
         if (!jsTypeIsTyped(declared)) return undefined;
         if (annotated && !this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)))
           return undefined;
+        if (annotated && this.jsParsedDataKeepsStorage(declared, node.right)) return undefined;
         const assigned = this.checker.getTypeAtLocation(node.right);
         if (
           annotated
@@ -15122,6 +15147,7 @@ export class Lowerer {
             name: field.name,
             type: field.type,
             runtimeOptional: field.runtimeOptional ?? false,
+            widened: field.widened ?? false,
             globalId: field.globalId,
             readonly: field.readonly,
           })),
@@ -24756,6 +24782,41 @@ function hasJsSetterParamAnnotation(param: ts.ParameterDeclaration): boolean {
   if (!accessor) return false;
   return /@param\b/.test(
     ts.getSourceFileOfNode(accessor).text.slice(accessor.pos, ts.tokenStartOfNode(param)),
+  );
+}
+
+/** Whether an assignment operator stores its right side in the target: `=`,
+ * `||=`, `&&=` and `??=`. A JSDoc-typed binding or field these write a value
+ * outside the annotation to takes checked-dynamic storage, exactly like a
+ * plain assignment. */
+function jsStoresWrittenValue(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.EqualsToken ||
+    kind === ts.SyntaxKind.BarBarEqualsToken ||
+    kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+    kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+  );
+}
+
+/** Whether a JavaScript expression's value is data a parser built: a
+ * `JSON.parse` result, possibly passed through `Object.freeze`,
+ * `Object.seal` or `Object.preventExtensions`, which answer the same object.
+ * Such a value has no class identity to keep, and a JSDoc annotation that
+ * describes it as a record holds its writes like Node's plain object. */
+function jsValueIsParsedData(expr: ts.Expression): boolean {
+  const value = withoutParenthesesAssertionsNonNull(expr);
+  if (!ts.isCallExpression(value) || !ts.isPropertyAccessExpression(value.expression)) return false;
+  const callee = value.expression;
+  if (!ts.isIdentifier(callee.expression)) return false;
+  const owner = callee.expression.text;
+  if (owner === "JSON" && callee.name.text === "parse") return true;
+  return (
+    owner === "Object" &&
+    (callee.name.text === "freeze" ||
+      callee.name.text === "seal" ||
+      callee.name.text === "preventExtensions") &&
+    value.arguments.nodes.length === 1 &&
+    jsValueIsParsedData(value.arguments.nodes[0]!)
   );
 }
 

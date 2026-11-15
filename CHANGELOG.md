@@ -6,6 +6,18 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.14
+
+### Highlights
+
+- **TypeScript parity:**
+  - `concat` whose arguments hold elements the receiver's array cannot take as they are, such as a row of strings and numbers concatenated onto a string array or a `var` that may still be undefined, runs as the checked-dynamic `concat`: it builds the mixed array JavaScript builds and appends a non-array argument as one element, instead of failing with SC1090 or SC2009.
+  - A call resolved to an overload that names a subclass of the class its implementation returns, such as a DOM factory's `createElement("canvas")` returning the canvas element class over an element implementation, checks the value against the subclass as an assertion does instead of refusing to build; a value of another class throws the assertion's `TypeError`.
+- **Fixes:**
+  - A class with static fields whose getter names a subclass declared later in the same module, used as a value from another module, no longer throws `ReferenceError: Cannot access 'Element' before initialization` at startup and prints what Node prints. The compiler-generated class helpers no longer receive the checks that guard a reference to a class made before its definition ran; the program's own references keep their checks.
+
+<!-- release:end -->
+
 ## 0.4.13
 
 ### Highlights
@@ -82,8 +94,6 @@ All notable changes to scriptc will be documented in this file.
   - The abort-signal check that net's connect path uses is linked with the net unit, so a program that links http, http2 and net without event targets builds again.
   - The sequence scope of a stabilized checked read opens with the emitter's scope pair instead of a closure: through that closure the compiler's own build had lowered `emitReadReceiver` dynamically (4,933 stack slots, 108,940 LLVM lines and 4,815 tag checks, against 409 slots and 14,196 lines), and the bootstrapped second generation overran the shard's 8 MiB stack. The emitted module of every program is unchanged.
   - A compiled program suspends when its launcher blocked SIGTSTP, restores the terminal mode at exit and on `process.exit` the way Node's `uv_tty_reset_mode` does, and clears an inherited signal mask at startup.
-
-<!-- release:end -->
 
 ## 0.4.12
 

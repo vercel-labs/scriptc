@@ -601,14 +601,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return value;
   }
-  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
+  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefBrandIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
     if (e.fn === "dyn.typedRefKeyIs" && literal === null)
       throw new InternalCompilerError("llvm emitter bug: dyn.typedRefKeyIs needs a literal key");
     // A literal brand cannot replace the receiver while being evaluated.
     // Generated class dispatch uses these probes repeatedly on one local.
     const value = literal !== null ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-    const key = e.fn === "dyn.typedRefIs" ? host.emitExpr(e.args[1]!) : null;
+    const keyed = e.fn !== "dyn.typedRefKeyIs";
+    const key = keyed ? host.emitExpr(e.args[1]!) : null;
     // Expose the capsule tag to LLVM so class dispatch can skip the whole
     // chain of brand comparisons for ordinary checked-dynamic values.
     // Keep the runtime's null handling and evaluate both operands once.
@@ -680,12 +681,14 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.startBlock(full);
       }
     }
-    if (e.fn === "dyn.typedRefIs") {
-      host.declare("declare zeroext i1 @scr_dyn_typed_ref_is_key(ptr, ptr) memory(read)");
+    if (keyed) {
+      const test =
+        e.fn === "dyn.typedRefBrandIs"
+          ? "scr_dyn_typed_ref_brand_is_key"
+          : "scr_dyn_typed_ref_is_key";
+      host.declare(`declare zeroext i1 @${test}(ptr, ptr) memory(read)`);
       const matches = B.tmp();
-      B.line(
-        `${matches} = call zeroext i1 @scr_dyn_typed_ref_is_key(ptr ${value.name}, ptr ${key!.name})`,
-      );
+      B.line(`${matches} = call zeroext i1 @${test}(ptr ${value.name}, ptr ${key!.name})`);
       B.line(`store i1 ${matches}, ptr ${slot}`);
       B.br(done);
     }

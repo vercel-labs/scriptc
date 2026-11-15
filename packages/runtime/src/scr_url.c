@@ -2487,11 +2487,22 @@ static bool sp_pair_units(const ScrDyn *row, ScrStr **name, ScrStr **value) {
     if (scr_dyn_arr_len(row) != 2) { sp_throw_invalid_tuple(); return false; }
     ScrDyn *first = scr_dyn_arr_at(row, 0);
     ScrDyn *second = scr_dyn_arr_at(row, 1);
-    *name = first ? scr_util_to_usv_string(first) : NULL;
-    *value = first && !scr_exc_pending() && second ? scr_util_to_usv_string(second) : NULL;
+    ScrStr *converted_name = first ? scr_util_to_usv_string(first) : NULL;
+    ScrStr *converted_value =
+        converted_name && !scr_exc_pending() && second ? scr_util_to_usv_string(second) : NULL;
     scr_dyn_release(first);
     scr_dyn_release(second);
-    return *name && *value;
+    if (!converted_name || !converted_value) {
+      /* The conversion that threw leaves the sibling it had already
+       * converted: the row fails as a whole, so nothing it produced
+       * outlives the call. */
+      scr_str_release(converted_name);
+      scr_str_release(converted_value);
+      return false;
+    }
+    *name = converted_name;
+    *value = converted_value;
+    return true;
   }
   ScrDyn *iterator = scr_dyn_iterator_optional(row);
   if (!iterator) {

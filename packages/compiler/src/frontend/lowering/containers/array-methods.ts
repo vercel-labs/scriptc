@@ -1327,7 +1327,18 @@ export function lowerArrayMethodCall(
         // that boundary before spreading the represented elements.
         let arg = lowerer.lowerExpr(argNode);
         if (arg.type.kind === "dyn") arg = lowerer.coerceInto(argNode, arg, argArrayType);
-        if (arg.type.kind !== "array") lowerer.badType(argNode, lowerer.typeOf(argNode));
+        // An argument the receiver's array cannot take as it is: an array
+        // whose elements are wider than the receiver's (`["a"].concat(row)`
+        // with `row` holding strings and numbers, which the checker types as
+        // the receiver's array), or a value that is an array or something
+        // else (a `var` that may still be undefined). JavaScript's concat
+        // builds a mixed array, or appends the non-array as one element; the
+        // checked-dynamic concat does exactly that.
+        if (
+          arg.type.kind !== "array" ||
+          !identityPreservingWidening(lowerer, arg.type.elem, elem, true)
+        )
+          return dynamicConcat(lowerer, call, access, receiver, loc);
         shape.push(arg.type.elem);
         args.push(arg);
         continue;
@@ -3218,4 +3229,27 @@ function lowerArrayAtCall(
     });
   }
   return { kind: "call", callee: name, args: [receiver, index], type: resultT, loc };
+}
+
+/** `a.concat(...)` as the checked-dynamic concat: the receiver (already
+ * lowered) and the arguments evaluate in order, and the runtime spreads each
+ * argument that is an array and appends every other one, as JavaScript does.
+ * The result is the checked-dynamic array, so elements of any types keep
+ * their values; a typed use of it converts with the checked conversion. */
+function dynamicConcat(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.coerceToExpected(receiver, DYN),
+    method: "concat",
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((argNode) => lowerer.lowerExprExpecting(argNode, DYN)),
+    type: DYN,
+    loc,
+  };
 }

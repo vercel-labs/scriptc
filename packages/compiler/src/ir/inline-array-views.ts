@@ -87,6 +87,7 @@ const READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.toDyn",
   "dyn.this",
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
   "dyn.classValueHash",

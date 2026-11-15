@@ -1,6 +1,6 @@
-// An untyped module that only asks for the binding's type. `typeof` never
-// reads the storage, so it compiles even though `document` is not
-// initialized until the module holding its class finishes.
+// An untyped module that only asks for the binding's type. Its function is
+// called after `document` is initialized, so `typeof` answers "object"
+// (cycle-typeof-binding covers a `typeof` that runs before).
 import { document } from "./dom.ts";
 
 export function label() {

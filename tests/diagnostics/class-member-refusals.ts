@@ -51,23 +51,20 @@ class Plotter extends Printer {
 console.log(new Printer().print("a", 1));
 console.log(new Plotter().print());
 
-// a getter/setter pair with different types: the getter compiles, the
+// a setter whose parameter type has no mapping: the getter compiles, the
 // setter is refused
 class Cell {
   private raw = "1";
   get v(): string {
     return this.raw;
   }
-  set v(x: string | number) {
+  set v(x: BigInt64Array<ArrayBuffer>) {
     this.raw = String(x);
   }
 }
 const cell = new Cell();
 console.log(cell.v);
-cell.v = 3;
-// a compound assignment reads the getter and writes the setter
-const other = new Cell();
-other.v += "!";
+cell.v = new BigInt64Array(1);
 
 // an accessor whose type has no mapping
 class Holder {

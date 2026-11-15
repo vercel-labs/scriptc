@@ -359,6 +359,59 @@ static void sw_teardown(SwCtx *c) {
   sw_unref(c); /* the live list's reference */
 }
 
+/* The adapter reached its terminal state (the node side ended, errored or
+ * was canceled, or the web side closed or aborted): unlink it from the live
+ * list and drop the node stream, the controller and the web stream it owned.
+ * The event listeners stay attached to the streams the caller still holds,
+ * as Node's adapters leave them (a completed adapter reports the same
+ * listener counts as Node's), so the context itself now lives only while
+ * one of those callbacks references it, and a program that adapts a stream
+ * per operation no longer accumulates the streams until exit. */
+static void sw_finish(SwCtx *c) {
+  if (!c->live) return;
+  c->live = false;
+  if (c->live_prev) c->live_prev->live_next = c->live_next;
+  else if (sw_live == c) sw_live = c->live_next;
+  if (c->live_next) c->live_next->live_prev = c->live_prev;
+  c->live_prev = c->live_next = NULL;
+  /* Our slot references: the streams own the listeners now. */
+  if (c->l_data) {
+    scr_closure_release(c->l_data);
+    c->l_data = NULL;
+  }
+  if (c->l_drain) {
+    scr_closure_release(c->l_drain);
+    c->l_drain = NULL;
+  }
+  if (c->l_error) {
+    scr_closure_release(c->l_error);
+    c->l_error = NULL;
+  }
+  sw_eos_cleanup(c);
+  if (c->controller) {
+    scr_dyn_release(c->controller);
+    c->controller = NULL;
+  }
+  if (c->bp) {
+    scr_dyn_release(c->bp);
+    c->bp = NULL;
+  }
+  if (c->closed_p) {
+    scr_promise_release(c->closed_p);
+    c->closed_p = NULL;
+  }
+  if (c->web) {
+    scr_dyn_release(c->web);
+    c->web = NULL;
+  }
+  if (c->node) {
+    ScrStream *s = c->node;
+    c->node = NULL;
+    scr_stream_release(s);
+  }
+  sw_unref(c); /* the live list's reference */
+}
+
 static void sw_atexit(void) {
   while (sw_live) sw_teardown(sw_live);
 }
@@ -464,6 +517,7 @@ static void sw_rd_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
                     (void *)&scr_ee_inv_fixed1, c);
   if (c->was_canceled || !c->controller) {
     if (error) scr_error_release(error);
+    sw_finish(c);
     sw_unref(c);
     return;
   }
@@ -479,6 +533,7 @@ static void sw_rd_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
     ScrDyn *r = sw_invoke(c->controller, "close", NULL, 0, "controller.close");
     if (r) scr_dyn_release(r);
   }
+  sw_finish(c);
   sw_unref(c);
 }
 
@@ -643,6 +698,7 @@ static void sw_wr_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
       c->controller = NULL;
     }
     scr_error_release(error);
+    sw_finish(c);
     sw_unref(c);
     return;
   }
@@ -652,6 +708,7 @@ static void sw_wr_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
     c->closed_started = false;
     scr_promise_fulfill_void(p);
     scr_promise_release(p);
+    sw_finish(c);
     sw_unref(c);
     return;
   }
@@ -668,6 +725,7 @@ static void sw_wr_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
     scr_dyn_release(c->controller);
     c->controller = NULL;
   }
+  sw_finish(c);
   sw_unref(c);
 }
 
@@ -1376,10 +1434,17 @@ static void swf_closed_entry(ScrFiber *fiber, void *arg) {
   swf_unref(w.c);
 }
 
-static void swf_watch_closed(SwfCtx *c, ScrDyn *object, bool reader) {
-  ScrStr *key = scr_str_new("closed", 6);
-  ScrDyn *closed = object ? scr_dyn_handle_key_get(object, key) : NULL;
-  scr_str_release(key);
+/* The acquisition's `closed` value. The writer or reader is whatever the
+ * stream's getWriter/getReader answered, and those methods are overridable:
+ * read `closed` through the checked dynamic read, which dispatches on the
+ * value's kind, rather than the native handle access the browser-stream
+ * writer's slot needs. A custom stream that answers an ordinary value must
+ * not make that value's union fields a handle tag and pointer. Answers +1
+ * (undefined when absent) or NULL with the read's exception pending. */
+static ScrDyn *swf_closed_of(ScrDyn *object) { return sw_get(object, "closed"); }
+
+/* Watch a closed value the factory read before it rooted anything (owned). */
+static void swf_watch_closed(SwfCtx *c, ScrDyn *closed, bool reader) {
   if (!closed) return;
   if (closed->kind == SCR_DYN_PROMISE) {
     SwfClosed *w = malloc(sizeof *w);
@@ -1487,6 +1552,27 @@ static void swf_opts_release(SwfOpts *o) {
   o->hwm = o->object = o->encoding = o->decode = o->half_open = o->signal = NULL;
 }
 
+/* The `signal` option on a rooted adapter. Node passes it to the stream
+ * constructor, which validates it and throws out of the factory; here the
+ * stream already exists, so a rejected signal must give the rooted context
+ * back, or every rejected call would leave a stream the caller never
+ * received (with its writer, reader and callbacks) on the live list until
+ * process exit. Answers false with Node's validation exception pending. */
+static bool swf_attach_signal(SwfCtx *c, ScrStream *s, const ScrDyn *signal) {
+  if (!signal || signal->kind == SCR_DYN_UNDEF || signal->kind == SCR_DYN_NULL) return true;
+  ScrStream *held =
+      scr_stream_add_abort_signal(s, (ScrDyn *)signal, true, scr_events_add_abort_listener);
+  if (held) {
+    scr_stream_release(held);
+    return true;
+  }
+  /* The close hook names the context, so clear it before the context goes:
+   * nothing else can close a stream the caller never received. */
+  scr_stream_set_closed_hook(s, NULL, NULL);
+  swf_teardown(c);
+  return false;
+}
+
 /* Node's newStreamWritableFromWritableStream. +1, or NULL with the
  * exception pending. */
 ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const ScrDyn *options) {
@@ -1512,6 +1598,15 @@ ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const Scr
     swf_opts_release(&o);
     return NULL;
   }
+  /* Node reads writer.closed after it builds the stream; a read that throws
+   * leaves no adapter for the caller, so it happens before anything is
+   * rooted. */
+  ScrDyn *writer_closed = swf_closed_of(writer);
+  if (!writer_closed) {
+    swf_opts_release(&o);
+    scr_dyn_release(writer);
+    return NULL;
+  }
   SwfCtx *c = calloc(1, sizeof *c);
   if (!c) abort();
   c->rc = 1;
@@ -1521,6 +1616,7 @@ ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const Scr
   scr_dyn_release(bag);
   if (!s) {
     swf_opts_release(&o);
+    scr_dyn_release(writer_closed);
     if (c->writer) scr_dyn_release(c->writer);
     free(c);
     return NULL;
@@ -1528,11 +1624,14 @@ ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const Scr
   c->node = scr_stream_retain(s);
   swf_push_live(c);
   scr_stream_set_closed_hook(s, &swf_closed_hook, c);
-  if (o.signal && o.signal->kind != SCR_DYN_UNDEF && o.signal->kind != SCR_DYN_NULL)
-    scr_stream_release(scr_stream_add_abort_signal(s, o.signal, true,
-                                                   scr_events_add_abort_listener));
+  if (!swf_attach_signal(c, s, o.signal)) {
+    swf_opts_release(&o);
+    scr_dyn_release(writer_closed);
+    scr_stream_release(s); /* the caller's reference */
+    return NULL;
+  }
   swf_opts_release(&o);
-  swf_watch_closed(c, c->writer, false);
+  swf_watch_closed(c, writer_closed, false);
   return s;
 }
 
@@ -1576,6 +1675,19 @@ static ScrStream *swf_duplex_from_web(const ScrDyn *pair, const ScrDyn *options)
     swf_opts_release(&o);
     return NULL;
   }
+  /* Node reads writer.closed and reader.closed after it builds the duplex;
+   * a read that throws leaves no adapter for the caller, so both happen
+   * before anything is rooted. */
+  ScrDyn *writer_closed = swf_closed_of(writer);
+  ScrDyn *reader_closed = writer_closed ? swf_closed_of(reader) : NULL;
+  if (!writer_closed || !reader_closed) {
+    if (writer_closed) scr_dyn_release(writer_closed);
+    if (reader_closed) scr_dyn_release(reader_closed);
+    scr_dyn_release(writer);
+    scr_dyn_release(reader);
+    swf_opts_release(&o);
+    return NULL;
+  }
   SwfCtx *c = calloc(1, sizeof *c);
   if (!c) abort();
   c->rc = 1;
@@ -1591,6 +1703,8 @@ static ScrStream *swf_duplex_from_web(const ScrDyn *pair, const ScrDyn *options)
   scr_dyn_release(bag);
   if (!s) {
     swf_opts_release(&o);
+    scr_dyn_release(writer_closed);
+    scr_dyn_release(reader_closed);
     if (c->writer) scr_dyn_release(c->writer);
     if (c->reader) scr_dyn_release(c->reader);
     free(c);
@@ -1599,12 +1713,16 @@ static ScrStream *swf_duplex_from_web(const ScrDyn *pair, const ScrDyn *options)
   c->node = scr_stream_retain(s);
   swf_push_live(c);
   scr_stream_set_closed_hook(s, &swf_closed_hook, c);
-  if (o.signal && o.signal->kind != SCR_DYN_UNDEF && o.signal->kind != SCR_DYN_NULL)
-    scr_stream_release(scr_stream_add_abort_signal(s, o.signal, true,
-                                                   scr_events_add_abort_listener));
+  if (!swf_attach_signal(c, s, o.signal)) {
+    swf_opts_release(&o);
+    scr_dyn_release(writer_closed);
+    scr_dyn_release(reader_closed);
+    scr_stream_release(s); /* the caller's reference */
+    return NULL;
+  }
   swf_opts_release(&o);
-  swf_watch_closed(c, c->writer, false);
-  swf_watch_closed(c, c->reader, true);
+  swf_watch_closed(c, writer_closed, false);
+  swf_watch_closed(c, reader_closed, true);
   return s;
 }
 

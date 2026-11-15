@@ -576,6 +576,12 @@ typedef struct ScrDnsqQuery {
   unsigned gen;
   int qtype;
   unsigned char id[2];
+  /* The wire-encoded question name the packet carries: a response is only
+   * this query's answer when its question matches these bytes (and the type
+   * and class below), so a packet that merely guessed the transaction id
+   * cannot settle the query. */
+  unsigned char qname[SCR_DNSQ_NAME_MAX];
+  size_t qname_len;
   unsigned char *pkt;
   size_t pkt_len;
   int fd;     /* -1 when none */
@@ -596,7 +602,21 @@ typedef struct ScrDnsqQuery {
 
 static ScrDnsqQuery *scr_dnsq_live; /* doubly linked, in start order */
 
-static unsigned scr_dnsq_next_id = 0x5c00;
+/* A transaction id from the system CSPRNG. A counter (a fresh process always
+ * starts at the same value) lets an off-path sender predict the answer it
+ * has to spoof once it guesses the ephemeral port; c-ares draws random ids
+ * for the same reason.
+ *
+ * Only the id's randomness matters, not its uniqueness across queries: every
+ * query owns a socket — scr_dnsq_start_attempt creates one, binds it to an
+ * ephemeral port and connects it to the server — and its responses are read
+ * from that descriptor and matched against that query's own id. A packet on
+ * another query's socket is never compared with this one, so two queries may
+ * carry the same id without ambiguity — and allocation is a single draw that
+ * always finishes, however many queries are outstanding. */
+static void scr_dnsq_pick_id(ScrDnsqQuery *q) {
+  arc4random_buf(q->id, sizeof q->id);
+}
 
 enum {
   T_A = 1,
@@ -1476,6 +1496,50 @@ static void scr_dnsq_response(ScrDnsqQuery *q, const unsigned char *buf, size_t 
   scr_dnsq_finish(q, NULL, result);
 }
 
+/* Whether a packet answers the outstanding query: the response bit, the
+ * QUERY opcode, exactly one question, and that question's encoded name,
+ * type and class matching the request. Anything else is not this query's
+ * answer and is ignored — accepting it would let an off-path sender who
+ * guesses the transaction id (and the ephemeral port) hand the program a
+ * forged answer. */
+static bool scr_dnsq_matches(const ScrDnsqQuery *q, const unsigned char *buf, size_t len) {
+  if (len < 12) return false;
+  if (buf[0] != q->id[0] || buf[1] != q->id[1]) return false;
+  if ((buf[2] & 0x80) == 0) return false; /* QR: a response */
+  if ((buf[2] & 0x78) != 0) return false; /* opcode 0: a standard query */
+  unsigned qd = ((unsigned)buf[4] << 8) | buf[5];
+  /* A truncated answer may carry no question at all; its TC bit only moves
+   * the query to TCP, where the answer is read and validated again. */
+  if (qd == 0 && (buf[2] & 0x02) != 0) return true;
+  if (qd != 1 || q->qname_len == 0) return false;
+  /* The question is the name this query sent, echoed uncompressed. */
+  size_t at = 12, wire = 0;
+  for (;;) {
+    if (at >= len) return false;
+    unsigned label = buf[at];
+    if (label == 0) {
+      wire = at + 1 - 12;
+      break;
+    }
+    if ((label & 0xc0) != 0) return false; /* a pointer: not our echo */
+    if (at + 1 + label > len) return false;
+    at += 1 + label;
+  }
+  if (wire != q->qname_len) return false;
+  /* DNS names compare case-insensitively. */
+  for (size_t i = 0; i < wire; i++) {
+    unsigned a = buf[12 + i], b = q->qname[i];
+    if (a >= 'A' && a <= 'Z') a += 32;
+    if (b >= 'A' && b <= 'Z') b += 32;
+    if (a != b) return false;
+  }
+  size_t tail = 12 + wire;
+  if (tail + 4 > len) return false;
+  unsigned qtype = ((unsigned)buf[tail] << 8) | buf[tail + 1];
+  unsigned qclass = ((unsigned)buf[tail + 2] << 8) | buf[tail + 3];
+  return qtype == (unsigned)q->qtype && qclass == 1; /* IN */
+}
+
 static void scr_dnsq_udp_ready(ScrDnsqQuery *q) {
   unsigned char buf[4096];
   for (;;) {
@@ -1501,8 +1565,7 @@ static void scr_dnsq_udp_ready(ScrDnsqQuery *q) {
       return; /* EAGAIN and friends: wait for the next readiness */
     }
     if (n == 0) return;
-    if ((size_t)n < 12) continue;
-    if (buf[0] != q->id[0] || buf[1] != q->id[1]) continue;
+    if (!scr_dnsq_matches(q, buf, (size_t)n)) continue; /* not this query's answer */
     scr_dnsq_response(q, buf, (size_t)n);
     return;
   }
@@ -1570,6 +1633,13 @@ static void scr_dnsq_tcp_read(ScrDnsqQuery *q) {
       q->have_len = true;
     }
     if (q->have_len && q->rlen >= q->want + 2) {
+      /* The peer is the configured server, but the frame it answered with
+       * must still be this query's response: a stream that carries
+       * somebody else's answer is a bad response, not a result. */
+      if (!scr_dnsq_matches(q, q->rbuf + 2, q->want)) {
+        scr_dnsq_finish(q, "EBADRESP", NULL);
+        return;
+      }
       scr_dnsq_response(q, q->rbuf + 2, q->want);
       return;
     }
@@ -1713,22 +1783,24 @@ static int scr_dnsq_start(ScrDnsResolver *r, const ScrStr *binding, const ScrDyn
    * (ü.test is 6 bytes and xn--tda.test is 12), so sizing from the input
    * would cut a valid name into EBADNAME. */
   bool bad = false;
-  unsigned char qname[512];
+  unsigned char qname[SCR_DNSQ_NAME_MAX];
   size_t n = scr_dnsq_encode_name(q->host, qname, sizeof qname, &bad);
   /* The question packet. */
   size_t cap = 12 + n + 4;
   q->pkt = malloc(cap);
   if (q->pkt == NULL) scr_trap("scriptc: out of memory\n");
-  scr_dnsq_next_id = (scr_dnsq_next_id + 1) & 0xffff;
-  q->id[0] = (unsigned char)(scr_dnsq_next_id >> 8);
-  q->id[1] = (unsigned char)(scr_dnsq_next_id & 0xff);
+  scr_dnsq_pick_id(q);
   memset(q->pkt, 0, 12);
   q->pkt[0] = q->id[0];
   q->pkt[1] = q->id[1];
   q->pkt[2] = 0x01; /* RD */
   q->pkt[4] = 0x00;
   q->pkt[5] = 0x01; /* QDCOUNT */
-  if (!bad) memcpy(q->pkt + 12, qname, n);
+  if (!bad) {
+    memcpy(q->pkt + 12, qname, n);
+    memcpy(q->qname, qname, n);
+  }
+  q->qname_len = bad ? 0 : n;
   /* link */
   q->prev = NULL;
   q->next = scr_dnsq_live;
@@ -2114,6 +2186,11 @@ static bool scr_dnsq_servers_parse(const ScrDyn *servers, ScrDnsServerList *list
   const ScrDyn *read = scr_dnsq_arg_read(servers, &view);
   bool ok = scr_dnsq_servers_parse_plain(read, list);
   if (view != NULL) scr_dyn_release(view);
+  /* A rejected configuration keeps none of the prefix it had parsed: every
+   * setter abandons the list, and the applications that feed it
+   * request-provided addresses would accumulate that memory on each
+   * refusal. */
+  if (!ok) scr_dnsq_server_list_free(list);
   return ok;
 }
 

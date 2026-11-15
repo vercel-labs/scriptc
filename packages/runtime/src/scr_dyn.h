@@ -1451,6 +1451,12 @@ double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
  * than 2 and 3) and the index its next step reads from. */
 void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
                                    ScrMap **collection, double *index);
+/* For util.inspect: a retained (+1) reference to the collection a Map or Set
+ * iterator reads, or NULL once the iterator is exhausted. A render invokes
+ * program code between entries, and that code can consume the iterator, which
+ * drops the iterator's own reference to the collection; a render that keeps
+ * reading the collection holds it through this accessor. */
+ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
 /* A compiled program that boxes generators and calls iterator helpers on
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
@@ -1582,6 +1588,9 @@ ScrDyn *scr_dyn_new_typed_ref_observed(
 bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_prototypes_replaced(void);
+bool scr_dyn_prototype_replaced(const ScrDyn *d);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 /* Record views (scr_json.c): a checked conversion's view of the record a
  * capsule holds, or NULL. */
@@ -2295,6 +2304,11 @@ bool scr_dyn_truthy(const ScrDyn *d);
 /* Math.max/Math.min(...src) over an untyped iterable; `what` names the
  * source in V8's null/undefined spread TypeError. NaN with it pending. */
 double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what);
+/* Math.max/Math.min/Math.hypot over a call's argument pack, whose spread
+ * operands only the run time knows: every value converts through ToNumber
+ * once, in pack order; mode 0 max, 1 min, 2 hypot. NaN with an exception
+ * pending when a conversion throws. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode);
 int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee);
 /* JS String() over a dyn value (arrays join, [object Object], the error
  * encoding renders "name: message"); borrowed, result +1, never throws. */

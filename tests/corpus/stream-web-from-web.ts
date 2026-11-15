@@ -106,6 +106,32 @@ async function main(): Promise<void> {
   ac.abort();
   await aborted;
   out("abort close");
+
+  // The signal option is validated the way the stream constructors validate
+  // it, and the rejected construction throws out of the factory: the adapter
+  // it had begun to build never reaches the caller.
+  const rejected = (label: string, build: () => unknown): void => {
+    try {
+      build();
+      out(`${label} accepted`);
+    } catch (error) {
+      const e = error as Error & { code?: string };
+      out(`${label} ${e.name} ${String(e.code)} ${e.message}`);
+    }
+  };
+  rejected("signal object", () =>
+    Writable.fromWeb(new WritableStream(), { signal: {} as AbortSignal }),
+  );
+  rejected("signal string", () =>
+    Writable.fromWeb(new WritableStream(), { signal: "x" as unknown as AbortSignal }),
+  );
+  rejected("signal number", () =>
+    Writable.fromWeb(new WritableStream(), { signal: 5 as unknown as AbortSignal }),
+  );
+  const ts4 = pair();
+  rejected("duplex signal", () =>
+    Duplex.fromWeb({ readable: ts4.readable, writable: ts4.writable }, { signal: {} as AbortSignal }),
+  );
 }
 
 void main();

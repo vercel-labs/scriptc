@@ -19,12 +19,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { type IrLibFn } from "../../../ir/builtin-signatures.js";
-import {
-  ipcJsonMessage,
-  ipcSendCallback,
-  ipcMessageListener,
-  ipcDisconnectListener,
-} from "./ipc.js";
+import { ipcSendArguments, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { resultIsDiscarded } from "../call-position.js";
 
 export function lowerChildMethodCall(
@@ -40,23 +35,11 @@ export function lowerChildMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   if (name === "send") {
-    if (
-      call.arguments.nodes.length < 1 ||
-      call.arguments.nodes.length > 2 ||
-      call.arguments.nodes.some(ts.isSpreadElement)
-    ) {
-      lowerer.noLowering(
-        `child.send with ${call.arguments.nodes.length} arguments`,
-        call,
-        "send(message[, callback]) is supported; handle transfer and options are not",
-      );
-    }
     const receiver = lowerer.lowerExpr(access.expression);
-    const json = ipcJsonMessage(lowerer, call.arguments.nodes[0]!, loc);
-    if (call.arguments.nodes[1] === undefined) {
+    const { json, callback } = ipcSendArguments(lowerer, call, loc);
+    if (callback === null) {
       return { kind: "libCall", fn: "child.send", args: [receiver, json], type: BOOL, loc };
     }
-    const callback = ipcSendCallback(lowerer, call.arguments.nodes[1]);
     return {
       kind: "libCall",
       fn: "child.sendCb",

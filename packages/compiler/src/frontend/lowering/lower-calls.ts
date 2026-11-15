@@ -1,4 +1,6 @@
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { checkedIterableSpread } from "./checked-iterable-spread.js";
+import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import {
   memberCallHolder,
@@ -8,7 +10,9 @@ import {
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
+  applyDeferredArrayClassCheck,
   arrayClassReceiver,
+  type DeferredArrayClassCheck,
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
 import { refuseWrittenParamCopy, structuralCallInstance } from "./structural-instances.js";
@@ -299,6 +303,7 @@ import {
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
+import { checkedClassAssertion } from "./class-assertions.js";
 import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
   emitOverrideAtOrAbove,
@@ -396,6 +401,7 @@ import { lowerRecordInheritedCall } from "./record-inherited.js";
 import { builtinConstructorNames, builtinConstructorText } from "./held-constructors.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 import { lowerFetchDispatcherHook } from "./fetch-dispatcher.js";
+import { withClassInitFlag } from "./cycle-initialization.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -1695,7 +1701,19 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // or position fences by name inside.
   if (ts.isIdentifier(expr.expression)) {
     const mixinInfo = lowerer.mixinCallClassInfoOf(expr);
-    if (mixinInfo) return lowerer.classValueRef(mixinInfo, expr);
+    if (mixinInfo) {
+      const value = lowerer.classValueRef(mixinInfo, expr);
+      // A statics-bearing instantiation in a conditional's arm defines its
+      // statics where the arm evaluates: only on the path that selects it.
+      if (!mixinInfo.mixinInstance?.staticsInArm) return value;
+      return {
+        kind: "seqExpr",
+        stmts: withClassInitFlag(lowerer, mixinInfo, lowerer.lowerStaticFieldInits(mixinInfo)),
+        result: value,
+        type: value.type,
+        loc,
+      };
+    }
   }
 
   // Direct call of a top-level declared function: the fast path (no
@@ -7204,6 +7222,20 @@ function reconcileOverloadReturn(
   if (call.type.kind === "union" && rt.kind !== "union") {
     const helper = lowerer.narrowedArmHelper(call.type.unionId, rt, call.loc);
     if (helper) return lowerer.checkedNarrowCall(helper, call, rt, call.loc);
+  }
+  // An overload that names a subclass of the class the implementation
+  // returns (`createElement(tag: "canvas"): HTMLCanvasElement` over an
+  // `HTMLElement` implementation): the value is the subclass when the
+  // implementation made one, which the call checks, as an assertion to the
+  // subclass does. Any other instance has no subclass layout to read, so the
+  // call throws the assertion's TypeError.
+  if (
+    call.type.kind === "object" &&
+    rt.kind === "object" &&
+    lowerer.isSubclassOf(rt.className, call.type.className)
+  ) {
+    const checked = checkedClassAssertion(lowerer, call, rt, call.loc);
+    if (checked) return checked;
   }
   return lowerer.coerceInto(expr, call, rt);
 }
@@ -13056,6 +13088,27 @@ export function lowerObjectMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  /** The receiver, already evaluated into a local (the declared arm of a
+   * call on an instance whose prototype may have been replaced). */
+  staged?: IrExpr,
+): IrExpr | null {
+  // A member of an Array subclass called on an array value tests the
+  // array's class after the call's arguments, as Node finds a missing
+  // method only when it calls it.
+  const deferred: DeferredArrayClassCheck[] = [];
+  const result = lowerObjectMethodCallOn(lowerer, call, access, deferred, staged);
+  const check = deferred[0];
+  return result === null || check === undefined
+    ? result
+    : applyDeferredArrayClassCheck(lowerer, result, check);
+}
+
+function lowerObjectMethodCallOn(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  deferred: DeferredArrayClassCheck[],
+  staged: IrExpr | undefined,
 ): IrExpr | null {
   if (lowerer.chainBlocked(access, call)) return null;
   let mappedReceiver =
@@ -13129,12 +13182,16 @@ export function lowerObjectMethodCall(
         : null;
   if (receiverIr === null) return null;
   const lowerReceiver = (): IrExpr => {
+    if (staged !== undefined) return staged;
     if (arrayClassOwner !== null)
       return arrayClassReceiver(
         lowerer,
         arrayClassOwner,
         lowerer.lowerExpr(access.expression),
         access.expression,
+        access.name.text,
+        "read",
+        deferred,
       );
     const receiver = specializedReceiver ?? lowerer.lowerExpr(access.expression);
     const optional = lowerer.runtimeOptionalPropertyReceiver(
@@ -13163,6 +13220,88 @@ export function lowerObjectMethodCall(
   // A member the class refused (class-member-refusals.ts): this call is a
   // statically visible use of it.
   if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
+  // An instance of a class a setPrototypeOf call may reprototype: once one
+  // has another prototype, the call on it looks the method up through that
+  // prototype, as JavaScript does. Every other instance makes the declared
+  // call, and nothing is boxed until some instance's prototype changes.
+  if (info && found && staged === undefined && mayReplacePrototype(lowerer, info)) {
+    const loc = locOf(call);
+    const receiver = lowerReceiver();
+    const local = lowerer.declareHiddenLocal("%reprototypedReceiver", receiver.type);
+    const value = varRef(local.id, receiver.type, loc);
+    const declared = lowerObjectMethodCall(lowerer, call, access, value);
+    if (declared === null) return null;
+    const boxed = (): IrExpr => lowerer.coerceToExpected(value, DYN);
+    // The method the instance's prototype answers, called with the
+    // instance as its receiver; a spread argument drains its iterable as
+    // the call does.
+    const spreads: { arg: number; what: string }[] = [];
+    const dynamic: IrExpr = {
+      kind: "dynCall",
+      callee: {
+        kind: "dynKeyGet",
+        value: boxed(),
+        key: { kind: "strLit", value: access.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      receiver: boxed(),
+      calleeName: ts.getTextOfNode(access),
+      args: call.arguments.nodes.map((argument, index) => {
+        if (!ts.isSpreadElement(argument)) return lowerer.lowerExprExpecting(argument, DYN);
+        const spelling = ts.getTextOfNode(argument.expression);
+        spreads.push({ arg: index, what: spelling });
+        return checkedIterableSpread(
+          lowerer,
+          lowerer.lowerExpr(argument.expression),
+          spelling,
+          loc,
+        );
+      }),
+      ...(spreads.length > 0 ? { spreads } : {}),
+      type: DYN,
+      loc,
+    };
+    const replaced: IrExpr = {
+      kind: "logical",
+      op: "&&",
+      left: { kind: "libCall", fn: "dyn.prototypesReplaced", args: [], type: BOOL, loc },
+      right: { kind: "libCall", fn: "dyn.prototypeReplaced", args: [boxed()], type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+    const result: IrExpr =
+      declared.type.kind === "void"
+        ? {
+            kind: "ternary",
+            cond: replaced,
+            then: dynamic,
+            else_: {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: declared, loc }],
+              result: dynUndefinedExpr(loc),
+              type: DYN,
+              loc,
+            },
+            type: DYN,
+            loc,
+          }
+        : {
+            kind: "ternary",
+            cond: replaced,
+            then: lowerer.coerceToExpected(dynamic, declared.type),
+            else_: declared,
+            type: declared.type,
+            loc,
+          };
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
+  }
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
   if (

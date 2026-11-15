@@ -711,9 +711,14 @@ static int scr_uncaught_dispatch(bool from_promise) {
      * own throw is the fatal one (the pending exception the fatal path
      * below prints). */
     ScrDyn *capture_args[1] = {error};
-    ScrDyn *result = scr_dyn_call(scr_capture_fn, capture_args, 1, "callback");
+    /* The call holds its own reference: a callback that clears itself
+     * (setUncaughtExceptionCaptureCallback(null)) drops the registry's,
+     * and its body still reads what it captured. */
+    ScrDyn *capture = scr_dyn_retain(scr_capture_fn);
+    ScrDyn *result = scr_dyn_call(capture, capture_args, 1, "callback");
     ok = !scr_exc_pending();
     scr_dyn_release(result);
+    scr_dyn_release(capture);
     handled = ok;
   } else {
     handled = ok && scr_uncaught_n[0] > 0;

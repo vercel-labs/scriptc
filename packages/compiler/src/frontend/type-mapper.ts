@@ -121,6 +121,20 @@ export function jsOpenObjectType(
     present[0]!.kind === "bytes"
   )
     return DYN;
+  // A Map or Set parameter whose type arguments are all `any` (a bare
+  // JSDoc `{Map}` or `{Set}`, `{Set<*>}`) accepts a collection of any
+  // element types, and Node passes the caller's collection itself: keep
+  // its runtime storage at the boundary, like an array parameter's.
+  if (
+    parameter &&
+    !parameter.dotDotDotToken &&
+    present?.length === 1 &&
+    ((present[0]!.kind === "map" &&
+      present[0]!.key.kind === "dyn" &&
+      present[0]!.value.kind === "dyn") ||
+      (present[0]!.kind === "set" && present[0]!.elem.kind === "dyn"))
+  )
+    return DYN;
   // An unannotated JavaScript parameter's object default is a fallback,
   // not a closed class contract. Published code routinely passes another
   // implementation of the same protocol through a boxed callable.
@@ -1745,6 +1759,12 @@ export interface TypeMapperCtx {
    * table of constructors before the function form existed. The value in
    * it is the same function. */
   untypedConstructors?: boolean;
+  /** Whether the class values of the program class `className` are held
+   * as checked-dynamic values (LowererMode.dynamicClassValues): a slot of
+   * its class value type may hold a descendant whose constructor takes
+   * other arguments, so construction through it picks the constructor by
+   * the class the value holds at run time. */
+  dynamicClassValue?: (className: string) => boolean;
   /** Called each time a primitive constructor type maps to the
    * constructor's own function type (never under untypedConstructors). */
   onConstructorFunctionType?: () => void;
@@ -4381,7 +4401,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const inst = mapType(checker.getReturnTypeOfSignature(ctorSigs[0]!), ctx);
       return inst?.kind === "object" ? { kind: "classval", className: inst.className } : null;
     }
-    return { kind: "classval", className: classNamer(classDecl) };
+    const className = classNamer(classDecl);
+    if (ctx.dynamicClassValue?.(className) === true) return DYN;
+    return { kind: "classval", className };
   }
   // Constructor-signature TYPES (`new (…) => T`, an interface with one
   // construct signature): slots typed as constructables hold class
@@ -4401,6 +4423,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         inst.className !== RUNTIME_EMITTER_CLASS &&
         !RUNTIME_STREAM_CLASSES.has(inst.className)
       ) {
+        if (ctx.dynamicClassValue?.(inst.className) === true) return DYN;
         return { kind: "classval", className: inst.className };
       }
     }

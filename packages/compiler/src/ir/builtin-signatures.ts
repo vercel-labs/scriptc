@@ -356,8 +356,19 @@ function buildLibFnSignatures() {
     "dyn.globalSymbolSet": { argTypes: [SYMBOL_T, DYN], result: VOID },
     "dyn.globalSymbolHas": { argTypes: [SYMBOL_T], result: BOOL },
     "dyn.globalSymbolDelete": { argTypes: [SYMBOL_T], result: VOID },
-    /** Exact native class capsule identity, without materializing its fields. */
+    /** Exact native class capsule identity, without materializing its fields,
+     * for class dispatch: false for an instance Object.setPrototypeOf gave
+     * another prototype, which dispatches through it. */
     "dyn.typedRefIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Exact native class capsule identity whatever the instance's prototype
+     * is: the brand a private member or a method's receiver checks. */
+    "dyn.typedRefBrandIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Whether Object.setPrototypeOf has replaced a live class instance's
+     * prototype (scr_dyn_prototypes_replaced). */
+    "dyn.prototypesReplaced": { argTypes: [], result: BOOL },
+    /** Whether the value wraps a class instance whose prototype
+     * Object.setPrototypeOf replaced. */
+    "dyn.prototypeReplaced": { argTypes: [DYN], result: BOOL },
     /** A capsule boxed by this program from exactly this class: one key
      * pointer test, false for equal keys boxed elsewhere. Guards fast paths
      * whose fallback handles every other value. The key is a literal. */
@@ -387,6 +398,11 @@ function buildLibFnSignatures() {
      * may-throw seed set. */
     "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
     "dyn.mathFold": { argTypes: [DYN, BOOL, STRING], result: F64 },
+    /** Math.max/Math.min/Math.hypot over an argument list whose spread
+     * operands are only known at run time: the values a call's argument
+     * pack holds, each through ToNumber, folded in the pack's order (mode
+     * 0 max, 1 min, 2 hypot). May throw: ToNumber can run valueOf. */
+    "dyn.mathFoldMany": { argTypes: [DYN, F64], result: F64 },
     "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
     "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
     "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
@@ -3629,6 +3645,15 @@ function buildLibFnSignatures() {
       result: CHILD_T,
     },
     "child.connected": { argTypes: [CHILD_T], result: BOOL },
+    /** child.stdio's length: the child's stdio slot count (3, or 4 for a
+     * fork's IPC slot). A plain read of the child's fixed slot count. */
+    "child.stdioLen": { argTypes: [CHILD_T], result: F64 },
+    /** child.stdio's one array per child: the first read stores the built
+     * array (stdioStore) and every read answers it (stdioCached /
+     * stdioArray, whose result is the call site's array type). */
+    "child.stdioCached": { argTypes: [CHILD_T], result: BOOL },
+    "child.stdioArray": { argTypes: [CHILD_T], result: VOID },
+    "child.stdioStore": { argTypes: [CHILD_T, null], result: VOID },
     "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
     "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },

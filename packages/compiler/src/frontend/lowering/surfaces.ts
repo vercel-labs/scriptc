@@ -4101,7 +4101,11 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
  * the same technique as isConsoleLog: trust declarations, not names. */
 export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const direct = lowerer.checker.getSymbolAtLocation(access.name);
-  if (direct) return lowerer.isStdlibSymbol(direct);
+  if (direct)
+    return (
+      lowerer.isStdlibSymbol(direct) ||
+      lowerer.isStdlibSymbol(jsThisAssignedBaseMember(lowerer, direct, access.name.text))
+    );
   // An IMPLICIT-ANY instance body (the checker sees an `any` receiver —
   // no member symbol resolves) or an ALIASED-TYPEOF narrow (the checker
   // sees the un-narrowed union — `val.length` on String|Number has no
@@ -4117,6 +4121,45 @@ export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpres
     return lowerer.isStdlibSymbol(viaType ?? undefined);
   }
   return false;
+}
+
+/** The base member that a JavaScript class's `this.name = v` assignments
+ * write when its base type declares `name` (`this.length = 0` in a class
+ * that extends Array). checkJs binds the assignment as a declaration of the
+ * class's own, but the write and every read reach the inherited property,
+ * as in Node. Undefined when any declaration is something else. */
+export function jsThisAssignedBaseMember(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  name: string,
+): ts.Symbol | undefined {
+  let owner: ts.ClassLikeDeclaration | undefined;
+  for (const decl of symbol.declarations ?? []) {
+    if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return undefined;
+    const target = ts.isBinaryExpression(decl) ? decl.left : decl;
+    if (
+      !(ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) ||
+      target.expression.kind !== ts.SyntaxKind.ThisKeyword
+    )
+      return undefined;
+    let node: ts.Node | undefined = target.parent;
+    while (node && !ts.isClassLikeDeclaration(node)) node = node.parent;
+    if (!node || (owner !== undefined && owner !== node)) return undefined;
+    owner = node;
+  }
+  if (!owner) return undefined;
+  const classSymbol = owner.name ? lowerer.checker.getSymbolAtLocation(owner.name) : undefined;
+  // The class layout already decided (the JS field collector): a name the
+  // class keeps as its own field is the class's member, not the base's.
+  const info = classSymbol ? lowerer.classBySymbol.get(classSymbol) : undefined;
+  if (info?.fields.has(name)) return undefined;
+  const instance = classSymbol ? lowerer.checker.getDeclaredTypeOfSymbol(classSymbol) : undefined;
+  if (!instance || (instance.flags & ts.TypeFlags.Object) === 0) return undefined;
+  for (const base of lowerer.checker.getBaseTypes(instance as ts.InterfaceType)) {
+    const inherited = lowerer.checker.getPropertyOfType(base, name);
+    if (inherited) return inherited;
+  }
+  return undefined;
 }
 
 /** The provenance check the CHILD receiver lowerings use: a stdlib

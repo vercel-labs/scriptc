@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
@@ -513,6 +514,34 @@ export function lowerPropertyAccessExpr(
     builtinConstructorNames(lowerer, expr.expression) !== null
   )
     lowerer.noLowering("the prototype of a held built-in constructor", expr);
+  // A method or accessor read on an instance whose prototype may have been
+  // replaced (reprototyped-reads.ts).
+  if (expr.questionDotToken === undefined && ts.isIdentifier(expr.name)) {
+    const name = expr.name.text;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const info = type?.kind === "object" ? lowerer.classes.get(type.className) : undefined;
+    if (
+      info &&
+      !info.fields.has(name) &&
+      (lowerer.findMethodOn(info, name) || lowerer.findMethodOn(info, `get:${name}`))
+    ) {
+      const read = reprototypedGuard(
+        lowerer,
+        expr,
+        expr.expression,
+        loc,
+        (boxed) => ({
+          kind: "dynKeyGet",
+          value: boxed,
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          type: DYN,
+          loc,
+        }),
+        () => lowerPropertyAccessExpr(lowerer, expr, loc),
+      );
+      if (read !== null) return read;
+    }
+  }
   const heldLoaderMember = heldLoaderMemberThrow(lowerer, expr);
   if (heldLoaderMember !== null) return heldLoaderMember;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
@@ -1994,12 +2023,16 @@ export function lowerPropertyAccessExpr(
   // or undefined (JS's own-property answer), throwing JS's TypeError
   // on undefined/null receivers unless an earlier `?.` guards the
   // chain. Scalar-narrowed occurrences bridge via maybeNarrow's
-  // validated dynCheck as usual.
+  // validated dynCheck as usual. A private name is not a property key:
+  // the brand-checked lowerings above claim the ones that resolve, and
+  // the rest keep the refusal below rather than read a public property
+  // of the same spelling.
   if (
-    recvLowered.type.kind === "dyn" ||
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-      (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
-        (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type))))
+    !ts.isPrivateIdentifier(expr.name) &&
+    (recvLowered.type.kind === "dyn" ||
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
+          (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type)))))
   ) {
     const key: IrExpr = {
       kind: "strLit",
@@ -2143,16 +2176,18 @@ export function lowerPropertyAccessExpr(
       !info.builtinEmitter &&
       !info.builtinStream
     ) {
-      return lowerer.maybeNarrow(
-        {
-          kind: "dynKeyGet",
-          value: lowerer.coerceToExpected(recvLowered, DYN),
-          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-          type: DYN,
-          loc,
-        },
-        expr,
-      );
+      const read: IrExpr = {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      // A name the class's index signature answers: a missing property
+      // reads undefined (Lowerer.classIndexSignatureRead).
+      const indexValue = lowerer.classIndexSignatureRead(expr);
+      const optional = indexValue ? lowerer.withUndefinedArmOf(indexValue) : null;
+      return optional ? lowerer.coerceInto(expr, read, optional) : lowerer.maybeNarrow(read, expr);
     }
   }
   // A member a JavaScript module attached to one of its functions
@@ -2277,6 +2312,7 @@ export function lowerPropertyAccessExpr(
   // member read (a socket's `server`, a connection's `bufferSize`). The
   // box shares the handle, so it needs no fresh-result restriction.
   if (
+    !ts.isPrivateIdentifier(expr.name) &&
     (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
     DYN_HANDLE_KINDS.has(recvLowered.type.kind)
   ) {
@@ -2318,6 +2354,7 @@ export function lowerPropertyAccessExpr(
   // through any other view of the same object.
   if (
     !expr.questionDotToken &&
+    !ts.isPrivateIdentifier(expr.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     lowerer.jsDynamicMemberTarget(recvLowered.type) &&
     !declaredMemberOf(lowerer, expr.expression, expr.name.text)
@@ -5560,6 +5597,54 @@ export function lowerUnionKeyedRead(
 /** A structural TypeScript view does not change a nominal object's layout
  * or accessor dispatch. Resolve the property from the represented class;
  * the optional checker view must not turn its getter into a record read. */
+/** Whether `access` is written: the target of an assignment (`=` or a
+ * compound operator), of `++` or `--`, or an element of a destructuring
+ * assignment's pattern (`({ v: x.data } = r)`, `for ([x.data] of rows)`). */
+function isWrittenAccess(access: ts.Node | undefined): boolean {
+  if (!access) return false;
+  let node: ts.Node = access;
+  for (;;) {
+    const up: ts.Node | undefined = node.parent;
+    if (!up) return false;
+    // A pattern element: the property or element is assigned when the
+    // pattern is (a default `x.data = d` inside a pattern is the element).
+    if (
+      ts.isParenthesizedExpression(up) ||
+      ts.isArrayLiteralExpression(up) ||
+      ts.isSpreadElement(up) ||
+      ts.isSpreadAssignment(up) ||
+      (ts.isPropertyAssignment(up) && up.initializer === node) ||
+      (ts.isShorthandPropertyAssignment(up) && up.name === node) ||
+      (ts.isObjectLiteralExpression(up) && node !== access) ||
+      (ts.isBinaryExpression(up) &&
+        up.left === node &&
+        up.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        node === access &&
+        up.parent !== undefined &&
+        (ts.isArrayLiteralExpression(up.parent) || ts.isPropertyAssignment(up.parent)))
+    ) {
+      node = up;
+      continue;
+    }
+    break;
+  }
+  const parent = node.parent;
+  if (!parent) return false;
+  if (node !== access && ts.isForOfStatement(parent)) return parent.initializer === node;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    );
+  return false;
+}
+
 export function classFieldTarget(
   lowerer: Lowerer,
   receiverNode: ts.Expression,
@@ -5647,12 +5732,17 @@ export function classFieldTarget(
   const setF = lowerer.findMethodOn(info, `set:${fieldName}`);
   if (getF || setF) {
     const obj = lowerObjectReceiver();
+    // A pair may declare different types (`get data(): string` beside
+    // `set data(v: string | number)`, as tsc 5.1+ admits): a written
+    // access converts its value into the setter's parameter type, and a
+    // read answers the getter's return.
+    const written = setF !== null && isWrittenAccess(receiverNode.parent);
     return {
       container: "accessor",
       obj,
       className: receiverType.className,
       field: fieldName,
-      fieldType: getF ? getF.sig.ret : setF!.sig.params[0]!.type,
+      fieldType: getF && !written ? getF.sig.ret : setF!.sig.params[0]!.type,
     };
   }
   if (info.decl && isJsSourceFile(ts.getSourceFileOfNode(info.decl))) {
@@ -5875,6 +5965,12 @@ export function fieldTarget(
         owner,
         lowerer.lowerExpr(access.expression),
         access.expression,
+        name,
+        ts.isBinaryExpression(access.parent) &&
+          access.parent.left === access &&
+          access.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          ? "set"
+          : "read",
       );
       return classFieldTarget(
         lowerer,

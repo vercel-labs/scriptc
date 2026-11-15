@@ -167,6 +167,7 @@ import {
   lowerClassPrototypeData,
   prototypeMadeClass,
   prototypeViewable,
+  prototypeViewStart,
   reflectClassPrototype,
 } from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
@@ -6481,9 +6482,25 @@ export function fieldGetExpr(
       lowerer.prototypeMethodAccesses.has(target.field) &&
       prototypeViewable(getF.declarer)
     ) {
-      const receiver = lowerer.coerceToExpected(target.obj, DYN);
-      const prototype = reflectClassPrototype(lowerer, getF.declarer, loc, receiver);
-      if (prototype && getF.declarer.prototypeReflectionRefusal === undefined) {
+      // The read names the receiver up to four times; an effectful
+      // expression (`make().x`) runs once, into a hidden local.
+      const receiverValue = lowerer.coerceToExpected(target.obj, DYN);
+      const stable =
+        isSafeToRepeat(receiverValue) || lowerer.fnStack.length === 0
+          ? null
+          : lowerer.declareHiddenLocal("%prototypeReceiver", DYN);
+      const receiver = (): IrExpr =>
+        stable === null ? receiverValue : varRef(stable.id, DYN, loc);
+      // Node's [[Get]] starts at the receiver: the receiver's own class's
+      // prototype may replace what the class that declares the getter put
+      // there.
+      const viewStart = prototypeViewStart(
+        lowerer,
+        lowerer.classes.get(target.className) ?? null,
+        getF.declarer,
+      );
+      const prototype = reflectClassPrototype(lowerer, viewStart, loc, receiver());
+      if (prototype && viewStart.prototypeReflectionRefusal === undefined) {
         // [[Get]] starts at the receiver: an own property the program wrote
         // shadows the prototype's, whatever the definition put there.
         const key: IrExpr = { kind: "strLit", value: target.field, type: STRING, loc };
@@ -6492,13 +6509,13 @@ export function fieldGetExpr(
           cond: {
             kind: "libCall",
             fn: "dyn.hasOwn",
-            args: [receiver, key],
+            args: [receiver(), key],
             type: BOOL,
             loc,
           },
           then: {
             kind: "dynKeyGet",
-            value: receiver,
+            value: receiver(),
             key,
             type: DYN,
             loc,
@@ -6506,14 +6523,22 @@ export function fieldGetExpr(
           else_: {
             kind: "libCall",
             fn: "dyn.reflectGet",
-            args: [prototype, lowerer.coerceToExpected(key, DYN), receiver],
+            args: [prototype, lowerer.coerceToExpected(key, DYN), receiver()],
             type: DYN,
             loc,
           },
           type: DYN,
           loc,
         };
-        return lowerer.coerceToExpected(read, getF.sig.ret);
+        const result = lowerer.coerceToExpected(read, getF.sig.ret);
+        if (stable === null) return result;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: stable.id, init: receiverValue, loc }],
+          result,
+          type: result.type,
+          loc,
+        };
       }
     }
     if (

@@ -14,7 +14,11 @@ import {
 } from "../undefined-index.js";
 import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
-import { prototypeViewable, reflectClassPrototype } from "../class-prototypes.js";
+import {
+  prototypeViewable,
+  prototypeViewStart,
+  reflectClassPrototype,
+} from "../class-prototypes.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   type FieldTarget,
@@ -1056,8 +1060,16 @@ export function fieldSetStmt(
     // receiver, as Node's [[Set]] walks the prototype chain.
     if (lowerer.prototypeMethodAccesses.has(target.field) && prototypeViewable(setF.declarer)) {
       const receiver = lowerer.coerceToExpected(target.obj, DYN);
-      const prototype = reflectClassPrototype(lowerer, setF.declarer, loc, receiver);
-      if (prototype && setF.declarer.prototypeReflectionRefusal === undefined)
+      // Node's [[Set]] starts at the receiver: the receiver's own class's
+      // prototype may replace what the class that declares the setter put
+      // there.
+      const viewStart = prototypeViewStart(
+        lowerer,
+        lowerer.classes.get(target.className) ?? null,
+        setF.declarer,
+      );
+      const prototype = reflectClassPrototype(lowerer, viewStart, loc, receiver);
+      if (prototype && viewStart.prototypeReflectionRefusal === undefined)
         return {
           kind: "exprStmt",
           expr: {

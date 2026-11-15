@@ -72,6 +72,7 @@ import {
   hasClassPrototypeData,
   prototypeReflectedFlag,
   prototypeViewable,
+  prototypeViewStart,
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
@@ -8497,17 +8498,17 @@ export class ClassDynamicDispatch {
         // prototype view may hold a replaced accessor (Object.defineProperty
         // on the prototype), so the read runs from the view with the
         // instance as the receiver, after the instance's own properties.
+        const viewStart = prototypeViewStart(lowerer, info, accessor.declarer);
         let prototype =
           lowerer.prototypeMethodAccesses.has(name) && prototypeViewable(accessor.declarer)
             ? reflectClassPrototype(
                 lowerer,
-                accessor.declarer,
+                viewStart,
                 loc,
                 lowerer.coerceToExpected(receiver, DYN),
               )
             : null;
-        if (prototype && accessor.declarer.prototypeReflectionRefusal !== undefined)
-          prototype = null;
+        if (prototype && viewStart.prototypeReflectionRefusal !== undefined) prototype = null;
         const answer: IrExpr = prototype
           ? {
               kind: "libCall",
@@ -8646,19 +8647,16 @@ export class ClassDynamicDispatch {
     // A name the program reflects on some class prototype: a replaced
     // setter (or a data property the definition put there) answers through
     // the shared prototype view, with the instance as the receiver.
+    const viewStart =
+      accessor === null ? null : prototypeViewStart(lowerer, info, accessor.declarer);
     let prototype =
       !field &&
       lowerer.prototypeMethodAccesses.has(name) &&
       accessor !== null &&
       prototypeViewable(accessor.declarer)
-        ? reflectClassPrototype(
-            lowerer,
-            accessor.declarer,
-            loc,
-            lowerer.coerceToExpected(receiver, DYN),
-          )
+        ? reflectClassPrototype(lowerer, viewStart!, loc, lowerer.coerceToExpected(receiver, DYN))
         : null;
-    if (prototype && accessor && accessor.declarer.prototypeReflectionRefusal !== undefined)
+    if (prototype && viewStart && viewStart.prototypeReflectionRefusal !== undefined)
       prototype = null;
     const store: IrStmt = field
       ? { kind: "fieldSet", obj: receiver, className: info.def.name, field: name, value, loc }
@@ -8671,7 +8669,7 @@ export class ClassDynamicDispatch {
               args: [
                 prototype,
                 lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
-                value,
+                lowerer.coerceToExpected(value, DYN),
                 lowerer.coerceToExpected(receiver, DYN),
               ],
               type: BOOL,

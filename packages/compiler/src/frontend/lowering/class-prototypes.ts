@@ -311,6 +311,21 @@ export function prototypeViewable(info: ClassInfo): boolean {
   return true;
 }
 
+/** The class whose prototype view a member reflection starts at, for a
+ * receiver whose static class is `receiver`: that class when it inherits
+ * the member and its prototype can be reflected (a subclass may replace
+ * what its base declared, and Node's [[Get]] walks the receiver's own
+ * prototype chain), else the class that declares the member. */
+export function prototypeViewStart(
+  lowerer: Lowerer,
+  receiver: ClassInfo | null,
+  declarer: ClassInfo,
+): ClassInfo {
+  if (receiver === null || receiver.def.name === declarer.def.name) return declarer;
+  if (!prototypeViewable(receiver)) return declarer;
+  return lowerer.isSubclassOf(receiver.def.name, declarer.def.name) ? receiver : declarer;
+}
+
 export function hasClassPrototypeData(info: ClassInfo): boolean {
   return (
     info.callableBase !== undefined ||
@@ -607,21 +622,43 @@ function prototypeViewPosition(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   return readOnlyPrototypeUse(lowerer, expr, 0);
 }
 
+/** The binding of a class's prototype view that `init` aliases
+ * (`const q = p`), or null. `seen` breaks the cycle a pair of aliases
+ * would otherwise walk. */
+function aliasedPrototypeView(
+  lowerer: Lowerer,
+  init: ts.Expression,
+  seen: Set<ts.VariableDeclaration>,
+): ts.VariableDeclaration | null {
+  let value = init;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isIdentifier(value)) return null;
+  const declaration = lowerer.checker.getSymbolAtLocation(value)?.valueDeclaration;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return null;
+  return isPrototypeViewBinding(lowerer, declaration, seen) ? declaration : null;
+}
+
 /** Whether `decl` binds a class's prototype view (`const proto = C.prototype`
- * whose every use only reads it, readOnlyPrototypeUse): its storage is the
- * checked-dynamic prototype object rather than the class's instance type the
- * checker gives it. */
-export function isPrototypeViewBinding(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+ * or an alias of such a binding, `const alias = proto`) whose every use
+ * only reads it (readOnlyPrototypeUse): its storage is the checked-dynamic
+ * prototype object rather than the class's instance type the checker gives
+ * it. */
+export function isPrototypeViewBinding(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  seen: Set<ts.VariableDeclaration> = new Set(),
+): boolean {
+  if (seen.has(decl)) return false;
+  seen.add(decl);
   let init = decl.initializer;
   while (init && ts.isParenthesizedExpression(init)) init = init.expression;
-  if (!init || !ts.isPropertyAccessExpression(init) || init.name.text !== "prototype") return false;
-  const info = exactClassOfReceiver(lowerer, init.expression);
-  return (
-    info !== null &&
-    info !== undefined &&
-    viewableClass(lowerer, info, init.expression) &&
-    readOnlyPrototypeUse(lowerer, init, 0)
-  );
+  if (!init) return false;
+  if (ts.isPropertyAccessExpression(init) && init.name.text === "prototype") {
+    const info = exactClassOfReceiver(lowerer, init.expression);
+    if (info === null || info === undefined || !viewableClass(lowerer, info, init.expression))
+      return false;
+  } else if (aliasedPrototypeView(lowerer, init, seen) === null) return false;
+  return readOnlyPrototypeUse(lowerer, init, 0);
 }
 
 /** Whether `node` reads a binding of a class's prototype view

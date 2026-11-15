@@ -359,6 +359,18 @@ static void sw_teardown(SwCtx *c) {
   sw_unref(c); /* the live list's reference */
 }
 
+/* A pair construction builds the writable adapter before the readable one,
+ * as Node does. If the readable half is rejected, the caller gets an
+ * exception instead of the pair and can never close the writable adapter it
+ * did not receive, so that adapter is unlinked and dropped here; otherwise it
+ * would stay rooted until process exit. Takes (and releases) the reference
+ * sw_writable_to_web answered for the caller. */
+static void sw_abandon(SwCtx *c) {
+  if (!c) return;
+  sw_teardown(c);
+  sw_unref(c);
+}
+
 /* The adapter reached its terminal state (the node side ended, errored or
  * was canceled, or the web side closed or aborted): unlink it from the live
  * list and drop the node stream, the controller and the web stream it owned.
@@ -815,8 +827,11 @@ static ScrDyn *sw_closed_writable(void) {
 }
 
 /* Node's newWritableStreamFromStreamWritable. +1, or NULL with the
- * exception pending. */
-static ScrDyn *sw_writable_to_web(ScrStream *node) {
+ * exception pending. On success `*ctx_out`, when given, answers the adapter
+ * context with its own reference, which Duplex.toWeb holds until the pair is
+ * complete and releases through sw_abandon if the readable half never
+ * materializes. */
+static ScrDyn *sw_writable_to_web(ScrStream *node, SwCtx **ctx_out) {
   bool object_mode = scr_stream_prop(node, "writableObjectMode") != 0;
   double hwm = scr_stream_prop(node, "writableHighWaterMark");
 
@@ -872,6 +887,7 @@ static ScrDyn *sw_writable_to_web(ScrStream *node) {
   }
   sw_add_listener(node, "drain", &c->l_drain, (void *)&sw_drain_listener,
                   (void *)&scr_ee_inv_fixed0, c);
+  if (ctx_out) *ctx_out = sw_ref(c);
   return web;
 }
 
@@ -1794,7 +1810,7 @@ ScrDyn *scr_stream_writable_to_web(const ScrDyn *stream) {
   if (scr_stream_prop(node, "destroyed") || !scr_stream_prop(node, "writable")) {
     web = sw_closed_writable();
   } else {
-    web = sw_writable_to_web(node);
+    web = sw_writable_to_web(node, NULL);
   }
   scr_stream_release(node);
   return web;
@@ -1856,8 +1872,11 @@ ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options) {
     return pair;
   }
 
-  /* Node builds the writable side first, then the readable one. */
-  writable = is_writable ? sw_writable_to_web(node) : sw_closed_writable();
+  /* Node builds the writable side first, then the readable one. Until the
+   * pair is complete the writable adapter has no owner but this function:
+   * if the readable half is rejected, it is unlinked and released below. */
+  SwCtx *wctx = NULL;
+  writable = is_writable ? sw_writable_to_web(node, &wctx) : sw_closed_writable();
   if (!writable) {
     scr_stream_release(node);
     return NULL;
@@ -1870,6 +1889,7 @@ ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options) {
                                         memcmp(type->v.str->data, "bytes", 5) == 0)) {
       scr_dyn_arg_value_fail("options.type", "must be one of: 'bytes', undefined", type);
       scr_dyn_release(type);
+      sw_abandon(wctx);
       scr_dyn_release(writable);
       scr_stream_release(node);
       return NULL;
@@ -1897,6 +1917,7 @@ ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options) {
   }
   scr_dyn_release(type);
   if (!readable) {
+    sw_abandon(wctx);
     scr_dyn_release(writable);
     scr_stream_release(node);
     return NULL;
@@ -1905,5 +1926,6 @@ ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options) {
   sw_set(pair, "writable", writable);
   sw_set(pair, "readable", readable);
   scr_stream_release(node);
+  if (wctx) sw_unref(wctx);
   return pair;
 }

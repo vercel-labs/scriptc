@@ -8,14 +8,14 @@
  * one conversion's graph per request until memory runs out.
  *
  * The fixture builds five conversions per round, one per terminal path, two
- * fromWeb constructions whose signal option is rejected, and yields to the
- * event loop so the stream's deferred close ticks run. It reports the
- * runtime heap after a warm-up: unlinked contexts leave only a few tens of
- * kilobytes of allocator noise, while one rooted context per conversion
- * adds megabytes. It also pins that a finished adapter keeps the listeners
- * Node's adapters leave on the stream, so the fix does not change what a
- * program can observe there, and that a rejected signal still reaches the
- * caller as the exception it is.
+ * fromWeb constructions whose signal option is rejected, four Duplex.toWeb
+ * pairs whose readable half is rejected, and yields to the event loop so the
+ * stream's deferred close ticks run. It reports the runtime heap after a
+ * warm-up: unlinked contexts leave only a few tens of kilobytes of allocator
+ * noise, while one rooted context per conversion adds megabytes. It also
+ * pins that a finished adapter keeps the listeners Node's adapters leave on
+ * the stream, so the fix does not change what a program can observe there,
+ * and that a rejected signal still reaches the caller as the exception it is.
  *
  * The sanitized lane's allocator reports different figures, so this measures
  * the plain runtime only. */
@@ -71,5 +71,7 @@ test.skipIf(sanitize)(
     expect(growth, `heap growth ${growth} KB`).toBeLessThan(1024);
     // Both rejected constructions still threw.
     expect(lines[3]).toBe("rejected 1000");
+    // Every rejected Duplex.toWeb pair still threw (four per round).
+    expect(lines[4]).toBe("rejectedPair 2000");
   },
 );

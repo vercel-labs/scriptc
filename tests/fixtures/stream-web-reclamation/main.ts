@@ -9,8 +9,10 @@
 // stay attached, as Node's do.
 //
 // The loop also makes two fromWeb calls per round whose signal option the
-// factories reject: the exception reaches the caller, so the adapter they
-// had begun to build is never returned, and it must not stay rooted either.
+// factories reject, and four Duplex.toWeb calls per round whose readable
+// options or readable stream the pair construction rejects: the exception
+// reaches the caller, so the adapter each factory had begun to build is
+// never returned, and it must not stay rooted either.
 import { Duplex, Readable, Writable } from "node:stream";
 
 function heapKb(): number {
@@ -55,6 +57,30 @@ function turn(): Promise<void> {
   return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+// A duplex both of whose sides are live: Duplex.toWeb builds the writable
+// adapter first, then rejects the readable options.
+function duplex(): Duplex {
+  return new Duplex({
+    read(): void {
+      this.push(null);
+    },
+    write(_chunk: Buffer, _enc: string, cb: () => void): void {
+      cb();
+    },
+  });
+}
+
+// A duplex whose readable side is already disabled: the pair's readable is
+// built as an already-cancelled stream, so the constructor is what rejects.
+function disabledDuplex(): Duplex {
+  return new Duplex({
+    readable: false,
+    write(_chunk: Buffer, _enc: string, cb: () => void): void {
+      cb();
+    },
+  });
+}
+
 // A signal option both factories reject. The thrown exception is the
 // caller's; the adapter the factory had begun to build is never returned.
 let rejectedCount = 0;
@@ -71,6 +97,34 @@ function rejected(): void {
     );
   } catch {
     rejectedCount++;
+  }
+}
+
+// A Duplex.toWeb pair construction that throws before the pair is complete.
+// The writable adapter it built first never reaches the caller, so the
+// caller cannot close it; it must be released here instead of staying
+// rooted until exit.
+let rejectedPairCount = 0;
+function rejectedPair(): void {
+  try {
+    Duplex.toWeb(duplex(), { type: "text" as unknown as "bytes" });
+  } catch {
+    rejectedPairCount++;
+  }
+  try {
+    Duplex.toWeb(duplex(), { readableType: "text" as unknown as "bytes" });
+  } catch {
+    rejectedPairCount++;
+  }
+  try {
+    Duplex.toWeb(disabledDuplex(), { type: "text" as unknown as "bytes" });
+  } catch {
+    rejectedPairCount++;
+  }
+  try {
+    Duplex.toWeb(disabledDuplex(), { readableType: "text" as unknown as "bytes" });
+  } catch {
+    rejectedPairCount++;
   }
 }
 
@@ -101,11 +155,13 @@ async function main(): Promise<void> {
     await writer.close();
     await Writable.toWeb(sink()).getWriter().abort();
     rejected();
+    rejectedPair();
     await turn();
     if (i === 100) baseline = heapKb();
   }
   console.log("growth", heapKb() - baseline);
   console.log("rejected", rejectedCount);
+  console.log("rejectedPair", rejectedPairCount);
 }
 
 void main();

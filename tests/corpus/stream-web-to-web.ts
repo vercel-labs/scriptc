@@ -81,6 +81,17 @@ async function main(): Promise<void> {
   const eof = await reader.read();
   log.push(`eof ${String(eof.done)}`);
 
+  // An invalid readable option throws out of the pair construction after the
+  // writable adapter was built, and that adapter never reaches the caller.
+  const rejected = new PassThrough();
+  try {
+    Duplex.toWeb(rejected, { type: "text" } as any);
+    log.push("rejected accepted");
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    log.push(`rejected ${e.name} ${String(e.code)}`);
+  }
+
   const gone = mkDuplex();
   gone.destroy();
   const gonePair = Duplex.toWeb(gone);

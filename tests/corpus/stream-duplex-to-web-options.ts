@@ -2,7 +2,8 @@
 // the pair's readable as an already-cancelled ReadableStream over the
 // caller's `type` (or `readableType`) option, and the writable side from the
 // live duplex. The options bag is the caller's, so each conversion must leave
-// it intact.
+// it intact. An invalid option makes that constructor throw, after the
+// writable side was built.
 import { Duplex } from "node:stream";
 
 function disabledDuplex(): Duplex {
@@ -41,6 +42,18 @@ async function main(): Promise<void> {
   const untyped = disabledDuplex();
   const plain = Duplex.toWeb(untyped);
   await describe(plain.readable, plain.writable);
+
+  // The pair's readable is built by the ReadableStream constructor, which
+  // rejects an invalid type after the writable adapter already exists; that
+  // adapter never reaches the caller.
+  const invalid = disabledDuplex();
+  try {
+    Duplex.toWeb(invalid, { type: "text" } as any);
+    console.log("invalid type accepted");
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(`invalid type ${e.name} ${String(e.code)}`);
+  }
 }
 
 await main();

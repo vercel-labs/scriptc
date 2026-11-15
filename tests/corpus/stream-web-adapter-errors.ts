@@ -40,6 +40,18 @@ function mkDuplex(): Duplex {
   });
 }
 
+// A duplex whose readable side is already disabled. Duplex.toWeb builds the
+// pair's readable from the caller's type option, and the ReadableStream
+// constructor is what rejects an invalid one.
+function mkDisabledDuplex(): Duplex {
+  return new Duplex({
+    readable: false,
+    write(_chunk: Buffer, _enc: string, cb: () => void): void {
+      cb();
+    },
+  });
+}
+
 function mkPair(): TransformStream<Uint8Array, Uint8Array> {
   return new TransformStream<Uint8Array, Uint8Array>();
 }
@@ -63,6 +75,10 @@ report("duplex.toWeb(undefined)", () => Duplex.toWeb(undefined as any));
 report("duplex.toWeb(text type)", () => Duplex.toWeb(mkDuplex(), { type: "text" } as any));
 report("duplex.toWeb(text readableType)", () =>
   Duplex.toWeb(mkDuplex(), { readableType: "text" } as any));
+report("duplex.toWeb(disabled text type)", () =>
+  Duplex.toWeb(mkDisabledDuplex(), { type: "text" } as any));
+report("duplex.toWeb(disabled text readableType)", () =>
+  Duplex.toWeb(mkDisabledDuplex(), { readableType: "text" } as any));
 
 report("writable.fromWeb(null)", () => Writable.fromWeb(null as any));
 report("writable.fromWeb(readableStream)", () => Writable.fromWeb(new ReadableStream() as any));

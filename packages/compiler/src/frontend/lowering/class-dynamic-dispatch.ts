@@ -441,6 +441,20 @@ interface PropertyReceiver {
   array?: true;
 }
 
+/** Whether a class declared `extends Array` answers the string key `name`
+ * itself: a public field, or a method or accessor with a body. An abstract
+ * re-declaration emits no prototype member, so the key reaches the Array
+ * member above it, as in Node; a private or compiler-owned name is no
+ * property of the instance. */
+function arrayClassAnswers(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  if (!isClassOwnEnumerableFieldName(name)) return false;
+  if (info.fields.has(name)) return true;
+  return [name, `get:${name}`, `set:${name}`].some((member) => {
+    const found = findMethodOn(lowerer, info, member);
+    return found !== null && found !== undefined && found.sig.abstract !== true;
+  });
+}
+
 interface PropertyDispatch {
   name: string;
   write: boolean;
@@ -3377,9 +3391,9 @@ export class ClassDynamicDispatch {
       const plans = this.propertyReceivers(lowerer, true, true, true);
       const test = ({ info, array }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
-        // A private (`#`) or compiler-owned (`%`) method is no property of an
-        // Array subclass instance: a string key does not reach it.
-        if (array && !isClassOwnEnumerableFieldName(method)) return [];
+        // An Array subclass answers only the methods it implements: a private,
+        // compiler-owned or abstract one is not its own (arrayClassAnswers).
+        if (array && !arrayClassAnswers(lowerer, info, method)) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
           emitterRooted(lowerer, info) &&
@@ -5371,6 +5385,12 @@ export class ClassDynamicDispatch {
         // Classes answered in an earlier pass skip the member lookups.
         if (dispatch.classes.has(plan.key)) continue;
         if (skips(plan)) continue;
+        if (
+          plan.array &&
+          dispatch.name !== "constructor" &&
+          !arrayClassAnswers(lowerer, info, dispatch.name)
+        )
+          continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -5427,7 +5447,7 @@ export class ClassDynamicDispatch {
             if (
               !method.startsWith("set:") &&
               !name.startsWith("sym:") &&
-              isClassOwnEnumerableFieldName(name)
+              arrayClassAnswers(lowerer, info, name)
             )
               names.add(name);
           }

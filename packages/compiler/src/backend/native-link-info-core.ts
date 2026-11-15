@@ -221,6 +221,10 @@ export interface NativeLinkFeatures {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
@@ -279,6 +283,9 @@ export interface NativeLinkFeatures {
   dgram: boolean;
   /** node:dns/promises: scr_dns_promises.c. */
   dnsPromises: boolean;
+  /** The stub resolver's queries, dns.Resolver and dns/promises'
+   * Resolver: scr_dns_resolve.c. */
+  dnsResolve: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
   /** TextEncoder and TextDecoder records as untyped values:
@@ -375,6 +382,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   http2: false,
   dgram: false,
   dnsPromises: false,
+  dnsResolve: false,
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
@@ -442,6 +450,10 @@ interface LinkFeatureRequirement {
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "http2", requires: ["http", "net"] },
+  // scr_dns_resolve.c encodes query names with scr_idna.c's ToASCII (the
+  // unit that rides the regex engine), and its queries ride the dgram
+  // unit's poller.
+  { feature: "dnsResolve", requires: ["dgram", "regex"] },
   // scr_event_target.c holds the events-module helpers over an EventTarget
   // or a NodeEventTarget and the `events.on`/`events.once` target paths;
   // they answer NodeEventTarget receivers through the emitter unit's
@@ -455,6 +467,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "fetch", requires: ["emitter", "symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
+  // scr_perf.c resolves performance.measure's Node timing milestone names
+  // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
+  { feature: "dynAsync", requires: ["perfLoop"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

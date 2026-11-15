@@ -46,8 +46,8 @@ export function globalObjectInherits(name: string): boolean {
 
 /** Whether a read of the inherited `name` answers a value: the members a
  * constant-key read of Object.prototype answers (`toString`, `valueOf`,
- * `hasOwnProperty`, `propertyIsEnumerable`, `constructor`). The runtime has
- * no value for the rest (`isPrototypeOf`, `toLocaleString`, `__proto__`, the
+ * `hasOwnProperty`, `propertyIsEnumerable`, `isPrototypeOf`, `constructor`).
+ * The runtime has no value for the rest (`toLocaleString`, `__proto__`, the
  * legacy accessors). */
 export function globalObjectInheritedValue(name: string): boolean {
   return INHERITED_MEMBER_NAMES.has(name);

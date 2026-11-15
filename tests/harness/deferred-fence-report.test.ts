@@ -328,8 +328,10 @@ test("an uncaught deferred refusal is reported before the uncaught error", async
 test.skipIf(sanitize || process.platform === "win32")(
   "a program without a deferred refusal does not link the reporter",
   async () => {
+    // Mach-O spells a C symbol with a leading underscore (`_scr_deferred_
+    // fence`); ELF does not.
     const defined = (binary: string): boolean =>
-      /\bscr_deferred_fence\b/.test(execFileSync("nm", [binary], { encoding: "utf8" }));
+      /\b_?scr_deferred_fence\b/.test(execFileSync("nm", [binary], { encoding: "utf8" }));
     const clean = await build("clean", "main.ts", `console.log("no fence here");\n`);
     const fenced = await build("swallowed", "main.js", SWALLOWED);
     expect(defined(fenced)).toBe(true);

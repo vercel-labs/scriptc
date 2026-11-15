@@ -77,6 +77,69 @@ export function funcReturnWidthAdapter(
   return name;
 }
 
+/** Wrap a function whose result is a `Promise<module namespace>` (the lazy
+ * `() => import("./chunk.mjs")` loader) so its result becomes
+ * `Promise<unknown>`: each call forwards the arguments, then maps the
+ * promise through the module's lifted namespace mapper
+ * (moduleNamespacePromiseDynValue), which answers the same namespace object
+ * a bare namespace value boxes to. The boxed-function thunk cannot build
+ * that value itself (a namespace has no static dyn conversion), while the
+ * adapter's signature is boxable, so the value crosses into an untyped
+ * slot and the chunk still loads when the untyped code calls the loader.
+ * Interned per source type; the factory creates a fresh closure over the
+ * original. */
+export function namespacePromiseFnAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): { name: string; type: IrType & { kind: "func" } } | null {
+  if (fromT.ret.kind !== "promise" || fromT.ret.inner.kind !== "moduleNs") return null;
+  const target: IrType & { kind: "func" } = {
+    ...fromT,
+    ret: { kind: "promise", inner: DYN },
+  };
+  const key = `fn:nsPromise:${typeKey(fromT)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing !== undefined) return { name: existing, type: target };
+  const params: IrParam[] = fromT.params.map((type, i) => ({
+    localId: `p.${i}`,
+    name: `p${i}`,
+    type,
+  }));
+  const called: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: params.map((param) => ({
+      kind: "varRef",
+      localId: param.localId,
+      type: param.type,
+      loc,
+    })),
+    type: fromT.ret,
+    loc,
+  };
+  const mapped = lowerer.moduleNamespacePromiseDynValue(
+    called as IrExpr & { type: IrType & { kind: "promise" } },
+  );
+  if (mapped === null) return null;
+  const name = keyedHelperName(lowerer, "%fn.nsPromise", typeKey(fromT));
+  lowerer.valueHelpers.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(
+      name,
+      fromT,
+      target,
+      params,
+      [],
+      [{ kind: "return", value: mapped, loc }],
+      loc,
+    ),
+  );
+  return { name, type: target };
+}
+
 /** Probe mechanical value conversions without creating helpers.
  * Trap-only conversions are excluded: they cannot justify an adapter that
  * promises to accept the destination signature. */

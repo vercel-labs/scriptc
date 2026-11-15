@@ -2402,8 +2402,9 @@ export function runtimeOptionalLocalOf(lowerer: Lowerer, node: ts.Expression): I
 /** JS ToBoolean: bool passes through; f64/string get a `toBool` wrapper
  * (falsy: 0, -0, NaN, ""); unions get the same wrapper answered by a
  * per-union interned helper (unit arms falsy; scalar/string arms by
- * value; ref arms always truthy). Anything else (void) cannot be
- * tested. */
+ * value; ref arms always truthy). A `void`-typed operand reaches here
+ * only where it is `undefined` at run time, so ToBoolean of it is false:
+ * the operand evaluates once for its effects, as Node evaluates it. */
 export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "f64" || e.type.kind === "string") {
@@ -2433,6 +2434,22 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
   // no effectful producers, so folding the read away loses nothing.
   if (isUnitType(e.type)) {
     return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+  }
+  // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
+  // JavaScript source, tsc-codes.ts TS1345): the row admits only operands
+  // that are `undefined` whenever they run (a call of a function whose body
+  // returns no value), so Node's ToBoolean is false, and the operand still
+  // runs once for its effects and any exception. Typed sources and every
+  // other void-typed operand never reach this: TS1345 stops them at
+  // preflight.
+  if (e.type.kind === "void") {
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: e, loc: e.loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc: e.loc },
+      type: BOOL,
+      loc: e.loc,
+    };
   }
   lowerer.badType(node, lowerer.typeOf(node));
 }
@@ -3614,7 +3631,12 @@ export function cjsImportedDataSnapshotOf(
     isCjsJsFile(ts.getSourceFileOfNode(binding), lowerer.program)
   )
     return null;
-  return cjsLinkedDataExport(lowerer, lowerer.checker.getAliasedSymbol(raw))?.snapshot ?? null;
+  return (
+    cjsLinkedDataExport(
+      lowerer,
+      lowerer.aliasStorageSymbolOf(raw) ?? lowerer.checker.getAliasedSymbol(raw),
+    )?.snapshot ?? null
+  );
 }
 
 /** Per CommonJS module, the export names ES-module importers bind by name
@@ -3671,7 +3693,9 @@ export function cjsAccessorSnapshotStores(
   for (const exported of exportedSymbols) {
     if (bound !== null && !bound.has(ts.symbolName(exported))) continue;
     const symbol =
-      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+      exported.flags & ts.SymbolFlags.Alias
+        ? (lowerer.aliasStorageSymbolOf(exported) ?? lowerer.checker.getAliasedSymbol(exported))
+        : exported;
     const linked = cjsLinkedDataExport(lowerer, symbol);
     if (linked === null) continue;
     const first = lowerer.cjsLinkedDataModules.get(symbol);

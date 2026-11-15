@@ -618,6 +618,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.toString",
   "dyn.toStringCoerce",
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.typeof",
   // error.ctorOptions runs scr_error_init_options, the initializer
@@ -699,6 +700,10 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   // a value.
   "weakMap.new",
   "weakSet.new",
+  // A WeakRef keeps its target and answers it from deref: the target gets a
+  // reference count, but no property.
+  "weakRef.new",
+  "weakRef.is",
   "worker.new",
 ]);
 /** Runtime helpers that do nothing with their dynamic arguments but call

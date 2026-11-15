@@ -53,19 +53,30 @@ function jsConstructorFunctionOf(
   return declaration;
 }
 
+/** An expression whose value replaces the receiver instead of answering it:
+ * an object, an array, a function, or a constructed instance. */
+function returnsObjectValue(expression: ts.Expression): boolean {
+  return (
+    ts.isObjectLiteralExpression(expression) ||
+    ts.isArrayLiteralExpression(expression) ||
+    ts.isArrowFunction(expression) ||
+    ts.isFunctionExpression(expression) ||
+    ts.isNewExpression(expression)
+  );
+}
+
 /** An ordinary constructor's explicit object return replaces its receiver.
  * Without observing this or new.target, it can use the function's call ABI. */
 function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
   const declaration = jsConstructorFunctionOf(lowerer, expr);
   if (!declaration?.body) return false;
-  const objectReturn = (expression: ts.Expression): boolean =>
-    ts.isObjectLiteralExpression(expression) ||
-    ts.isArrayLiteralExpression(expression) ||
-    ts.isArrowFunction(expression) ||
-    ts.isFunctionExpression(expression) ||
-    ts.isNewExpression(expression);
   const last = declaration.body.statements.nodes.at(-1);
-  if (!last || !ts.isReturnStatement(last) || !last.expression || !objectReturn(last.expression))
+  if (
+    !last ||
+    !ts.isReturnStatement(last) ||
+    !last.expression ||
+    !returnsObjectValue(last.expression)
+  )
     return false;
   let safe = true;
   const visit = (node: ts.Node, nestedArrow = false): void => {
@@ -81,7 +92,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     if (
       !nestedArrow &&
       ts.isReturnStatement(node) &&
-      (!node.expression || !objectReturn(node.expression))
+      (!node.expression || !returnsObjectValue(node.expression))
     )
       safe = false;
     ts.forEachChild(node, (child) => visit(child, nestedArrow));
@@ -89,6 +100,32 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
   for (const parameter of declaration.parameters.nodes) visit(parameter);
   visit(declaration.body);
   return safe;
+}
+
+/** The construction-site refusal for an ordinary constructor whose last
+ * statement returns an object, but which `isObjectFactoryNew` rejects: it
+ * observes `this` or `new.target`, so the receiver it abandons is visible,
+ * or another return answers a primitive or nothing, so the construction
+ * mixes the returned object with that receiver. Checked construction would
+ * compile the call, so the site keeps the fence the checked path replaced.
+ * Null when the constructor is a factory the factory lowering owns, or its
+ * last statement does not return an object. */
+export function objectReturningConstructorRefusal(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): string | null {
+  const declaration = jsConstructorFunctionOf(lowerer, expr);
+  if (!declaration?.body) return null;
+  const last = declaration.body.statements.nodes.at(-1);
+  if (
+    !last ||
+    !ts.isReturnStatement(last) ||
+    !last.expression ||
+    !returnsObjectValue(last.expression) ||
+    isObjectFactoryNew(lowerer, expr)
+  )
+    return null;
+  return "object-returning constructors that observe this or return mixed primitive/object values";
 }
 
 /** Collection must register the shared result before reaching factory

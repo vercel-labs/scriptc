@@ -76,10 +76,11 @@ declare module "events" {
     // The class under its own name, so `import { EventEmitter }` resolves
     // (the @types/node namespace-alias pattern).
     export { internal as EventEmitter };
-    // The event's arguments, as checked-dynamic values.
+    // The event's arguments, as checked-dynamic values. An emitter's name
+    // may be a symbol, as @types/node's NodeEventTarget overload admits.
     export function once(
       emitter: EventEmitter | NodeJS.ReadableStream | NodeJS.WritableStream,
-      eventName: string,
+      eventName: string | symbol,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;
     /* An EventTarget has no 'error' event semantics: the promise settles

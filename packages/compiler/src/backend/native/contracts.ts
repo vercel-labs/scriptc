@@ -215,6 +215,10 @@ export interface CcOptions {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: compiles scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: compiles scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
@@ -404,6 +408,11 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** The program uses dns.Resolver or the resolve/reverse/setServers
+   * forms (the dnsResolve runtime feature): compiles scr_dns_resolve.c
+   * over the dgram unit, so programs that only call dns.lookup keep
+   * their exact link line. */
+  dnsResolve?: boolean;
   /** A dgram socket converts to or from an untyped value: compiles
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */

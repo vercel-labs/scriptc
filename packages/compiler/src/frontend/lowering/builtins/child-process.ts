@@ -1,5 +1,14 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, helperLoc, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  helperLoc,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
+import { isDynUndefined } from "../../../ir/runtime-features.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
@@ -27,6 +36,7 @@ import {
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import { optionMember } from "./arguments.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 
 /** The child-process args list: one string[] value. An omitted list
  * completes to an empty literal (Node's default); an array LITERAL
@@ -137,8 +147,6 @@ export function withChildArgsCheck(
     (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
   const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
   const effects = sourceOrder !== undefined && sourceOrder.some((step) => typeof step === "object");
-  if (fileAndArgsPass && optionsPass && !limited && !effects) return launch;
-  const stmts: IrStmt[] = [];
   // Literals and function literals have no evaluation to order, and a
   // function-typed local read is the callback itself.
   const evaluates = (arg: IrExpr): boolean =>
@@ -149,6 +157,19 @@ export function withChildArgsCheck(
       arg.kind === "closure" ||
       (arg.kind === "varRef" && arg.type.kind === "func")
     );
+  // The source's own order among the launch's option arguments matters
+  // only when two of them can be reordered observably: argument order and
+  // source order differ in nothing a program can see below that (the
+  // callback expression has no evaluation of its own).
+  const ordered =
+    sourceOrder !== undefined &&
+    (effects ||
+      (given.maxBuffer !== undefined && given.maxBuffer.value.kind !== "numLit") ||
+      sourceOrder.filter(
+        (step) => typeof step === "number" && step > 2 && evaluates(launch.args[step]!),
+      ).length > 1);
+  if (fileAndArgsPass && optionsPass && !limited && !ordered) return launch;
+  const stmts: IrStmt[] = [];
   const hold = (value: IrExpr): IrExpr => {
     const local = lowerer.declareHiddenLocal("%childArg", value.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
@@ -161,10 +182,7 @@ export function withChildArgsCheck(
       ? given.maxBuffer.value
       : undefined;
   const steps: ChildEvalStep[] = [];
-  if (
-    sourceOrder !== undefined &&
-    (effects || (given.maxBuffer !== undefined && given.maxBuffer.value.kind !== "numLit"))
-  ) {
+  if (sourceOrder !== undefined && ordered) {
     // A member written twice keeps its last place, as its last value is
     // the one the launch reads.
     sourceOrder.forEach((step, at) => {
@@ -410,6 +428,37 @@ const NODE_SIGNAL_NAMES = new Set([
   "SIGINFO",
 ]);
 
+/** Node's convertToValidSignal uppercases a killSignal name before its
+ * table lookup, so "sigkill" and "SigTerm" resolve like the uppercase
+ * spelling; an unknown name stays a compile-time fence. */
+function isNodeSignalName(value: string): boolean {
+  return NODE_SIGNAL_NAMES.has(value.toUpperCase());
+}
+
+/** A run-time Buffer-encoding NAME — the value's type must be a union of
+ * Buffer encoding string literals (`BufferEncoding` and its spellings), so
+ * every run-time value is a name Node's tables accept, and the call
+ * decodes through it. A widened `string`, a "buffer" or nullish arm, and
+ * any other value make the capture's static type depend on the value, so
+ * they fence. */
+export function encodingNameValue(lowerer: Lowerer, what: string, node: ts.Expression): IrExpr {
+  const t = lowerer.typeOf(node);
+  const arms = t.flags & ts.TypeFlags.Union ? ts.constituentTypes(t) : [t];
+  const fence = (): never =>
+    lowerer.noLowering(
+      `${what} with this encoding value`,
+      node,
+      'encoding is a Buffer encoding name literal, or a value typed as a union of them; "buffer"/null select the Buffer result',
+    );
+  if (arms.length === 0) fence();
+  for (const arm of arms) {
+    if (!arm.isStringLiteralType() || knownBufEncoding(arm.value) === undefined) fence();
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "string") fence();
+  return value;
+}
+
 /** `spawnSync(command, args?, options?)` → one cp.spawnSync /
  * cp.spawnSyncOpts libCall. An omitted args list completes to an empty
  * string[] literal (Node's default). The options argument must be an
@@ -446,6 +495,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 
   let timeout: IrExpr = numLit(0, loc);
   let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // The encoding option's canonical Buffer encoding name ("" = the
+  // unencoded Buffer form, Node's default): the STRING reads of the
+  // capture decode the bytes through it.
+  let encoding: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // spawnSync's own maxBuffer: cp.maxBuffer validates it and arms it as the
+  // next capture's limit (Node's 1 MiB without it).
+  let maxBuffer: IrExpr | null = null;
   // stdio modes (scr_child.c's core): stdin 0 = /dev/null ("pipe" with
   // no input and "ignore" both read nothing), 1 = ignore, 2 = inherit;
   // stdout/stderr 0 = capture, 1 = ignore, 2 = inherit. A slot whose TYPE
@@ -485,7 +541,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order. `stdio`
   // stands for a tuple whose slots resolve at the call.
-  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input" | "windowsHide")[] = [];
+  const optionOrder: (
+    | "timeout"
+    | "cwd"
+    | "env"
+    | "stdio"
+    | "input"
+    | "windowsHide"
+    | "encoding"
+    | "maxBuffer"
+  )[] = [];
   // A `windowsHide` value whose evaluation can be observed (a call, a
   // getter): it runs where the member sits, through the extended entry
   // point's ordered prelude.
@@ -519,12 +584,15 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
                 runtime.hasInput,
                 runtime.shell,
                 ...extra,
+                runtime.encoding,
               ],
               type: SPAWNRES_T,
               loc,
             },
             0,
-            (a) => ({ cwd: a[7], envPairs: a[11] }),
+            // The env pairs ride only when the entry point takes them; the
+            // trailing argument is the encoding otherwise.
+            (a) => ({ cwd: a[7], envPairs: extra.length > 0 ? a[11] : undefined }),
             loc,
           );
         // An absent `env` inherits our environment; a present one replaces
@@ -587,6 +655,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         );
       };
       const t = lowerer.typeOf(node);
+      // A nullish scalar is Node's default: every slot piped.
+      if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
       if (t.isStringLiteralType()) {
         modeOf(t.value, 0);
         modeOf(t.value, 1);
@@ -597,6 +667,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         let slotRuntime = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
+          // null and undefined mean the default "pipe" entry.
+          if (et.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
           if (!et.isStringLiteralType()) {
             // A slot typed as a union of the supported literals maps at
             // the call. stdin's "ignore" and "pipe" both read nothing, but
@@ -651,16 +723,38 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       }
       switch (m.name) {
         case "encoding": {
+          // Node's normalizeSpawnArguments: null/undefined mean the Buffer
+          // form; "buffer" is the same; otherwise the value must name a
+          // Buffer encoding, which the result's STRING reads decode with.
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-            lowerer.noLowering(
-              "spawnSync with a non-utf8 encoding",
-              m.value,
-              'outputs are captured as utf8 — pass { encoding: "utf8" }',
-            );
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) break;
+          if (t.isStringLiteralType()) {
+            if (t.value === "buffer") break; // Node's normalizing of "buffer"
+            const lit = knownBufEncoding(t.value);
+            if (lit === undefined) {
+              lowerer.noLowering(
+                `spawnSync with encoding "${t.value}"`,
+                m.value,
+                'a Buffer encoding name (or "buffer"/null for the Buffer form) is the supported encoding option',
+              );
+            }
+            encoding = strLit(lit, loc);
+          } else {
+            // A value whose TYPE is a Buffer encoding name (BufferEncoding
+            // and its spellings): the runtime decodes per read with the
+            // name it holds. A nullish or "buffer" arm would make the
+            // capture's type depend on the value, which fences.
+            encoding = encodingNameValue(lowerer, "spawnSync", m.value);
           }
+          optionOrder.push("encoding");
+          plain = false;
           break;
         }
+        case "maxBuffer":
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionOrder.push("maxBuffer");
+          plain = false;
+          break;
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
           optionOrder.push("timeout");
@@ -668,7 +762,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || !NODE_SIGNAL_NAMES.has(t.value)) {
+          if (!t.isStringLiteralType() || !isNodeSignalName(t.value)) {
             lowerer.noLowering(
               "spawnSync with this killSignal",
               m.value,
@@ -802,7 +896,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   if (plain) {
     return withChildArgsCheck(
       lowerer,
-      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc },
+      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv, encoding], type: SPAWNRES_T, loc },
       0,
       () => ({}),
       loc,
@@ -835,12 +929,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       {
         kind: "libCall",
         fn: "cp.spawnSyncStdioStr",
-        args: [cmd, argv, timeout, killSignal, stdioStr],
+        args: [cmd, argv, timeout, killSignal, stdioStr, encoding],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      () => ({}),
+      () => ({ maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
     );
   }
@@ -878,6 +972,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     let stdinModeArg = inMode;
     let outModeArg = outMode;
     let errModeArg = errMode;
+    let encodingArg = encoding;
+    let maxBufferArg = maxBuffer;
     for (const option of optionOrder) {
       if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
       else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
@@ -894,6 +990,10 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       } else if (option === "windowsHide") {
         const value = windowsHideValues.shift();
         if (value !== undefined) bind("%spawnSyncWindowsHide", value);
+      } else if (option === "encoding") {
+        encodingArg = bind("%spawnSyncEncoding", encoding);
+      } else if (option === "maxBuffer" && maxBuffer !== null) {
+        maxBufferArg = bind("%spawnSyncMaxBuffer", maxBuffer);
       }
     }
     // An `input` option makes the call read the stdin slot's runtime mode
@@ -940,12 +1040,17 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           hasInputArg,
           shell,
           ...(envArg !== null ? [envArg] : []),
+          encodingArg,
         ],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      (a) => ({ cwd: a[7], envPairs: a[11] }),
+      (a) => ({
+        cwd: a[7],
+        envPairs: envArg !== null ? a[11] : undefined,
+        maxBuffer: armedMaxBuffer(maxBufferArg, true),
+      }),
       loc,
     );
     return prelude.length === 0
@@ -966,12 +1071,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         outMode,
         errMode,
         ...(envPairs !== null ? [envPairs] : []),
+        encoding,
       ],
       type: SPAWNRES_T,
       loc,
     },
     0,
-    (a) => ({ envPairs: a[7] }),
+    (a) => ({
+      envPairs: envPairs !== null ? a[7] : undefined,
+      maxBuffer: armedMaxBuffer(maxBuffer, true),
+    }),
     loc,
   );
 }
@@ -1000,6 +1109,9 @@ function lowerSpawnSyncRuntimeOptions(
   inMode: IrExpr;
   outMode: IrExpr;
   errMode: IrExpr;
+  /** The encoding option's name (the record requires it): the STRING
+   * reads of the capture decode through it. */
+  encoding: IrExpr;
   /** The `env` member's presence test, null when the record has no such
    * member; the pairs ride only the present branch. */
   hasEnv: IrExpr | null;
@@ -1064,6 +1176,14 @@ function lowerSpawnSyncRuntimeOptions(
     loc,
   });
   const inMode = modeCall(0);
+  const encodingRead: IrExpr = {
+    kind: "recordGet",
+    obj: opts,
+    shapeId,
+    field: "encoding",
+    type: STRING,
+    loc,
+  };
   // input's PRESENCE rides separately (undefined = the option is absent —
   // no stdin pipe; "" pipes empty stdin), and Node IGNORES it when
   // stdio[0] takes the child's fd 0 away ("ignore"/"inherit"): the option
@@ -1165,6 +1285,7 @@ function lowerSpawnSyncRuntimeOptions(
     inMode,
     outMode: modeCall(1),
     errMode: modeCall(2),
+    encoding: encodingRead,
     hasEnv,
     envPairs,
   };
@@ -1416,6 +1537,35 @@ function stdioModeExpr(
   };
 }
 
+/** `child[Symbol.dispose]()`: Node's ChildProcess dispose, which sends
+ * SIGTERM only while `killed` is false. The receiver must type as a child
+ * handle; any other element-access call is not ours. */
+export function lowerChildDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "dispose"
+  ) {
+    return null;
+  }
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("child[Symbol.dispose] with arguments", call);
+  }
+  return {
+    kind: "libCall",
+    fn: "child.dispose",
+    args: [lowerer.lowerExpr(access.expression)],
+    type: VOID,
+    loc: locOf(call),
+  };
+}
+
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
  * libCall. Computed options use native runtime normalization. Inline
  * stdio accepts "ignore", "inherit", or "pipe" as the scalar, or the
@@ -1429,8 +1579,10 @@ function stdioModeExpr(
  * orientation — POSIX_SPAWN_SETSID, the child gets its own session and
  * process group like Node's), `env` (a REPLACEMENT environment, the
  * exec-core pairs machinery), `cwd`, and `windowsHide` (a POSIX no-op).
- * The bare `{ stdio: "ignore" }` shape keeps its historical cp.spawn
- * lowering. */
+ * `timeout`, `killSignal` and `signal` ride cp.spawnArmed (the
+ * SCR_CHILD_CP_OPTIONS build), which runs Node's launch checks before the
+ * child starts. The bare `{ stdio: "ignore" }` shape keeps its historical
+ * cp.spawn lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
@@ -1488,6 +1640,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
   let shellEnabled = false;
+  // Node's spawn-side options, which the SCR_CHILD_CP_OPTIONS build
+  // implements: `timeout` (0 = none), `killSignal` and `signal`. Any of
+  // them switches the launch to cp.spawnArmed.
+  let armed = false;
+  let timeoutMs: IrExpr = numLit(0, loc);
+  let killSignalOpt: IrExpr = dynUndefinedExpr(loc);
+  let signalOpt: IrExpr = dynUndefinedExpr(loc);
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
@@ -1505,6 +1664,11 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
     return varRef(local.id, value.type, loc);
   };
   const bind = (name: string, value: IrExpr): IrExpr => bindInto(valuePrelude, name, value);
+  // An explicitly absent checked-dynamic member stays the undefined
+  // literal: the emitter reads it to leave the event-target unit out, and
+  // the runtime reads it as Node's absent option.
+  const bindDyn = (name: string, value: IrExpr): IrExpr =>
+    isDynUndefined(value) ? value : bind(name, value);
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
     for (const p of optsNode.properties.nodes) {
@@ -1568,6 +1732,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
+              // null and undefined mean Node's default "pipe" entry.
+              if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+                if (which === 0) inMode = numLit(3, loc);
+                else if (which === 1) outMode = numLit(3, loc);
+                else errMode = numLit(3, loc);
+                plain = false;
+                return;
+              }
               if (t.isStringLiteralType()) {
                 if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
                   lowerer.noLowering(
@@ -1624,6 +1796,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             break;
           }
           const t = lowerer.typeOf(m.value);
+          // A nullish scalar is Node's default: all three slots piped.
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+            inMode = outMode = errMode = numLit(3, loc);
+            sawStdio = true;
+            plain = false;
+            break;
+          }
           // A scalar union-typed stdio expression feeds all three modes: it
           // is read once into a hidden local, so a side effect in the
           // expression runs once and the three modes cannot disagree.
@@ -1697,11 +1876,59 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             );
           }
           break;
+        case "timeout": {
+          // Node's validateTimeout: a nullish timeout is absent, and the
+          // timer arms only for a positive one, so an absent value and 0
+          // behave alike. A value that may be undefined lowers as
+          // `value ?? 0`, which keeps its runtime timeout and validation.
+          armed = true;
+          plain = false;
+          const t = lowerer.typeOf(m.value);
+          const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+          if ((t.flags & nullish) !== 0 && (t.flags & ~nullish) === 0) break;
+          const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+          const present = parts.filter((part) => (part.flags & nullish) === 0);
+          if (
+            present.length < parts.length &&
+            present.length === 1 &&
+            (present[0]!.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !== 0
+          ) {
+            timeoutMs = bind("%spawnTimeout", {
+              kind: "nullish",
+              left: lowerer.lowerExpr(m.value),
+              right: numLit(0, loc),
+              type: F64,
+              loc,
+            });
+            break;
+          }
+          timeoutMs = bind("%spawnTimeout", lowerer.lowerExprExpecting(m.value, F64));
+          break;
+        }
+        case "killSignal":
+          // sanitizeKillSignal: a signal name in any case, or a signal
+          // number from the platform's table. The runtime resolves and
+          // rejects the value (ERR_UNKNOWN_SIGNAL, or
+          // ERR_INVALID_ARG_TYPE for a non-string/number) before the
+          // child starts; undefined and null are absent.
+          killSignalOpt = bindDyn("%spawnKillSignal", lowerer.lowerExprExpecting(m.value, DYN));
+          armed = true;
+          plain = false;
+          break;
+        case "signal":
+          // validateAbortSignal: an AbortSignal (Node's
+          // ERR_INVALID_ARG_TYPE for anything else, null included). The
+          // runtime checks the checked-dynamic handle's tag and
+          // subscribes to the abort.
+          signalOpt = bindDyn("%spawnSignal", lowerer.lowerExprExpecting(m.value, DYN));
+          armed = true;
+          plain = false;
+          break;
         default:
           lowerer.noLowering(
             `spawn option '${m.name}'`,
             p,
-            "stdio, detached, env, cwd, windowsHide, windowsVerbatimArguments, and shell are the supported options",
+            "stdio, detached, env, cwd, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell are the supported options",
           );
       }
     }
@@ -1735,26 +1962,50 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
-      {
-        kind: "libCall",
-        fn: "cp.spawnOpts",
-        args: [
-          callCmd,
-          callArgs,
-          inMode,
-          outMode,
-          errMode,
-          outFd,
-          errFd,
-          detached,
-          shell,
-          hasEnv,
-          envPairs,
-          cwd,
-        ],
-        type: CHILD_T,
-        loc,
-      },
+      armed
+        ? {
+            kind: "libCall",
+            fn: "cp.spawnArmed",
+            args: [
+              callCmd,
+              callArgs,
+              inMode,
+              outMode,
+              errMode,
+              outFd,
+              errFd,
+              detached,
+              shell,
+              hasEnv,
+              envPairs,
+              cwd,
+              timeoutMs,
+              killSignalOpt,
+              signalOpt,
+            ],
+            type: CHILD_T,
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "cp.spawnOpts",
+            args: [
+              callCmd,
+              callArgs,
+              inMode,
+              outMode,
+              errMode,
+              outFd,
+              errFd,
+              detached,
+              shell,
+              hasEnv,
+              envPairs,
+              cwd,
+            ],
+            type: CHILD_T,
+            loc,
+          },
       0,
       (a) => ({ envPairs: a[10], cwd: a[11] }),
       loc,
@@ -1827,6 +2078,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   let outMode = 1;
   let errMode = 1;
   let sawStdio = false;
+  let sawNullishScalar = false;
   let silent = false;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -1834,6 +2086,11 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 
   const stdioMode = (node: ts.Expression, label: string): number => {
     const type = lowerer.typeOf(node);
+    // A null/undefined entry takes spawn's default "pipe"; a null/undefined
+    // scalar takes fork's own default, which the caller resolves once
+    // `silent` is known (inherit unless silent, as Node's fork does for
+    // every non-array, non-string stdio value).
+    if (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return -1;
     const value = type.isStringLiteralType() ? type.value : null;
     if (value !== "ignore" && value !== "inherit" && value !== "pipe") {
       lowerer.noLowering(
@@ -1891,12 +2148,17 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
                 'the fourth stdio entry must be "ipc"',
               );
             }
-            inMode = stdioMode(member.value.elements.nodes[0]!, "stdin");
-            outMode = stdioMode(member.value.elements.nodes[1]!, "stdout");
-            errMode = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            sawNullishScalar = false;
+            const inEntry = stdioMode(member.value.elements.nodes[0]!, "stdin");
+            const outEntry = stdioMode(member.value.elements.nodes[1]!, "stdout");
+            const errEntry = stdioMode(member.value.elements.nodes[2]!, "stderr");
+            inMode = inEntry === -1 ? 3 : inEntry;
+            outMode = outEntry === -1 ? 3 : outEntry;
+            errMode = errEntry === -1 ? 3 : errEntry;
           } else {
             const mode = stdioMode(member.value, "scalar");
-            inMode = outMode = errMode = mode;
+            sawNullishScalar = mode === -1;
+            if (mode !== -1) inMode = outMode = errMode = mode;
           }
           sawStdio = true;
           break;
@@ -1931,6 +2193,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
       }
     }
   }
+  if (sawNullishScalar) inMode = outMode = errMode = silent ? 3 : 1;
   if (!sawStdio && silent) inMode = outMode = errMode = 3;
 
   return withChildArgsCheck(
@@ -1964,9 +2227,13 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
- * to each stream as in Node (1 MiB without the option). Other options remain
- * fenced until their lifecycle can share this asynchronous core. */
+ * `encoding: "utf8"`, a numeric `maxBuffer` (the limit applies to each
+ * stream as in Node — 1 MiB without the option), `cwd`, `env`, `timeout`,
+ * `killSignal`, `shell`, and the Windows-only members are accepted. The
+ * deadline is Node's: at `timeout` the runtime destroys the capture streams
+ * and sends `killSignal` (SIGTERM without one), and the callback reports
+ * the exit's own status. Other options remain fenced until their lifecycle
+ * can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1994,9 +2261,12 @@ export function lowerExecFileCall(
   // failure messages). execFile's `shell: true` below turns it into the
   // same shape, so the launch values are final only after the options.
   let execShell = false;
-  // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
-  // one launch member the callback slice lacked.
+  // `cwd`, `env`, `timeout` and `killSignal` (the SCR_CHILD_CP_OPTIONS
+  // build): the launch members the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let envPairs: IrExpr | null = null;
+  let timeout: IrExpr | null = null;
+  let killSignal: IrExpr | null = null;
   let maxBuffer: IrExpr | null = null;
   // The options that are evaluated, as written: `cwd` is the launch's
   // fifth argument.
@@ -2039,6 +2309,35 @@ export function lowerExecFileCall(
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
         optionSteps.push(4);
+      } else if (member.name === "env") {
+        // A REPLACEMENT environment, as for spawn and spawnSync; `env: {}`
+        // is an empty environment, not the inherited one.
+        envPairs = recordToEnvPairs(lowerer, member.value);
+        optionSteps.push(6);
+      } else if (member.name === "timeout") {
+        // Node's validateTimeout (the runtime): an unsigned integer, or a
+        // nullish value that means no deadline. The delay rides the
+        // launch's eighth argument.
+        const t = lowerer.typeOf(member.value);
+        if (!(t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))) {
+          timeout = lowerer.lowerExprExpecting(member.value, F64);
+          optionSteps.push(7);
+        }
+      } else if (member.name === "killSignal") {
+        // sanitizeKillSignal's name form: a literal from Node's table
+        // (the runtime's twin resolves it; SIGTERM without one).
+        const t = lowerer.typeOf(member.value);
+        if (!(t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))) {
+          if (!t.isStringLiteralType() || !isNodeSignalName(t.value)) {
+            lowerer.noLowering(
+              `${what} with this killSignal`,
+              member.value,
+              'a signal-name literal from Node\'s table ("SIGTERM", "SIGKILL", ...) is the supported form',
+            );
+          }
+          killSignal = { kind: "strLit", value: t.value, type: STRING, loc };
+          optionSteps.push(8);
+        }
       } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
         // Windows-only presentation and quoting: Node reads neither on
         // POSIX. This form binds no member values, so a value whose
@@ -2059,7 +2358,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -2145,6 +2444,34 @@ export function lowerExecFileCall(
   // The source evaluates the file or command, the argument list, the
   // options as written, and the callback last.
   const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
+  if (envPairs !== null || timeout !== null || killSignal !== null) {
+    // The full option shape (the SCR_CHILD_CP_OPTIONS build): env REPLACES
+    // the environment (the flag says whether it is present at all),
+    // timeoutMs 0 means no deadline, and "" is the SIGTERM default.
+    const args: IrExpr[] = [
+      cmd,
+      argv,
+      callback,
+      boolLit(shellForm, loc),
+      cwd ?? strLit("", loc),
+      boolLit(envPairs !== null, loc),
+      envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+      timeout ?? numLit(0, loc),
+      killSignal ?? strLit("", loc),
+    ];
+    return withChildArgsCheck(
+      lowerer,
+      { kind: "libCall", fn: "cp.execFileOpts", args, type: CHILD_T, loc },
+      form,
+      (a) => ({
+        cwd: a[4],
+        envPairs: a[6],
+        maxBuffer: armedMaxBuffer(maxBuffer, false),
+      }),
+      loc,
+      sourceOrder,
+    );
+  }
   if (cwd !== null) {
     return withChildArgsCheck(
       lowerer,

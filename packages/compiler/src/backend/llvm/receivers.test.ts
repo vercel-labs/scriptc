@@ -70,9 +70,11 @@ test("a borrowed stabilized read emits its statements in a sequence scope", () =
   const steps: string[] = [];
   const emitter = {
     stableCallBindings: new Set(["%propertyRecv"]),
-    emitInSequenceScope<T>(body: () => T): T {
+    beginSequenceScope(): void {
       steps.push("scope");
-      return body();
+    },
+    endSequenceScope(): void {
+      steps.push("end");
     },
     emitStmt(s: IrStmt): void {
       steps.push(`stmt:${s.kind}`);
@@ -107,5 +109,5 @@ test("a borrowed stabilized read emits its statements in a sequence scope", () =
   };
   const value = emitReadReceiver(emitter, read);
   expect(value.name).toBe("%lent");
-  expect(steps).toEqual(["scope", "stmt:varDecl", "read:unionNarrow"]);
+  expect(steps).toEqual(["scope", "stmt:varDecl", "read:unionNarrow", "end"]);
 });

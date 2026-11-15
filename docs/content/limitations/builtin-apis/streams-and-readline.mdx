@@ -27,7 +27,7 @@
   `@types/node` types that result as `NodeJS.WritableStream`, so `for await` over it needs the `PassThrough` type (`pipeline(...) as PassThrough`, or a JSDoc `@type`).
   In typed code, a pipeline callback with an async function or async generator destination receives `null` for no error when its error parameter cannot hold `undefined` (@types/node declares it `NodeJS.ErrnoException | null`), and `undefined` when it can, as in Node.
   `Readable.from` accepts `objectMode` and `highWaterMark` options.
-  The `Readable` operators (`map`, `filter`, `forEach`, `toArray`, `some`, `find`, `every`, `flatMap`, `drop`, `take`, and `reduce`) accept `concurrency`, `highWaterMark`, and `signal` options.
+  The `Readable` operators (`map`, `filter`, `forEach`, `toArray`, `some`, `find`, `every`, `flatMap`, `drop`, `take`, and `reduce`) accept `concurrency`, `highWaterMark`, and `signal` options, written inline or passed as a value.
   Their callbacks may take the `{ signal }` argument, `map` may return any value, and `flatMap` may return any iterable, async iterable, or stream.
   `Duplex.from` accepts an async generator function, which reads what is written to the Duplex, a `Duplex`, `Transform` or `PassThrough`, which it returns, and the values `Readable.from` accepts, which give a Duplex that is not writable.
   It also accepts a lone `Readable` or `Writable` and a `{ readable, writable }` pair, which the Duplex reads and writes through, a promise, whose value it reads, and an async function, which reads what is written and must resolve to `null` or `undefined`.
@@ -38,8 +38,9 @@
   In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
   A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
   A web stream in a later compose stage is unsupported.
-  `stream.isDestroyed`, `isErrored`, `isDisturbed`, `isReadable`, and `isWritable`, and `Readable.isDisturbed`, answer for the `node:stream` classes and their subclasses, for file and zlib streams, for an untyped value that holds one of those, and for primitives.
-  For any other value, such as a plain object, a web stream, a socket, an HTTP message, or a process stream, they throw a not-supported error, and for a child-process stream they answer only about the side the stream has.
+  `stream.isDestroyed`, `isErrored`, `isDisturbed`, `isReadable`, and `isWritable`, and `Readable.isDisturbed`, answer for the `node:stream` classes and their subclasses, for file and zlib streams, for the web stream classes and their readers and writers (including a `Response` body), for an untyped value that holds one of those, and for primitives.
+  For any other value, such as a plain object or an array, they answer by the state members Node's duck typing reads, and for a child-process stream they answer only about the side the stream has.
+  The `nodejs.stream.*` symbol properties a userland stream may carry are not read; its state members answer instead.
   `readableAborted`, `readableDidRead`, `readableEncoding`, and `writableAborted` read as in Node, on a typed stream and through an untyped value.
   `writableAborted` is `undefined` on a `Duplex`, `Transform`, or `PassThrough`, as in Node, so a `boolean` slot refuses that read with a TypeError.
   `stream[Symbol.asyncDispose]()` and `await using` work on a value typed as a stream class; on an untyped value they are unsupported.

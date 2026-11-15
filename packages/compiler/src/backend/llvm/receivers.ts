@@ -54,11 +54,15 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     // pointer, so the projection of it lends the same owner. The local is a
     // sequence's, not the enclosing block's: it dies with the statement or
     // branch arm that created it, so a path that skips the read never
-    // releases a pointer it did not store.
-    return emitter.emitInSequenceScope(() => {
-      for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
-      return emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
-    });
+    // releases a pointer it did not store. The scope is opened here rather
+    // than in a closure: this function compiles with the compiler, and the
+    // closure #3563 passed here lowered it to 4,933 stack slots in the
+    // bootstrapped module instead of 409, which overran the bootstrap stack.
+    emitter.beginSequenceScope();
+    for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
+    const lent = emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
+    emitter.endSequenceScope();
+    return lent;
   }
   if (e.kind === "varRef") {
     emitter.materializeSplitLocal(e.localId);

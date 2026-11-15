@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-alias-late-write/one.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-late-write/two.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-late-write/lib.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-late-write/main.js"
+ ],
+ "diags": []
+}

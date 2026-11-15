@@ -15,8 +15,11 @@ export interface FnCtx {
   /** A constructor whose `this` a base constructor's returned instance may
    * rebind: the statements it runs where it finishes (a bare `return`
    * included), which publish the instance it ends with
-   * (constructor-returns.ts publishReboundThis). */
-  constructorEpilogue?: () => IrStmt[];
+   * (constructor-returns.ts publishConstructorResult). `site` is the
+   * completion the statements run at: the constructor's own `return`, or
+   * the end of a `finally` block, where a construction nested in the block
+   * may have published its own result. */
+  constructorEpilogue?: (site: "return" | "finally") => IrStmt[];
   /** Set when a lookup of `this` returned thisLocal, from this function's
    * body or from a nested function that captures it. */
   thisRead?: true;

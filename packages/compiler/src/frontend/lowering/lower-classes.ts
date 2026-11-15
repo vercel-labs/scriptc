@@ -43,7 +43,9 @@ import {
   constructorPrimitiveFlag,
   superIntoResultSlot,
   rebindingBase,
-  publishReboundThis,
+  publishConstructorResult,
+  constructorEntrySlot,
+  constructorReturnPlan,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
@@ -10211,9 +10213,29 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         init: varRef(allocated.id, thisType, loc),
         loc,
       });
-      lowerer.ctx.constructorEpilogue = () => [
-        publishReboundThis(lowerer, info, thisLocal, allocated, loc),
-      ];
+      const publish = () => [publishConstructorResult(lowerer, info, thisLocal, loc)];
+      // A `finally` republishes only while the constructor's answer is
+      // always its `this`: a returned instance or object sets the result
+      // slot itself, and a block that runs after that return must not
+      // overwrite it.
+      const returnsValue = (constructorReturnPlan(lowerer, info)?.returns.size ?? 0) !== 0;
+      lowerer.ctx.constructorEpilogue = (site) =>
+        site === "finally" && returnsValue ? [] : publish();
+    }
+    // A construction nested in this constructor's argument evaluation can
+    // have been abandoned after publishing its instance (a `finally` that
+    // throws after its return): clear the class's result slot once this
+    // constructor runs, so the read that follows it cannot answer that
+    // instance (constructor-returns.ts constructorEntrySlot).
+    const entrySlot = constructorEntrySlot(lowerer, info);
+    if (entrySlot !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: entrySlot.id,
+        value: lowerer.wrappedUndefined(entrySlot.type, clearLoc)!,
+        loc: clearLoc,
+      });
     }
     // A derived constructor that can return a primitive records the pending
     // TypeError for the construction site to raise. Drop a stale record on
@@ -10329,7 +10351,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       }
       body.push(...lowerer.fieldInitStmts(info, thisLocal));
     }
-    if (allocated !== null) body.push(...lowerer.ctx.constructorEpilogue!());
+    if (allocated !== null) body.push(...lowerer.ctx.constructorEpilogue!("return"));
     return {
       name: `%${className}.constructor`,
       params,

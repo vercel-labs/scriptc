@@ -2444,6 +2444,28 @@ function functionReadOf(
   );
 }
 
+/** `ret` with a constructor's publishing epilogue run where the return
+ * completes: after the operand evaluates (a constructor returns void, so a
+ * valued operand only runs for its effects) and before the return hands
+ * control to any `finally` block. */
+function withConstructorEpilogue(ret: IrStmt, epilogue: IrStmt[], loc: SrcLoc): IrStmt {
+  const body = ret.kind === "block" ? [...ret.body] : [ret];
+  const last = body.at(-1);
+  if (last?.kind !== "return") return { kind: "block", body: [...body, ...epilogue], loc };
+  const before = body.slice(0, -1);
+  if (last.value === null) return { kind: "block", body: [...before, ...epilogue, last], loc };
+  return {
+    kind: "block",
+    body: [
+      ...before,
+      { kind: "exprStmt", expr: last.value, loc },
+      ...epilogue,
+      { kind: "return", value: null, loc },
+    ],
+    loc,
+  };
+}
+
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ownPrototypeResetStatement(lowerer, stmt))
     return { kind: "block", body: [], loc: locOf(stmt) };
@@ -2655,10 +2677,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       const returned = withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
       // `return this` or a primitive (`undefined`) from a constructor whose
       // `this` may have been rebound answers that `this`: it is published
-      // as a bare return publishes it.
-      const epilogue = lowerer.ctx.constructorEpilogue?.();
-      if (epilogue !== undefined)
-        return { kind: "block", body: [...epilogue, returned], loc: locOf(stmt) };
+      // as a bare return publishes it, once the operand has run — the
+      // operand may construct another instance of the class, and the
+      // method the operand calls may publish that construction's result.
+      const epilogue = lowerer.ctx.constructorEpilogue?.("return");
+      if (epilogue !== undefined) return withConstructorEpilogue(returned, epilogue, locOf(stmt));
       return returned;
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
@@ -2682,7 +2705,7 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
       return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
     // A constructor whose `this` may have been rebound publishes it first.
-    const epilogue = lowerer.ctx.constructorEpilogue?.();
+    const epilogue = lowerer.ctx.constructorEpilogue?.("return");
     if (epilogue !== undefined)
       return {
         kind: "block",
@@ -9876,7 +9899,18 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
       }
     }
   }
-  const finallyBody = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
+  const loweredFinally = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
+  // A constructor publishes the instance it ends with where a `return`
+  // completes; its `finally` blocks run after that, and a construction in
+  // one publishes its own result. Publish this constructor's instance once
+  // the `finally` finishes, so the read that follows the constructor still
+  // answers it (constructor-returns.ts publishConstructorResult).
+  const finallyPublish =
+    loweredFinally === null ? undefined : lowerer.ctx.constructorEpilogue?.("finally");
+  const finallyBody =
+    loweredFinally === null || finallyPublish === undefined
+      ? loweredFinally
+      : [...loweredFinally, ...finallyPublish];
   return {
     kind: "tryCatch",
     tryBody,

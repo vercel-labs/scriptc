@@ -1249,39 +1249,42 @@ export function superIntoResultSlot(
   };
 }
 
+/** The class's result slot that its constructor clears on entry, or null.
+ * The construction site clears the slot before the arguments evaluate; a
+ * construction nested in those arguments that is abandoned after publishing
+ * its instance (a `finally` that throws after the return) would otherwise
+ * leave that instance for this construction's read. Cheap for classes
+ * without a result slot: only a class whose base can answer an existing
+ * instance, or whose own constructor returns a value, computes the plan. */
+export function constructorEntrySlot(lowerer: Lowerer, info: ClassInfo): IrGlobal | null {
+  if (info.localClass !== undefined || info.decl === null) return null;
+  const rebinding = rebindingBase(lowerer, info);
+  const ctor = info.ctor;
+  if (rebinding === null && (ctor?.body === undefined || ownValueReturns(ctor).length === 0))
+    return null;
+  return constructorReturnPlan(lowerer, info)?.slot ?? null;
+}
+
 /** The statement a constructor whose `this` may have been rebound
- * (superIntoResultSlot) runs where it finishes: the instance it ends with,
- * when it is not the one the construction allocated, goes to the class's
- * result slot, where the construction (constructedValue) and a subclass's
- * `super()` read it. */
-export function publishReboundThis(
+ * (superIntoResultSlot) runs where it finishes: the instance it ends with
+ * goes to the class's result slot, where the construction (constructedValue)
+ * and a subclass's `super()` read it. Every completion publishes, not only
+ * a rebound one: a construction that ran inside this constructor's own
+ * evaluation may have been abandoned after publishing (a `finally` that
+ * throws after its return), and the read that follows this constructor
+ * must find this constructor's instance, not that abandoned one. */
+export function publishConstructorResult(
   lowerer: Lowerer,
   info: ClassInfo,
   self: IrLocal,
-  allocated: IrLocal,
   loc: SrcLoc,
 ): IrStmt {
   const slot = constructorReturnPlan(lowerer, info)!.slot!;
   const type = instanceType(info);
   return {
-    kind: "if",
-    cond: {
-      kind: "bin",
-      op: "!==",
-      left: varRef(self.id, type, loc),
-      right: varRef(allocated.id, type, loc),
-      type: BOOL,
-      loc,
-    },
-    then: [
-      {
-        kind: "assign",
-        localId: slot.id,
-        value: lowerer.coerceToExpected(varRef(self.id, type, loc), slot.type),
-        loc,
-      },
-    ],
-    else_: null,
+    kind: "assign",
+    localId: slot.id,
+    value: lowerer.coerceToExpected(varRef(self.id, type, loc), slot.type),
     loc,
   };
 }

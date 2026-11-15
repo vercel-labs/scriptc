@@ -84,21 +84,23 @@ static void scr_rl_mark_event(ScrRl *rl, int ev) {
   if (rl->ev[ev].n == 0 && rl->ev_seq[ev] == 0) rl->ev_seq[ev] = ++rl->ev_seq_next;
 }
 
-static void scr_rl_add(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once, bool iter) {
+static void scr_rl_add(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once, bool iter,
+                       const ScrDynTypedRefRecipe *box) {
   RlList *l = &rl->ev[ev];
   scr_rl_mark_event(rl, ev);
   l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
-  l->v[l->n++] = (RlEntry){cb, fn, once, iter};
+  l->v[l->n++] = (RlEntry){cb, fn, once, iter, box};
 }
 
 /* prependListener's registration: the same entry at the FRONT of the
  * event's list, so it runs before the listeners already there. */
-static void scr_rl_add_first(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+static void scr_rl_add_first(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once,
+                             const ScrDynTypedRefRecipe *box) {
   RlList *l = &rl->ev[ev];
   scr_rl_mark_event(rl, ev);
   l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
   memmove(&l->v[1], &l->v[0], l->n * sizeof *l->v);
-  l->v[0] = (RlEntry){cb, fn, once, false};
+  l->v[0] = (RlEntry){cb, fn, once, false, box};
   l->n++;
 }
 
@@ -170,6 +172,13 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
         ((ScrRlLineFn)e.fn)(e.cb, scr_str_retain(line));
       } else if (ev == RL_EV_ERROR) {
         ((ScrRlErrFn)e.fn)(e.cb, err);
+      } else if (ev == RL_EV_HISTORY && e.box) {
+        /* A checked-dynamic listener gets the interface's array itself, as
+         * the interned capsule a typed read of rl.history boxes it into:
+         * `h === rl.history` holds and the listener's writes land in the
+         * array. The callee owns the +1 capsule. */
+        ScrDyn *view = scr_dyn_typed_box(scr_rl_history_of(rl), e.box);
+        ((void (*)(ScrClosure *, ScrDyn *))e.cb->fn)(e.cb, view);
       } else if (ev == RL_EV_HISTORY && e.fn) {
         ((ScrRlHistoryFn)e.fn)(e.cb, scr_rl_history_of(rl));
       } else {
@@ -202,7 +211,12 @@ static void scr_rl_feed_bytes(ScrRl *rl, const char *p, size_t n);
  * closed interface; close() itself pauses first). */
 void scr_rl_do_pause(ScrRl *rl) {
   if (rl->paused) return;
+  /* Node's pause() pauses the input itself. On process.stdin the shared
+   * descriptor stops reading, which is also what lets the loop exit once
+   * the last interface closes: the keypress hub's 'data' listener stays
+   * registered, as in Node, but a paused stdin never reads. */
   if (rl->in) rl->io->pause(rl->in);
+  else if (rl->stdin_in) scr_stdin_pause();
   rl->paused = true;
   scr_rl_emit(rl, RL_EV_PAUSE, NULL, NULL);
 }
@@ -210,6 +224,7 @@ void scr_rl_do_pause(ScrRl *rl) {
 void scr_rl_do_resume(ScrRl *rl) {
   if (!rl->paused) return;
   if (rl->in) rl->io->resume(rl->in);
+  else if (rl->stdin_in) scr_stdin_resume();
   rl->paused = false;
   if (rl->tty) scr_rl_tty_ops->resumed(rl);
   scr_rl_emit(rl, RL_EV_RESUME, NULL, NULL);
@@ -230,11 +245,42 @@ bool scr_rl_prompt_writable(ScrRl *rl) {
   return false;
 }
 
+/* The prompt text one use writes: `prompt + line` in Node coerces a
+ * non-string prompt_value at each use (again on every refresh and in
+ * getCursorPos), with the default hint the operator's ToPrimitive takes —
+ * a Date renders its string form and an object runs valueOf before
+ * toString. `"" + value` is exactly that conversion; a symbol throws
+ * Node's "Cannot convert a Symbol value to a string". +1. */
+ScrStr *scr_rl_prompt_text_now(ScrRl *rl) {
+  if (rl->prompt_value) {
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *left = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+    ScrDyn *sum = scr_dyn_add(left, rl->prompt_value);
+    scr_dyn_release(left);
+    if (!sum) return NULL;
+    ScrStr *text = scr_dyn_string_coerce(sum);
+    scr_dyn_release(sum);
+    return text;
+  }
+  return scr_str_retain(rl->prompt);
+}
+
+void scr_rl_resize(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  if (rl && rl->tty) scr_rl_tty_ops->resize(rl);
+}
+
 static void scr_rl_prompt_now(ScrRl *rl) {
   if (rl->paused) scr_rl_do_resume(rl);
   if (scr_exc_pending()) return;
-  if (rl->tty) scr_rl_tty_ops->prompt(rl, false);
-  else if (scr_rl_prompt_writable(rl)) scr_rl_write_out(rl, rl->prompt);
+  if (rl->tty) {
+    scr_rl_tty_ops->prompt(rl, false);
+  } else if (scr_rl_prompt_writable(rl)) {
+    ScrStr *text = scr_rl_prompt_text_now(rl);
+    if (text && !scr_exc_pending()) scr_rl_write_out(rl, text);
+    if (text) scr_str_release(text);
+  }
 }
 
 /* setPrompt(this[kOldPrompt]) when a question is answered or cancelled */
@@ -638,9 +684,9 @@ void scr_rl_iter_open(double id) {
   if (!rl || rl->iter) return;
   rl->iter = calloc(1, sizeof *rl->iter);
   if (!rl->iter) scr_rl_oom();
-  scr_rl_add(rl, RL_EV_LINE, NULL, NULL, false, true);
-  scr_rl_add(rl, RL_EV_ERROR, NULL, NULL, false, true);
-  scr_rl_add(rl, RL_EV_CLOSE, NULL, NULL, false, true);
+  scr_rl_add(rl, RL_EV_LINE, NULL, NULL, false, true, NULL);
+  scr_rl_add(rl, RL_EV_ERROR, NULL, NULL, false, true, NULL);
+  scr_rl_add(rl, RL_EV_CLOSE, NULL, NULL, false, true, NULL);
 }
 
 /* next(): a promise of the next line, or of undefined once done. */
@@ -837,6 +883,10 @@ double scr_rl_open(const ScrRlIo *io, void *in, void *out, bool out_stdout, doub
         scr_stdin_on_end(scr_closure_new((void *)&scr_rl_end_thunk, 0), false);
       }
     }
+    /* Node's Interface constructor ends with input.resume(): a fresh
+     * interface on process.stdin resumes a stream a closed interface
+     * paused, so the 'end' (and any input) still reaches it. */
+    scr_stdin_resume();
   }
   if (signal && scr_dyn_truthy(signal)) scr_rl_watch_signal(rl, signal, add);
   return rl->id;
@@ -867,31 +917,11 @@ void scr_rl_question(double id, ScrStr *query, ScrClosure *cb /*moves*/, ScrRlLi
   scr_rl_prompt_now(rl);
 }
 
-/* A prompt that is not a string: String(value) for a primitive, which is
- * what the terminal's line refresh and getCursorPos concatenate. An
- * object's valueOf/toString would run on every refresh, and a symbol
- * throws there, so a terminal interface refuses them (false, the refusal
- * pending); another interface only writes the prompt, which throws for
- * any value that is not a string, so it keeps ''. +1. */
-static bool scr_rl_prompt_text(ScrRl *rl, ScrDyn *value, ScrStr **out) {
-  if (scr_rl_primitive_prompt(value)) {
-    *out = scr_dyn_string_coerce(value);
-    return true;
-  }
-  if (!rl->tty) {
-    *out = scr_str_new("", 0);
-    return true;
-  }
-  static const char m[] =
-      "a terminal readline prompt that is an object or a symbol has no lowering";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, m, sizeof m - 1, "SC2020");
-  return false;
-}
-
 /* question(query, cb) with a checked-dynamic query: a string goes through
- * scr_rl_question. Another value becomes the prompt, the callback is
- * kept, and the prompt write throws ERR_INVALID_ARG_TYPE on an interface
- * that is not a terminal (the question stays pending, as in Node). */
+ * scr_rl_question. Another value becomes the prompt (Node stores it and
+ * coerces only when a use writes it), the callback is kept, and the prompt
+ * write throws ERR_INVALID_ARG_TYPE on an interface that is not a
+ * terminal (the question stays pending, as in Node). */
 void scr_rl_question_dyn(double id, ScrDyn *query, ScrClosure *cb /*moves*/, ScrRlLineFn fn) {
   if (query->kind == SCR_DYN_STR) {
     scr_rl_question(id, query->v.str, cb, fn);
@@ -902,14 +932,9 @@ void scr_rl_question_dyn(double id, ScrDyn *query, ScrClosure *cb /*moves*/, Scr
     scr_rl_question(id, NULL, cb, fn); /* the closed throw, or the re-prompt */
     return;
   }
-  ScrStr *text;
-  if (!scr_rl_prompt_text(rl, query, &text)) {
-    scr_closure_release(cb);
-    return;
-  }
   rl->old_prompt = rl->prompt;
   rl->old_prompt_value = rl->prompt_value;
-  rl->prompt = text;
+  rl->prompt = scr_str_new("", 0);
   rl->prompt_value = scr_dyn_retain(query);
   rl->q_cb = cb;
   rl->q_fn = fn;
@@ -1169,7 +1194,9 @@ void scr_rl_set_prompt(double id, ScrStr *prompt) {
   rl->prompt_value = NULL;
 }
 
-/* setPrompt(value) with a checked-dynamic value; borrows. */
+/* setPrompt(value) with a checked-dynamic value; borrows. Node keeps the
+ * value itself and coerces at each use, so a non-string is stored as-is
+ * and scr_rl_prompt_text_now renders it. */
 void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt) {
   if (prompt->kind == SCR_DYN_STR) {
     scr_rl_set_prompt(id, prompt->v.str);
@@ -1177,10 +1204,8 @@ void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt) {
   }
   ScrRl *rl = scr_rl_find(id);
   if (!rl) return;
-  ScrStr *text;
-  if (!scr_rl_prompt_text(rl, prompt, &text)) return;
   scr_str_release(rl->prompt);
-  rl->prompt = text;
+  rl->prompt = scr_str_new("", 0);
   if (rl->prompt_value) scr_dyn_release(rl->prompt_value);
   rl->prompt_value = scr_dyn_retain(prompt);
 }
@@ -1193,6 +1218,20 @@ ScrStr *scr_rl_get_prompt(double id) {
     return scr_str_new("", 0);
   }
   return rl ? scr_str_retain(rl->prompt) : scr_str_new("", 0);
+}
+
+/* rl.getPrompt() for a checked-dynamic use: Node answers the stored value
+ * itself (a number or object survives, with its identity), not String(). */
+ScrDyn *scr_rl_get_prompt_dyn(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  if (rl && rl->prompt_value) return scr_dyn_retain(rl->prompt_value);
+  if (!rl) {
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *d = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+    return d;
+  }
+  return scr_dyn_new_str(rl->prompt);
 }
 
 /* Called after a node:readline/promises interface opens: its Interface
@@ -1264,24 +1303,26 @@ void scr_rl_write(double id, ScrStr *data) {
 /* on/once for 'line' (fn: the line adapter), 'close', 'pause', 'resume'
  * (fn NULL), and 'error' (fn: the error adapter). Listeners added after
  * 'close' was emitted never run. */
-void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+               const ScrDynTypedRefRecipe *box, bool once) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || ev < 0 || ev >= RL_EV_COUNT) {
     scr_closure_release(cb);
     return;
   }
-  scr_rl_add(rl, (int)ev, cb, fn, once, false);
+  scr_rl_add(rl, (int)ev, cb, fn, once, false, box);
 }
 
 /* prependListener/prependOnceListener: the same registration, at the front
  * of the event's list. */
-void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+                     const ScrDynTypedRefRecipe *box, bool once) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || ev < 0 || ev >= RL_EV_COUNT) {
     scr_closure_release(cb);
     return;
   }
-  scr_rl_add_first(rl, (int)ev, cb, fn, once);
+  scr_rl_add_first(rl, (int)ev, cb, fn, once, box);
 }
 
 /* removeListener/off: the LAST registration of the same function leaves
@@ -1696,30 +1737,6 @@ ScrPromise *scr_rl_ui_commit(double id) {
  * interface keeps the array. */
 void scr_rl_history_thunk_arr(ScrClosure *cb, ScrArr *history) {
   ((void (*)(ScrClosure *, ScrArr *))cb->fn)(cb, scr_arr_retain(history));
-}
-
-/* A checked-dynamic (history) listener: it gets a dyn copy of the
- * history, and its changes to the copy are written back to the
- * interface's array when it returns. */
-void scr_rl_history_thunk_dyn(ScrClosure *cb, ScrArr *history) {
-  ScrDyn *copy = scr_dyn_new_arr();
-  double n = scr_arr_len(history);
-  for (double i = 0; i < n; i++) {
-    ScrStr *s = scr_arr_peek_ref(history, i);
-    scr_dyn_arr_push(copy, s ? scr_dyn_new_str(s) : scr_dyn_retain(scr_dyn_undefined()));
-  }
-  ((void (*)(ScrClosure *, ScrDyn *))cb->fn)(cb, scr_dyn_retain(copy));
-  if (!scr_exc_pending()) {
-    double m = scr_dyn_arr_len(copy);
-    scr_arr_set_len(history, 0);
-    for (double i = 0; i < m; i++) {
-      ScrDyn *e = scr_dyn_arr_at(copy, i);
-      ScrStr *s = e->kind == SCR_DYN_STR ? scr_str_retain(e->v.str) : scr_dyn_string_coerce(e);
-      scr_arr_push_ref(history, s);
-      scr_dyn_release(e);
-    }
-  }
-  scr_dyn_release(copy);
 }
 
 /* A zero-param line/answer callback: the text is ignored. */

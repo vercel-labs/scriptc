@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { shardSelect } from "../harness/shard.js";
 import { runSource, type Outcome } from "./execute.js";
+import { closeIslandRuleScanner, islandRuleMarker, type IslandRuleMarker } from "./island-marker.js";
 import { idPath, limitPerChapter, parseStatuses, readJournalIds, readPathList, resolveListedPaths } from "./select.mjs";
 import {
   assertThrowsSource, directory, exclusion, harnessSource, propertyHelperSource, typedArrayHelperSource, matchesExpectation, matchesParseNegative, metadata, pin, sha256, snapshotDigest, summarize,
@@ -131,7 +132,7 @@ pass and an island failure of such a variant is not a native regression.`);
     mkdirSync(process.env.SCRIPTC_CACHE_DIR, { recursive: true, mode: 0o700 });
   }
   process.env.SCRIPTC_TEST_STABLE_TOOLCHAIN ??= "1";
-  const results: (Outcome & { id: string; path: string; variant: string; features: string[]; lifted: boolean })[] = [];
+  const results: (Outcome & { id: string; path: string; variant: string; features: string[]; lifted: boolean; islandRule: IslandRuleMarker | null })[] = [];
   const journalPath = values.journal ? resolve(values.journal) : undefined;
   if (journalPath) {
     mkdirSync(dirname(journalPath), { recursive: true });
@@ -155,12 +156,18 @@ pass and an island failure of such a variant is not a native regression.`);
       const outcome = item.negative?.phase === "parse" && matchesParseNegative(raw, item.source, item.variant)
         ? { status: "pass", phase: "compile" }
         : raw;
-      const result = { id: item.id, path: item.path, variant: item.variant, features: item.features, lifted: item.lifted, ...outcome };
+      // The island-rule marker sits beside every result, passing, failing or
+      // excluded: a marked variant stays in the denominator, and the report
+      // counts both views. A syntax negative carries none: it has no module
+      // whose constructs could put it in an island.
+      const islandRule = islandRuleMarker(item.source, item.variant, item.negative?.phase === "parse");
+      const result = { id: item.id, path: item.path, variant: item.variant, features: item.features, lifted: item.lifted, islandRule, ...outcome };
       if (journalPath) appendFileSync(journalPath, `${JSON.stringify(result)}\n`);
       results.push(result);
       if (outcome.status !== "excluded") console.log(`${outcome.status}\t${item.id}`);
     }
   }));
+  closeIslandRuleScanner();
   results.sort((a, b) => a.id.localeCompare(b.id));
   // A lifted variant is newly measured, so its result is data rather than a
   // native regression. Island passes satisfy the profile's pass expectation
@@ -189,6 +196,7 @@ pass and an island failure of such a variant is not a native regression.`);
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report.counts));
+  console.log(`Island rules: ${JSON.stringify(report.islandRules.marked)} marked, ${JSON.stringify(report.islandRules.unmarked)} unmarked`);
   console.log(`Report: ${reportPath}`);
   // Exclusions are visible but not failures. An all-excluded local selection
   // must not turn green; an empty distributed shard is legitimate.

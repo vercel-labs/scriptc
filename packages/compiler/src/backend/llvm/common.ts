@@ -50,6 +50,7 @@ export const CLOSURE_KIND = {
   OWN_PROTOTYPE: 4,
   CHECKED_ADAPTER: 8,
   RECEIVER_FREE: 16,
+  VALUES: 32,
 } as const;
 
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a

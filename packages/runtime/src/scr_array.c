@@ -1961,7 +1961,7 @@ void scr_arr_subclass_construct_dyn(ScrArr *a, const ScrDyn *args, bool dyn_elem
     } else {
       static const char msg[] =
           "constructing this Array subclass with element arguments is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       return;
     }
   }
@@ -2059,7 +2059,7 @@ static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_le
     if (!empty || (traced && !species->cyc)) {
       static const char msg[] =
           "an Array subclass's species result of another element type is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       scr_arr_release(species);
       return result;
     }
@@ -5947,43 +5947,7 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
   return true;
 }
 
-/* join over a hole-free string array: size the result exactly, then copy
- * each piece without per-append capacity checks. Only a piece starting
- * with a lone low surrogate can complete a pair across its seam. */
-static ScrStr *scr_arr_join_dense_str(const ScrArr *a, const ScrStr *sep) {
-  const size_t limit = SIZE_MAX - sizeof(ScrStr) - 1;
-  size_t n = a->len;
-  if (n > 1 && sep->len > limit / (n - 1)) scr_arr_oom();
-  size_t total = n > 1 ? (n - 1) * sep->len : 0;
-  bool ascii = n < 2 || sep->ascii, lone = scr_wtf8_any();
-  bool lead_low = lone && n > 1 && scr_wtf8_low_at(sep->data);
-  for (size_t i = 0; i < n; i++) {
-    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
-    if (!s) continue;
-    total = scr_join_size(total, s->len);
-    ascii &= s->ascii;
-    if (lone) lead_low |= scr_wtf8_low_at(s->data);
-  }
-  ScrStr *out = scr_str_alloc_raw(total, total);
-  char *w = out->data;
-  for (size_t i = 0; i < n; i++) {
-    if (i > 0) {
-      scr_copy_bytes(w, sep->data, sep->len);
-      w += sep->len;
-    }
-    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
-    if (!s) continue;
-    scr_copy_bytes(w, s->data, s->len);
-    w += s->len;
-  }
-  out->data[total] = '\0';
-  if (lead_low) scr_str_fuse_surrogates(out);
-  else if (ascii) scr_str_note_ascii(out);
-  return out;
-}
-
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
-  if (a->elem == SCR_ELEM_STR && a->filled == a->len) return scr_arr_join_dense_str(a, sep);
   size_t cap = 64;
   /* String widths are already known. Size once to avoid growth and copying
    * even when the array holds holes, explicit undefined or sparse slots.

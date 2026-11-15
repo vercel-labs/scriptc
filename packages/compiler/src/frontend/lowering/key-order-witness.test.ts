@@ -154,6 +154,8 @@ test("values built in two orders each record their literal's order", () => {
   expect(shape.fields.map((x) => x.name)).toEqual([KEY_ORDER_FIELD, "a", "b"]);
   expect(orderIndexOf(ba)).toMatchObject({ kind: "numLit", value: 1 });
   expect(orderIndexOf(aOrder)).toMatchObject({ kind: "numLit", value: 0 });
+  // Each value lists its own order: nothing to report.
+  expect(f.notes.warnings).toEqual([]);
 });
 
 test("a copy of a value with orders stores its source's index", () => {
@@ -220,6 +222,8 @@ test("an unobserved shape keeps today's table", () => {
   );
   f.run([decl("x", f.literal(ab, ["b", "a"]))]);
   expect(f.order(ab)).toEqual(["a", "b"]);
+  // Nothing observes the order, so nothing is reported.
+  expect(f.notes.warnings).toEqual([]);
 });
 
 test("a synthesized construction pins today's table", () => {
@@ -390,6 +394,11 @@ test("a spread of a checked-conversion source cannot be ordered statically", () 
     observe(f.literal(out, ["a", "b", "c"], [spread, { kind: "key", name: "c", definite: true }])),
   ]);
   expect(f.order(out)).toEqual(["c", "a", "b"]);
+  // The observed type keeps one table its values may not follow: SC6014
+  // names it once, by its keys, at the spread.
+  expect(f.notes.warnings.map((w) => [w.code, w.message.split(" natively")[0]])).toEqual([
+    ["SC6014", "objects of this type enumerate their keys as 'c, a, b'"],
+  ]);
 });
 
 test("a late-only optional key follows the keys values are built with", () => {

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/builtin-member-write-modules/patch.ts",
+  "<repo>/tests/diagnostics/builtin-member-write-modules/use.ts",
+  "<repo>/tests/diagnostics/builtin-member-write-modules/main.ts"
+ ],
+ "diags": []
+}

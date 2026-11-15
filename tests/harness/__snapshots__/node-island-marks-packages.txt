@@ -1,0 +1,17 @@
+<dir>/main.ts:1:1 - error SC8006: --node-island=@acme/missing.json/lib/index.js names no package this program loads from node_modules: read as the package '@acme/missing.json', because no file <dir>/@acme/missing.json/lib/index.js exists
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path; a path starts with ./ (--node-island=./@acme/missing.json/lib/index.js)
+
+<dir>/main.ts:1:1 - error SC8006: --node-island=absent.js names no package this program loads from node_modules: read as the package 'absent.js', because no file <dir>/absent.js exists
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path; a path starts with ./ (--node-island=./absent.js)
+
+2 errors.

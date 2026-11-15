@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { libraryArchiveFeatures } from "./library-pack.js";
+import { noLinkFeatures } from "./native-link-info-core.js";
 import { effectiveRuntimeFeatures } from "./runtime-pack-core.js";
 
 const base = { cPath: "program.ll", outPath: "library.lib.a" };
@@ -19,6 +20,42 @@ describe("library archive runtime gates", () => {
     });
   });
 
+  // The archive's gates spell every required key by hand (four open changes
+  // append to that literal). These two tests hold it to the one list of the
+  // keys: it is noLinkFeatures() with the options' gates turned on.
+  test("an archive with no gate links no optional runtime", () => {
+    expect(libraryArchiveFeatures(base)).toEqual(noLinkFeatures());
+  });
+
+  test("each gate turns on its own key and no other", () => {
+    const gates = [
+      "regex",
+      "copying",
+      "textDecoderLegacy",
+      "bigintBytes",
+      "zlib",
+      "assert",
+      "inspect",
+      "dynInvoke",
+      "emitter",
+      "symbol",
+      "bigint",
+      "searchParams",
+      "x509",
+      "dynBuffer",
+      "dynTier",
+      "mutableBuffers",
+    ] as const;
+    for (const gate of gates) {
+      expect(libraryArchiveFeatures({ ...base, [gate]: true }), gate).toEqual({
+        ...noLinkFeatures(),
+        [gate]: true,
+      });
+      // Off is false for a required key and absence for an optional one.
+      expect(libraryArchiveFeatures({ ...base, [gate]: false }), gate).toEqual(noLinkFeatures());
+    }
+  });
+
   test("a program that leaves buffers alone selects neither build", () => {
     const features = libraryArchiveFeatures(base);
     expect(features.mutableBuffers).toBeUndefined();
@@ -26,5 +63,16 @@ describe("library archive runtime gates", () => {
       jsObjectModel: false,
       dynTier: false,
     });
+  });
+
+  // An exported function that defines one of a function's own protocol
+  // members runs that write inside the archive. The archive must carry the
+  // SCR_FN_MEMBER_PROPS builds the executable lane links, or the write keeps
+  // the default build's SC2020 refusal at run time.
+  test("a program that defines a function's own member selects its builds", () => {
+    const features = libraryArchiveFeatures({ ...base, fnMemberProps: true });
+    expect(features.fnMemberProps).toBe(true);
+    const constant = libraryArchiveFeatures(base).fnMemberProps;
+    expect(constant === undefined || constant === false).toBe(true);
   });
 });

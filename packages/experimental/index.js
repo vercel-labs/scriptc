@@ -9,7 +9,9 @@
 // ThreadSlots is a WeakMap per name and thread: module state is per thread
 // under Node.js, so each thread sees only the values it set. InlineArray is
 // a type (`import type`), with no value here: under Node.js the field holds
-// the array its constructor stored.
+// the array its constructor stored. The parallel loops are the loops the
+// scriptc build compiles: every chunk runs on the calling thread, in chunk
+// order, so a program prints the same either way.
 
 import { publish } from "@scriptc/threads";
 
@@ -97,6 +99,57 @@ export class InternTable {
 
 /** This thread's slot families, by name. */
 const families = new Map();
+
+/** The chunk count check of the parallel functions: `count` must be a
+ * non-negative integer, as a typed array's length always is. */
+function checkedCount(count) {
+  if (!Number.isInteger(count) || count < 0)
+    throw new RangeError("count must be a non-negative integer");
+  return count;
+}
+
+/** One chunk's indices per call: the option when given, else about 256
+ * chunks over `count` indices. */
+function grainOf(count, options) {
+  const grain = options?.grain ?? Math.max(1, Math.ceil(count / 256));
+  if (!Number.isInteger(grain) || grain < 1)
+    throw new RangeError("grain must be a positive integer");
+  return grain;
+}
+
+/** Fills `target` chunk by chunk, in order, on the calling thread: the
+ * meaning of every scriptc build of the call. */
+export function parallelInto(target, body, options) {
+  const stride = options?.stride ?? 1;
+  if (!Number.isInteger(stride) || stride < 1 || target.length % stride !== 0)
+    throw new RangeError("stride must be a positive integer that divides the target's length");
+  const count = target.length / stride;
+  const grain = grainOf(count, options);
+  for (let start = 0; start < count; start += grain) {
+    const end = Math.min(start + grain, count);
+    body(target.subarray(start * stride, end * stride), start, end);
+  }
+}
+
+/** Folds one value per chunk of [0, count) from left to right, in chunk
+ * order, on the calling thread. */
+export function parallelReduce(count, initial, part, combine, options) {
+  checkedCount(count);
+  const grain = grainOf(count, options);
+  let result = initial;
+  for (let start = 0; start < count; start += grain) {
+    result = combine(result, part(start, Math.min(start + grain, count)));
+  }
+  return result;
+}
+
+/** Calls `body` once per chunk of [0, count), in order, on the calling
+ * thread. */
+export function parallelFor(count, body, options) {
+  checkedCount(count);
+  const grain = grainOf(count, options);
+  for (let start = 0; start < count; start += grain) body(start, Math.min(start + grain, count));
+}
 
 export class ThreadSlots {
   #values;

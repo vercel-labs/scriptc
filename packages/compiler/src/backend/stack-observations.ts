@@ -15,6 +15,7 @@ import {
 } from "../ir/node-index.js";
 import { MAY_THROW_LIB_FNS } from "../ir/builtin-effects.js";
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
+import type { IrLibFn } from "../ir/builtin-signatures.js";
 import { MAY_THROW_ARR_METHODS } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { unreachableStatements } from "./may-throw.js";
@@ -23,13 +24,17 @@ import { writesPublished } from "./publication.js";
 
 /** The nodes the scans below read: stack reads, the "stack" literal, call
  * sites and function references, declarations. */
-const STACK_READ_KINDS: readonly IrNodeKind[] = ["libCall", "dynKeyGet"];
+const STACK_READ_KINDS: readonly IrNodeKind[] = ["libCall", "intrinsic", "dynKeyGet"];
 const STRING_KINDS: readonly IrNodeKind[] = ["strLit"];
 const CENSUS_KINDS: readonly IrNodeKind[] = ["call", ...FUNCTION_REFERENCE_KINDS];
 const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 
 /** Lib calls that read a captured stack trace. */
-const STACK_READS: ReadonlySet<string> = new Set(["error.stack"]);
+const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack"]);
+
+/** Intrinsics that read a captured stack trace: console.trace prints the
+ * frames the call captured. */
+const STACK_READ_INTRINSICS: ReadonlySet<string> = new Set(["console.trace"]);
 
 /** Key types whose property names are never `stack`: a number, bigint or
  * boolean key names its decimal or `true`/`false` property. */
@@ -156,11 +161,13 @@ class StackKeys {
   }
 }
 
-/** A typed `error.stack` read, or a read on a checked-dynamic value that
- * can reach an error's own `stack` accessor: one whose key can be "stack"
+/** A typed `error.stack` read, a console.trace call (its write carries the
+ * frames the call captured), or a read on a checked-dynamic value that can
+ * reach an error's own `stack` accessor: one whose key can be "stack"
  * (StackKeys). */
 function readsStack(fn: IrFunction, expr: IrExpr, keys: StackKeys): boolean {
   if (expr.kind === "libCall") return STACK_READS.has(expr.fn);
+  if (expr.kind === "intrinsic") return STACK_READ_INTRINSICS.has(expr.name);
   if (expr.kind !== "dynKeyGet") return false;
   return keys.mayBeStack(fn, expr.key);
 }

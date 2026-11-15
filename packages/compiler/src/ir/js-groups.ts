@@ -152,6 +152,7 @@ export function planJsGroups(
         site !== null &&
         site.kind !== "keyed" &&
         site.kind !== "keyedSet" &&
+        site.kind !== "namedSet" &&
         site.key !== "length" &&
         site.key !== "next"
       ) {

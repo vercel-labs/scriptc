@@ -81,3 +81,13 @@ $ LLVM_DIR=<dir>/lib/cmake/llvm SCRIPTC_LLVM_THINLTO=1 pnpm --filter @scriptc/ll
 The `llvm-dist` workflow (run by hand) builds the archive for x64 and arm64, checks that a helper linked against it gives the same objects as one linked against LLVM's release archive (`scripts/check-llvm-dist.mjs`), and attaches it to the release. The arm64 build uses the profile collected on x64, and its log reports how many functions the profile does not match there.
 
 The profile depends on LLVM's sources and the kind of code scriptc emits, not on scriptc's commits. `scripts/refresh-llvm-profile.mjs` collects a new one after an LLVM version change: it builds LLVM with IR instrumentation and an instrumented helper, runs that helper on tsc-ts, five Effect fixtures, the runtime benchmark workloads and every 50th corpus program (`scripts/llvm-helper-inputs.mjs`), and merges the result. A new profile or LLVM version gets a new `LLVM_DIST_TAG`.
+
+## The comptime evaluator
+
+Each helper package's `build:native` script also builds `bin/scriptc-comptime` from `comptime/` (`comptime/build.mjs`): QuickJS-ng (`packages/runtime/vendor/quickjs-ng`), the runtime's port of V8's fdlibm (`packages/runtime/src/scr_ieee754.c`) and `comptime/comptime.c`, compiled with a clang-compatible driver (clang on macOS and Linux, where the executable is static like the helper; Zig's Windows GNU target on Windows). The Node-hosted compiler and the native compiler both start this executable for every `comptime` callback (`packages/compiler/src/frontend/comptime.ts`), so a callback has one behaviour.
+
+```console
+scriptc-comptime <javascript file> <timeout-ms> <memory-mb>
+```
+
+It evaluates the file as a script in a context that holds the ECMAScript built-ins and no host binding, and prints one line: the completion value as tagged JSON (`["number","42"]`, `["array",[...]]`, `["object",[[key, value], ...]]`), or `["error", kind, text]` where `kind` is `timeout`, `memory`, `thrown` or `refused`. A second thread ends the process when the time limit is past by half a second, for builtins the engine does not interrupt, and the memory limit is enforced in the allocator the engine is given. `Math`'s transcendental members and `hypot` compute Node's values; members whose Node result needs locale data, and `Number.prototype.toString` with a radix for a value that is not a safe integer, throw.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/path-parse-dynamic-binding/main.ts"
+ ],
+ "diags": []
+}

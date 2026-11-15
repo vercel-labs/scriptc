@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/computed-global-write-keeps-builtin-globals/main.ts"
+ ],
+ "diags": []
+}

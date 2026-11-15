@@ -370,6 +370,29 @@ describe("union conversion planning", () => {
     expect(f.plan()).toBeNull();
   });
 
+  test("an arm that enters the destination by its own discriminant takes that plan", () => {
+    // The source keeps no discriminant (one of its arms lacks the member,
+    // or it is a record beside a unit), the destination does, and the
+    // record alone has no unique arm: its own plan is the route by the
+    // discriminant's value.
+    const f = fixture();
+    delete f.from.discriminant;
+    const route: WidthLift = { how: "discriminantRoute" };
+    const lift = (source: IrType, target: IrType): WidthLift | null =>
+      source.kind === "record" && target.kind === "union" ? route : f.lift(source, target);
+    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift)).toEqual([
+      { kind: "own", lift: route },
+      { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
+    ]);
+    // A unit the destination has no arm for still traps beside it.
+    f.from.arms.push(NULL_T);
+    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift)!.at(-1)).toEqual({ kind: "trap" });
+    // An arm the site's type excludes traps before its plan is asked.
+    expect(planUnionRetag(f.from, f.to, f.shapeOf, lift, new Set([0]))![0]).toEqual({
+      kind: "trap",
+    });
+  });
+
   test("does not match differently named discriminants", () => {
     const f = fixture();
     f.to.discriminant!.field = "mode";
@@ -627,6 +650,42 @@ describe("retag IR construction", () => {
     expect(branch.then.at(-1)?.kind).toBe("throw");
     expect(fn.body.at(-1)?.kind).toBe("throw");
     expect(fn.locals.filter((local) => local.name === "kind")).toHaveLength(1);
+  });
+
+  test("an arm with a plan of its own converts its payload into the destination union", () => {
+    const f = fixture();
+    delete f.from.discriminant;
+    const route: WidthLift = { how: "discriminantRoute" };
+    const plan: UnionRetagArm[] = [
+      { kind: "own", lift: route },
+      { kind: "direct", route: { tag: 2, lift: { how: "copy" }, values: [] } },
+    ];
+    const uses: { how: string; src: IrType; dst: IrType }[] = [];
+    const fn = buildUnionRetag(
+      "retag",
+      f.from,
+      f.to,
+      plan,
+      loc,
+      (lift, value, dst) => {
+        uses.push({ how: lift.how, src: value.type, dst });
+        return { kind: "varRef", localId: "converted", type: dst, loc };
+      },
+      () => "source",
+    );
+    const branch = fn.body[0]!;
+    if (branch.kind !== "if") throw new Error("missing source tag branch");
+    expect(branch.cond.kind).toBe("unionIsTag");
+    const returned = branch.then[0]!;
+    if (returned.kind !== "return" || returned.value?.kind !== "varRef")
+      throw new Error("missing converted payload");
+    // No wrap: the arm's own plan already answers a value of the union.
+    expect(returned.value.type).toEqual({ kind: "union", unionId: "u1" });
+    expect(uses[0]).toEqual({
+      how: "discriminantRoute",
+      src: record("r0"),
+      dst: { kind: "union", unionId: "u1" },
+    });
   });
 
   test("emits a catchable TypeError for a stranded arm", () => {

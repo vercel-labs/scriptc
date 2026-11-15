@@ -43,6 +43,10 @@ export class BlockBuilder {
   /** Loops of the IR function enclosing the lines being emitted; inline dyn
    * releases inside one carry LOOP_SITE (shapes.ts limitInlineReleases). */
   loopDepth = 0;
+  /** Calls emitted now carry `nomerge`: LLVM leaves each where it is instead
+   * of sinking it into a block it shares with matching calls of other paths
+   * (the shared release blocks of throw sites, emit-function.ts). */
+  unmergedCalls = false;
 
   constructor() {
     this.cur = { label: "entry", lines: [], term: null };
@@ -65,7 +69,8 @@ export class BlockBuilder {
 
   line(s: string): void {
     if (this.cur.term === null) {
-      const marked = this.loopDepth > 0 && s.startsWith(DYN_RELEASE_CALL) ? s + LOOP_SITE : s;
+      const call = this.unmergedCalls && s.startsWith("call ") ? `${s} nomerge` : s;
+      const marked = this.loopDepth > 0 && s.startsWith(DYN_RELEASE_CALL) ? call + LOOP_SITE : call;
       this.cur.lines.push(`  ${this.withDebugLocation(marked)}`);
     }
   }

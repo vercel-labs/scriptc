@@ -361,6 +361,23 @@ version: sdk-1.0
     );
   });
 
+  /* ── a deferred JavaScript refusal: the plain throw, no reporter ─────── */
+
+  test("a deferred refusal in a library throws without the stderr reporter", async () => {
+    const { archive, outDir } = await buildLibrary("deferred-fence", emission);
+    // An executable throws such a refusal through scr_deferred_fence.c,
+    // which a library archive does not carry: the archive must not name it.
+    const { defined, undef } = nmSymbols(archive);
+    expect(undef.has("scr_deferred_fence")).toBe(false);
+    expect(defined.has("scr_deferred_fence")).toBe(false);
+    const probe = buildProbe("deferred-fence", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 5\nrun: 6\n");
+    expect(run.stderr).toBe("");
+  });
+
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 
   test("cstring parameters, results, and callback arguments", async () => {
@@ -854,6 +871,18 @@ describe("K9: library-mode refusals", () => {
     expect(diags[0]!.note).toBe(
       "from the 'refusal-fixture' profile: schedule through the embedder frame loop",
     );
+  });
+
+  test("SC4005: process.features as a value", async () => {
+    // The flags object is a gated runtime unit no library archive carries,
+    // so the value form is refused by name instead of leaving the archive
+    // with an undefined symbol.
+    const diags = await refusal(
+      `export function f(): number { return "tls" in process.features ? 1 : 0; }\n`,
+      { exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }] },
+    );
+    expect(diags[0]!.code).toBe("SC4005");
+    expect(diags[0]!.message).toContain("process.features as a value");
   });
 
   test("SC4007: a generic export", async () => {

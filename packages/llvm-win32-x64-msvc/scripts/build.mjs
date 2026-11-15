@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { buildComptimeEvaluator } from "../../../native/llvm-codegen/comptime/build.mjs";
 import { nativeTargetCmakeArgs } from "../../../native/llvm-codegen/targets.mjs";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -43,3 +44,12 @@ execFileSync(
 );
 mkdirSync(join(root, "bin"), { recursive: true });
 copyFileSync(output.executable, join(root, "bin", "scriptc-llvm-codegen.exe"));
+// The engine and the runtime's math port are written for clang, so the
+// evaluator is built with Zig for its Windows GNU target, as the runtime pack
+// and compiled programs are, not with the MSVC compiler that builds the helper.
+buildComptimeEvaluator({
+  compiler: ["zig", "cc", "-target", "x86_64-windows-gnu"],
+  platform: "win32",
+  build: join(repo, "node_modules/.cache/scriptc-llvm-win32-x64-msvc-comptime"),
+  output: join(root, "bin", "scriptc-comptime.exe"),
+});

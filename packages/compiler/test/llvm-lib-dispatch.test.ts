@@ -55,8 +55,8 @@ test.each([
   expect(emitLlvmModule(mod)).toContain(`call void @${sym}(`);
 });
 
-test("LLVM routes net.connectOptsChk through network validation emission", () => {
-  const mod = libCallModule("net.connectOptsChk", [dyn(), str("fence")], NETSOCKET_T);
+test("LLVM routes net.connectDyn through network validation emission", () => {
+  const mod = libCallModule("net.connectDyn", [dyn(), dyn(), dyn(), str("fence")], NETSOCKET_T);
   expect(validateModule(mod)).toEqual([]);
-  expect(emitLlvmModule(mod)).toContain("call void @scr_net_connect_opts_chk(");
+  expect(emitLlvmModule(mod)).toContain("call ptr @scr_net_connect_dyn(");
 });

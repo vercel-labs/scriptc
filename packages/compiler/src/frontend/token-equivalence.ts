@@ -1,6 +1,21 @@
 /* Token equivalence of two versions of a source file, for frontend cache
  * reuse after edits that touch only comments and whitespace.
  *
+ * The frontend also reads raw text beside the tokens (SourceTextObserver):
+ * a node's text, its leading comments, a line number, whether a word occurs
+ * in the file. An entry records those reads (SourceTextReads), and two
+ * token-equivalent versions are equivalent for it only when every recorded
+ * read has the same answer in both. Offsets are carried from one version to
+ * the other through the tokens: an offset inside or at the edge of a token
+ * keeps its distance from that token's start. An offset that cannot be
+ * carried over with certainty makes the versions not equivalent.
+ *
+ * A file the frontend compiled in another form (SourceTextRewrite: spans
+ * blanked, a tail appended) records the rewrite with the reads of that form.
+ * The edited version's form is made again from its own text, with the
+ * blanks placed by its tokens, and the form's reads are answered over the
+ * two forms. An offset in the tail keeps its distance from the tail's start.
+ *
  * Two versions are equivalent when they have the same tokens, in the same
  * order, with line breaks between the same pairs of tokens (automatic
  * semicolon insertion depends on them), and differ only in whitespace and
@@ -33,6 +48,14 @@
  *
  * The scanner models only what these rules name; anything else makes the
  * versions not equivalent, which rebuilds. */
+
+import type { SourceTextFact, SourceTextReads } from "./input-tracker.js";
+import { astLineOfPosition, astLineStarts } from "./ts7/ast-text.js";
+import {
+  rewrittenSourceText,
+  rewrittenTailStart,
+  sourceTextPredicateTest,
+} from "./ts7/ast-node.js";
 
 interface Token {
   text: string;
@@ -417,33 +440,290 @@ function tokenPositions(source: string, tokens: readonly Token[]): number[] {
   return positions;
 }
 
-function equivalentSources(
+/** How an offset is anchored: at the start of a token, at the place the
+ * token before it ended (the start of the text when there is none), or
+ * unknown. */
+type Anchor = "start" | "end" | "any";
+
+/** The offset in `current` of the place `offset` names in `previous`, two
+ * versions with the same tokens (`left` and `right`), or -1 when the place
+ * is not certain. An offset strictly within a token keeps its distance from
+ * the token's start. Otherwise the anchor decides: the start of the token
+ * that starts there, or the end of the token that ends there. The start of
+ * the text is an end anchor too (nothing came before it), and its end is
+ * both (the text ends there and the end-of-file token starts there); where
+ * a token touches the end of the text, both readings must be one offset in
+ * `current`. An offset anchored where no such token is, in the whitespace
+ * and dropped comments between two tokens, has no counterpart. With an
+ * unknown anchor every reading must be one offset. */
+function carriedOffset(
+  offset: number,
+  anchor: Anchor,
+  previous: string,
+  current: string,
+  left: readonly Token[],
+  right: readonly Token[],
+): number {
+  let carried = -1;
+  let certain = true;
+  const place = (candidate: number): void => {
+    if (carried === -1) carried = candidate;
+    else if (carried !== candidate) certain = false;
+  };
+  // The last token that starts at or before the offset.
+  let low = 0;
+  let high = left.length - 1;
+  while (low <= high) {
+    const middle = low + ((high - low) >> 1);
+    if (left[middle]!.start <= offset) low = middle + 1;
+    else high = middle - 1;
+  }
+  const index = low - 1;
+  const token = index >= 0 ? left[index]! : undefined;
+  if (token !== undefined && offset > token.start && offset < token.start + token.text.length) {
+    return right[index]!.start + (offset - token.start);
+  }
+  // The token that starts here, and the one that ends here.
+  const starts = token !== undefined && token.start === offset ? index : -1;
+  const before = starts >= 0 ? index - 1 : index;
+  const ends =
+    before >= 0 && left[before]!.start + left[before]!.text.length === offset ? before : -1;
+  if (anchor !== "end" && starts >= 0) place(right[starts]!.start);
+  if (anchor !== "start" && ends >= 0) place(right[ends]!.start + left[ends]!.text.length);
+  // The edges of the text: its start is where "the token before" ended, and
+  // its end is where the end-of-file token starts and where the text ends.
+  if (offset === 0 && anchor !== "start") place(0);
+  if (offset === previous.length) place(current.length);
+  return certain ? carried : -1;
+}
+
+/** One set of reads: of a file's text, or of the form it was compiled in. */
+interface TextReadSet {
+  ranges: number[];
+  positions: number[];
+  facts: SourceTextFact[];
+}
+
+/** `reads`, recorded of `previous`, as reads of `current`: every offset
+ * carried over by `carry`, when every read has the same answer over both
+ * texts. Else the first read that does not, in words. */
+function carriedReadSet(
+  reads: TextReadSet,
+  previous: string,
+  current: string,
+  carry: (offset: number, anchor: Anchor) => number,
+): TextReadSet | string {
+  /** An anchored range in both versions: its texts and its anchored offsets
+   * in `current`, or null. */
+  const range = (
+    anchoredStart: number,
+    anchoredEnd: number,
+  ): { before: string; after: string; start: number; end: number } | null => {
+    const start = Math.floor(anchoredStart / 2);
+    const end = Math.floor(anchoredEnd / 2);
+    if (start > end || end > previous.length) return null;
+    const newStart = carry(start, anchoredStart % 2 === 1 ? "start" : "end");
+    const newEnd = carry(end, anchoredEnd % 2 === 1 ? "start" : "end");
+    if (newStart < 0 || newEnd < newStart) return null;
+    return {
+      before: previous.substring(start, end),
+      after: current.substring(newStart, newEnd),
+      start: newStart * 2 + (anchoredStart % 2),
+      end: newEnd * 2 + (anchoredEnd % 2),
+    };
+  };
+  const carried: TextReadSet = { ranges: [], positions: [], facts: [] };
+  for (const fact of reads.facts) {
+    // A recorded answer is the one over `previous`; a predicate that no
+    // longer gives it there cannot be replayed.
+    const test = sourceTextPredicateTest(fact.predicate);
+    const same = (before: string, after: string, result: boolean): boolean =>
+      test(before) === result && test(after) === result;
+    const asked =
+      fact.predicate.kind === "includes"
+        ? `whether it includes ${JSON.stringify(fact.predicate.needle)}`
+        : `whether /${fact.predicate.source}/${fact.predicate.flags} matches it`;
+    if (fact.whole !== undefined && !same(previous, current, fact.whole))
+      return `the frontend asked of the text ${asked}`;
+    const lists: [number[], number[]] = [[], []];
+    for (const [list, result, to] of [
+      [fact.yes, true, lists[0]],
+      [fact.no, false, lists[1]],
+    ] as const) {
+      for (let index = 0; index + 1 < list.length; index += 2) {
+        const found = range(list[index]!, list[index + 1]!);
+        if (found === null || !same(found.before, found.after, result))
+          return `the frontend asked of the text at offset ${Math.floor(list[index]! / 2)} ${asked}`;
+        to.push(found.start, found.end);
+      }
+    }
+    carried.facts.push({
+      predicate: fact.predicate,
+      ...(fact.whole === undefined ? {} : { whole: fact.whole }),
+      yes: lists[0],
+      no: lists[1],
+    });
+  }
+  for (let index = 0; index + 1 < reads.ranges.length; index += 2) {
+    const found = range(reads.ranges[index]!, reads.ranges[index + 1]!);
+    if (found === null || found.before !== found.after)
+      return `the frontend read the text at offset ${Math.floor(reads.ranges[index]! / 2)}`;
+    carried.ranges.push(found.start, found.end);
+  }
+  if (reads.positions.length === 0) return carried;
+  // Lines as the syntax tree counts them (AstNode.getLineAndCharacterOfPosition).
+  const before = astLineStarts(previous);
+  const after = astLineStarts(current);
+  for (const position of reads.positions) {
+    const moved = `the frontend read the line and column of offset ${position}`;
+    if (position > previous.length) return moved;
+    const place = carry(position, "any");
+    if (place < 0) return moved;
+    const line = astLineOfPosition(before, position);
+    if (line !== astLineOfPosition(after, place)) return moved;
+    if (position - before[line]! !== place - after[line]!) return moved;
+    carried.positions.push(place);
+  }
+  return carried;
+}
+
+/** `reads`, the reads recorded of `previous`, as reads of `current`, a
+ * version with the same tokens: every offset carried over, when every read
+ * has the same answer over both. Else the first read that does not, in
+ * words. The reads of a rewritten form are answered over the forms of the
+ * two versions; with `positions`, the form's tail must also start at the
+ * same line in both, since the tokens of the tail have positions too. */
+function carriedTextReads(
+  reads: SourceTextReads,
+  previous: string,
+  current: string,
+  left: readonly Token[],
+  right: readonly Token[],
+  positions: boolean,
+): SourceTextReads | string {
+  const carry = (offset: number, anchor: Anchor): number =>
+    carriedOffset(offset, anchor, previous, current, left, right);
+  const carried = carriedReadSet(reads, previous, current, carry);
+  if (typeof carried === "string") return carried;
+  const form = reads.rewritten;
+  if (form === undefined) return carried;
+  // The blanks, placed in `current` by its tokens.
+  const blanks: number[] = [];
+  let at = 0;
+  for (let index = 0; index + 1 < form.blanks.length; index += 2) {
+    const start = carry(form.blanks[index]! >> 1, form.blanks[index]! % 2 === 1 ? "start" : "end");
+    const end = carry(
+      form.blanks[index + 1]! >> 1,
+      form.blanks[index + 1]! % 2 === 1 ? "start" : "end",
+    );
+    if (start < at || end < start)
+      return "the frontend compiled a rewritten form of it, and a rewritten span cannot be placed in the new text";
+    blanks.push(start * 2 + (form.blanks[index]! % 2), end * 2 + (form.blanks[index + 1]! % 2));
+    at = end;
+  }
+  const formBefore = rewrittenSourceText(previous, form);
+  const rewrite = { blanks, tail: form.tail };
+  const formAfter = rewrittenSourceText(current, rewrite);
+  // Below the tail an offset of the form is an offset of the text, and the
+  // form's tokens there are tokens of the text. The tail moves as a whole.
+  const tailBefore = rewrittenTailStart(previous, form);
+  const tailAfter = rewrittenTailStart(current, rewrite);
+  const carryForm = (offset: number, anchor: Anchor): number =>
+    form.tail !== "" && offset >= tailBefore
+      ? offset - tailBefore + tailAfter
+      : carry(offset, anchor);
+  const carriedForm = carriedReadSet(form, formBefore, formAfter, carryForm);
+  if (typeof carriedForm === "string") return `in its rewritten form, ${carriedForm}`;
+  if (positions && form.tail !== "") {
+    const lineBefore = astLineOfPosition(astLineStarts(formBefore), tailBefore);
+    if (lineBefore !== astLineOfPosition(astLineStarts(formAfter), tailAfter))
+      return "the declarations the frontend added after its last line moved, and the build records source positions";
+  }
+  return { ...carried, rewritten: { ...rewrite, ...carriedForm } };
+}
+
+/** An edit that is equivalent: the reads recorded of the previous text, as
+ * reads of the current one (undefined when none were recorded). */
+export interface EquivalentSourceEdit {
+  reads: SourceTextReads | undefined;
+}
+
+/** The equivalent edit from `previous` to `current`, or why it is not one. */
+function sourceEdit(
   path: string,
   previous: string,
   current: string,
   positions: boolean,
-): boolean {
-  if (previous === current) return true;
+  reads: SourceTextReads | undefined,
+): EquivalentSourceEdit | string {
+  if (previous === current) return { reads };
   const left = scan(path, previous);
-  if (left === null) return false;
-  const right = scan(path, current);
-  if (right === null || left.length !== right.length) return false;
+  const right = left === null ? null : scan(path, current);
+  if (left === null || right === null) return "its text cannot be compared token by token";
+  if (left.length !== right.length) return "its tokens changed";
   for (let index = 0; index < left.length; index++) {
     const a = left[index]!;
     const b = right[index]!;
-    if (a.text !== b.text || a.comment !== b.comment) return false;
-    if (index > 0 && a.lineBreakBefore !== b.lineBreakBefore) return false;
+    if (a.text !== b.text || a.comment !== b.comment) return "its tokens changed";
+    if (index > 0 && a.lineBreakBefore !== b.lineBreakBefore)
+      return "a line break between two tokens changed";
   }
-  if (!positions) return true;
-  const before = tokenPositions(previous, left);
-  const after = tokenPositions(current, right);
-  return before.every((value, index) => value === after[index]);
+  const carried =
+    reads === undefined
+      ? undefined
+      : carriedTextReads(reads, previous, current, left, right, positions);
+  if (typeof carried === "string") return carried;
+  if (positions) {
+    const before = tokenPositions(previous, left);
+    const after = tokenPositions(current, right);
+    if (!before.every((value, index) => value === after[index]))
+      return "a token moved, and the build records source positions";
+  }
+  return { reads: carried };
+}
+
+/** The edit from `previous` to `current` when it is equivalent, else null:
+ * the versions differ only in whitespace and in comments that cannot affect
+ * compilation, every read `reads` records of the raw text of `previous` has
+ * the same answer over `current`, and, with `positions`, every token keeps
+ * its line and column (the source positions debug information records). The
+ * edit carries the reads over to `current`, so that the entry it refreshes
+ * describes the text it now holds. */
+export function equivalentSourceEdit(
+  path: string,
+  previous: string,
+  current: string,
+  positions: boolean,
+  reads?: SourceTextReads,
+): EquivalentSourceEdit | null {
+  const edit = sourceEdit(path, previous, current, positions, reads);
+  return typeof edit === "string" ? null : edit;
+}
+
+/** Why the edit from `previous` to `current` is not equivalent
+ * (equivalentSourceEdit), or null when it is: the reason a rebuild after a
+ * comment or whitespace edit ran the frontend. */
+export function sourceEditDifference(
+  path: string,
+  previous: string,
+  current: string,
+  positions: boolean,
+  reads?: SourceTextReads,
+): string | null {
+  const edit = sourceEdit(path, previous, current, positions, reads);
+  return typeof edit === "string" ? edit : null;
 }
 
 /** Whether `current` differs from `previous` only in whitespace and in
- * comments that cannot affect compilation. */
-export function tokenEquivalentSource(path: string, previous: string, current: string): boolean {
-  return equivalentSources(path, previous, current, false);
+ * comments that cannot affect compilation, and every read `reads` records
+ * of the raw text of `previous` has the same answer over `current`. */
+export function tokenEquivalentSource(
+  path: string,
+  previous: string,
+  current: string,
+  reads?: SourceTextReads,
+): boolean {
+  return equivalentSourceEdit(path, previous, current, false, reads) !== null;
 }
 
 /** Whether `current` is token-equivalent to `previous` (tokenEquivalentSource)
@@ -455,6 +735,7 @@ export function tokenPositionEquivalentSource(
   path: string,
   previous: string,
   current: string,
+  reads?: SourceTextReads,
 ): boolean {
-  return equivalentSources(path, previous, current, true);
+  return equivalentSourceEdit(path, previous, current, true, reads) !== null;
 }

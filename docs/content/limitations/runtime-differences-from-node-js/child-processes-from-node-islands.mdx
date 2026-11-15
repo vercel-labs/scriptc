@@ -1,0 +1,9 @@
+- **Child processes from Node islands:** A `ChildProcess` that JavaScript in a Node island started, for example through a package that wraps `spawn`, and that the program uses at the `ChildProcess` type is the island's own process object: its events arrive in Node.js's order, and its properties, its streams and its listeners are the island object's.
+  The following differs from Node.js.
+  `once` for `spawn`, `exit`, `close` and `error` registers the listener for every emit of the event, which shows only when the event is emitted more than once.
+  When the child has closed, the listeners the program registered on it, on its streams and on its `stdin` are released: they stay registered on the island's object but no longer run, and a listener the program registers afterwards is not registered at all.
+  While the program listens to anything on the child, one more `close` listener is registered on the island's object.
+  A `data` listener that takes `Buffer` chunks throws a `TypeError` when JavaScript in the island set an encoding on that stream, and one that takes strings throws when no encoding is set, where Node.js hands either listener whatever the stream delivers.
+  A write to the child's `stdin` after the child closed reports `ERR_STREAM_DESTROYED` to the write's callback, as under Node.js, and also emits `error` on the stream.
+  An `error` event's error has its `name`, `message` and `code`, and its `errno`, `syscall`, `path` and `spawnargs` read as `undefined`.
+  A listener runs outside the `AsyncLocalStorage` store that was current when the child was started.

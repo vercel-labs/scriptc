@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/static-member-redeclared.ts"
+ ],
+ "diags": []
+}

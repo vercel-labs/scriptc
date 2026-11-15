@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-alias-read-before-write/one.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-read-before-write/two.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-read-before-write/lib.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-alias-read-before-write/main.js"
+ ],
+ "diags": []
+}

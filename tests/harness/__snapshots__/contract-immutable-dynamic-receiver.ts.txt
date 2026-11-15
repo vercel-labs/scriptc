@@ -1,0 +1,8 @@
+contract-immutable-dynamic-receiver.ts:16:15 - error SC7005: a value that may be Immutable escapes to dynamic (any or unknown) code, where writes are not checked: 'el[key]'
+
+  15 | function tamper(el: any, key: string): void {
+  16 |   const got = el[key];
+     |               ^~~~~~~
+  17 |   got.push(4);
+
+  hint: keep Immutable values in typed code, or copy the value before handing it out

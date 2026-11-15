@@ -22,6 +22,7 @@ declare module "dgram" {
   }
   export interface Socket {
     bind(port: number, address?: string, callback?: () => void): void;
+    bind(port: number, callback: () => void): void;
     connect(port: number, address?: string, callback?: () => void): void;
     send(msg: string | Uint8Array, port: number, address: string): void;
     address(): AddressInfo;

@@ -15,7 +15,7 @@ import {
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { newFnCtx, type Lowerer } from "./lowerer.js";
+import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
   findGenericMethodOn,
@@ -23,11 +23,18 @@ import {
   genericOverrideBelow,
   type ClassInfo,
 } from "./lower-classes.js";
-import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
+import { checkRefusedMemberUse, reportRefusedMemberUse } from "./class-member-refusals.js";
+import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
+import { methodJsName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
+
+/** The name prefix of the helper that checks the receiver a class's method
+ * value was called with into the class (`%method.receiver:C`). */
+export const METHOD_RECEIVER_PREFIX = "%method.receiver:";
 
 export interface ClassMethodValueSelection {
   expression: ts.PropertyAccessExpression;
@@ -142,21 +149,7 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
         candidate.methods.get(selection.method)?.abstract
       )
         continue;
-      let value = methodValue(lowerer, selection.expression, candidate);
-      if (value && selection.checked) value = lowerer.coerceToExpected(value, DYN);
-      if (value && !typeEquals(value.type, selection.fallback.type)) {
-        const widened = lowerer.coerceCovariantFunction(value, selection.fallback.type);
-        // Only a representation-preserving view can keep extraction's
-        // identity contract across differently typed base/derived views.
-        if (widened) value = widened;
-      }
-      if (!value || !typeEquals(value.type, selection.fallback.type))
-        lowerer.unsupported(
-          "SC1090",
-          selection.expression,
-          "method values with incompatible override signatures",
-        );
-      selection.values.set(candidate.def.name, value);
+      selection.values.set(candidate.def.name, selectedMethodValue(lowerer, selection, candidate));
       added = true;
     }
     if (!added) continue;
@@ -183,11 +176,58 @@ export function refreshClassMethodValueSelections(lowerer: Lowerer): boolean {
   return changed;
 }
 
+/** The value a selector answers for instances of `candidate`.
+ *
+ * The selector grows in a pass that has no statement to poison, so a
+ * candidate whose value is refused (its class refused the member, or the
+ * override has no view as the selector's type) must not throw out of the
+ * pass: the refusal has reported at the read that made the selector, which
+ * fails the build, and the candidate's arm throws. The arm is never the
+ * inherited method: a read through a base-typed receiver would answer the
+ * wrong function for the class. A poison nothing reported stays a crash. */
+function selectedMethodValue(
+  lowerer: Lowerer,
+  selection: ClassMethodValueSelection,
+  candidate: ClassInfo,
+): IrExpr {
+  try {
+    let value = methodValue(lowerer, selection.expression, candidate);
+    if (value && selection.checked) value = lowerer.coerceToExpected(value, DYN);
+    if (value && !typeEquals(value.type, selection.fallback.type)) {
+      const widened = lowerer.coerceCovariantFunction(value, selection.fallback.type);
+      // Only a representation-preserving view can keep extraction's
+      // identity contract across differently typed base/derived views.
+      if (widened) value = widened;
+    }
+    if (!value || !typeEquals(value.type, selection.fallback.type))
+      lowerer.unsupported(
+        "SC1090",
+        selection.expression,
+        "method values with incompatible override signatures",
+      );
+    return value;
+  } catch (e) {
+    if (!(e instanceof PoisonError) || lowerer.diags.length === 0) throw e;
+    return nodeThrowExpr(
+      1,
+      "",
+      `The value of method '${selection.method}' of class '${candidate.def.name}' did not compile`,
+      selection.fallback.type,
+      selection.fn.loc,
+    );
+  }
+}
+
 function methodValue(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
   info: ClassInfo,
 ): IrExpr | null {
+  // A method read as a value in source: a refused member reports here.
+  const declared = findMethodOn(lowerer, info, expr.name.text);
+  if (declared) checkRefusedMemberUse(lowerer, declared.declarer, expr.name.text, expr.name);
+  const generic = declared ? null : findGenericMethodOn(lowerer, info, expr.name.text);
+  if (generic?.info.refused) reportRefusedMemberUse(lowerer, generic.info.refused, expr.name);
   return classMethodValue(lowerer, expr, info, expr.name.text, locOf(expr));
 }
 
@@ -248,14 +288,24 @@ export function classMethodValue(
   }
   const type = funcTypeFromParamShapes(params, ret);
   const name = `%method.value:${callee}`;
+  const member = classMethodMember(lowerer, owner, method, false);
+  // The value is the method the class declares, so its `length` is that
+  // declaration's. The type counts the slot's parameters: an override that
+  // adds optional parameters keeps the inherited slot, and a parameter with
+  // a default is a position of the type that Node does not count.
+  const typeLength = type.params.length - (type.restAbi === "typed" ? 1 : 0);
+  const ownLength =
+    member !== undefined && ts.isMethodDeclaration(member) ? declaredLength(member) : typeLength;
   if (!lowerer.classMethodValueHelpers.has(name)) {
+    if (member !== undefined && readsReceiver(member))
+      lowerer.receiverReadingMethodValues.add(name);
     const thunkParams = params.map((param, i) => ({
       localId: `p.${i}`,
       name: `p${i}`,
       type: param.type,
     }));
     const receiverType: IrType = { kind: "object", className: owner.def.name };
-    const receiverName = `%method.receiver:${owner.def.name}`;
+    const receiverName = `${METHOD_RECEIVER_PREFIX}${owner.def.name}`;
     if (!lowerer.classMethodValueHelpers.has(receiverName)) {
       lowerer.liftedFns.push({
         name: receiverName,
@@ -295,6 +345,14 @@ export function classMethodValue(
           type: ret,
           loc,
         };
+    // The value is the method, so its `name` is the method's; the function
+    // that stands for it has no source name of its own (function-names.ts).
+    // The runtime's own `Error.prototype.toString` is in nearly every
+    // program with an untyped error and stays as it was.
+    if (!owner.builtinError) {
+      const jsName = member?.name !== undefined ? methodJsName(member.name) : method;
+      if (jsName !== null) lowerer.objectMethodNames.set(name, jsName);
+    }
     const fn: IrFunction = {
       name,
       params: thunkParams,
@@ -316,8 +374,29 @@ export function classMethodValue(
     };
     lowerer.liftedFns.push(fn);
     lowerer.classMethodValueHelpers.add(name);
+    // The value IS the method, so it prints the method's own text when the
+    // module boxes it into a checked value (function-source-text.ts).
+    if (member !== undefined) noteFunctionSourceNode(lowerer, fn, member);
   }
-  return { kind: "closure", fnName: name, captures: [], type, loc };
+  return {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    ...(ownLength !== typeLength ? { length: ownLength } : {}),
+    type,
+    loc,
+  };
+}
+
+/** A method declaration's own `length`, as Node counts it: the parameters
+ * before the first one with a default or a rest. A `this` parameter is a
+ * type, not a parameter. */
+function declaredLength(member: ts.MethodDeclaration): number {
+  const parameters = member.parameters.nodes.filter((parameter) => !isThisParameter(parameter));
+  const stop = parameters.findIndex(
+    (parameter) => parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined,
+  );
+  return stop < 0 ? parameters.length : stop;
 }
 
 /** Public JS prototype methods are ordinary callables over their actual
@@ -340,22 +419,34 @@ export function reflectedClassStaticMethodValue(
   return reflectedMethodValue(lowerer, info, method, true);
 }
 
-function reflectedMethodValue(
+/** A static member lowered for a class value's property table: its
+ * declaration's body runs over the dynamic receiver the reflective read
+ * supplies (`C.m()` through `any` passes the class value as `this`, and an
+ * inherited accessor passes the class the read named), as JavaScript does.
+ * TypeScript declarations lower the same way here because the table is the
+ * only caller: the member's reads of `this` are checked-dynamic reads. */
+export function reflectedClassStaticMethodValueForTable(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+): IrExpr | null {
+  return reflectedMethodValue(lowerer, info, method, true, true);
+}
+
+/** The declaration with a body behind `method` of `info`'s own class
+ * declaration (an accessor's name is `get:x` or `set:x`). An overloaded
+ * method's signatures have none; its implementation is the one. */
+function classMethodMember(
   lowerer: Lowerer,
   info: ClassInfo,
   method: string,
   staticMethod: boolean,
-): IrExpr | null {
-  const existing = (staticMethod ? info.staticMethodValues : info.prototypeMethodValues)?.get(
-    method,
-  );
-  if (existing) return existing;
-  const declaration = info.decl;
-  if (!declaration) return null;
-  const member = declaration.members.nodes.find((member) => {
+): ts.MethodDeclaration | ts.AccessorDeclaration | undefined {
+  const member = info.decl?.members.nodes.find((member) => {
     if (
       (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
       !member.name ||
+      !member.body ||
       !!ts
         .getModifiers(member)
         ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) !== staticMethod
@@ -372,12 +463,46 @@ function reflectedMethodValue(
             : null) === method
     );
   });
-  if (!member || (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) || !member.body)
-    return null;
+  return member && (ts.isMethodDeclaration(member) || ts.isAccessor(member)) && member.body
+    ? member
+    : undefined;
+}
+
+/** Whether a method's source reads its receiver: `this` or `super` in its
+ * parameters or body, outside nested functions and classes, which bind
+ * their own (arrow functions see the method's). */
+function readsReceiver(member: ts.MethodDeclaration | ts.AccessorDeclaration): boolean {
+  const reads = (node: ts.Node): boolean => {
+    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
+      return true;
+    if (
+      (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
+    )
+      return false;
+    return ts.forEachChild(node, (child) => (reads(child) ? true : undefined)) === true;
+  };
+  return ts.forEachChild(member, (child) => (reads(child) ? true : undefined)) === true;
+}
+
+/** Whether `member`'s body needs the class's native receiver rather than the
+ * dynamic one a method value or a class value's property table supplies.
+ * `super` outside a call that a viewable prototype chain answers and private
+ * names a dynamic receiver cannot read keep it: only a source class whose
+ * body never touches either runs over the value it is given. */
+function memberNeedsNativeReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+  staticMethod: boolean,
+  tableValue: boolean,
+): boolean {
+  const declaration = info.decl!;
   let needsNativeReceiver =
-    !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
+    (!tableValue && !isJsSourceFile(ts.getSourceFileOfNode(declaration))) ||
     info.localClass !== undefined ||
-    lowerer.errorHierarchyClassOf(info.def.name);
+    !!lowerer.errorHierarchyClassOf(info.def.name);
   // `super.m(...)` in a prototype method reads the base class's prototype,
   // which lowerSuperMethodCall answers over the call-site receiver when the
   // base has a prototype object. Other uses of `super` keep the native
@@ -407,7 +532,41 @@ function reflectedMethodValue(
     )
       needsNativeReceiver = true;
   });
-  if (needsNativeReceiver) return null;
+  return needsNativeReceiver;
+}
+
+/** Whether a static method or accessor of `info`'s class cannot be lowered to
+ * run over the dynamic receiver a class value's property table supplies. Such
+ * a class keeps the runtime's fence: a table would have to answer the member
+ * with `undefined`, which is a wrong value rather than a refusal. */
+export function staticTableMemberRefused(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): boolean {
+  return memberNeedsNativeReceiver(lowerer, info, member, true, true);
+}
+
+function reflectedMethodValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+  staticMethod: boolean,
+  tableValue = false,
+): IrExpr | null {
+  const existing = (
+    tableValue
+      ? info.staticTableMethodValues
+      : staticMethod
+        ? info.staticMethodValues
+        : info.prototypeMethodValues
+  )?.get(method);
+  if (existing) return existing;
+  const declaration = info.decl;
+  if (!declaration) return null;
+  const member = classMethodMember(lowerer, info, method, staticMethod);
+  if (!member) return null;
+  if (memberNeedsNativeReceiver(lowerer, info, member, staticMethod, tableValue)) return null;
   // The method reads itself as a value inside its own body: it is the
   // closure its lowering in progress produces.
   if (lowerer.methodLambdasInProgress.has(member)) {
@@ -438,7 +597,13 @@ function reflectedMethodValue(
   lowerer.fnStack.push(context);
   lowerer.methodLambdasInProgress.set(member, null);
   try {
-    const value = lowerer.lowerLambda(member);
+    // A STATIC member the property table answers runs over the class value
+    // the reflective call supplies as its receiver, so its `this` is that
+    // checked-dynamic value even in a TypeScript source: a read through it
+    // asks the class value's table, which is where a subclass's
+    // redeclaration answers. An accessor's getter/setter receives the same
+    // receiver from the table.
+    const value = lowerer.lowerLambda(member, tableValue && staticMethod);
     const pending = lowerer.methodLambdasInProgress.get(member);
     if (
       pending &&
@@ -458,9 +623,11 @@ function reflectedMethodValue(
       const body = lowerer.liftedFnNamed(value.fnName);
       if (body?.captures?.length === 0) delete body.captures;
     }
-    const cache = staticMethod
-      ? (info.staticMethodValues ??= new Map())
-      : (info.prototypeMethodValues ??= new Map());
+    const cache = tableValue
+      ? (info.staticTableMethodValues ??= new Map())
+      : staticMethod
+        ? (info.staticMethodValues ??= new Map())
+        : (info.prototypeMethodValues ??= new Map());
     cache.set(method, value);
     return value;
   } finally {
@@ -523,7 +690,7 @@ function isSuperMethodCallee(node: ts.Node): boolean {
 export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunction[]): void {
   const byName = new Map(functions.map((fn) => [fn.name, fn]));
   for (const fn of [...functions]) {
-    if (fn.name.startsWith("%method.receiver:") && fn.returnType.kind === "object") {
+    if (fn.name.startsWith(METHOD_RECEIVER_PREFIX) && fn.returnType.kind === "object") {
       const owner = fn.returnType.className;
       const loc = fn.loc;
       const receiver = varRef("this.0", DYN, loc);
@@ -594,7 +761,7 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           kind: "if",
           cond: {
             kind: "libCall",
-            fn: "dyn.typedRefIs",
+            fn: "dyn.typedRefBrandIs",
             args: [receiver, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
             type: BOOL,
             loc,
@@ -618,7 +785,13 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           !(expr.kind === "varRef" && expr.localId === thisParam.localId) &&
           !(expr.kind === "closure" && expr.captures.includes(thisParam.localId)),
       });
-    if (usesThis) continue;
+    // The lowered body alone does not decide this. A test of the receiver
+    // (`this === undefined`, `typeof this`, `this instanceof C`) and a test
+    // of a member's type (`typeof this.name`) are answered from the type
+    // `this` has after the check below, and leave no read behind: skipping
+    // the check for such a method would run it with those answers on a
+    // receiver that is not an instance.
+    if (usesThis || lowerer.receiverReadingMethodValues.has(fn.name)) continue;
     // A method that never uses this remains callable when detached. Without
     // class captures it needs no class environment, so the detached copy
     // drops the (empty) capture list, which requires a receiver.

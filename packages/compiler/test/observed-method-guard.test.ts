@@ -61,12 +61,14 @@ test("typed calls of an observed method call it natively while its slot is uncha
   const sum = module.functions.find((fn) => fn.name.endsWith("sum"));
   expect(sum).toBeDefined();
   const records = recordsOf(sum);
-  const guards = records.filter(
-    (record) =>
-      record.kind === "ternary" &&
-      (record.cond as IrRecord | undefined)?.kind === "libCall" &&
-      (record.cond as IrRecord).fn === "dyn.sameValue",
-  );
+  // The call is native while nothing has been replaced (the instance has no
+  // own property and its class no prototype object) or the slot is unchanged.
+  const guards = records.filter((record) => {
+    if (record.kind !== "ternary") return false;
+    const cond = record.cond as IrRecord | undefined;
+    const unchanged = (cond?.kind === "logical" ? cond.right : cond) as IrRecord | undefined;
+    return unchanged?.kind === "libCall" && unchanged.fn === "dyn.sameValue";
+  });
   expect(guards).toHaveLength(1);
   const then = guards[0]!.then as IrRecord;
   expect(then.kind).toBe("call");

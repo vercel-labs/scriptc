@@ -1,0 +1,18 @@
+{
+  "aliasableCopies": {
+    "arr": 9,
+    "objWidth": 5,
+    "ovf": 2,
+    "tupleArr": 4,
+    "width": 363
+  },
+  "warnedIdentical": 21,
+  "refused": [
+    "empty/declaration/push",
+    "instance/declaration/write",
+    "partial/declaration/increment"
+  ],
+  "silent": [
+    "promise/declaration/write"
+  ]
+}

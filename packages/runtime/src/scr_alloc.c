@@ -61,6 +61,12 @@ static void scr_sa_thread_large_note(void);
 #include <sched.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#include <sys/personality.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 /* Page policy. Chunk pages are committed by first touch, which on 4 KiB
  * pages is one fault (and page clear) per 4 KiB the bump pointers cross.
@@ -788,7 +794,16 @@ static void scr_sa_large_note(void *p, size_t n) {
  * atomic add, or from the chunks that discarded workers returned whole
  * (scr_sa_spare). A host that refuses the whole window (valgrind limits the
  * address space) gets a smaller one, down to SCR_SA_WINDOW_MIN; an exhausted
- * or refused window leaves small blocks to the system allocator. */
+ * or refused window leaves small blocks to the system allocator.
+ *
+ * Where it starts differs from run to run (scr_sa_window_slide), by a whole
+ * number of chunks: a block's address then cannot be known before the
+ * process runs, while its offset in its chunk, and so its alignment and its
+ * place in a cache line and in a huge page, and the order of any two blocks
+ * stay what they were. The fast paths read the start from scr_sa.base either
+ * way. The window has the same size whatever the slide: the range keeps
+ * SCR_SA_SLIDE_CHUNKS chunks free for it, so a program's heap limit does not
+ * depend on the draw. */
 #ifdef SCR_WORKERS
 #define SCR_SA_ARENAS 32u
 #else
@@ -832,6 +847,54 @@ static void scr_sa_window_lock_take(void) { scr_sa_spin_take(&scr_sa_window_lock
 static void scr_sa_window_lock_drop(void) { __atomic_clear(&scr_sa_window_lock, __ATOMIC_RELEASE); }
 
 #if defined(__linux__) || defined(SCR_COMPACT_REFS)
+/* The starts the window can have: 1024 of them, 4 GiB of the range. */
+#define SCR_SA_SLIDE_CHUNKS 1024u
+#define SCR_SA_SLIDE_SPAN ((size_t)SCR_SA_SLIDE_CHUNKS << SCR_SA_CHUNK_SHIFT)
+_Static_assert((SCR_SA_SLIDE_CHUNKS & (SCR_SA_SLIDE_CHUNKS - 1)) == 0, "the slide is masked to a chunk count");
+
+/* How far past its lowest start this process's window begins: a multiple of
+ * SCR_SA_CHUNK below SCR_SA_SLIDE_SPAN, drawn once.
+ *
+ * A process whose address-space randomization is switched off keeps the
+ * lowest start, as its stack and mappings keep their addresses: on Linux
+ * the ADDR_NO_RANDOMIZE personality, which `setarch -R` sets and gdb sets
+ * for the programs it starts; on macOS an image loaded without a slide,
+ * which is how lldb starts programs. A watchpoint or a recorded address is
+ * then good for the next run too.
+ *
+ * Linux draws from the sixteen bytes the kernel hands every process
+ * (AT_RANDOM), which takes no system call and cannot fail. The C library
+ * takes its stack protector and pointer guard from the same bytes, so the
+ * slide is a mix of all of them and names none. macOS asks the system's
+ * generator. */
+#if defined(__linux__)
+/* splitmix64's finalizer. */
+static uint64_t scr_sa_slide_mix(uint64_t x) {
+  x ^= x >> 30;
+  x *= UINT64_C(0xbf58476d1ce4e5b9);
+  x ^= x >> 27;
+  x *= UINT64_C(0x94d049bb133111eb);
+  return x ^ x >> 31;
+}
+#endif
+
+static size_t scr_sa_window_slide(void) {
+  uint64_t r;
+#if defined(__linux__)
+  int persona = personality(0xffffffff);
+  if (persona != -1 && (persona & ADDR_NO_RANDOMIZE)) return 0;
+  const unsigned char *bytes = (const unsigned char *)getauxval(AT_RANDOM);
+  if (!bytes) return 0;
+  uint64_t half[2];
+  memcpy(half, bytes, sizeof half);
+  r = scr_sa_slide_mix(scr_sa_slide_mix(half[0]) ^ half[1]);
+#else
+  if (_dyld_get_image_vmaddr_slide(0) == 0) return 0;
+  arc4random_buf(&r, sizeof r);
+#endif
+  return (size_t)(r >> 32 & (SCR_SA_SLIDE_CHUNKS - 1)) << SCR_SA_CHUNK_SHIFT;
+}
+
 /* Maps `size` bytes at `at` exactly, as scr_sa_map does anywhere; NULL if
  * refused. */
 static char *scr_sa_map_at(void *at, size_t size) {
@@ -865,19 +928,24 @@ static bool scr_sa_window_reserve(void) {
     char *p = NULL;
     size_t size = 0;
 #ifdef __linux__
-    for (size_t start = (size_t)4 << 30; !p && start <= (size_t)16 << 30; start *= 2) {
-      size = ((size_t)32 << 30) - start;
+    size_t slide = scr_sa_window_slide();
+    for (size_t low = (size_t)4 << 30; !p && low <= (size_t)16 << 30; low *= 2) {
+      /* What the range holds above every start. */
+      size = ((size_t)32 << 30) - low - SCR_SA_SLIDE_SPAN;
       if (size > SCR_SA_WINDOW_WANT) size = SCR_SA_WINDOW_WANT;
-      while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)start, size))) size /= 2;
+      while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at((void *)(low + slide), size))) size /= 2;
     }
 #elif defined(SCR_COMPACT_REFS)
-    /* The window starts one chunk past the base, which stays inaccessible:
-     * an object at offset 0 would encode as 0, the NULL reference (Linux's
-     * window starts at 4 GiB, so its references are never 0). */
+    /* The window starts one chunk past its mapping's start, which stays
+     * inaccessible: an object at offset 0 from the base would encode as 0,
+     * the NULL reference (Linux's window starts at 4 GiB or above, so its
+     * references are never 0). The 32 GiB that references reach hold that
+     * chunk, the slide and the whole window. */
+    _Static_assert(SCR_SA_SLIDE_SPAN + SCR_SA_WINDOW_WANT <= (size_t)32 << 30,
+                   "the slid window lies within reach of a 32-bit reference");
+    char *at = (char *)(uintptr_t)SCR_WINDOW_BASE + scr_sa_window_slide();
     size = SCR_SA_WINDOW_WANT;
-    while (size >= SCR_SA_WINDOW_MIN &&
-           !(p = scr_sa_map_at((void *)(uintptr_t)SCR_WINDOW_BASE, size + SCR_SA_CHUNK)))
-      size /= 2;
+    while (size >= SCR_SA_WINDOW_MIN && !(p = scr_sa_map_at(at, size + SCR_SA_CHUNK))) size /= 2;
     if (p) {
       (void)mprotect(p, SCR_SA_CHUNK, PROT_NONE);
       p += SCR_SA_CHUNK;

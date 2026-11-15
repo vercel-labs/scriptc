@@ -165,6 +165,59 @@ function collectWrites(bodies: readonly IrStmt[][]): Map<string, Write[]> {
   return writes;
 }
 
+/** The functions that name each of `ids`, in module order: a read, a write, a
+ * loop or catch binding, or a closure capture of that id anywhere in the body.
+ * A function that names a binding nowhere holds no use of it and no write to it. */
+function functionsNaming(
+  functions: readonly IrFunction[],
+  ids: ReadonlySet<string>,
+): Map<string, IrFunction[]> {
+  const naming = new Map<string, IrFunction[]>();
+  for (const fn of functions) {
+    const note = (id: string): void => {
+      if (!ids.has(id)) return;
+      const list = naming.get(id);
+      if (list === undefined) naming.set(id, [fn]);
+      else if (list[list.length - 1] !== fn) list.push(fn);
+    };
+    const scanExpr = (node: IrExpr): void => {
+      if (node.kind === "varRef" || node.kind === "assignExpr" || node.kind === "incDec")
+        note(node.localId);
+      else if (node.kind === "closure") for (const capture of node.captures) note(capture);
+      mapExprChildren(
+        node,
+        (child) => {
+          scanExpr(child);
+          return child;
+        },
+        (child) => {
+          scan(child);
+          return child;
+        },
+      );
+    };
+    const scan = (statement: IrStmt): void => {
+      if (statement.kind === "varDecl" || statement.kind === "assign" || statement.kind === "forOf")
+        note(statement.localId);
+      else if (statement.kind === "tryCatch" && statement.catchLocalId !== null)
+        note(statement.catchLocalId);
+      mapStmtChildren(
+        statement,
+        (child) => {
+          scanExpr(child);
+          return child;
+        },
+        (child) => {
+          scan(child);
+          return child;
+        },
+      );
+    };
+    for (const statement of fn.body) scan(statement);
+  }
+  return naming;
+}
+
 /** The locals of `fn` that hold the array `id` holds: the binding itself and
  * every local whose every write copies one of them. A copy is how a `for…of`
  * iterable or a cast reaches the array. A local a closure captures is left
@@ -460,13 +513,33 @@ export function specializeConstantArrayLengths(
     return paramReadOnly(target, argIndex);
   }
 
-  /** The length of the array `id` holds at every use, or null. */
-  function bindingLength(key: string, scope: IrFunction[], id: string): number | null {
+  // A global's proof reads the whole module. The module's writes and the
+  // functions that name each global are the same for every global, so they
+  // are read once: a walk of the module per global was 20 s of the
+  // compiler's own build.
+  let moduleWrites: Map<string, Write[]> | null = null;
+  let globalNamers: Map<string, IrFunction[]> | null = null;
+
+  /** The length of the array `id` holds at every use, or null. `caller` is
+   * the function that declares a local; a global has none. */
+  function bindingLength(key: string, caller: IrFunction | null, id: string): number | null {
     const known = bindingLengths.get(key);
     if (known !== undefined) return known;
     bindingLengths.set(key, null);
     let result: number | null = null;
-    const writes = collectWrites(scope.map((fn) => fn.body)).get(id) ?? [];
+    let writes: Write[];
+    let scope: readonly IrFunction[];
+    if (caller !== null) {
+      writes = collectWrites([caller.body]).get(id) ?? [];
+      scope = [caller];
+    } else {
+      moduleWrites ??= collectWrites(mod.functions.map((fn) => fn.body));
+      globalNamers ??= functionsNaming(mod.functions, new Set(globals.keys()));
+      writes = moduleWrites.get(id) ?? [];
+      // A function that does not name the global passes the check below
+      // without asking anything, so only the ones that name it are asked.
+      scope = globalNamers.get(id) ?? [];
+    }
     if (writes.length === 1) {
       const write = writes[0]!;
       const value = write.value;
@@ -501,12 +574,12 @@ export function specializeConstantArrayLengths(
     const local = caller.locals.find((candidate) => candidate.id === id);
     if (local !== undefined) {
       if (local.mutable || local.boxed) return null;
-      return bindingLength(`local\0${caller.name}\0${id}`, [caller], id);
+      return bindingLength(`local\0${caller.name}\0${id}`, caller, id);
     }
     const global = globals.get(id);
     if (global === undefined) return null;
     if (global.mutable || global.tdz === true || global.initFlag !== undefined) return null;
-    return bindingLength(`global\0${id}`, mod.functions, id);
+    return bindingLength(`global\0${id}`, null, id);
   }
 
   /** Whether the body reads the element count of parameter `id`, the read a

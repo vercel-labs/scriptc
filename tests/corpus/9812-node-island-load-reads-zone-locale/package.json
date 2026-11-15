@@ -1,0 +1,1 @@
+{"name": "island-load-reads-zone-locale", "private": true, "scriptc": {"packages": {"zone-kit": "node", "calendar-kit": "node", "locale-kit": "node", "seen-kit": "node", "fixed-kit": "node"}}}

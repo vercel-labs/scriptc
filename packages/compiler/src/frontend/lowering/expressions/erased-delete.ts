@@ -1,5 +1,6 @@
 /* A member `delete` through a chain of type assertions:
- * `delete (o as View).k`, `delete (o as unknown as View)["k"]`.
+ * `delete (o as View).k`, `delete (o as unknown as View)["k"]`,
+ * `delete (o as View)!.k`, `delete ((o as View) satisfies View).k`.
  *
  * Node erases a type assertion, so the delete names the very object the
  * operand names: the assertion only decides what the checker accepts. The
@@ -15,37 +16,32 @@
  * copying width record; a dyn/unknown cast is an identity-preserving view,
  * and the ordinary lowering already deletes through it, so those keep it
  * (also exactly Node). The static type decides before lowering, so an
- * operand with side effects is lowered exactly once. */
+ * operand with side effects is lowered exactly once.
+ *
+ * The other erased wrappers are part of the same chain. A non-null
+ * assertion or a `satisfies` AROUND an assertion (`(o as View)!.k`) hides
+ * the assertion from a test that only looks at the receiver's outermost
+ * node, and the delete would land on the copy again; both are looked
+ * through. An operand that may be `undefined` or `null`
+ * (`delete (maybe as View).k`) converts into the same copy once the
+ * assertion drops the unit arms, so it is addressed in place too: the
+ * record arm is extracted with a check, and a nullish value throws the
+ * TypeError Node's ToObject gives a `delete`. */
 import * as ts from "../../ts7/adapter.js";
 import { BOOL, STRING, type IrExpr, type IrStmt, type SrcLoc } from "../../../ir/ir.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { markSloppyRecordWrites } from "../frozen-records.js";
+import { recordMayKeepSource } from "../record-sources.js";
+import { isStrictCode } from "../strict-mode.js";
 import { isPureReference } from "../effect-free.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { literalFieldKeys } from "./keyed-field-targets.js";
-
-/** The operand a member `delete` addresses through a chain of type
- * assertions: `(o as View).k` names `o`, and `(o as unknown as View)["k"]`
- * the same. Null when no `as`/`<T>` wraps the receiver (a delete there
- * keeps the ordinary lowering). */
-export function assertionOperandOf(node: ts.Expression): ts.Expression | null {
-  let operand: ts.Expression = node;
-  let asserted = false;
-  for (;;) {
-    if (ts.isParenthesizedExpression(operand)) {
-      operand = operand.expression;
-      continue;
-    }
-    if (ts.isAsExpression(operand) || ts.isTypeAssertion(operand)) {
-      operand = operand.expression;
-      asserted = true;
-      continue;
-    }
-    break;
-  }
-  return asserted ? operand : null;
-}
+import {
+  type ErasedRecordOperand,
+  erasedRecordOperand,
+  lowerErasedRecordOperand,
+} from "./asserted-receiver.js";
 
 /** The constant property key of a `delete` target: the name of a dot
  * access, or the one key of a bracket access spelled as a literal or
@@ -105,27 +101,40 @@ const MISSING_ASSERTED_MEMBER = (member: string): string =>
 const UNKNOWN_ASSERTED_LAYOUT =
   "'delete' through a type assertion whose value has no statically known record layout (the asserted view's conversion would build a copy, so the delete would land on the temporary and disappear)";
 
+const OPTIONAL_CHAIN_ASSERTED =
+  "'delete' through an optional chain on an asserted value that may be undefined or null (the chain answers true for a nullish value, and the assertion's conversion would build a copy of a present one — narrow the value first, or delete through the value's own type)";
+
+/** The TypeError Node's ToObject gives a `delete` whose receiver is
+ * `undefined` or `null`; it names neither the receiver nor the key. */
+export const DELETE_NULLISH_RECEIVER = "Cannot convert undefined or null to object";
+
 /** What a member `delete` through a chain of assertions addresses.
  *
  * - `operand`: the unasserted value to delete from, when its own stored
- *   layout can hold the member (the caller lowers it once, in place).
+ *   layout can hold the member (the caller lowers it once, in place, with
+ *   lowerErasedDeleteOperand). `layout` is that record layout: the
+ *   operand's own type, or its one record arm when the operand may also be
+ *   `undefined` or `null`.
  * - `refuse`: the assertion names a constant member the operand's layout
  *   does not hold at all, so there is nothing a delete could remove.
  *
  * Null when no assertion wraps the receiver, or when the operand is not a
  * RECORD — a dyn/unknown cast is an identity-preserving view the ordinary
  * lowering already deletes through. */
-export type ErasedDeletePlan = { operand: ts.Expression } | { refuse: string };
+export type ErasedDeletePlan = ErasedRecordOperand | { refuse: string };
 
 export function erasedDeletePlan(
   lowerer: Lowerer,
   target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): ErasedDeletePlan | null {
-  const operand = assertionOperandOf(target.expression);
-  if (operand === null) return null;
-  const staticType = lowerer.mapTypeOf(lowerer.typeOf(operand));
-  if (staticType?.kind !== "record") return null;
-  const shape = lowerer.shapes.get(staticType.shapeId);
+  const erased = erasedRecordOperand(lowerer, target.expression);
+  if (erased === null) return null;
+  const { operand, layout } = erased;
+  // `delete (maybe as View)?.k`: the chain answers `true` for a nullish
+  // value without deleting, where the narrowing below throws.
+  if (target.questionDotToken && lowerer.mapTypeOf(lowerer.typeOf(operand))?.kind !== "record")
+    return { refuse: OPTIONAL_CHAIN_ASSERTED };
+  const shape = lowerer.shapes.get(layout.shapeId);
   if (!shape) return { refuse: UNKNOWN_ASSERTED_LAYOUT };
   const member = constantDeleteKey(lowerer, target);
   // A key only a literal proves, a pure index signature's key, and a
@@ -136,8 +145,28 @@ export function erasedDeletePlan(
   const held =
     (shape.indexValue !== undefined && shape.fields.length === 0 && !shape.tuple) ||
     member === null ||
-    (!shape.tuple && shape.fields.some((field) => field.name === member));
-  return held ? { operand } : { refuse: MISSING_ASSERTED_MEMBER(member) };
+    (!shape.tuple && shape.fields.some((field) => field.name === member)) ||
+    // A checked record can hold a key its own type does not declare in the
+    // kept source it notes from the value it was converted from
+    // (record-sources.ts): the delete addresses the operand and removes the
+    // key there, exactly as Node deletes the property from the one object.
+    recordMayKeepSource(lowerer, layout);
+  return held ? { operand, layout } : { refuse: MISSING_ASSERTED_MEMBER(member) };
+}
+
+/** The value an erased delete addresses, lowered once. An operand that may
+ * be `undefined` or `null` is narrowed to its record arm with a check: the
+ * assertion claimed the value is there, and when it is not, the delete
+ * throws the TypeError Node's ToObject gives. */
+export function lowerErasedDeleteOperand(
+  lowerer: Lowerer,
+  plan: ErasedRecordOperand,
+  blame: ts.Node,
+): IrExpr {
+  return (
+    lowerErasedRecordOperand(lowerer, plan, () => DELETE_NULLISH_RECEIVER) ??
+    lowerer.unsupported("SC1090", blame, UNKNOWN_ASSERTED_LAYOUT)
+  );
 }
 
 /** A record member delete: the store, and — for a caller that needs the
@@ -330,6 +359,70 @@ function recordDeletePlan(
       "SC1090",
       expr,
       `'delete' through keys of ${keyNames.length} literals (${keyNames.map((k) => `'${k}'`).join(", ")}; delete one constant key at a time, or switch over the key)`,
+    );
+  }
+  // A constant key the shape does not DECLARE lives in the record's kept
+  // source (the undeclared-keys table, record-sources.ts): Node's object
+  // still has that own property, so the delete removes it there, and every
+  // reflective surface — Object.keys, `in`, hasOwn, JSON, spread, inspect —
+  // already answers from that table. A key the table never held is already
+  // absent, so the delete answers true and changes nothing. A frozen record
+  // keeps the key (sloppy code answers false) or refuses the delete
+  // (strict code throws), which the runtime call decides from the delete's
+  // own mode.
+  if (
+    constantKey !== null &&
+    field === undefined &&
+    !shape?.indexValue &&
+    recordMayKeepSource(lowerer, obj.type)
+  ) {
+    const deleted: IrExpr = {
+      kind: "libCall",
+      fn: "record.sourceDelete",
+      args: [
+        obj,
+        { kind: "strLit", value: constantKey, type: STRING, loc },
+        { kind: "boolLit", value: isStrictCode(expr), type: BOOL, loc },
+      ],
+      type: BOOL,
+      loc,
+    };
+    lowerer.recordSourcesPossible = true;
+    // The key must live in this record's own kept source. A value that is a
+    // view or a copy of a record declaring the key holds it in that record's
+    // slot instead, which this delete cannot reach: refused once every
+    // conversion is known (refuseSourceFieldDeletes).
+    lowerer.recordSourceDeletes.push({ shapeId: obj.type.shapeId, key: constantKey, loc });
+    if (!withPresent) return { stmt: { kind: "exprStmt", expr: deleted, loc }, present: null };
+    // `delete` in value position: the call answers whether the property is
+    // gone, which IS the delete's value, so it is held once and the
+    // caller's `!present` reads it.
+    const slot = lowerer.declareHiddenLocal("%sourceDeleted", BOOL);
+    return {
+      stmt: { kind: "varDecl", localId: slot.id, init: deleted, loc },
+      present: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "varRef", localId: slot.id, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+    };
+  }
+  // A declared field with no absent state: the type says it is always
+  // there, so no delete can remove it without making the type lie.
+  if (field !== undefined) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of '${field.name}': the operand's type '${lowerer.fmt(obj.type)}' declares '${field.name}' required, so it cannot be absent (only an optional field, 'f?: T', has an absent state that Object.keys, 'in' and JSON.stringify follow; make '${field.name}' optional if the program must remove it)`,
+    );
+  }
+  if (constantKey !== null && !shape?.indexValue) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `'delete' of a key '${constantKey}' the record's layout does not declare (only an optional declared field, an index-signature key, or an undeclared key a checked record keeps from its source can be removed)`,
     );
   }
   lowerer.unsupported(

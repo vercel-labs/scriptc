@@ -22,8 +22,11 @@
  * - splits, gotos, saves and capture resets keep libregexp's exact
  *   backtracking order and capture undo semantics;
  * - an unanchored search starts the program only at positions whose byte can
- *   begin a match (memchr when exactly one byte can), and only at position 0
- *   for patterns anchored by a non-multiline `^`.
+ *   begin a match (memchr when exactly one byte can).
+ *
+ * A pattern that can only match at position 0 (every path meets a
+ * non-multiline `^` first) is searched with one attempt, here and in the
+ * interpreter: see scr_re_anchor_search.
  *
  * Patterns using anything else (lookaround, back references) are not
  * translated: they keep the
@@ -102,7 +105,7 @@ typedef struct ScrReNative {
   uint8_t *tabs; /* backing store for every table and literal run */
   int ncap;      /* capture pairs, including the whole match */
   int nslots;    /* 2 * ncap capture slots, then the loop registers */
-  bool sticky;
+  bool sticky;    /* one attempt at the start index: /y, or scr_re_anchor_search */
   bool first_any; /* the program may match without consuming a first byte */
   bool first_bol; /* some path is anchored at position 0 */
   int first_byte; /* the only byte that can start a match, or -1 */
@@ -202,6 +205,100 @@ static int rn_loop_jump(const uint8_t *body, int off) {
   return off + 10 + (int32_t)rn_u32(body + off + 6);
 }
 
+/* The search prefix of every non-sticky pattern: `split_goto_first +6; any;
+ * goto -11`, which tries the body at each position in turn. */
+enum { RN_SEARCH_PREFIX_LEN = 11 };
+static bool rn_search_prefix(const uint8_t *body, int blen) {
+  return blen >= RN_SEARCH_PREFIX_LEN && body[0] == SCR_REOP_split_goto_first &&
+         rn_u32(body + 1) == 6 && body[5] == SCR_REOP_any && body[6] == SCR_REOP_goto &&
+         (int32_t)rn_u32(body + 7) == -RN_SEARCH_PREFIX_LEN;
+}
+
+/* Whether the pattern can match only at subject position 0: every path
+ * through the body meets a non-multiline `^` before it consumes a character
+ * or reaches the match. The search prefix of such a pattern retries a body
+ * that fails at once at every other position, so a miss costs time linear
+ * in the subject for nothing.
+ *
+ * The walk follows the bytecode from the body's first instruction through
+ * every instruction that leaves the position where it is: saves and
+ * register writes, the other zero-width assertions, both sides of every
+ * split and loop, and the continuation of a lookaround (its body is not
+ * read: a `^` inside one proves nothing about a negative lookaround, and
+ * skipping it only loses an anchor). A path that reaches `line_start` is
+ * anchored. Anything else (an instruction that consumes, a back reference,
+ * the match, an unknown or malformed instruction) makes the pattern
+ * unanchored. Every instruction is visited once, and split targets go on
+ * `work`, not the C stack (see rn_first). */
+RN_ONCE static bool rn_anchored(const uint8_t *body, int blen, int start) {
+  const uint8_t *end = body + blen;
+  uint8_t *seen = calloc((size_t)blen + 1, 1);
+  int *work = malloc(((size_t)blen + 1) * sizeof *work);
+  bool anchored = seen != NULL && work != NULL && start < blen;
+  int top = 0;
+  if (anchored) {
+    seen[start] = 1;
+    work[top++] = start;
+  }
+  while (anchored && top > 0) {
+    int off = work[--top];
+    for (;;) {
+      int len = rn_ins_len(body + off, end);
+      if (len < 0) {
+        anchored = false;
+        break;
+      }
+      int next = off + len, target = -1;
+      bool reached = false;
+      switch (body[off]) {
+        case SCR_REOP_line_start:
+          reached = true;
+          break;
+        case SCR_REOP_save_start: case SCR_REOP_save_end: case SCR_REOP_save_reset:
+        case SCR_REOP_set_i32: case SCR_REOP_set_char_pos: case SCR_REOP_check_advance:
+        case SCR_REOP_line_start_m: case SCR_REOP_line_end: case SCR_REOP_line_end_m:
+        case SCR_REOP_word_boundary: case SCR_REOP_word_boundary_i:
+        case SCR_REOP_not_word_boundary: case SCR_REOP_not_word_boundary_i:
+          break;
+        case SCR_REOP_goto:
+        case SCR_REOP_lookahead:
+        case SCR_REOP_negative_lookahead:
+          next = rn_jump(body, off);
+          break;
+        case SCR_REOP_split_goto_first:
+        case SCR_REOP_split_next_first:
+          target = rn_jump(body, off);
+          break;
+        case SCR_REOP_loop:
+        case SCR_REOP_loop_split_goto_first:
+        case SCR_REOP_loop_split_next_first:
+        case SCR_REOP_loop_check_adv_split_goto_first:
+        case SCR_REOP_loop_check_adv_split_next_first:
+          target = rn_loop_jump(body, off);
+          break;
+        default:
+          anchored = false;
+          break;
+      }
+      if (reached || !anchored) break;
+      if (next < start || next >= blen || (target >= 0 && (target < start || target >= blen))) {
+        anchored = false;
+        break;
+      }
+      if (target >= 0 && !seen[target]) {
+        seen[target] = 1;
+        work[top++] = target;
+      }
+      if (seen[next]) break;
+      seen[next] = 1;
+      off = next;
+    }
+  }
+  free(seen);
+  free(work);
+  return anchored;
+}
+
 /* First-byte analysis from op `start`: which bytes can the first consumed
  * character be, whether a path is anchored at position 0, and whether a
  * path can reach the match without consuming. Zero-width assertions are
@@ -280,11 +377,8 @@ RN_ONCE static ScrReNative *scr_re_native_build(const uint8_t *bc) {
   const uint8_t *end = body + blen;
   int start = 0;
   if (!(flags & LRE_FLAG_STICKY)) {
-    /* split_goto_first +6; any; goto -11 — the search prefix. */
-    if (blen < 11 || body[0] != SCR_REOP_split_goto_first || rn_u32(body + 1) != 6 ||
-        body[5] != SCR_REOP_any || body[6] != SCR_REOP_goto || (int32_t)rn_u32(body + 7) != -11)
-      return NULL;
-    start = 11;
+    if (!rn_search_prefix(body, blen)) return NULL;
+    start = RN_SEARCH_PREFIX_LEN;
   }
 
   /* Decode instruction boundaries. */
@@ -607,6 +701,24 @@ fail_alloc:
   free(offs);
   free(map);
   return NULL;
+}
+
+/* Make the search of a pattern that can only match at position 0 one
+ * attempt at its start index, in both engines: the bytecode's search prefix
+ * becomes a jump to the body (the split's operand is the jump's), and the
+ * translated program (NULL when there is none) runs like a sticky one. The
+ * flags in the bytecode header stay as they are, so lastIndex handling does
+ * not change. Call it after scr_re_native_build, which reads the prefix.
+ * Returns whether the pattern is anchored. */
+RN_ONCE static bool scr_re_anchor_search(uint8_t *bc, ScrReNative *native) {
+  if (rn_u16(bc) & LRE_FLAG_STICKY) return false;
+  int blen = (int)rn_u32(bc + 4);
+  uint8_t *body = bc + SCR_RE_HEADER_LEN;
+  if (!rn_search_prefix(body, blen) || !rn_anchored(body, blen, RN_SEARCH_PREFIX_LEN))
+    return false;
+  body[0] = SCR_REOP_goto;
+  if (native) native->sticky = true;
+  return true;
 }
 
 /* ── execution ─────────────────────────────────────────────────────────── */

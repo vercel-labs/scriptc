@@ -110,6 +110,23 @@ void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgrad
                               ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_upgrade(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
 void scr_http1_ctx_settle(void *ctx);
+/* server.off(event, cb) / removeListener and server.listeners(event) for
+ * the HTTP request-side events: the LAST listener standing for the same
+ * function leaves the event's list (Node's removal order), and listeners
+ * answers a +1 closure array in registration order. `kind` selects the
+ * list (SCR_HTTP_OFF_*); a server with no HTTP/1 parser has none of these
+ * lists, so both are no-ops there (an empty array for listeners). */
+enum {
+  SCR_HTTP_OFF_REQUEST = 1,
+  SCR_HTTP_OFF_CHECK_CONTINUE = 2,
+  SCR_HTTP_OFF_CHECK_EXPECTATION = 3,
+  SCR_HTTP_OFF_UPGRADE = 4,
+  SCR_HTTP_OFF_CONNECT = 5,
+  SCR_HTTP_OFF_CLIENT_ERROR = 6,
+  SCR_HTTP_OFF_DROP_REQUEST = 7,
+};
+void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
 ScrStr *scr_http_req_url(ScrHttpReq *r);      /* +1 */
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
@@ -175,6 +192,8 @@ ScrDyn *scr_http_res_get_headers(ScrHttpRes *r); /* +1 */
 bool scr_http_res_has_header_named(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_remove_header(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+/* 'prefinish': inside end(), once the last bytes are handed to the socket. */
+void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
@@ -190,6 +209,10 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                  ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+/* server.on("dropRequest", (req, socket) => ...) — a request past
+ * maxRequestsPerSocket (HTTP/1.1 only). */
+void scr_http_server_on_drop_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
+                                     bool once);
 typedef void (*ScrHttpClientErrorFn)(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                      ScrHttpClientErrorFn fn, bool once);
@@ -233,6 +256,8 @@ void scr_http_res_flush_headers(ScrHttpRes *r);
 void scr_http_res_cork(ScrHttpRes *r);
 void scr_http_res_uncork(ScrHttpRes *r);
 double scr_http_res_writable_corked(ScrHttpRes *r);
+double scr_http_res_writable_high_water_mark(ScrHttpRes *r);
+bool scr_http_res_writable_object_mode(ScrHttpRes *r);
 bool scr_http_res_destroyed_flag(ScrHttpRes *r);
 void scr_http_res_set_req(ScrHttpRes *r, ScrHttpReq *req /*borrowed, nullable*/);
 void scr_http_res_set_timeout(ScrHttpRes *r, double ms, ScrClosure *cb /*moves, nullable*/);
@@ -301,6 +326,9 @@ void scr_http_client_destroy(ScrHttpClientReq *c);
 /* req.destroy(err): err (borrowed) becomes the request's 'error'. */
 void scr_http_client_destroy_error(ScrHttpClientReq *c, ScrError *err);
 void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see the server form */
+/* request.maxHeadersCount: Node's writable property, null until assigned. */
+ScrDyn *scr_http_client_max_headers_count_get(ScrHttpClientReq *c); /* +1 */
+void scr_http_client_max_headers_count_set(ScrHttpClientReq *c, const ScrDyn *value /*borrowed*/);
 /* http.request's `signal` option (borrowed), checked before the request
  * is built. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_signal_check(const ScrDyn *signal);
@@ -323,6 +351,19 @@ void scr_http_client_on_socket(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, Sc
 void scr_http_client_on_finish(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_abort(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_continue(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
+/* 'information': every 1xx response but 101. `fn` is scr_http_resp_thunk0
+ * for a zero-parameter listener or scr_http_information_thunk_dyn, which
+ * hands the listener Node's event object. */
+void scr_http_client_on_information(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once);
+void scr_http_information_thunk_dyn(ScrClosure *cb, ScrHttpReq *res /* +1 */);
+/* fetch(): frame the request body whatever the method, as undici does. */
+void scr_http_client_frame_any_method(ScrHttpClientReq *c);
+/* 'connect': the response to a CONNECT request, with the socket and the
+ * bytes read past the head (the scr_http_upgrade_thunk* adapters). */
+void scr_http_client_on_connect(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+/* http.setMaxIdleHTTPParsers(max): validates like Node; there is no parser
+ * pool to size. */
+void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);

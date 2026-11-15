@@ -1,0 +1,1 @@
+{ "name": "node-island-tested-values", "private": true, "type": "module", "scriptc": { "packages": { "probe-kit": "node" } } }

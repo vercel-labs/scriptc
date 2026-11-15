@@ -1,0 +1,1 @@
+{ "name": "node-island-subclass-own-fields", "private": true, "type": "module", "scriptc": { "packages": { "fixture-pkg": "node" } } }

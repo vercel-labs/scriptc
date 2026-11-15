@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/jsdoc-unchecked-field-project-entry.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'slot_def' has no initializer and is not definitely assigned in the constructor.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsdoc-unchecked-field-project-entry.js",
+    "start": 478,
+    "end": 486
+   }
+  }
+ ]
+}

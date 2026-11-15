@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8817-cjs-chained-array-export/tokens.cjs",
+  "<repo>/tests/corpus/8817-cjs-chained-array-export/fresh.cjs",
+  "<repo>/tests/corpus/8817-cjs-chained-array-export/main.cjs"
+ ],
+ "diags": []
+}

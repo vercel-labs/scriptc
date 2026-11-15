@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "5c116c54af743be1";
+export const IR_CODEC_LAYOUT = "9100c57293044915";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -24,8 +24,8 @@ export function decodeIrFunction(r: IrReader): IrFunction {
   return decIrFunction(r);
 }
 
-const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","threadSlotKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
-const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
+const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","weakKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
+const KEYS1: readonly string[] = ["name","sourceName","displayName","sourceText","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
 const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays"];
@@ -48,7 +48,7 @@ const KEYS20: readonly string[] = ["kind"];
 const KEYS21: readonly string[] = ["kind"];
 const KEYS22: readonly string[] = ["kind"];
 const KEYS23: readonly string[] = ["kind"];
-const KEYS24: readonly string[] = ["kind","params","ret","rest","restAbi","argumentsAll"];
+const KEYS24: readonly string[] = ["kind","params","ret","rest","restAbi","argumentsAll","argumentsPresence"];
 const KEYS25: readonly string[] = ["kind","async","yieldT","retT","nextT"];
 const KEYS26: readonly string[] = ["kind"];
 const KEYS27: readonly string[] = ["kind"];
@@ -115,7 +115,7 @@ const KEYS87: readonly string[] = ["kind","obj","shapeId","key","value","overflo
 const KEYS88: readonly string[] = ["kind","obj","shapeId","field","value","loc"];
 const KEYS89: readonly string[] = ["kind","localId","loc"];
 const KEYS90: readonly string[] = ["kind","value","awaited","loc"];
-const KEYS91: readonly string[] = ["kind","code","message","loc"];
+const KEYS91: readonly string[] = ["kind","code","message","guarded","loc"];
 const KEYS92: readonly string[] = ["kind","disc","cases","labels","loc"];
 const KEYS93: readonly string[] = ["kind","value","loc"];
 const KEYS94: readonly string[] = ["kind","tryBody","catchBody","catchLocalId","dropFinallyErrors","finallyBody","suppressFinallyErrors","loc"];
@@ -141,19 +141,19 @@ const KEYS113: readonly string[] = ["kind","value","type","loc"];
 const KEYS114: readonly string[] = ["kind","method","receiver","args","type","loc","invalidNaN"];
 const KEYS115: readonly string[] = ["kind","source","from","type","loc"];
 const KEYS116: readonly string[] = ["kind","callee","args","type","loc"];
-const KEYS117: readonly string[] = ["kind","callee","receiver","args","type","loc"];
+const KEYS117: readonly string[] = ["kind","callee","receiver","args","untyped","type","loc"];
 const KEYS118: readonly string[] = ["kind","value","className","type","loc"];
 const KEYS119: readonly string[] = ["kind","value","type","loc"];
 const KEYS120: readonly string[] = ["kind","value","test","className","negated","type","loc"];
 const KEYS121: readonly string[] = ["kind","value","type","loc"];
 const KEYS122: readonly string[] = ["kind","id","type","loc"];
 const KEYS123: readonly string[] = ["kind","className","type","loc","captures"];
-const KEYS124: readonly string[] = ["kind","fnName","captures","adapts","type","loc"];
+const KEYS124: readonly string[] = ["kind","fnName","captures","adapts","length","type","loc"];
 const KEYS125: readonly string[] = ["kind","numbers","strings","index","type","loc"];
 const KEYS126: readonly string[] = ["kind","value","type","loc"];
 const KEYS127: readonly string[] = ["kind","elems","type","loc"];
 const KEYS128: readonly string[] = ["kind","callee","receiver","calleeName","calleeNameValue","args","spreads","type","loc"];
-const KEYS129: readonly string[] = ["kind","value","preserveRefs","adopt","exact","partialView","inferredSite","origin","pathIndex","type","loc"];
+const KEYS129: readonly string[] = ["kind","value","preserveRefs","adopt","shared","exact","partialView","inferredSite","origin","pathIndex","type","loc"];
 const KEYS130: readonly string[] = ["kind","value","spelling","firstProp","type","loc"];
 const KEYS131: readonly string[] = ["kind","value","type","loc","liveRef","fnName","fnNameMainThreadOnly","fnLength"];
 const KEYS132: readonly string[] = ["kind","key","negated","value","type","loc"];
@@ -173,13 +173,13 @@ const KEYS145: readonly string[] = ["kind","value","className","type","loc"];
 const KEYS146: readonly string[] = ["kind","value","classValue","type","loc"];
 const KEYS147: readonly string[] = ["kind","name","args","type","loc"];
 const KEYS148: readonly string[] = ["kind","value","indent","circular","type","loc"];
-const KEYS149: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis"];
+const KEYS149: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis","namedKey"];
 const KEYS150: readonly string[] = ["kind","op","left","right","type","loc"];
 const KEYS151: readonly string[] = ["kind","method","receiver","args","type","loc"];
 const KEYS152: readonly string[] = ["kind","seed","type","loc"];
-const KEYS153: readonly string[] = ["kind","moduleId","type","loc"];
+const KEYS153: readonly string[] = ["kind","moduleId","type","loc","esmNamespace"];
 const KEYS154: readonly string[] = ["kind","className","args","type","loc"];
-const KEYS155: readonly string[] = ["kind","executor","type","loc"];
+const KEYS155: readonly string[] = ["kind","executor","resolves","type","loc"];
 const KEYS156: readonly string[] = ["kind","callee","args","type","loc"];
 const KEYS157: readonly string[] = ["kind","left","right","type","loc"];
 const KEYS158: readonly string[] = ["kind","value","spelling","type","loc"];
@@ -222,29 +222,31 @@ const KEYS194: readonly string[] = ["kind","unionId","tag","value","type","loc"]
 const KEYS195: readonly string[] = ["kind","unit","type","loc"];
 const KEYS196: readonly string[] = ["kind","value","type","loc"];
 const KEYS197: readonly string[] = ["kind","localId","type","loc"];
-const KEYS198: readonly string[] = ["kind","className","method","args","type","loc","targets"];
-const KEYS199: readonly string[] = ["kind","value","awaited","delegated","captureCompletion","type","loc"];
-const KEYS200: readonly string[] = ["member","helper"];
-const KEYS201: readonly string[] = ["name","type"];
-const KEYS202: readonly string[] = ["name","type","optional"];
-const KEYS203: readonly string[] = ["path","size","sha256","placeholder"];
-const KEYS204: readonly string[] = ["path","target"];
-const KEYS205: readonly string[] = ["diff","skipPrototype"];
-const KEYS206: readonly string[] = ["returnType"];
-const KEYS207: readonly string[] = ["test","body"];
-const KEYS208: readonly string[] = ["field","globalId"];
-const KEYS209: readonly string[] = ["field","wellKnown"];
-const KEYS210: readonly string[] = ["tag","values"];
-const KEYS211: readonly string[] = ["context"];
-const KEYS212: readonly string[] = ["callback"];
-const KEYS213: readonly string[] = ["callback"];
-const KEYS214: readonly string[] = ["arg","what"];
-const KEYS215: readonly string[] = ["key","value"];
-const KEYS216: readonly string[] = ["key","value"];
-const KEYS217: readonly string[] = ["name","value"];
-const KEYS218: readonly string[] = ["name","value","overflow"];
-const KEYS219: readonly string[] = ["id","params","returns","lifetime","invoke"];
-const KEYS220: readonly string[] = ["release","params","returns"];
+const KEYS198: readonly string[] = ["kind","value","adapter","type","loc"];
+const KEYS199: readonly string[] = ["kind","value","adapter","type","loc"];
+const KEYS200: readonly string[] = ["kind","className","method","args","type","loc","targets"];
+const KEYS201: readonly string[] = ["kind","value","awaited","delegated","captureCompletion","type","loc"];
+const KEYS202: readonly string[] = ["member","helper"];
+const KEYS203: readonly string[] = ["name","type"];
+const KEYS204: readonly string[] = ["name","type","optional"];
+const KEYS205: readonly string[] = ["path","size","sha256","placeholder","generated"];
+const KEYS206: readonly string[] = ["path","target"];
+const KEYS207: readonly string[] = ["diff","skipPrototype"];
+const KEYS208: readonly string[] = ["returnType"];
+const KEYS209: readonly string[] = ["test","body"];
+const KEYS210: readonly string[] = ["field","globalId"];
+const KEYS211: readonly string[] = ["field","wellKnown"];
+const KEYS212: readonly string[] = ["tag","values"];
+const KEYS213: readonly string[] = ["context"];
+const KEYS214: readonly string[] = ["callback"];
+const KEYS215: readonly string[] = ["callback"];
+const KEYS216: readonly string[] = ["arg","what"];
+const KEYS217: readonly string[] = ["key","value"];
+const KEYS218: readonly string[] = ["key","value"];
+const KEYS219: readonly string[] = ["name","value"];
+const KEYS220: readonly string[] = ["name","value","overflow"];
+const KEYS221: readonly string[] = ["id","params","returns","lifetime","invoke"];
+const KEYS222: readonly string[] = ["release","params","returns"];
 
 function encIrModule(w: IrWriter, v: IrModule): void {
   w.keys(Object.keys(v), KEYS0);
@@ -307,10 +309,20 @@ function encIrModule(w: IrWriter, v: IrModule): void {
     w.byte(1);
     encT9(w, v.recordLinks);
   }
+  if (v.recordSourcesFolded === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    encT8(w, v.recordSourcesFolded);
+  }
   if (v.threadSlotKeys === undefined) w.byte(0);
   else {
     w.byte(1);
     encT8(w, v.threadSlotKeys);
+  }
+  if (v.weakKeys === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    encT8(w, v.weakKeys);
   }
   if (v.bytesHeadersMutable === undefined) w.byte(0);
   else {
@@ -394,21 +406,23 @@ function decIrModule(r: IrReader): IrModule {
   const f12 = r.tag(2, "IrModule.lifetimeRegions") === 0 ? undefined : (r.bool() as NonNullable<IrModule["lifetimeRegions"]>);
   const f13 = r.tag(2, "IrModule.foreignElementKeys") === 0 ? undefined : decT8(r);
   const f14 = r.tag(2, "IrModule.recordLinks") === 0 ? undefined : decT9(r);
-  const f15 = r.tag(2, "IrModule.threadSlotKeys") === 0 ? undefined : decT8(r);
-  const f16 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
-  const f17 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
-  const f18 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
-  const f19 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
-  const f20 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
-  const f21 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
-  const f22 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
-  const f23 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
-  const f24 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
-  const f25 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
-  const f26 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
-  const f27 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
-  const f28 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
-  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { threadSlotKeys: f15 } : {}), ...(f16 !== undefined ? { bytesHeadersMutable: f16 } : {}), ...(f17 !== undefined ? { freezableArrays: f17 } : {}), ...(f18 !== undefined ? { sloppyDynWrites: f18 } : {}), ...(f19 !== undefined ? { untypedIntegrity: f19 } : {}), ...(f20 !== undefined ? { commonJsEntry: f20 } : {}), ...(f21 !== undefined ? { nodeIsland: f21 } : {}), ...(f22 !== undefined ? { ffiImports: f22 } : {}), ...(f23 !== undefined ? { lib: f23 } : {}), ...(f24 !== undefined ? { contracts: f24 } : {}), ...(f25 !== undefined ? { int32ArrayCandidates: f25 } : {}), ...(f26 !== undefined ? { wasmModules: f26 } : {}), ...(f27 !== undefined ? { wasmUntranslated: f27 } : {}), ...(f28 !== undefined ? { wasmCustomSections: f28 } : {}) };
+  const f15 = r.tag(2, "IrModule.recordSourcesFolded") === 0 ? undefined : decT8(r);
+  const f16 = r.tag(2, "IrModule.threadSlotKeys") === 0 ? undefined : decT8(r);
+  const f17 = r.tag(2, "IrModule.weakKeys") === 0 ? undefined : decT8(r);
+  const f18 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
+  const f19 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
+  const f20 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
+  const f21 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
+  const f22 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
+  const f23 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
+  const f24 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
+  const f25 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
+  const f26 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
+  const f27 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
+  const f28 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
+  const f29 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
+  const f30 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
+  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { recordSourcesFolded: f15 } : {}), ...(f16 !== undefined ? { threadSlotKeys: f16 } : {}), ...(f17 !== undefined ? { weakKeys: f17 } : {}), ...(f18 !== undefined ? { bytesHeadersMutable: f18 } : {}), ...(f19 !== undefined ? { freezableArrays: f19 } : {}), ...(f20 !== undefined ? { sloppyDynWrites: f20 } : {}), ...(f21 !== undefined ? { untypedIntegrity: f21 } : {}), ...(f22 !== undefined ? { commonJsEntry: f22 } : {}), ...(f23 !== undefined ? { nodeIsland: f23 } : {}), ...(f24 !== undefined ? { ffiImports: f24 } : {}), ...(f25 !== undefined ? { lib: f25 } : {}), ...(f26 !== undefined ? { contracts: f26 } : {}), ...(f27 !== undefined ? { int32ArrayCandidates: f27 } : {}), ...(f28 !== undefined ? { wasmModules: f28 } : {}), ...(f29 !== undefined ? { wasmUntranslated: f29 } : {}), ...(f30 !== undefined ? { wasmCustomSections: f30 } : {}) };
   return o;
 }
 
@@ -424,6 +438,11 @@ function encIrFunction(w: IrWriter, v: IrFunction): void {
   else {
     w.byte(1);
     w.str(v.displayName);
+  }
+  if (v.sourceText === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.sourceText);
   }
   if (v.ownsPrototype === undefined) w.byte(0);
   else {
@@ -449,6 +468,11 @@ function encIrFunction(w: IrWriter, v: IrFunction): void {
   else {
     w.byte(1);
     w.str(v.jsEntry);
+  }
+  if (v.boxesSource === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.bool(v.boxesSource);
   }
   if (v.tier === undefined) w.byte(0);
   else {
@@ -495,24 +519,26 @@ function decIrFunction(r: IrReader): IrFunction {
   const f0 = r.str();
   const f1 = r.tag(2, "IrFunction.sourceName") === 0 ? undefined : r.str();
   const f2 = r.tag(2, "IrFunction.displayName") === 0 ? undefined : r.str();
-  const f3 = r.tag(2, "IrFunction.ownsPrototype") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["ownsPrototype"]>);
-  const f4 = decT16(r);
-  const f5 = decIrType(r);
-  const f6 = decT18(r);
-  const f7 = r.tag(2, "IrFunction.captures") === 0 ? undefined : decT16(r);
-  const f8 = r.tag(2, "IrFunction.classCaptures") === 0 ? undefined : decT19(r);
-  const f9 = decT20(r);
-  const f10 = decSrcLoc(r);
-  const f11 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
-  const f12 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
-  const f13 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
-  const f14 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
-  const f15 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
-  const f16 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
-  const f17 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
-  const f18 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
-  const f19 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
-  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { ownsPrototype: f3 } : {}), params: f4, returnType: f5, locals: f6, ...(f7 !== undefined ? { captures: f7 } : {}), ...(f8 !== undefined ? { classCaptures: f8 } : {}), body: f9, loc: f10, ...(f11 !== undefined ? { jsEntry: f11 } : {}), ...(f12 !== undefined ? { tier: f12 } : {}), ...(f13 !== undefined ? { speculativeDispatch: f13 } : {}), ...(f14 !== undefined ? { fastRead: f14 } : {}), ...(f15 !== undefined ? { plainLoops: f15 } : {}), ...(f16 !== undefined ? { async: f16 } : {}), ...(f17 !== undefined ? { generator: f17 } : {}), ...(f18 !== undefined ? { asyncCacheGlobal: f18 } : {}), ...(f19 !== undefined ? { asyncCycleCacheGlobal: f19 } : {}) };
+  const f3 = r.tag(2, "IrFunction.sourceText") === 0 ? undefined : r.str();
+  const f4 = r.tag(2, "IrFunction.ownsPrototype") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["ownsPrototype"]>);
+  const f5 = decT16(r);
+  const f6 = decIrType(r);
+  const f7 = decT18(r);
+  const f8 = r.tag(2, "IrFunction.captures") === 0 ? undefined : decT16(r);
+  const f9 = r.tag(2, "IrFunction.classCaptures") === 0 ? undefined : decT19(r);
+  const f10 = decT20(r);
+  const f11 = decSrcLoc(r);
+  const f12 = r.tag(2, "IrFunction.jsEntry") === 0 ? undefined : r.str();
+  const f13 = r.tag(2, "IrFunction.boxesSource") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["boxesSource"]>);
+  const f14 = r.tag(2, "IrFunction.tier") === 0 ? undefined : (r.str() as NonNullable<IrFunction["tier"]>);
+  const f15 = r.tag(2, "IrFunction.speculativeDispatch") === 0 ? undefined : r.bool();
+  const f16 = r.tag(2, "IrFunction.fastRead") === 0 ? undefined : (r.str() as NonNullable<IrFunction["fastRead"]>);
+  const f17 = r.tag(2, "IrFunction.plainLoops") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["plainLoops"]>);
+  const f18 = r.tag(2, "IrFunction.async") === 0 ? undefined : (r.bool() as NonNullable<IrFunction["async"]>);
+  const f19 = r.tag(2, "IrFunction.generator") === 0 ? undefined : decT22(r);
+  const f20 = r.tag(2, "IrFunction.asyncCacheGlobal") === 0 ? undefined : r.str();
+  const f21 = r.tag(2, "IrFunction.asyncCycleCacheGlobal") === 0 ? undefined : r.str();
+  const o: IrFunction = { name: f0, ...(f1 !== undefined ? { sourceName: f1 } : {}), ...(f2 !== undefined ? { displayName: f2 } : {}), ...(f3 !== undefined ? { sourceText: f3 } : {}), ...(f4 !== undefined ? { ownsPrototype: f4 } : {}), params: f5, returnType: f6, locals: f7, ...(f8 !== undefined ? { captures: f8 } : {}), ...(f9 !== undefined ? { classCaptures: f9 } : {}), body: f10, loc: f11, ...(f12 !== undefined ? { jsEntry: f12 } : {}), ...(f13 !== undefined ? { boxesSource: f13 } : {}), ...(f14 !== undefined ? { tier: f14 } : {}), ...(f15 !== undefined ? { speculativeDispatch: f15 } : {}), ...(f16 !== undefined ? { fastRead: f16 } : {}), ...(f17 !== undefined ? { plainLoops: f17 } : {}), ...(f18 !== undefined ? { async: f18 } : {}), ...(f19 !== undefined ? { generator: f19 } : {}), ...(f20 !== undefined ? { asyncCacheGlobal: f20 } : {}), ...(f21 !== undefined ? { asyncCycleCacheGlobal: f21 } : {}) };
   return o;
 }
 
@@ -935,6 +961,11 @@ function encIrType(w: IrWriter, v: IrType): void {
         w.byte(1);
         w.bool(v.argumentsAll);
       }
+      if (v.argumentsPresence === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.argumentsPresence);
+      }
       return;
     }
     case "generator": {
@@ -1189,7 +1220,8 @@ function decIrType(r: IrReader): IrType {
       const f2 = r.tag(2, "IrFunction.returnType<func>.rest") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["rest"]>);
       const f3 = r.tag(2, "IrFunction.returnType<func>.restAbi") === 0 ? undefined : (r.str() as NonNullable<Extract<IrType, { kind: "func" }>["restAbi"]>);
       const f4 = r.tag(2, "IrFunction.returnType<func>.argumentsAll") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["argumentsAll"]>);
-      const o: Extract<IrType, { kind: "func" }> = { kind: "func", params: f0, ret: f1, ...(f2 !== undefined ? { rest: f2 } : {}), ...(f3 !== undefined ? { restAbi: f3 } : {}), ...(f4 !== undefined ? { argumentsAll: f4 } : {}) };
+      const f5 = r.tag(2, "IrFunction.returnType<func>.argumentsPresence") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrType, { kind: "func" }>["argumentsPresence"]>);
+      const o: Extract<IrType, { kind: "func" }> = { kind: "func", params: f0, ret: f1, ...(f2 !== undefined ? { rest: f2 } : {}), ...(f3 !== undefined ? { restAbi: f3 } : {}), ...(f4 !== undefined ? { argumentsAll: f4 } : {}), ...(f5 !== undefined ? { argumentsPresence: f5 } : {}) };
       return o;
     }
     case 20: {
@@ -2206,6 +2238,11 @@ function encIrStmt(w: IrWriter, v: IrStmt): void {
       w.keys(Object.keys(v), KEYS91);
       w.str(v.code);
       w.str(v.message);
+      if (v.guarded === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.guarded);
+      }
       encSrcLoc(w, v.loc);
       return;
     }
@@ -2458,8 +2495,9 @@ function decIrStmt(r: IrReader): IrStmt {
     case 21: {
       const f0 = r.str();
       const f1 = r.str();
-      const f2 = decSrcLoc(r);
-      const o: Extract<IrStmt, { kind: "runtimeFence" }> = { kind: "runtimeFence", code: f0, message: f1, loc: f2 };
+      const f2 = r.tag(2, "IrFunction.body[]<runtimeFence>.guarded") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrStmt, { kind: "runtimeFence" }>["guarded"]>);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrStmt, { kind: "runtimeFence" }> = { kind: "runtimeFence", code: f0, message: f1, ...(f2 !== undefined ? { guarded: f2 } : {}), loc: f3 };
       return o;
     }
     case 22: {
@@ -2885,6 +2923,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         encIrExpr(w, v.receiver);
       }
       encT68(w, v.args);
+      if (v.untyped === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.untyped);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -2964,6 +3007,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.adapts);
       }
+      if (v.length === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.num(v.length);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -3040,6 +3088,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       else {
         w.byte(1);
         w.bool(v.adopt);
+      }
+      if (v.shared === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.shared);
       }
       if (v.exact === undefined) w.byte(0);
       else {
@@ -3355,6 +3408,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.bindsThis);
       }
+      if (v.namedKey === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.namedKey);
+      }
       return;
     }
     case "logical": {
@@ -3395,6 +3453,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       w.str(v.moduleId);
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
+      if (v.esmNamespace === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.esmNamespace);
+      }
       return;
     }
     case "new": {
@@ -3410,6 +3473,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       w.length(52);
       w.keys(Object.keys(v), KEYS155);
       encIrExpr(w, v.executor);
+      if (v.resolves === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.resolves);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -3842,9 +3910,35 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       encSrcLoc(w, v.loc);
       return;
     }
-    case "virtualCall": {
+    case "viewOf": {
       w.length(95);
       w.keys(Object.keys(v), KEYS198);
+      encIrExpr(w, v.value);
+      if (v.adapter === null) w.byte(0);
+      else {
+        w.byte(1);
+        w.str(v.adapter);
+      }
+      encIrType(w, v.type);
+      encSrcLoc(w, v.loc);
+      return;
+    }
+    case "viewSource": {
+      w.length(96);
+      w.keys(Object.keys(v), KEYS199);
+      encIrExpr(w, v.value);
+      if (v.adapter === null) w.byte(0);
+      else {
+        w.byte(1);
+        w.str(v.adapter);
+      }
+      encIrType(w, v.type);
+      encSrcLoc(w, v.loc);
+      return;
+    }
+    case "virtualCall": {
+      w.length(97);
+      w.keys(Object.keys(v), KEYS200);
       w.str(v.className);
       w.str(v.method);
       encT68(w, v.args);
@@ -3858,8 +3952,8 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
       return;
     }
     case "yieldExpr": {
-      w.length(96);
-      w.keys(Object.keys(v), KEYS199);
+      w.length(98);
+      w.keys(Object.keys(v), KEYS201);
       if (v.value === null) w.byte(0);
       else {
         w.byte(1);
@@ -4008,9 +4102,10 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = decIrExpr(r);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<callValue>.receiver") === 0 ? undefined : decIrExpr(r);
       const f2 = decT68(r);
-      const f3 = decIrType(r);
-      const f4 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "callValue" }> = { kind: "callValue", callee: f0, ...(f1 !== undefined ? { receiver: f1 } : {}), args: f2, type: f3, loc: f4 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<callValue>.untyped") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "callValue" }>["untyped"]>);
+      const f4 = decIrType(r);
+      const f5 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "callValue" }> = { kind: "callValue", callee: f0, ...(f1 !== undefined ? { receiver: f1 } : {}), args: f2, ...(f3 !== undefined ? { untyped: f3 } : {}), type: f4, loc: f5 };
       return o;
     }
     case 15: {
@@ -4064,9 +4159,10 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = r.str();
       const f1 = decT8(r);
       const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<closure>.adapts") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "closure" }>["adapts"]>);
-      const f3 = decIrType(r);
-      const f4 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "closure" }> = { kind: "closure", fnName: f0, captures: f1, ...(f2 !== undefined ? { adapts: f2 } : {}), type: f3, loc: f4 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<closure>.length") === 0 ? undefined : r.num();
+      const f4 = decIrType(r);
+      const f5 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "closure" }> = { kind: "closure", fnName: f0, captures: f1, ...(f2 !== undefined ? { adapts: f2 } : {}), ...(f3 !== undefined ? { length: f3 } : {}), type: f4, loc: f5 };
       return o;
     }
     case 22: {
@@ -4108,14 +4204,15 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = decIrExpr(r);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.preserveRefs") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>);
       const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.adopt") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>);
-      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.exact") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>);
-      const f4 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.partialView") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>);
-      const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.inferredSite") === 0 ? undefined : r.str();
-      const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.origin") === 0 ? undefined : r.num();
-      const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathIndex") === 0 ? undefined : r.num();
-      const f8 = decIrType(r);
-      const f9 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { exact: f3 } : {}), ...(f4 !== undefined ? { partialView: f4 } : {}), ...(f5 !== undefined ? { inferredSite: f5 } : {}), ...(f6 !== undefined ? { origin: f6 } : {}), ...(f7 !== undefined ? { pathIndex: f7 } : {}), type: f8, loc: f9 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.shared") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["shared"]>);
+      const f4 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.exact") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>);
+      const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.partialView") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>);
+      const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.inferredSite") === 0 ? undefined : r.str();
+      const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.origin") === 0 ? undefined : r.num();
+      const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathIndex") === 0 ? undefined : r.num();
+      const f9 = decIrType(r);
+      const f10 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { shared: f3 } : {}), ...(f4 !== undefined ? { exact: f4 } : {}), ...(f5 !== undefined ? { partialView: f5 } : {}), ...(f6 !== undefined ? { inferredSite: f6 } : {}), ...(f7 !== undefined ? { origin: f7 } : {}), ...(f8 !== undefined ? { pathIndex: f8 } : {}), type: f9, loc: f10 };
       return o;
     }
     case 27: {
@@ -4298,7 +4395,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.realTimer") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["realTimer"]>);
       const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.assertOptions") === 0 ? undefined : decT72(r);
       const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.bindsThis") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["bindsThis"]>);
-      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}) };
+      const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.namedKey") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["namedKey"]>);
+      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}), ...(f8 !== undefined ? { namedKey: f8 } : {}) };
       return o;
     }
     case 47: {
@@ -4330,7 +4428,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = r.str();
       const f1 = decIrType(r);
       const f2 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "moduleNsRef" }> = { kind: "moduleNsRef", moduleId: f0, type: f1, loc: f2 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<moduleNsRef>.esmNamespace") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "moduleNsRef" }>["esmNamespace"]>);
+      const o: Extract<IrExpr, { kind: "moduleNsRef" }> = { kind: "moduleNsRef", moduleId: f0, type: f1, loc: f2, ...(f3 !== undefined ? { esmNamespace: f3 } : {}) };
       return o;
     }
     case 51: {
@@ -4343,9 +4442,10 @@ function decIrExpr(r: IrReader): IrExpr {
     }
     case 52: {
       const f0 = decIrExpr(r);
-      const f1 = decIrType(r);
-      const f2 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "newPromise" }> = { kind: "newPromise", executor: f0, type: f1, loc: f2 };
+      const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<newPromise>.resolves") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "newPromise" }>["resolves"]>);
+      const f2 = decIrType(r);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "newPromise" }> = { kind: "newPromise", executor: f0, ...(f1 !== undefined ? { resolves: f1 } : {}), type: f2, loc: f3 };
       return o;
     }
     case 53: {
@@ -4703,6 +4803,22 @@ function decIrExpr(r: IrReader): IrExpr {
       return o;
     }
     case 95: {
+      const f0 = decIrExpr(r);
+      const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<viewOf>.adapter") === 0 ? null : r.str();
+      const f2 = decIrType(r);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "viewOf" }> = { kind: "viewOf", value: f0, adapter: f1, type: f2, loc: f3 };
+      return o;
+    }
+    case 96: {
+      const f0 = decIrExpr(r);
+      const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<viewSource>.adapter") === 0 ? null : r.str();
+      const f2 = decIrType(r);
+      const f3 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "viewSource" }> = { kind: "viewSource", value: f0, adapter: f1, type: f2, loc: f3 };
+      return o;
+    }
+    case 97: {
       const f0 = r.str();
       const f1 = r.str();
       const f2 = decT68(r);
@@ -4712,7 +4828,7 @@ function decIrExpr(r: IrReader): IrExpr {
       const o: Extract<IrExpr, { kind: "virtualCall" }> = { kind: "virtualCall", className: f0, method: f1, args: f2, type: f3, loc: f4, ...(f5 !== undefined ? { targets: f5 } : {}) };
       return o;
     }
-    case 96: {
+    case 98: {
       const f0 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<yieldExpr>.value") === 0 ? null : decIrExpr(r);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<yieldExpr>.awaited") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["awaited"]>);
       const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<yieldExpr>.delegated") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["delegated"]>);
@@ -4740,7 +4856,7 @@ function decT57(r: IrReader): NonNullable<Extract<IrStmt, { kind: "switch" }>["c
 }
 
 function encT58(w: IrWriter, v: NonNullable<NonNullable<IrClassDef["viewAccessors"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS200);
+  w.keys(Object.keys(v), KEYS202);
   w.str(v.member);
   w.str(v.helper);
 }
@@ -4775,7 +4891,7 @@ function decT59(r: IrReader): NonNullable<NonNullable<IrClassDef["symbolFields"]
 }
 
 function encT60(w: IrWriter, v: NonNullable<NonNullable<IrClassDef["fields"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS201);
+  w.keys(Object.keys(v), KEYS203);
   w.str(v.name);
   encIrType(w, v.type);
 }
@@ -4787,7 +4903,7 @@ function decT60(r: IrReader): NonNullable<NonNullable<IrClassDef["fields"]>[numb
 }
 
 function encIrRecordField(w: IrWriter, v: IrRecordField): void {
-  w.keys(Object.keys(v), KEYS202);
+  w.keys(Object.keys(v), KEYS204);
   w.str(v.name);
   encIrType(w, v.type);
   if (v.optional === undefined) w.byte(0);
@@ -4818,7 +4934,7 @@ function decT62(r: IrReader): NonNullable<IrUnionDiscriminant["cases"]> {
 }
 
 function encT63(w: IrWriter, v: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS203);
+  w.keys(Object.keys(v), KEYS205);
   w.str(v.path);
   w.num(v.size);
   w.str(v.sha256);
@@ -4827,18 +4943,24 @@ function encT63(w: IrWriter, v: NonNullable<NonNullable<IrNodeIslandModules["fil
     w.byte(1);
     w.bool(v.placeholder);
   }
+  if (v.generated === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.generated);
+  }
 }
 function decT63(r: IrReader): NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> {
   const f0 = r.str();
   const f1 = r.num();
   const f2 = r.str();
   const f3 = r.tag(2, "IrModule.nodeIsland.modules.files[].placeholder") === 0 ? undefined : (r.bool() as NonNullable<NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]>["placeholder"]>);
-  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}) };
+  const f4 = r.tag(2, "IrModule.nodeIsland.modules.files[].generated") === 0 ? undefined : r.str();
+  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}), ...(f4 !== undefined ? { generated: f4 } : {}) };
   return o;
 }
 
 function encT64(w: IrWriter, v: NonNullable<NonNullable<IrNodeIslandModules["links"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS204);
+  w.keys(Object.keys(v), KEYS206);
   w.str(v.path);
   w.str(v.target);
 }
@@ -4965,7 +5087,7 @@ function decT71(r: IrReader): NonNullable<Extract<IrExpr, { kind: "dynObjLit" }>
 }
 
 function encT72(w: IrWriter, v: NonNullable<Extract<IrExpr, { kind: "libCall" }>["assertOptions"]>): void {
-  w.keys(Object.keys(v), KEYS205);
+  w.keys(Object.keys(v), KEYS207);
   if (v.diff === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -5024,7 +5146,7 @@ function decT75(r: IrReader): NonNullable<Extract<IrExpr, { kind: "recordLit" }>
 }
 
 function encT76(w: IrWriter, v: NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["captureCompletion"]>): void {
-  w.keys(Object.keys(v), KEYS206);
+  w.keys(Object.keys(v), KEYS208);
   encIrType(w, v.returnType);
 }
 function decT76(r: IrReader): NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["captureCompletion"]> {
@@ -5034,7 +5156,7 @@ function decT76(r: IrReader): NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>
 }
 
 function encT77(w: IrWriter, v: NonNullable<NonNullable<Extract<IrStmt, { kind: "switch" }>["cases"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS207);
+  w.keys(Object.keys(v), KEYS209);
   if (v.test === null) w.byte(0);
   else {
     w.byte(1);
@@ -5050,7 +5172,7 @@ function decT77(r: IrReader): NonNullable<NonNullable<Extract<IrStmt, { kind: "s
 }
 
 function encT78(w: IrWriter, v: Extract<NonNullable<NonNullable<IrClassDef["symbolFields"]>[number]>, { globalId: unknown }>): void {
-  w.keys(Object.keys(v), KEYS208);
+  w.keys(Object.keys(v), KEYS210);
   w.str(v.field);
   w.str(v.globalId);
 }
@@ -5062,7 +5184,7 @@ function decT78(r: IrReader): Extract<NonNullable<NonNullable<IrClassDef["symbol
 }
 
 function encT79(w: IrWriter, v: Extract<NonNullable<NonNullable<IrClassDef["symbolFields"]>[number]>, { wellKnown: unknown }>): void {
-  w.keys(Object.keys(v), KEYS209);
+  w.keys(Object.keys(v), KEYS211);
   w.str(v.field);
   w.str(v.wellKnown);
 }
@@ -5074,7 +5196,7 @@ function decT79(r: IrReader): Extract<NonNullable<NonNullable<IrClassDef["symbol
 }
 
 function encT80(w: IrWriter, v: NonNullable<NonNullable<IrUnionDiscriminant["cases"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS210);
+  w.keys(Object.keys(v), KEYS212);
   w.num(v.tag);
   encT89(w, v.values);
 }
@@ -5086,7 +5208,7 @@ function decT80(r: IrReader): NonNullable<NonNullable<IrUnionDiscriminant["cases
 }
 
 function encIrFfiContextParam(w: IrWriter, v: IrFfiContextParam): void {
-  w.keys(Object.keys(v), KEYS211);
+  w.keys(Object.keys(v), KEYS213);
   w.str(v.context);
 }
 function decIrFfiContextParam(r: IrReader): IrFfiContextParam {
@@ -5096,7 +5218,7 @@ function decIrFfiContextParam(r: IrReader): IrFfiContextParam {
 }
 
 function encIrFfiCallbackParam(w: IrWriter, v: IrFfiCallbackParam): void {
-  w.keys(Object.keys(v), KEYS212);
+  w.keys(Object.keys(v), KEYS214);
   encT90(w, v.callback);
 }
 function decIrFfiCallbackParam(r: IrReader): IrFfiCallbackParam {
@@ -5106,7 +5228,7 @@ function decIrFfiCallbackParam(r: IrReader): IrFfiCallbackParam {
 }
 
 function encIrFfiReleaseParam(w: IrWriter, v: IrFfiReleaseParam): void {
-  w.keys(Object.keys(v), KEYS213);
+  w.keys(Object.keys(v), KEYS215);
   encT91(w, v.callback);
 }
 function decIrFfiReleaseParam(r: IrReader): IrFfiReleaseParam {
@@ -5116,7 +5238,7 @@ function decIrFfiReleaseParam(r: IrReader): IrFfiReleaseParam {
 }
 
 function encT84(w: IrWriter, v: NonNullable<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS214);
+  w.keys(Object.keys(v), KEYS216);
   w.num(v.arg);
   w.str(v.what);
 }
@@ -5128,7 +5250,7 @@ function decT84(r: IrReader): NonNullable<NonNullable<Extract<IrExpr, { kind: "d
 }
 
 function encT85(w: IrWriter, v: NonNullable<NonNullable<Extract<IrExpr, { kind: "dynObjLit" }>["fields"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS215);
+  w.keys(Object.keys(v), KEYS217);
   encIrExpr(w, v.key);
   encIrExpr(w, v.value);
 }
@@ -5140,7 +5262,7 @@ function decT85(r: IrReader): NonNullable<NonNullable<Extract<IrExpr, { kind: "d
 }
 
 function encT86(w: IrWriter, v: NonNullable<NonNullable<Extract<IrExpr, { kind: "mapNew" }>["seed"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS216);
+  w.keys(Object.keys(v), KEYS218);
   encIrExpr(w, v.key);
   encIrExpr(w, v.value);
 }
@@ -5152,7 +5274,7 @@ function decT86(r: IrReader): NonNullable<NonNullable<Extract<IrExpr, { kind: "m
 }
 
 function encT87(w: IrWriter, v: NonNullable<NonNullable<Extract<IrExpr, { kind: "recordClone" }>["overrides"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS217);
+  w.keys(Object.keys(v), KEYS219);
   w.str(v.name);
   encIrExpr(w, v.value);
 }
@@ -5164,7 +5286,7 @@ function decT87(r: IrReader): NonNullable<NonNullable<Extract<IrExpr, { kind: "r
 }
 
 function encT88(w: IrWriter, v: NonNullable<NonNullable<Extract<IrExpr, { kind: "recordLit" }>["fields"]>[number]>): void {
-  w.keys(Object.keys(v), KEYS218);
+  w.keys(Object.keys(v), KEYS220);
   w.str(v.name);
   encIrExpr(w, v.value);
   if (v.overflow === undefined) w.byte(0);
@@ -5195,7 +5317,7 @@ function decT89(r: IrReader): NonNullable<NonNullable<NonNullable<IrUnionDiscrim
 }
 
 function encT90(w: IrWriter, v: NonNullable<IrFfiCallbackParam["callback"]>): void {
-  w.keys(Object.keys(v), KEYS219);
+  w.keys(Object.keys(v), KEYS221);
   w.str(v.id);
   encT93(w, v.params);
   w.str(v.returns);
@@ -5213,7 +5335,7 @@ function decT90(r: IrReader): NonNullable<IrFfiCallbackParam["callback"]> {
 }
 
 function encT91(w: IrWriter, v: NonNullable<IrFfiReleaseParam["callback"]>): void {
-  w.keys(Object.keys(v), KEYS220);
+  w.keys(Object.keys(v), KEYS222);
   w.str(v.release);
   encT93(w, v.params);
   w.str(v.returns);

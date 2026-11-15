@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arguments-object-type-tests-typed.ts"
+ ],
+ "diags": []
+}

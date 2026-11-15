@@ -132,6 +132,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "js-array-constructor.js",
     "array-numeric-own-keys.ts",
     "synchronous-callback-lifetimes.ts",
+    "string-union-collection-keys.ts",
     "error-inherited-message.mjs",
     "js-class-shadowed-methods.js",
     "js-default-listener-arguments.cjs",

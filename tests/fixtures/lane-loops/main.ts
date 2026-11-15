@@ -681,3 +681,466 @@ for (const n of storeLengths) {
     console.log("rampk32", n, j, rm.join(" "));
   }
 }
+
+/* Outer loops: a `for` whose body declares the row's own state, runs one
+ * inner `while` to that row's own exit, and counts the rows whose inner loop
+ * ran to its limit. The lanes take whole rows at a time, each lane's inner
+ * loop exiting on its own with the false iterations dropped by a mask, so a
+ * lane that takes one step too many or too few changes a printed count. The
+ * rows below cover the value-object shape the plan inlines (numeric fields
+ * only, methods that build a new instance), carried numbers assigned in an
+ * order that matters, a three-field instance, and the tests the entry guard
+ * makes on the counter's start, on the bound and on the accumulator. */
+
+class Pair {
+  re: number;
+  im: number;
+  constructor(re: number, im: number) {
+    this.re = re;
+    this.im = im;
+  }
+  plus(o: Pair): Pair {
+    return new Pair(this.re + o.re, this.im + o.im);
+  }
+  times(o: Pair): Pair {
+    return new Pair(this.re * o.re - this.im * o.im, this.re * o.im + this.im * o.re);
+  }
+  norm(): number {
+    return this.re * this.re + this.im * this.im;
+  }
+}
+
+class Other {
+  v: number;
+  constructor(v: number) {
+    this.v = v;
+  }
+}
+
+// A three-field instance: every field is its own vector slot.
+class Triple {
+  a: number;
+  b: number;
+  c: number;
+  constructor(a: number, b: number, c: number) {
+    this.a = a;
+    this.b = b;
+    this.c = c;
+  }
+  next(d: Triple): Triple {
+    return new Triple(this.a + d.a, this.b * 0.5 + d.b, this.c - d.c);
+  }
+}
+
+// The value-objects shape: one row per outer iteration, the row's constant
+// built before the inner loop, a two-field instance carried through it, and
+// the count of rows that used up the limit.
+function pairRow(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// The row with its counter's start and bound given separately, which is what
+// the lane entry guard reads.
+function pairRowRange(
+  start: number,
+  bound: number,
+  size: number,
+  limit: number,
+  cim: number,
+): number {
+  let inside = 0;
+  for (let x = start; x < bound; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// The accumulator's entry value is carried: the lanes count into it, so they
+// take it only while it is an exact integer the lane count keeps exact.
+function pairRowSeed(size: number, limit: number, cim: number, seed: number): number {
+  let inside = seed;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// One inner statement per step, the second reading what the first stored: the
+// lanes store each statement's group before the next one is evaluated, so a
+// plan that reapplies the first statement's expression tree to the updated
+// slots counts a different number of rows.
+function pairRowStepwise(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.plus(c);
+      z = z.times(z);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// The row's constant built through a chain of declarations that each reuse
+// the previous one. The declarations' slots are stored before the next
+// declaration's value is computed, so the chain reads slots; inlining each
+// declaration's tree into the next would make the row's constant grow with
+// the chain and duplicate every step.
+function pairRowChain(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let t0 = (x / size) * 3 - 2;
+    let t1 = t0 * 0.5 + 0.25;
+    let t2 = t1 * 0.5 + 0.25;
+    let t3 = t2 * 0.5 + 0.25;
+    let t4 = t3 * 0.5 + 0.25;
+    let t5 = t4 * 0.5 + 0.25;
+    const c = new Pair(t5, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// Carried numbers, with the third assignment reading what the first left
+// behind: the lanes compute and store one statement at a time.
+function numberRow(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const cre = (x / size) * 3 - 2;
+    let zr = 0;
+    let zi = 0;
+    let keep = 0;
+    let n = 0;
+    while (n < limit && zr * zr + zi * zi <= 4) {
+      keep = zr;
+      zr = zr * zr - zi * zi + cre;
+      zi = 2 * keep * zi + cim;
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// Three numeric fields, each a slot of its own.
+function tripleWalk(count: number, steps: number): number {
+  let done = 0;
+  for (let i = 0; i < count; i++) {
+    const d = new Triple(1, (i % 5) - 2, 0.25);
+    let p = new Triple(0, 0, 0);
+    let k = 0;
+    while (k < steps && p.c < 4) {
+      p = p.next(d);
+      k++;
+    }
+    if (k === steps) done++;
+  }
+  return done;
+}
+
+// The inner test's boolean forms: a literal, a negation and a disjunction
+// with a literal all reduce to the same mask.
+function pairRowTrue(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && true && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function pairRowNot(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (!(n >= limit) && z.norm() <= 4) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function pairRowOr(size: number, limit: number, cim: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    const c = new Pair((x / size) * 3 - 2, cim);
+    let z = new Pair(0, 0);
+    let n = 0;
+    while (n < limit && (z.norm() <= 4 || false)) {
+      z = z.times(z).plus(c);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+// The value-objects workload's nested form: a row loop around the lane loop.
+function fractal(size: number, limit: number): number {
+  let inside = 0;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const c = new Pair((x / size) * 3 - 2, (y / size) * 3 - 1.5);
+      let z = new Pair(0, 0);
+      let n = 0;
+      while (n < limit && z.norm() <= 4) {
+        z = z.times(z).plus(c);
+        n++;
+      }
+      if (n === limit) inside++;
+    }
+  }
+  return inside;
+}
+
+/* Rows the planner must refuse, kept scalar: a second inner loop, a
+ * statement after the inner loop that is not the counted increment, a branch
+ * inside it, an inner assignment to a local the row did not declare, a
+ * carried value that changes class, a counter stepped by two, and a row whose
+ * first statement is an assignment instead of a declaration. Each must print
+ * what Node prints from its scalar loop. */
+
+function rowTwoWhiles(size: number, limit: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let n = 0;
+    while (n < limit) n++;
+    let m = 0;
+    while (m < limit) m++;
+    if (n + m === limit * 2) inside++;
+  }
+  return inside;
+}
+
+function rowSumN(size: number, limit: number): number {
+  let total = 0;
+  for (let x = 0; x < size; x++) {
+    let n = 0;
+    while (n < limit) n++;
+    total = total + n;
+  }
+  return total;
+}
+
+function rowBranch(size: number, limit: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let z = 0;
+    let n = 0;
+    while (n < limit && z < 4) {
+      if (n % 2 === 0) z = z + 1;
+      else z = z + 0.5;
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function rowEscape(size: number, limit: number): number {
+  let total = 0;
+  for (let x = 0; x < size; x++) {
+    let z = 0;
+    let n = 0;
+    while (n < limit) {
+      z = z + 1;
+      total = total + 1;
+      n++;
+    }
+    if (n === limit) total++;
+  }
+  return total;
+}
+
+function rowSwapClass(size: number, limit: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    let z = new Pair(0, 0);
+    let o = new Other(0);
+    let n = 0;
+    while (n < limit) {
+      z = new Pair(z.re + 1, z.im);
+      o = new Other(o.v + 1);
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function rowStride(size: number, limit: number): number {
+  let inside = 0;
+  for (let x = 0; x < size; x += 2) {
+    let n = 0;
+    while (n < limit) n++;
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+function rowNoDecl(size: number, limit: number, start: number): number {
+  let zre = start;
+  let inside = 0;
+  for (let x = 0; x < size; x++) {
+    zre = start;
+    let n = 0;
+    while (n < limit && zre * zre <= 4) {
+      zre = zre * zre * 0.5;
+      n++;
+    }
+    if (n === limit) inside++;
+  }
+  return inside;
+}
+
+const rowSizes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 17, 23, 33];
+const rowLimits = [0, 1, 2, 3, 4, 7, 16, 63];
+const rowCims = [-1.5, -0.75, 0, 0.3, 1.2, NaN, Infinity];
+
+for (const size of rowSizes) {
+  for (const limit of rowLimits) {
+    for (let j = 0; j < rowCims.length; j++) {
+      const cim = rowCims[j]!;
+      console.log(
+        "row",
+        size,
+        limit,
+        j,
+        pairRow(size, limit, cim),
+        numberRow(size, limit, cim),
+        pairRowTrue(size, limit, cim),
+        pairRowNot(size, limit, cim),
+        pairRowOr(size, limit, cim),
+        pairRowStepwise(size, limit, cim),
+        pairRowChain(size, limit, cim),
+      );
+    }
+  }
+}
+
+// The lane entry guard's bounds, from both sides: starts and bounds at the
+// exact-integer ceiling, a start or bound past it, a fractional start and
+// bound, and bounds that admit no row at all.
+for (const [start, bound] of [
+  [0, 33],
+  [1, 33],
+  [-3, 9],
+  // Negative zero is not an exact integer for this guard: the lanes would
+  // round its bits to positive zero and count a different number of rows.
+  [-0, 9],
+  [-0, 33],
+  [2 ** 45 - 8, 2 ** 45],
+  [2 ** 45 - 4, 2 ** 45],
+  [2 ** 45 - 2, 2 ** 45],
+  [2 ** 45 - 2, 2 ** 45 + 2],
+  [2 ** 45, 2 ** 45 + 4],
+  [2 ** 45 + 1, 2 ** 45 + 4],
+  [-(2 ** 45), -(2 ** 45) + 8],
+  [-(2 ** 45) - 4, -(2 ** 45) + 4],
+  [0.5, 9.5],
+  [0, 7.5],
+  [-2.5, 4],
+  [0, 0],
+  [0, -1],
+  [3, 3],
+  [0, NaN],
+  [0, -Infinity],
+]) {
+  const key = `${start},${bound}`;
+  console.log(
+    "range",
+    key,
+    pairRowRange(start!, bound!, 9, 20, -0.5),
+    pairRowRange(start!, bound!, 9, 3, 0.75),
+  );
+}
+
+// The accumulator's entry value, either side of the guard's ceiling.
+for (const seed of [0, 1, -1, 2 ** 45 - 1, 2 ** 45, 2 ** 45 + 1, 0.5, -(2 ** 45) + 1, 2 ** 53]) {
+  console.log(
+    "seed",
+    seed,
+    pairRowSeed(7, 5, -0.5, seed),
+    pairRowSeed(16, 20, -0.25, seed),
+    pairRowSeed(7.5, 20, -0.25, seed),
+  );
+}
+
+for (const count of [0, 1, 2, 3, 4, 5, 7, 8, 16, 17]) {
+  for (const steps of [0, 1, 2, 3, 5, 20]) console.log("triple", count, steps, tripleWalk(count, steps));
+}
+
+for (const size of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 24, 32]) {
+  for (const limit of [0, 1, 3, 20]) {
+    console.log(
+      "fractal",
+      size,
+      limit,
+      fractal(size, limit),
+      fractal(size, limit),
+      fractal(size + 0.5, limit),
+    );
+  }
+}
+
+for (const size of [0, 1, 3, 8, 17]) {
+  for (const limit of [0, 1, 4, 11]) {
+    console.log(
+      "refused",
+      size,
+      limit,
+      rowTwoWhiles(size, limit),
+      rowSumN(size, limit),
+      rowBranch(size, limit),
+      rowEscape(size, limit),
+      rowSwapClass(size, limit),
+      rowStride(size, limit),
+      rowNoDecl(size, limit, 1.5),
+    );
+  }
+}

@@ -15,7 +15,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, locOf, requireSpecOf, resolveImport } from "../program.js";
+import { isCjsJsFile, locOf, requireSpecOf } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
 import { invalidJsonModuleDiag } from "../../diagnostics/diagnostic.js";
 import { BOOL, type IrExpr, type IrGlobal, type IrType } from "../../ir/ir.js";
@@ -40,7 +40,7 @@ export function jsonRequireTarget(
   const sf = ts.getSourceFileOfNode(call);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   if (createRequireCalleeFileOf(lowerer, call.expression) !== null) return null;
-  const target = resolveImport(lowerer.program, sf, spec, "require");
+  const target = lowerer.facts.importedModule(sf, spec, "require");
   return target !== null && target.fileName.endsWith(".json") ? target : null;
 }
 
@@ -56,7 +56,7 @@ export function collectJsonRequires(lowerer: Lowerer, parts: FileParts[]): void 
   for (const fp of parts) {
     const sf = fp.sf;
     if (sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) continue;
-    if (!sf.text.includes(".json")) continue;
+    if (!ts.sourceTextIncludes(sf, ".json")) continue;
     const calls: ts.CallExpression[] = [];
     ts.walkPreorder(sf, (node) => {
       if (ts.isCallExpression(node) && requireSpecOf(node) !== null) calls.push(node);

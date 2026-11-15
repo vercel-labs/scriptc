@@ -1,0 +1,17 @@
+promise-like-slot-static-only.ts:5:17 - error SC2020: 'PromiseLike<number>' is part of the standard library types but has no scriptc lowering yet
+
+  4 | // refused by name, with the type that keeps the slot static.
+  5 | function settle(work: PromiseLike<number>): Promise<number> {
+    |                 ^~~~
+  6 |   return Promise.resolve(work);
+
+  hint: a PromiseLike value is any object with a then method, so it has no static representation: a declared slot holds it as a checked-dynamic value, and Promise<T> keeps the slot static
+
+promise-like-slot-static-only.ts:9:20 - error SC2004: uses of 'settle' inherit the blocker on its declaration
+
+   8 | 
+   9 | console.log(typeof settle);
+     |                    ^~~~~~
+  10 | 
+
+  hint: the declaration of 'settle' did not compile — fix the diagnostic reported there and these sites clear with it

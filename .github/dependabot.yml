@@ -1,0 +1,14 @@
+# The actions in the workflows and in the local composite actions are pinned to commits. This keeps the pins
+# current: once a month, one pull request that moves every pin whose action has a newer release.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"

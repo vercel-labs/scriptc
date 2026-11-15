@@ -156,3 +156,66 @@ main();
 `);
   expect(bodiesContaining(llvm, "typedArg")).toHaveLength(0);
 });
+
+/** The locals a function body reads that nothing in it writes: an alloca
+ * that is loaded and whose only stores, if any, are the null a reference
+ * slot starts with. */
+function localsReadButNeverWritten(body: string): string[] {
+  const unset: string[] = [];
+  for (const match of body.matchAll(/^\s*(%sc_l_\S+) = alloca /gm)) {
+    const slot = match[1]!;
+    const quoted = slot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const loaded = new RegExp(`= load [^\\n]*, ptr ${quoted}(?![\\w.])`).test(body);
+    const stores = [...body.matchAll(new RegExp(`store ([^\\n]*), ptr ${quoted}(?![\\w.])`, "g"))];
+    if (loaded && stores.every((store) => store[1] === "ptr null")) unset.push(slot);
+  }
+  return unset;
+}
+
+const COMPOUND = (statement: string) => `
+type Stats = { hits: number; misses: number };
+let turns = 0;
+function turn(): number {
+  turns += 1;
+  return turns;
+}
+function bump(target: unknown): void {
+  const record = target as Record<string, number>;
+  ${statement}
+}
+const stats: Stats = { hits: 1, misses: 2 };
+function main(): void {
+  bump(stats);
+  console.log(stats.hits, stats.misses, turns);
+}
+main();
+`;
+
+test("no clone reads an operand of a compound assignment that it does not declare", async () => {
+  for (const statement of [
+    "record.hits += 2;",
+    "record.hits -= 2;",
+    "record.hits += turn();",
+    "record.hits += 1;\n  record.misses += record.hits!;",
+  ]) {
+    const llvm = await llvmFor(COMPOUND(statement));
+    // The sequence of a compound assignment declares the old value and the
+    // right-hand side, and its result names both. A clone either keeps those
+    // declarations or is not made: it never stores a result computed from
+    // locals nothing wrote.
+    for (const body of bodiesContaining(llvm, "typedArg"))
+      expect(localsReadButNeverWritten(body), statement).toEqual([]);
+  }
+});
+
+test("a keyed write whose operands are independent is still rewritten in place", async () => {
+  const llvm = await llvmFor(BUMP(`bump(stats, "hits", 1);`));
+  const clones = bodiesContaining(llvm, "bump_typedArg");
+  expect(clones.length).toBeGreaterThan(0);
+  for (const body of clones) {
+    expect(localsReadButNeverWritten(body)).toEqual([]);
+    // The hoisted receiver, key and value are put back in place: the clone
+    // never reads their locals.
+    expect(body).not.toMatch(/= load [^\n]*, ptr %sc_l__x25_set(Receiver|Key|Value)_/);
+  }
+});

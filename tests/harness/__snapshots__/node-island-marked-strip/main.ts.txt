@@ -1,0 +1,7 @@
+node-island-marked-strip/levels.ts:1:1 - error SC8006: scriptc.nodeIslands.modules marks 'node-island-marked-strip/levels.ts' to run in a Node island, but Node cannot strip its types: an 'enum' declaration
+
+  1 | export enum Level {
+    | ^~~~~~~~~~~~~~~~~~~
+  2 |   Low,
+
+  hint: Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is

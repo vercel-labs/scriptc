@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-uncaught-native-callback/main.mjs"
+ ],
+ "diags": []
+}

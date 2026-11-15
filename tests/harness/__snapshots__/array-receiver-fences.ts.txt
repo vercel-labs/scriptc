@@ -1,0 +1,98 @@
+array-receiver-fences.ts:16:23 - error SC2020: 'tuple .reduce callback array parameter' is part of the standard library types but has no scriptc lowering yet
+
+  15 | function reduceWithArray(): number {
+  16 |   return sides.reduce((acc, side, index, all) => acc + side.length + index + all.length, 0);
+     |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | }
+
+  hint: capture the original tuple explicitly to preserve its identity
+
+array-receiver-fences.ts:19:17 - error SC2020: 'tuple .forEach callback array parameter' is part of the standard library types but has no scriptc lowering yet
+
+  18 | function forEachWithArray(): void {
+  19 |   sides.forEach((side, index, all) => console.log(side, index, all.length));
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  20 | }
+
+  hint: capture the original tuple explicitly to preserve its identity
+
+array-receiver-fences.ts:24:10 - error SC2020: 'tuple .flat with a depth that is not a number literal' is part of the standard library types but has no scriptc lowering yet
+
+  23 | function tupleFlatComputedDepth(): number {
+  24 |   return rows.flat(depth).length;
+     |          ^~~~~~~~~~~~~~~~
+  25 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:28:10 - error SC2020: '.flat over elements with runtime-dependent array shape' is part of the standard library types but has no scriptc lowering yet
+
+  27 | function flatThreeKinds(): number {
+  28 |   return levels.flat().length;
+     |          ^~~~~~~~~~~~~
+  29 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:31:10 - error SC2020: '.flat over elements with runtime-dependent array shape' is part of the standard library types but has no scriptc lowering yet
+
+  30 | function flatWithUndefined(): number {
+  31 |   return optional.flat().length;
+     |          ^~~~~~~~~~~~~~~
+  32 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:35:10 - error SC2020: '.flat with a nonconstant depth' is part of the standard library types but has no scriptc lowering yet
+
+  34 | function flatComputedDepth(): number {
+  35 |   return words.flat(depth).length;
+     |          ^~~~~~~~~~~~~~~~~
+  36 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:39:14 - error SC2020: '[string, string, string].entries' is part of the standard library types but has no scriptc lowering yet
+
+  38 | function tupleEntriesValue(): number {
+  39 |   return [...sides.entries()].length;
+     |              ^~~~~~~~~~~~~
+  40 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:42:21 - error SC2020: '[string, string, string].keys' is part of the standard library types but has no scriptc lowering yet
+
+  41 | function tupleKeysValue(): number {
+  42 |   return Array.from(sides.keys()).length;
+     |                     ^~~~~~~~~~
+  43 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:46:10 - error SC2020: '[string, string, string].at' is part of the standard library types but has no scriptc lowering yet
+
+  45 | function tupleAt(): string | undefined {
+  46 |   return sides.at(-1);
+     |          ^~~~~~~~
+  47 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:49:10 - error SC2020: '[string, string, string].concat' is part of the standard library types but has no scriptc lowering yet
+
+  48 | function tupleConcat(): number {
+  49 |   return sides.concat(["down"]).length;
+     |          ^~~~~~~~~~~~
+  50 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+array-receiver-fences.ts:52:10 - error SC2020: '[string, string, string].toSorted' is part of the standard library types but has no scriptc lowering yet
+
+  51 | function tupleToSorted(): string {
+  52 |   return sides.toSorted().join(",");
+     |          ^~~~~~~~~~~~~~
+  53 | }
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

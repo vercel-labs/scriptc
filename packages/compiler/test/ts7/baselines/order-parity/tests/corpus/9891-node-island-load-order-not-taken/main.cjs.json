@@ -1,0 +1,106 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs"
+ ],
+ "diags": [
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/list-maker.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 2171,
+    "end": 2205
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/global-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 746,
+    "end": 783
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/effect-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 924,
+    "end": 961
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/export-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 1473,
+    "end": 1510
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/private-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 1608,
+    "end": 1646
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/registry-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 1778,
+    "end": 1817
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/console-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 2048,
+    "end": 2086
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/list-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 2218,
+    "end": 2253
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'state-kit/getter-writer.js' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/9891-node-island-load-order-not-taken/main.cjs",
+    "start": 2385,
+    "end": 2422
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  }
+ ]
+}

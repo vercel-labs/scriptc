@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/builtin-member-write-js.cjs"
+ ],
+ "diags": []
+}

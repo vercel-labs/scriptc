@@ -1,0 +1,17 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tsconfig-strict-unset/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0002",
+   "message": "this project's tsconfig does not enable strict or strictNullChecks, which scriptc requires (null and undefined are modeled as distinct static types; without the knob every type implicitly includes them)",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-strict-unset/tsconfig.json",
+    "start": 0,
+    "end": 0
+   },
+   "hint": "set \"strictNullChecks\": true (or \"strict\": true) in the project tsconfig"
+  }
+ ]
+}

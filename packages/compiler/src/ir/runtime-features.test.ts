@@ -1,6 +1,18 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrExpr, type IrModule, type IrLibFn } from "./ir.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  VOID,
+  arrayOf,
+  type IrExpr,
+  type IrFunction,
+  type IrModule,
+  type IrLibFn,
+  type IrType,
+  type IrStmt,
+} from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
   jsObjectModelFact,
@@ -99,6 +111,53 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).genBind).toBe(false);
     mod.functions.push(generator(true));
     expect(moduleRuntimeFeatures(mod).genBind).toBe(true);
+  });
+
+  test("gates the kept-source read unit on the record width copy's libCall", () => {
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).recordSourceGet).toBe(false);
+    mod.functions[0]!.body.push(call("record.sourceGet"));
+    expect(moduleRuntimeFeatures(mod).recordSourceGet).toBe(true);
+    // The per-key presence test lives in the same unit.
+    const probe = module();
+    probe.functions[0]!.body.push(call("record.sourceHasKey"));
+    expect(moduleRuntimeFeatures(probe).recordSourceGet).toBe(true);
+  });
+
+  test("gates the string join unit on a join whose receiver holds strings", () => {
+    const join = (elem: IrType): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "join",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(elem), loc },
+        args: [{ kind: "strLit", value: ",", type: STRING, loc }],
+        type: STRING,
+        loc,
+      },
+    });
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Numbers and booleans join through scr_arr_join alone.
+    mod.functions[0]!.body.push(join({ kind: "f64" }), join(BOOL));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Another method of a string array is not a join.
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(STRING), loc },
+        args: [],
+        type: { kind: "f64" },
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    mod.functions[0]!.body.push(join(STRING));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(true);
   });
 
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
@@ -297,6 +356,37 @@ describe("runtime feature snapshots", () => {
     }
   });
 
+  test("a process stream held as a value is the stdioObject feature", () => {
+    // The stream object is the only way to replace process.stdout.write, so
+    // the two lib calls that answer it, and a value of the stream's type
+    // (boxing one creates the object), decide whether a program's islands
+    // share its write slot (scr_node_island_stdio.c). Console output and
+    // direct writes never create the object.
+    for (const fn of ["process.stdio", "process.stdioSlot"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).stdioObject, fn).toBe(true);
+    }
+    const typed = module();
+    typed.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "libCall",
+        fn: "process.stdoutWrite",
+        args: [],
+        type: { kind: "procStream" },
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(typed).stdioObject).toBe(true);
+    for (const fn of ["process.stdoutWrite", "process.stdioWriteStr"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).stdioObject, fn).toBe(false);
+    }
+  });
+
   test("a dynamic __proto__ key selects the object model build", () => {
     // Object.prototype's __proto__ accessor is modelled in the object model
     // build of scr_json.c, so a source that reads or writes the member by
@@ -473,6 +563,235 @@ describe("runtime feature snapshots", () => {
     expect(selects("dyn.keyDelete" as IrLibFn, str("987654321"))).toBe(false);
   });
 
+  test("selects the function-property build for a spelled protocol member", () => {
+    // A function may carry an own data property named after an inherited
+    // member (`fn.call = f`). The runtime paths that admit it live in the
+    // SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so the
+    // fact follows the member name a keyed write, definition or delete
+    // spells; an ordinary expando write and a plain definition of a name
+    // every object literal defines select the default objects. A definition
+    // also follows the receiver: a typed callable, a class value or a
+    // checked-dynamic value (which may hold an any-typed function) can reach
+    // the function path, a boxed non-callable cannot.
+    const boxed = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const receiver: IrExpr = { kind: "varRef", localId: "o", type: DYN, loc };
+    const fnValue: IrExpr = {
+      kind: "varRef",
+      localId: "f",
+      type: { kind: "func", params: [], ret: VOID },
+      loc,
+    };
+    const op = (fn: IrLibFn, target: IrExpr, key: IrExpr): IrModule => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn,
+          args: [target, key, boxed(str("v"))],
+          type: fn.startsWith("dyn.define") ? DYN : VOID,
+          loc,
+        },
+      });
+      return mod;
+    };
+    const selects = (fn: IrLibFn, target: IrExpr, key: IrExpr): boolean =>
+      moduleRuntimeFeatures(op(fn, target, key)).fnMemberProps;
+    expect(moduleRuntimeFeatures(module()).fnMemberProps).toBe(false);
+    expect(selects("dyn.keySet", receiver, str("call"))).toBe(true);
+    expect(selects("dyn.keySet", receiver, str("apply"))).toBe(true);
+    // The keyed write evaluates its key into a hidden local first.
+    const local = op("dyn.keySet", receiver, { kind: "varRef", localId: "%key", type: DYN, loc });
+    local.functions[0]!.body.unshift({
+      kind: "varDecl",
+      localId: "%key",
+      init: boxed(str("bind")),
+      loc,
+    });
+    expect(moduleRuntimeFeatures(local).fnMemberProps).toBe(true);
+    expect(selects("dyn.keyDelete", receiver, str("valueOf"))).toBe(true);
+    // An expando member and a name a plain object literal defines select
+    // nothing: their writes never reach the function-property path.
+    expect(selects("dyn.keySet", receiver, str("extra"))).toBe(false);
+    expect(selects("dyn.defineProperty", receiver, boxed(str("toString")))).toBe(false);
+    // A definition on a boxed callable creates the own property Node does.
+    expect(selects("dyn.defineProperty", boxed(fnValue), boxed(str("bind")))).toBe(true);
+    // A class value's own protocol member is an own property too: its
+    // runtime node is the constructor function.
+    const classValue: IrExpr = {
+      kind: "varRef",
+      localId: "C",
+      type: { kind: "classval", className: "C" },
+      loc,
+    };
+    expect(selects("dyn.defineProperty", boxed(classValue), boxed(str("call")))).toBe(true);
+    // A checked-dynamic receiver names no kind at all, so an any-typed
+    // function among its values reaches the definition as one: the build
+    // that admits the own property must be selected, not whichever unrelated
+    // statement happens to select it.
+    expect(selects("dyn.defineProperty", receiver, boxed(str("call")))).toBe(true);
+    expect(selects("dyn.definePropertyShapes", receiver, boxed(str("apply")))).toBe(true);
+    expect(
+      selects(
+        "dyn.defineProperty",
+        { kind: "dynFrom", value: receiver, type: DYN, loc },
+        boxed(str("bind")),
+      ),
+    ).toBe(true);
+    // A boxed receiver of a non-callable type is an object at run time, so
+    // its definition keeps the default objects.
+    const recordValue: IrExpr = {
+      kind: "varRef",
+      localId: "o",
+      type: { kind: "record", shapeId: "r0" },
+      loc,
+    };
+    expect(selects("dyn.defineProperty", boxed(recordValue), boxed(str("constructor")))).toBe(
+      false,
+    );
+    expect(
+      selects(
+        "dyn.defineProperty",
+        { kind: "varRef", localId: "b", type: { kind: "bytes", elem: "u8" }, loc },
+        boxed(str("valueOf")),
+      ),
+    ).toBe(false);
+    // Every `Object.defineProperty` on a dynamic target is lifted into the
+    // class-dispatch helper, whose own `dyn.defineProperty` call sees only
+    // parameters. The call site still spells the key, so the definition is
+    // read from the call into the helper.
+    const lifted = (target: IrExpr, key: IrExpr): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "call",
+          callee: "%dyn.class.defineProperty",
+          args: [target, key, boxed(str("v"))],
+          type: DYN,
+          loc,
+        },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(lifted(receiver, boxed(str("call")))).toBe(true);
+    expect(lifted(boxed(fnValue), boxed(str("apply")))).toBe(true);
+    expect(lifted(boxed(classValue), boxed(str("bind")))).toBe(true);
+    expect(lifted(boxed(recordValue), boxed(str("constructor")))).toBe(false);
+    expect(lifted(receiver, boxed(str("toString")))).toBe(false);
+    expect(lifted(receiver, { kind: "varRef", localId: "k", type: DYN, loc })).toBe(false);
+    // A key computed at run time cannot be proven a protocol member.
+    expect(
+      selects("dyn.keySetComputed", receiver, { kind: "varRef", localId: "k", type: DYN, loc }),
+    ).toBe(false);
+    // The hidden key local is function-scope: `%setKey.0` names a different
+    // value in the next function, so neither declaration answers the other.
+    const sibling = (name: string): IrFunction => ({
+      name,
+      params: [],
+      locals: [],
+      returnType: VOID,
+      loc,
+      body: [{ kind: "varDecl", localId: "%setKey.0", init: boxed(str("call")), loc }],
+    });
+    const own = module();
+    own.functions[0]!.body.push(
+      { kind: "varDecl", localId: "%setKey.0", init: boxed(str("extra")), loc },
+      {
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySet",
+          args: [
+            receiver,
+            { kind: "varRef", localId: "%setKey.0", type: STRING, loc },
+            boxed(str("v")),
+          ],
+          type: VOID,
+          loc,
+        },
+      },
+    );
+    expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
+    own.functions.push(sibling("other"));
+    expect(moduleRuntimeFeatures(own).fnMemberProps).toBe(false);
+  });
+
+  test("selects the function-property build for a spelled read of an inherited member", () => {
+    // A function inherits `call`, `bind` and `toString`; the default build of
+    // scr_json.c reads the member itself as undefined, and only the
+    // SCR_FN_MEMBER_PROPS build has a value for it. A dynamic read that
+    // spells `call` or `bind` selects that build. `apply` has a value in
+    // every build, a key computed at run time proves nothing, and a read of
+    // `toString` is what `String(value)` lowers to, so it selects nothing:
+    // a delete of `toString`, which reveals the inherited member, does.
+    const str = (value: string): IrExpr => ({ kind: "strLit", value, type: STRING, loc });
+    const receiver: IrExpr = { kind: "varRef", localId: "o", type: DYN, loc };
+    const reads = (key: IrExpr): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "dynKeyGet", value: receiver, key, type: DYN, loc },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(reads(str("call"))).toBe(true);
+    expect(reads(str("bind"))).toBe(true);
+    expect(reads(str("toString"))).toBe(false);
+    expect(reads(str("apply"))).toBe(false);
+    expect(reads(str("valueOf"))).toBe(false);
+    expect(reads(str("extra"))).toBe(false);
+    expect(reads({ kind: "varRef", localId: "k", type: DYN, loc })).toBe(false);
+    // A literal bracket key is boxed into the dynamic tier (`fn["call"]`).
+    const boxedKey = (value: string): IrExpr => ({
+      kind: "dynFrom",
+      value: str(value),
+      type: DYN,
+      loc,
+    });
+    expect(reads(boxedKey("call"))).toBe(true);
+    expect(reads(boxedKey("bind"))).toBe(true);
+    expect(reads(boxedKey("toString"))).toBe(false);
+    // The read counts wherever the function holds it.
+    const nested = module();
+    nested.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [{ kind: "dynKeyGet", value: receiver, key: str("call"), type: DYN, loc }],
+        type: STRING,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(nested).fnMemberProps).toBe(true);
+    const keyed = (fn: IrLibFn, name: string): boolean => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "libCall",
+          fn,
+          args: [receiver, str(name), { kind: "boolLit", value: true, type: BOOL, loc }],
+          type: VOID,
+          loc,
+        },
+      });
+      return moduleRuntimeFeatures(mod).fnMemberProps;
+    };
+    expect(keyed("dyn.keyDelete", "toString")).toBe(true);
+    // An own `toString` is an ordinary property in the default build.
+    expect(keyed("dyn.keySet", "toString")).toBe(false);
+    expect(keyed("dyn.keyDelete", "extra")).toBe(false);
+  });
+
   test("arms the host-global check for a computed global read and `in`", () => {
     // A computed read of the global object, or `… in globalThis`, links the
     // derived name table's runtime check (scr_global_host_absent.c) and the
@@ -485,6 +804,38 @@ describe("runtime feature snapshots", () => {
       expect(features.jsObjectModel, fn).toBe(false);
     }
     expect(moduleRuntimeFeatures(module()).hostAbsentGlobals).toBe(false);
+  });
+
+  test("links the stderr reporter for a fence that stands for a deferred diagnostic", () => {
+    // A runtimeFence whose message carries its diagnostic's tag throws
+    // through scr_deferred_fence.c; the traps the lowering writes itself
+    // (no tag) leave the program without the unit.
+    const fenced = (message: string, file = "/app/a.js") => {
+      const mod = module();
+      mod.functions[0]!.body.push({
+        kind: "runtimeFence",
+        code: "SC2020",
+        message,
+        loc: { ...loc, file },
+      });
+      return moduleRuntimeFeatures(mod).deferredFence;
+    };
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]")).toBe(true);
+    expect(fenced("'unescape' has no scriptc lowering yet [SC2020]")).toBe(true);
+    expect(fenced("reading 'x' through an untyped value is not supported")).toBe(false);
+    // A TypeScript source's fences keep the plain throw.
+    expect(fenced("an undefined index [SC2020 at /app/a.ts:4]", "/app/a.ts")).toBe(false);
+    expect(moduleRuntimeFeatures(module()).deferredFence).toBe(false);
+    // So do a library's: its archive carries no reporter.
+    const library = module();
+    library.lib = { profileName: "p" } as NonNullable<IrModule["lib"]>;
+    library.functions[0]!.body.push({
+      kind: "runtimeFence",
+      code: "SC2020",
+      message: "'unescape' has no scriptc lowering yet [SC2020 at /app/a.js:4]",
+      loc: { ...loc, file: "/app/a.js" },
+    });
+    expect(moduleRuntimeFeatures(library).deferredFence).toBe(false);
   });
 
   test("gates the BigInt typed-array element kinds on the constructor name", () => {
@@ -534,5 +885,206 @@ describe("runtime feature snapshots", () => {
       childProcess: true,
       childErrorFields: false,
     });
+  });
+
+  test("gates Node's pipe lifecycle on a pipe, an unpipe or a pipeline", () => {
+    // A stream program that never pipes links the stream unit alone.
+    const writer = module();
+    writer.functions[0]!.body.push(call("writable.write"));
+    expect(moduleRuntimeFeatures(writer)).toMatchObject({ stream: true, streamPipeEvents: false });
+
+    const piping = ["readable.pipe", "readable.unpipe", "stream.pipeline", "sp.pipeline"] as const;
+    for (const fn of piping) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod).streamPipeEvents).toBe(true);
+    }
+
+    // A member named pipe called on an untyped value can reach a native
+    // stream's own method.
+    const untyped = module();
+    untyped.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method: "pipe",
+        calleeName: "source.pipe",
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
+  });
+
+  test("gates the terminal color methods on a held process stream and one of their names", () => {
+    const invoke = (method: string): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method,
+        calleeName: `out.${method}`,
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    // A program that holds the stream object and names neither method keeps
+    // the default events unit.
+    const holder = module();
+    holder.functions[0]!.body.push(call("process.stdio"), invoke("getWindowSize"));
+    expect(moduleRuntimeFeatures(holder)).toMatchObject({ stdioObject: true, ttyColors: false });
+
+    // The name alone, without a stream object to read it from, selects
+    // nothing.
+    const named = module();
+    named.functions[0]!.body.push(invoke("hasColors"));
+    expect(moduleRuntimeFeatures(named).ttyColors).toBe(false);
+
+    for (const method of ["getColorDepth", "hasColors"]) {
+      const calling = module();
+      calling.functions[0]!.body.push(call("process.stdio"), invoke(method));
+      expect(moduleRuntimeFeatures(calling).ttyColors, method).toBe(true);
+
+      // A member read by name, or a computed key that is a literal.
+      const reading = module();
+      reading.functions[0]!.body.push(call("process.stdioSlot"), {
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "strLit", value: method, type: { kind: "string" }, loc },
+      });
+      expect(moduleRuntimeFeatures(reading).ttyColors, method).toBe(true);
+    }
+  });
+
+  test("gates the process.features object on reading it as a value", () => {
+    // Member reads are constants; only the value form links the unit.
+    const reader = module();
+    reader.functions[0]!.body.push(call("process.features"));
+    expect(moduleRuntimeFeatures(reader).processFeatures).toBe(true);
+    expect(moduleRuntimeFeatures(module()).processFeatures).toBe(false);
+  });
+
+  test("gates a child stream's flowing state on pausing, resuming or reading it", () => {
+    // Each of the four members selects scr_child.c's SCR_CHILD_STREAM_FLOW
+    // build; a program that only listens to a child's output keeps the
+    // default object.
+    for (const fn of [
+      "stream.childPause",
+      "stream.childResume",
+      "stream.childIsPaused",
+      "stream.childFlowing",
+    ] as const) {
+      const flow = module();
+      flow.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(flow).childStreamFlow).toBe(true);
+    }
+
+    const listener = module();
+    listener.functions[0]!.body.push(call("stream.onEnd"));
+    expect(moduleRuntimeFeatures(listener).childStreamFlow).toBe(false);
+  });
+
+  test("gates the fs streams' signal option on options that can hold one", () => {
+    // The `...Signal` entries select scr_fs_stream.c's SCR_FS_STREAM_SIGNAL
+    // build and the event-target unit its abort listener comes from; the
+    // plain entries keep the default fs stream unit and link no event target.
+    for (const fn of [
+      "fs.createReadStreamSignal",
+      "fs.createWriteStreamSignal",
+      "fileHandle.createReadStreamSignal",
+      "fileHandle.createWriteStreamSignal",
+    ] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod)).toMatchObject({
+        stream: true,
+        fsStreamSignal: true,
+        eventTarget: true,
+      });
+    }
+    for (const fn of ["fs.createReadStream", "fileHandle.createWriteStream"] as const) {
+      const mod = module();
+      mod.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(mod)).toMatchObject({
+        stream: true,
+        fsStreamSignal: false,
+        eventTarget: false,
+      });
+    }
+  });
+
+  test("installs a failed spawn's error object only where an 'error' listener can be registered", () => {
+    // The fact decides the emitted scr_child_error_event_install call: a
+    // program that only spawns keeps the settle path's hook empty and links
+    // none of the property code.
+    for (const fn of ["child.onError", "child.onDyn", "child.propsOnDyn"] as const) {
+      const listener = module();
+      listener.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(listener)).toMatchObject({
+        childProcess: true,
+        childErrorEvent: true,
+      });
+    }
+
+    // A child that becomes an untyped value can be listened to through the
+    // handle table.
+    const boxed = module();
+    boxed.functions[0]!.body.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "dynFrom",
+        value: { kind: "varRef", localId: "c", type: { kind: "child" }, loc },
+        type: { kind: "dyn" },
+        loc,
+      },
+      loc,
+    });
+    expect(moduleRuntimeFeatures(boxed).childErrorEvent).toBe(true);
+
+    const spawner = module();
+    spawner.functions[0]!.body.push(call("child.onExit"));
+    expect(moduleRuntimeFeatures(spawner)).toMatchObject({
+      childProcess: true,
+      childErrorEvent: false,
+    });
+  });
+
+  test("links the adoption unit for a typed slot's flagged conversion, not for a boxed function", () => {
+    const names = arrayOf(STRING);
+    const takesNames: IrType = { kind: "func", params: [names], ret: VOID };
+    const links = (flagged: boolean): boolean => {
+      const mod = module();
+      mod.functions[0]!.locals.push(
+        { id: "fn", name: "fn", mutable: false, type: takesNames },
+        { id: "source", name: "source", mutable: false, type: DYN },
+      );
+      // A function boxed for untyped code: its thunk converts the caller's
+      // array and keeps the copy, so it does not ask for the unit.
+      const boxed: IrExpr = {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "fn", type: takesNames, loc },
+      };
+      const check: IrExpr & { kind: "dynCheck" } = {
+        kind: "dynCheck",
+        type: names,
+        loc,
+        value: { kind: "varRef", localId: "source", type: DYN, loc },
+      };
+      if (flagged) check.shared = true;
+      mod.functions[0]!.body.push(
+        { kind: "exprStmt", loc, expr: boxed },
+        { kind: "exprStmt", loc, expr: check },
+      );
+      return moduleRuntimeFeatures(mod).declAdopt;
+    };
+    expect(links(true)).toBe(true);
+    expect(links(false)).toBe(false);
   });
 });

@@ -39,7 +39,7 @@ const flag = (name) => {
 const repo = resolve(flag("--repo") ?? process.cwd());
 const toolsDir = resolve(flag("--tools") ?? process.cwd());
 const require = createRequire(join(toolsDir, "package.json"));
-const ts = require("typescript");
+const ts = require("typescript5");
 const modulePath = join(repo, config.module);
 const dir = join(repo, config.dir);
 // Every read and write stays inside the checkout, or for the templates, the

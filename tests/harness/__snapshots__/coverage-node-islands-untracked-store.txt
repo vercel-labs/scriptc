@@ -1,0 +1,24 @@
+scriptc coverage tests/coverage-fixtures/node-islands-untracked-store/main.ts
+
+  statements analyzed   23
+  compile statically    23  (100%)
+    in dynamic tier     17  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    store-kit  static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    marked  store-kit@1.0.0 (marked by scriptc.packages)
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  fully static — all analyzed statements compile to native code.
+
+  differs from Node   9 sites (compiles; the native program can behave differently)
+      ×9  SC6007  this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object…
+          at tests/coverage-fixtures/node-islands-untracked-store/main.ts:26:10, tests/coverage-fixtures/node-islands-untracked-store/main.ts:28:17, tests/coverage-fixtures/node-islands-untracked-store/main.ts:29:23 (+6 more)
+          hint: assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'
+
+  trusts unverified types   1 checked conversion on 1 claim (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  store-kit@1.0.0 declares raw() as unknown (index.d.ts:1): a Node island value the program reads as string
+          at tests/coverage-fixtures/node-islands-untracked-store/main.ts:22:13
+          fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch store-kit 'raw()' '<type>'

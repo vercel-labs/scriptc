@@ -1,14 +1,14 @@
   dynamic tier   (tier assignment, report-only; --tier=auto)
     4 functions already operate on dynamic values (1 statement)
-      readName  tests/coverage-fixtures/tier-demotions.ts:15:1: %dyn.error.stringConstructor at tests/coverage-fixtures/tier-demotions.ts:17:10
-      %dyn.class.property.0  tests/coverage-fixtures/tier-demotions.ts:17:17: %dyn.class.readPropertiesOrEmpty at tests/coverage-fixtures/tier-demotions.ts:17:17
-      %dyn.error.stringConstructor.0  tests/coverage-fixtures/tier-demotions.ts:17:10: dynCall at tests/coverage-fixtures/tier-demotions.ts:17:10
-      %method.value:%%Error.toString  tests/coverage-fixtures/tier-demotions.ts:17:10: dyn.this at tests/coverage-fixtures/tier-demotions.ts:17:10
+      readName  tests/coverage-fixtures/tier-demotions.ts:17:1: %dyn.error.stringConstructor at tests/coverage-fixtures/tier-demotions.ts:19:10
+      %dyn.class.property.0  tests/coverage-fixtures/tier-demotions.ts:19:17: %dyn.class.readPropertiesOrEmpty at tests/coverage-fixtures/tier-demotions.ts:19:17
+      %dyn.error.stringConstructor.0  tests/coverage-fixtures/tier-demotions.ts:19:10: dynCall at tests/coverage-fixtures/tier-demotions.ts:19:10
+      %method.value:%%Error.toString  tests/coverage-fixtures/tier-demotions.ts:19:10: dyn.this at tests/coverage-fixtures/tier-demotions.ts:19:10
 
     2 demotion requests (refusals and fences the dynamic tier would replace)
     class Point  tests/coverage-fixtures/tier-demotions.ts:2:1 (1 request)
-      <- SC1090 reflection at tests/coverage-fixtures/tier-demotions.ts:10:1: assignment to non-variables are not supported yet
+      <- SC1090 reflection at tests/coverage-fixtures/tier-demotions.ts:10:23: class prototype reflection and accessor replacement (named prototype data and methods compile) is not supported yet
       -> function <top level> turns dynamic
     function <top level>  tests/coverage-fixtures/tier-demotions.ts:1:1 (1 site inside)
-    function precise  tests/coverage-fixtures/tier-demotions.ts:21:1 (1 request, 1 site inside)
-      <- SC2020 operation at tests/coverage-fixtures/tier-demotions.ts:22:27: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
+    function precise  tests/coverage-fixtures/tier-demotions.ts:23:1 (1 request, 1 site inside)
+      <- SC2020 operation at tests/coverage-fixtures/tier-demotions.ts:24:27: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet

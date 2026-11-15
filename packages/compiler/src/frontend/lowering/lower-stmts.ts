@@ -149,6 +149,7 @@ import {
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
+  cjsInFileExportGlobalOf,
   isCjsExportsIdentifier,
   isCjsModuleExports,
   isFreshExportsReset,
@@ -216,6 +217,7 @@ import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
+  cjsVoidInitPreambleTargets,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -396,6 +398,7 @@ import { observesDeclaration } from "./observable-write.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
+  withUnitArm,
   jsOpenObjectType,
   unitOnlyUnion,
   holdsPrimitiveConstructors,
@@ -10230,6 +10233,23 @@ function lowerFunctionConstructorWrite(
   };
 }
 
+/** Whether the export storage behind every target of a `void 0` preamble
+ * write cannot hold undefined, which is what makes the write trap: a static
+ * slot with no undefined arm. Dynamic and explicitly optional storage holds
+ * it, so those writes keep their ordinary lowering. */
+function cjsVoidInitTargetsCannotHoldUndefined(
+  lowerer: Lowerer,
+  targets: readonly ts.PropertyAccessExpression[],
+): boolean {
+  for (const target of targets) {
+    const g = cjsInFileExportGlobalOf(lowerer, target);
+    if (!g || g.type.kind === "dyn" || g.type.kind === "void") return false;
+    const widened = withUnitArm(g.type, "undefinedT", lowerer.unions) ?? g.type;
+    if (typeEquals(widened, g.type)) return false;
+  }
+  return true;
+}
+
 /** A top-level CommonJS export statement (see cjsExportAssignmentOf):
  * `exports.f = <expr>` and each expression-valued property of
  * `module.exports = { ... }` assign their pre-registered export globals
@@ -10346,6 +10366,16 @@ function lowerCjsExportStatement(
     // later real assignment keep the ordinary path (the export IS
     // undefined then).
     if (cjsVoidInitPreambleReals(cjs) !== null) return { kind: "block", body: [], loc };
+    // The same preamble whose real assignments sit inside a conditional
+    // (`if (…) { exports.now = f } else { exports.now = g }`): every path
+    // past the statement assigns the export, and a static slot without an
+    // undefined arm cannot hold the transient value, so the write lowers to
+    // nothing.
+    {
+      const targets = cjsVoidInitPreambleTargets(cjs.expr);
+      if (targets !== null && cjsVoidInitTargetsCannotHoldUndefined(lowerer, targets))
+        return { kind: "block", body: [], loc };
+    }
     const sf = ts.getSourceFileOfNode(cjs.expr);
     let root: IrGlobal | undefined;
     for (const stmt of sf.statements.nodes) {
@@ -12029,6 +12059,14 @@ export function lowerExprStatement(
         const g = cjsExportMemberWriteGlobalOf(lowerer, expr.left);
         if (g) {
           const loc = locOf(expr);
+          // A `void 0` preamble write whose every continuing path assigns
+          // this export later, in a slot that cannot hold undefined,
+          // lowers to nothing instead of trapping at load.
+          {
+            const targets = cjsVoidInitPreambleTargets(expr);
+            if (targets !== null && cjsVoidInitTargetsCannotHoldUndefined(lowerer, targets))
+              return { kind: "block", body: [], loc };
+          }
           const value = lowerer.lowerExprExpecting(expr.right, g.type);
           if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {
             return { kind: "assign", localId: g.id, value, loc };

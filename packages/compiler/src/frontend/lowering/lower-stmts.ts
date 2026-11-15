@@ -2652,7 +2652,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
+      const returned = withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
+      // `return this` or a primitive (`undefined`) from a constructor whose
+      // `this` may have been rebound answers that `this`: it is published
+      // as a bare return publishes it.
+      const epilogue = lowerer.ctx.constructorEpilogue?.();
+      if (epilogue !== undefined)
+        return { kind: "block", body: [...epilogue, returned], loc: locOf(stmt) };
+      return returned;
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {

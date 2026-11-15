@@ -10194,8 +10194,10 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     // `this` is a local the allocated instance initializes, and the
     // instance the constructor ends with is published where it finishes.
     // Every other constructor keeps `this` as its parameter.
+    // A function-local class constructs through its own environment, which
+    // has no result slot: its `super()` keeps the earlier contract.
     const allocated: IrLocal | null =
-      rebindingBase(lowerer, info) !== null
+      info.localClass === undefined && rebindingBase(lowerer, info) !== null
         ? { id: "%allocated.0", name: "%allocated", type: thisType, mutable: false }
         : null;
     if (allocated !== null) {

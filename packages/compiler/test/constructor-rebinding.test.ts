@@ -57,9 +57,7 @@ console.log("unreached", upgraded.b);
     expect(child.stdout).toBe("built 2\n");
     expect(child.status).not.toBe(0);
     expect(child.stderr).toContain("is not a 'Derived'");
-    expect(child.stderr).toContain(
-      "create it as that class, or give it the class's prototype first",
-    );
+    expect(child.stderr).toContain("create it as that class or a class below it");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

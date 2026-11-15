@@ -739,7 +739,32 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
       loc,
     });
   }
-  return { kind: "call", callee: name, args: [constructed], type, loc };
+  const call: IrExpr = { kind: "call", callee: name, args: [constructed], type, loc };
+  return slot === null ? call : beforeConstruction(lowerer, [slot], call, loc);
+}
+
+/** `read` (a construction that reads the result `slots` after it runs)
+ * with the slots cleared first: a construction abandoned after its
+ * constructor published an instance (a `finally` that throws after the
+ * return) leaves its slot set, and this construction must not answer it. */
+function beforeConstruction(
+  lowerer: Lowerer,
+  slots: IrGlobal[],
+  read: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: slots.map((slot) => ({
+      kind: "assign" as const,
+      localId: slot.id,
+      value: lowerer.wrappedUndefined(slot.type, loc)!,
+      loc,
+    })),
+    result: read,
+    type: read.type,
+    loc,
+  };
 }
 
 /** The statements that drop the foreign result a constructor recorded. */
@@ -999,7 +1024,12 @@ export function constructedFromValue(
       loc,
     });
   }
-  return { kind: "call", callee: name, args: [value], type, loc };
+  return beforeConstruction(
+    lowerer,
+    slotted.map((sub) => constructorReturnPlan(lowerer, sub)!.slot!),
+    { kind: "call", callee: name, args: [value], type, loc },
+    loc,
+  );
 }
 
 /** `super()` into a class with a result slot, from the constructor of
@@ -1007,13 +1037,16 @@ export function constructedFromValue(
  * subclass's `this`, upcast to the base). Node rebinds the subclass's
  * `this` to an instance the base constructor returns. The rebinding is
  * exact when that instance already is an instance of `sub` (made as the
- * class, or given its prototype): a per-subclass helper reads and clears
+ * class or a class below it): a per-subclass helper reads and clears
  * the base's slot after the call and answers it, and `rebind` (the
  * subclass constructor's `this`, mutable for this) takes it, so the rest
  * of the constructor (the subclass's field initializers included) runs on
  * it. Any other returned instance has no representation as a `sub`
- * instance and refuses at run time. Unchanged for bases without a result
- * slot. */
+ * instance and refuses at run time. A function-local class constructs
+ * through its own environment, which has no result slot (`rebind` null):
+ * it keeps the earlier contract, refused in TypeScript and, in JavaScript,
+ * refused at run time unless the base returned the subclass's own `this`.
+ * Unchanged for bases without a result slot. */
 export function superIntoResultSlot(
   lowerer: Lowerer,
   base: ClassInfo,
@@ -1041,12 +1074,16 @@ export function superIntoResultSlot(
     );
     return call;
   }
-  if (slot !== null && rebind === null)
-    throw new Error("internal: a super() into a class with a result slot has no rebindable this");
+  const rebinds = slot !== null && rebind !== null;
+  const unboundFeature = `extending a class whose constructor can return an existing instance from a function-local class ('super()' would rebind 'this' to the instance '${display}' returns)`;
+  if (slot !== null && !rebinds && !isJsSourceFile(ts.getSourceFileOfNode(blame))) {
+    lowerer.unsupported("SC1090", blame, unboundFeature);
+    return call;
+  }
   const loc = locOf(blame);
   const type = instanceType(base);
   const subType = instanceType(sub);
-  const answerType = slot === null ? VOID : lowerer.withUndefinedArm(subType);
+  const answerType = rebinds ? lowerer.withUndefinedArm(subType) : VOID;
   const name = `%${sub.def.name}.%superResult`;
   if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
@@ -1059,7 +1096,9 @@ export function superIntoResultSlot(
     const existing = { id: "existing.0", name: "existing", type, mutable: false };
     const body: IrStmt[] = [];
     if (slot !== null) {
-      const feature = `constructing '${subDisplay}' when the constructor of '${display}' returns an existing instance that is not a '${subDisplay}' ('super()' rebinds 'this' to that instance, which must already be an instance of the class being constructed: create it as that class, or give it the class's prototype first)`;
+      const feature = rebinds
+        ? `constructing '${subDisplay}' when the constructor of '${display}' returns an existing instance that is not a '${subDisplay}' ('super()' rebinds 'this' to that instance, which must already be an instance of the class being constructed: create it as that class or a class below it)`
+        : unboundFeature;
       const diag = unsupportedDiag("SC1090", loc, feature);
       lowerer.runtimeFences.push(diag);
       const line =
@@ -1090,33 +1129,41 @@ export function superIntoResultSlot(
             loc,
           },
           then: [
+            ...(rebinds
+              ? [
+                  {
+                    kind: "if" as const,
+                    cond: {
+                      kind: "instanceOf" as const,
+                      value: varRef(existing.id, type, loc),
+                      className: sub.def.name,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [
+                      {
+                        kind: "return" as const,
+                        value: lowerer.coerceToExpected(
+                          {
+                            kind: "downcast",
+                            value: varRef(existing.id, type, loc),
+                            type: subType,
+                            loc,
+                          },
+                          answerType,
+                        ),
+                        loc,
+                      },
+                    ],
+                    else_: null,
+                    loc,
+                  },
+                ]
+              : []),
             {
-              kind: "if",
-              cond: {
-                kind: "instanceOf",
-                value: varRef(existing.id, type, loc),
-                className: sub.def.name,
-                type: BOOL,
-                loc,
-              },
-              then: [
-                {
-                  kind: "return",
-                  value: lowerer.coerceToExpected(
-                    { kind: "downcast", value: varRef(existing.id, type, loc), type: subType, loc },
-                    answerType,
-                  ),
-                  loc,
-                },
-              ],
-              else_: [
-                {
-                  kind: "runtimeFence",
-                  code: diag.code,
-                  message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
-                  loc,
-                },
-              ],
+              kind: "runtimeFence",
+              code: diag.code,
+              message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
               loc,
             },
           ],
@@ -1150,7 +1197,7 @@ export function superIntoResultSlot(
     }
     body.push({
       kind: "return",
-      value: slot === null ? null : lowerer.wrappedUndefined(answerType, loc)!,
+      value: rebinds ? lowerer.wrappedUndefined(answerType, loc)! : null,
       loc,
     });
     lowerer.liftedFns.push({
@@ -1163,13 +1210,27 @@ export function superIntoResultSlot(
     });
   }
   const answer: IrExpr = { kind: "call", callee: name, args: [self], type: answerType, loc };
-  if (slot === null)
-    return { kind: "block", body: [call, { kind: "exprStmt", expr: answer, loc }], loc };
+  // The base's slot is cleared before the call, so the helper reads only
+  // what this call's constructor published (beforeConstruction).
+  const clear: IrStmt[] =
+    slot === null
+      ? []
+      : [
+          {
+            kind: "assign",
+            localId: slot.id,
+            value: lowerer.wrappedUndefined(slot.type, loc)!,
+            loc,
+          },
+        ];
+  if (!rebinds)
+    return { kind: "block", body: [...clear, call, { kind: "exprStmt", expr: answer, loc }], loc };
   // `this` takes the instance the helper answers, and keeps itself when it
   // answers undefined.
   return {
     kind: "block",
     body: [
+      ...clear,
       call,
       {
         kind: "assign",

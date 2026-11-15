@@ -50,3 +50,45 @@ pending = new Leaf();
 const asLeaf = new Leaf();
 console.log(asLeaf instanceof Leaf, asLeaf.d);
 console.log(new Derived() !== first, new Derived().c);
+
+// A construction that a `finally` abandons after the constructor's return
+// leaves nothing behind for the next one, and `return this` answers the
+// rebound instance.
+let boom = false;
+class Guarded extends Base {
+  e = 5;
+  constructor() {
+    super();
+    try {
+      return;
+    } finally {
+      if (boom) {
+        boom = false;
+        throw new Error("finally");
+      }
+    }
+  }
+}
+class ReturnsThis extends Base {
+  f = 6;
+  constructor() {
+    super();
+    return this;
+  }
+}
+const guarded = new Guarded();
+guarded.a = 30;
+pending = guarded;
+boom = true;
+try {
+  new Guarded();
+} catch (error) {
+  console.log("abandoned", (error as Error).message);
+}
+const after = new Guarded();
+console.log(after === guarded, after.a, after.e);
+const returning = new ReturnsThis();
+returning.a = 40;
+pending = returning;
+const again2 = new ReturnsThis();
+console.log(again2 === returning, again2.a, again2.f);

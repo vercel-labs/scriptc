@@ -36,3 +36,12 @@ const registry = new Map([["x-counter", CounterElement]]);
 upgrading = element;
 const viaRegistry = new (registry.get("x-counter"))();
 console.log(viaRegistry === element, viaRegistry.count, new CounterElement() === element);
+
+// A function-local subclass constructs through its own environment.
+function defineLocal() {
+  class LocalElement extends BaseElement {
+    local = true;
+  }
+  return new LocalElement();
+}
+console.log(defineLocal().local, defineLocal().tagName);

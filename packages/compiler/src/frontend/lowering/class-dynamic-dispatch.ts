@@ -3375,8 +3375,11 @@ export class ClassDynamicDispatch {
       const found = byMethod.get(method);
       if (found) return found;
       const plans = this.propertyReceivers(lowerer, true, true, true);
-      const test = ({ info }: PropertyReceiver): ClassInfo[] => {
+      const test = ({ info, array }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
+        // A private (`#`) or compiler-owned (`%`) method is no property of an
+        // Array subclass instance: a string key does not reach it.
+        if (array && !isClassOwnEnumerableFieldName(method)) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
           emitterRooted(lowerer, info) &&
@@ -5414,12 +5417,18 @@ export class ClassDynamicDispatch {
           // that member, and every other key (an element, a builtin array
           // member) falls through to the read on the array itself.
           if (dispatch.write || dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
+          // Only the names a string key can reach: private (`#`) and
+          // compiler-owned (`%`) members are not properties of the instance.
           const names = new Set<string>();
           for (const field of info.fields.keys())
-            if (!field.startsWith("%") && !field.startsWith("#")) names.add(field);
+            if (isClassOwnEnumerableFieldName(field)) names.add(field);
           for (const method of info.methods.keys()) {
             const name = method.startsWith("get:") ? method.slice(4) : method;
-            if (!method.startsWith("set:") && !name.startsWith("sym:") && !name.startsWith("%"))
+            if (
+              !method.startsWith("set:") &&
+              !name.startsWith("sym:") &&
+              isClassOwnEnumerableFieldName(name)
+            )
               names.add(name);
           }
           if (names.size === 0) continue;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-private-members-stay-private.js"
+ ],
+ "diags": []
+}

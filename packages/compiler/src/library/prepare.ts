@@ -7,7 +7,6 @@ import {
   targetRefusalDiag,
 } from "../backend/target-diagnostics.js";
 import {
-  checkerPanicDiag,
   libAsyncExportDiag,
   libAsyncSurfaceDiag,
   libExportUnresolvedDiag,
@@ -17,11 +16,11 @@ import {
   libSidecarDiag,
   libUnmappableSignatureDiag,
   iceDiag,
-  isCheckerPanic,
   LIB_INBOUND_BYTES_TRAP_CODE,
   LIB_RUNTIME_TRAP_CODES,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
+import { compilerCrashDiag, isCompilerCrash } from "../diagnostics/crash-site.js";
 import {
   checkLibraryIntegerSlots,
   classSeed,
@@ -654,10 +653,8 @@ export function prepareLibrary(
         lib_roots: profile.exports.length + contractSurfaceRoots.length,
       });
     } catch (e) {
-      if (!isCheckerPanic(e)) throw e;
-      return fail([
-        checkerPanicDiag(e.message.split("\n", 1)[0]!, { file: entryPath, start: 0, end: 0 }),
-      ]);
+      if (!isCompilerCrash(e)) throw e;
+      return fail([compilerCrashDiag(e, { file: entryPath, start: 0, end: 0 })]);
     }
     if (lowered.module === null) return fail(lowered.diagnostics);
     entryInfo = fe.entryExports(profile.exports.map((e) => e.export));

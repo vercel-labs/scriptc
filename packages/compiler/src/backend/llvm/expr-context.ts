@@ -64,8 +64,14 @@ type LibCallPrefixOf<T extends string> = T extends `${infer Prefix}.${string}` ?
 export type LibCallPrefix = LibCallPrefixOf<IrLibFn>;
 
 export interface LlStreamTypedRefAdapter {
+  /** The view function a capsule names: the adapter this module defines
+   * (`${numbered}_materialize`) or a function of the runtime. */
   snapshot: string;
   commit: string;
+  /** The name the adapter took from the module counter (`sc_ldr_N`). The
+   * symbols the module defines for it are spelled from this name, and the
+   * chunk journal renames by it (emit-journal.ts), whatever `snapshot` is. */
+  readonly numbered: string;
   /** `@sym` of the ScrDynTypedArrayOps table for live array capsules. */
   arrayOps?: string;
   /** `@sym` of the ScrDynTypedRecordOps table for live record capsules. */

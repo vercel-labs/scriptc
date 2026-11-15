@@ -1,0 +1,10 @@
+{
+  "name": "node-islands-type-claims-coverage-fixture",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "tc-island": "node"
+    }
+  }
+}

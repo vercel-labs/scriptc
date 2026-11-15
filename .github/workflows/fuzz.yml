@@ -1,0 +1,118 @@
+name: Fuzz and ThreadSanitizer
+
+# The fuzz targets under tests/fuzz (tests/fuzz/README.md), built with AddressSanitizer, the reference-count audit
+# and UndefinedBehaviorSanitizer; and, nightly, the corpus programs that use worker threads under ThreadSanitizer.
+on:
+  # A smoke run on pull requests that change the runtime or the fuzzers: every regression case, then twenty
+  # seconds per target with fixed seeds, so it fails only for what the pull request changed.
+  pull_request:
+    paths:
+      - packages/runtime/**
+      - tests/fuzz/**
+      - scripts/fuzz.mjs
+      - scripts/fuzz-http.mjs
+      - .github/workflows/fuzz.yml
+  # The long run on main: ten minutes per target with a seed taken from the date, then the request-framing
+  # differential against Node.
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing time per target, in seconds
+        default: "600"
+      framing:
+        description: Time for the request-framing differential, in seconds (0 skips it)
+        default: "300"
+      seed:
+        description: The first seed (default, the day's)
+        default: ""
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ github.event_name == 'pull_request' && 'smoke' || 'long' }})
+    # The private mirror carries this file too; only the public repository runs the nightly.
+    if: github.event_name != 'schedule' || github.repository == 'vercel-labs/scriptc'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 40 || 120 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      # A sanitized build compiles the runtime from source and takes its unit selection and ICU from the pack.
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm build
+      # Ubuntu pipes core dumps to apport, which streams the runtime's reserved address space; write none.
+      - name: Disable piped core dumps
+        run: sudo sysctl -w kernel.core_pattern=core
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '20' || inputs.seconds || '600' }}
+          FRAMING_SECONDS: ${{ github.event_name == 'pull_request' && '0' || inputs.framing || '300' }}
+          SEED: ${{ github.event_name == 'pull_request' && '1' || inputs.seed }}
+        run: |
+          ulimit -c 0
+          # Ten thousand seeds per day, so two nights never run the same cases.
+          seed=${SEED:-$(( $(date -u +%s) / 86400 * 10000 ))}
+          echo "seed $seed"
+          node scripts/fuzz.mjs --seconds="$SECONDS_PER_TARGET" --framing="$FRAMING_SECONDS" --seed="$seed" \
+            --out="$RUNNER_TEMP/fuzz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fuzz-failures
+          path: |
+            ${{ runner.temp }}/fuzz/crashes
+            ${{ runner.temp }}/fuzz/summary.json
+            ${{ runner.temp }}/fuzz/framing-stricter.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Every corpus program that uses worker threads, built and run with ThreadSanitizer. Each program is a full
+  # sanitized build, so this runs nightly and on manual runs only.
+  tsan:
+    name: thread sanitizer (worker programs)
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'schedule' || github.repository == 'vercel-labs/scriptc')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm build
+      - name: Disable piped core dumps
+        run: sudo sysctl -w kernel.core_pattern=core
+      - name: Worker programs under ThreadSanitizer
+        run: |
+          ulimit -c 0
+          node scripts/tsan-workers.mjs --out="$RUNNER_TEMP/tsan"

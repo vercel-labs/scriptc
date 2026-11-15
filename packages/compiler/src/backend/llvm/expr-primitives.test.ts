@@ -399,3 +399,143 @@ test("string reads of a scan receiver load it inline where emitted code can addr
   expect(darwin).not.toContain("@scr_str_scan");
   expect(helper(darwin)).not.toContain("%scan.same");
 });
+
+test("a bitwise conversion of a constant-divisor quotient divides in integers", () => {
+  const ref = (localId: string, type = F64): IrExpr => ({ kind: "varRef", localId, type, loc });
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const text: IrExpr = ref("text", STRING);
+  const length: IrExpr = {
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: text,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const div = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op: "/",
+    left,
+    right,
+    type: F64,
+    loc,
+  });
+  const bin = (op: "|" | "&" | ">>>" | "<<", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op,
+    left,
+    right,
+    type: F64,
+    loc,
+  });
+  const returning = (name: string, value: IrExpr) => ({
+    name,
+    params: [
+      { name: "text", localId: "text", type: STRING },
+      { name: "x", localId: "x", type: F64 },
+    ],
+    returnType: F64,
+    locals: [
+      { id: "text", name: "text", type: STRING, mutable: false },
+      { id: "x", name: "x", type: F64, mutable: false },
+    ],
+    loc,
+    body: [{ kind: "return" as const, loc, value }],
+  });
+  const mod = fixture();
+  mod.functions = [
+    { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+    returning("literal", bin("|", div(num(10), num(3)), num(0))),
+    returning("length", bin("|", div(length, num(2)), num(0))),
+    returning("zero_divisor", bin("|", div(num(10), num(0)), num(0))),
+    returning("fractional_divisor", bin("|", div(num(10), num(2.5)), num(0))),
+    returning("unknown_dividend", bin("|", div(ref("x"), num(3)), num(0))),
+    returning("unsigned_shift", bin(">>>", div(num(10), num(3)), num(0))),
+    returning("and_all_ones", bin("&", div(num(10), num(3)), num(-1))),
+    // 2 ** 64 is an integer as a double but not exactly representable in
+    // the i64 constant the instruction takes; it truncates to 0 there.
+    returning("huge_divisor", bin("|", div(num(10), num(2 ** 64)), num(0))),
+    // A shift count on the RIGHT is the identity conversion; a literal on
+    // the LEFT is the shifted value, so `0 << (10 / 3)` is `0 << 3`.
+    returning("left_literal", bin("<<", num(0), div(num(10), num(3)))),
+    returning("left_literal_32", bin("<<", num(32), div(num(10), num(3)))),
+    returning("shift_count_zero", bin("<<", div(num(10), num(3)), num(0))),
+  ];
+  const llvm = emitLlvmModule(mod);
+  const body = (name: string): string =>
+    new RegExp(`^define internal [^\\n]*@sc_[bf]+_${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(
+      llvm,
+    )![0];
+  // ToInt32 of a real quotient truncates toward zero, which integer
+  // division does, so no floating-point division is emitted at all.
+  for (const name of ["literal", "length", "and_all_ones"]) {
+    expect(body(name)).toMatch(/ = sdiv i64 .*, (?:2|3)$/m);
+    expect(body(name)).not.toMatch(/ = fdiv double /);
+  }
+  // Every other shape keeps the ToInt32 of the real quotient.
+  for (const name of [
+    "zero_divisor",
+    "fractional_divisor",
+    "unknown_dividend",
+    "unsigned_shift",
+    "huge_divisor",
+    "left_literal",
+    "left_literal_32",
+  ]) {
+    expect(body(name)).toMatch(/ = fdiv double /);
+    expect(body(name)).not.toMatch(/ = sdiv i64 /);
+  }
+  // The shift count on the right is the identity conversion.
+  expect(body("shift_count_zero")).toMatch(/ = sdiv i64 10, 3$/m);
+});
+
+test("a quotient conversion evaluates a side-effecting dividend once", () => {
+  const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const arr = (): IrExpr => ({
+    kind: "varRef",
+    localId: "a",
+    type: { kind: "array", elem: F64 },
+    loc,
+  });
+  const push = (value: IrExpr): IrExpr => ({
+    kind: "arrIntrinsic",
+    method: "push",
+    receiver: arr(),
+    args: [value],
+    type: F64,
+    loc,
+  });
+  const value: IrExpr = {
+    kind: "bin",
+    op: "|",
+    left: {
+      kind: "bin",
+      op: "/",
+      left: push(num(1)),
+      right: num(2),
+      type: F64,
+      loc,
+    },
+    right: num(0),
+    type: F64,
+    loc,
+  };
+  const mod = fixture();
+  mod.functions = [
+    { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+    {
+      name: "push_once",
+      params: [],
+      returnType: F64,
+      locals: [{ id: "a", name: "a", type: { kind: "array", elem: F64 }, mutable: true }],
+      loc,
+      body: [{ kind: "return" as const, loc, value }],
+    },
+  ];
+  const llvm = emitLlvmModule(mod);
+  const body = /^define internal [^\n]*@sc_[bf]+_push_once(?:\.i32)?\([^]*?^}/m.exec(llvm)![0];
+  // The push's range is not proven, so the conversion falls back to the
+  // real quotient; the dividend must still be pushed exactly once.
+  expect(body.match(/@scr_arr_push_f64/g)).toHaveLength(1);
+  expect(body).toMatch(/ = fdiv double /);
+});

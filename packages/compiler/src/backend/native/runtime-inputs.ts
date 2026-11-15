@@ -81,6 +81,7 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
+  "scr_parallel.c",
   "scr_alloc.c",
   "scr_cipher_info.c",
   "scr_ieee754.c",

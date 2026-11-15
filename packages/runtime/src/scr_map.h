@@ -256,6 +256,9 @@ const ScrMapCEntry *scr_map_entry_str_c(const ScrMap *m, const ScrStr *key);
 bool scr_map_get_span_f64(const ScrMap *m, const char *bytes, size_t length, double *out);
 bool scr_map_get_span_bool(const ScrMap *m, const char *bytes, size_t length, bool *out);
 void *scr_map_get_span_ref(const ScrMap *m, const char *bytes, size_t length);
+/* Whether the map has the span key. A reference read that widens its value
+ * asks before it reads, because a stored null is still a hit. */
+bool scr_map_has_span(const ScrMap *m, const char *bytes, size_t length);
 
 /* Fresh shallow copies with compact storage and independent mutation.
  * keys_only selects a Set; checked views materialize their boxed values.

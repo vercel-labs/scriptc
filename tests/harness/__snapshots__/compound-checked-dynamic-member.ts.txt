@@ -1,0 +1,13 @@
+compound-checked-dynamic-member.ts:12:21 - error SC1043: compound '+=' assignments of 'string' values to 'number | string' targets are not supported yet
+
+  11 | const parsed: unknown = JSON.parse('{"kind":"cell","label":"a"}');
+  12 | if (isCell(parsed)) parsed.label += "b";
+     |                     ^~~~~~~~~~~~
+  13 | 
+
+compound-checked-dynamic-member.ts:15:1 - error SC1043: compound '+=' assignments of 'string' values to untyped targets are not supported yet
+
+  14 | const loose: any = JSON.parse('{"text":"a"}');
+  15 | loose.text += "b";
+     | ^~~~~~~~~~
+  16 | console.log(JSON.stringify(parsed), JSON.stringify(loose));

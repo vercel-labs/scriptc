@@ -3,16 +3,16 @@ description: Reuse the verified Zig installation across hosted runners
 runs:
   using: composite
   steps:
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: zig
       with:
         path: ${{ runner.tool_cache }}/zig/0.16.0
         key: zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-minisign-v1
     # The installer checks the verified marker and runs `zig version` on hits.
-    - uses: vercel-labs/setup-zig@v1
+    - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
       with:
         version: 0.16.0
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.zig.outputs.cache-hit != 'true'
       with:
         path: ${{ runner.tool_cache }}/zig/0.16.0

@@ -1,0 +1,17 @@
+umd-export-forced-native/main.ts:6:13 - error SC1090: the value of 'wordform' (its module assigns module.exports inside a function or under a condition, at index.js:6, so what it exports is decided when it runs) is not supported yet
+
+  5 | 
+  6 | console.log(wordform("item", 2), wordform.singular("items"));
+    |             ^~~~~~~~
+  7 | const held = wordform;
+
+  hint: run the package in a Node island: --node-island=wordform, or leave the choice to the build with --node-islands=auto
+
+umd-export-forced-native/main.ts:7:14 - error SC1090: the value of 'wordform' (its module assigns module.exports inside a function or under a condition, at index.js:6, so what it exports is decided when it runs) is not supported yet
+
+  6 | console.log(wordform("item", 2), wordform.singular("items"));
+  7 | const held = wordform;
+    |              ^~~~~~~~
+  8 | console.log(typeof held);
+
+  hint: run the package in a Node island: --node-island=wordform, or leave the choice to the build with --node-islands=auto

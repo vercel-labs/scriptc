@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/umd-export-forced-native/main.ts"
+ ],
+ "diags": []
+}

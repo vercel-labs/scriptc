@@ -85,6 +85,7 @@ const PRODUCERS: Readonly<Record<string, string>> = {
   "dyn.bitwise": "js.bitwise",
   "dyn.toNumeric": "js.toNumeric",
   "dyn.increment": "js.increment",
+  "dyn.negate": "js.negate",
 };
 
 /** dyn operators with a static result, with their jsval twins. */
@@ -249,6 +250,11 @@ function jsvalParams(
     byName.set(fn.name, fn);
     if (!direct.has(fn.name) && !candidates.has(fn.name)) continue;
     if (sites.site(fn.name) !== null) continue;
+    // A named helper (class-dynamic-dispatch.ts `%dyn.class.named.<n>`)
+    // hands each parameter to one checked-dynamic operation: a jsval
+    // parameter would move its boxing from the call into the helper and
+    // save none.
+    if (fn.name.startsWith("%dyn.class.named.")) continue;
     const js = fn.params.map((p) => p.type.kind === "dyn");
     if (js.includes(true)) params.set(fn.name, js);
   }

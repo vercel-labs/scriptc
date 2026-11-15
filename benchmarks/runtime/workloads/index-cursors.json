@@ -2,5 +2,6 @@
   "entry": "workloads/index-cursors.ts",
   "args": [
     "20000"
-  ]
+  ],
+  "scaleArg": 0
 }

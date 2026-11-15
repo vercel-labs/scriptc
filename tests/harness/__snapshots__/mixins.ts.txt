@@ -16,13 +16,6 @@ mixins.ts:21:13 - error SC2004: uses of 'makeClass' inherit the blocker on its d
 
   hint: the declaration of 'makeClass' did not compile — fix the diagnostic reported there and these sites clear with it
 
-mixins.ts:25:17 - error SC1090: this mixin call (its instantiation failed to collect — see the instantiation's own diagnostics) is not supported yet
-
-  24 | // sit under a mixin layer.
-  25 | class E extends M(Error) {}
-     |                 ^~~~~~~~
-  26 | console.log(new E().m);
-
 mixins.ts:25:19 - error SC1090: mixins over the builtin class 'Error' (its construction is libCall-shaped — only program classes compose) is not supported yet
 
   24 | // sit under a mixin layer.
@@ -71,26 +64,12 @@ mixins.ts:48:17 - error SC1090: mixin constructors whose rest parameter does any
      |                 ^~~~~~~~~~~~~~
   49 |       super(...args);
 
-mixins.ts:55:17 - error SC1090: this mixin call (its instantiation failed to collect — see the instantiation's own diagnostics) is not supported yet
-
-  54 | }
-  55 | class S extends Sneaky(Base) {}
-     |                 ^~~~~~~~~~~~
-  56 | console.log(new S().argc);
-
 mixins.ts:56:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
 
   55 | class S extends Sneaky(Base) {}
   56 | console.log(new S().argc);
      |             ^~~~~~~
   57 | 
-
-mixins.ts:67:9 - error SC1090: extending computed expressions are not supported yet
-
-  66 | }
-  67 | class L extends Leaky(Base) {}
-     |         ^~~~~~~~~~~~~~~~~~~
-  68 | console.log(new L().l);
 
 mixins.ts:67:17 - error SC2008: values of type '{ new (...args: any[]): Leaky.(Anonymous class); prototype: Leaky.(Anonymous class); } & typeof Base' cannot be compiled: this intersection resolves to no runtime shape
 

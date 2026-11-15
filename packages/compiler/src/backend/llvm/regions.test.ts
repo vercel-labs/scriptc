@@ -188,6 +188,50 @@ test("walkers cover the ordinary classes and records that can reach a region", (
   expect(table).toMatch(/\{ ptr, ptr \} zeroinitializer \] ; region type table$/);
 });
 
+test("a class in a nullable union skips the null sentinel in its counts", () => {
+  // `Node | null | undefined` spells its null arm with the module's static
+  // sentinel, which reaches an owned value's retain and release. A region
+  // instance has no header word to test immortality in, so the skip is
+  // explicit; a ProgramLifetime class outside such a union keeps the plain
+  // NULL test.
+  const maybe: IrType = { kind: "union", unionId: "maybe" };
+  const l: IrModule = {
+    ...module(),
+    classes: [
+      {
+        name: "Node",
+        fields: [
+          { name: "next", type: maybe },
+          { name: "value", type: F64 },
+        ],
+        methods: [],
+        loc,
+      },
+      { name: "Other", fields: [{ name: "value", type: F64 }], methods: [], loc },
+    ],
+    records: [],
+    unions: [
+      {
+        id: "maybe",
+        arms: [{ kind: "nullT" }, { kind: "object", className: "Node" }, { kind: "undefinedT" }],
+      },
+    ],
+    contracts: { programLifetime: ["Node", "Other"] },
+  };
+  expect(validateModule(l)).toEqual([]);
+  const llvm = emitLlvmModule(l, { pointerBits: 64 });
+  for (const fn of [mangleClassRetain("Node"), mangleClassRelease("Node")]) {
+    const text = body(llvm, fn);
+    expect(text, fn).toContain("%isnullarm = icmp eq ptr %o, @sc_nullable_null");
+    expect(text, fn).toMatch(/%skip0 = or i1 %idle, %nulled/);
+  }
+  for (const fn of [mangleClassRetain("Other"), mangleClassRelease("Other")]) {
+    const text = body(llvm, fn);
+    expect(text, fn).not.toContain("@sc_nullable_null");
+    expect(text, fn).toMatch(/%skip0 = or i1 %idle, %isnull/);
+  }
+});
+
 test("worker executables count only their own chunks", () => {
   const llvm = emitLlvmModule({ ...module(), workers: true }, { pointerBits: 64 });
   const retain = body(llvm, mangleClassRetain("Node"));

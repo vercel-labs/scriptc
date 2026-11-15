@@ -1,0 +1,7 @@
+{
+  "entry": "../startup/unused/main.ts",
+  "launches": 20,
+  "args": [
+    "--version"
+  ]
+}

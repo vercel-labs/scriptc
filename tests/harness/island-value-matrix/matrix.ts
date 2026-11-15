@@ -633,9 +633,19 @@ function cellControl(p: Program, kind: Kind): void {
     p.obs(`T.json${s}`, `JSON.stringify(${v})`);
     p.obs(`T.clone${s}`, `typeof structuredClone(${v})`);
     uObs(p, "U", v, s);
+    // The value as a key of an untyped collection, as the crossing cells
+    // observe it for a value that came back from the island.
+    p.obs(`N.mapkey${s}`, `new Map<unknown, number>([[${v}, 1]]).get(${v})`);
     if (kind.types.w !== undefined) {
       p.def(`S.widen${s}`, p.name("w", i), v, false, kind.types.w.t);
       nativeReads(p, kind, "w", "W.read", p.name("w", i), i, s);
+      // The wide type as a function's result has it: an assignment narrows
+      // the binding above to the value's own type, a call does not. This is
+      // what a wide-typed island function's result is to the program.
+      const r = p.name("r", i);
+      p.def(`S.result${s}`, r, `((x: ${kind.types.w.t}): ${kind.types.w.t} => x)(${v})`);
+      nativeReads(p, kind, "w", "W.result.read", r, i, s);
+      p.obs(`W.result.mapkey${s}`, `new Map<unknown, number>([[${v}, 1]]).get(${r})`);
     }
     p.def(`S.unknown${s}`, p.name("u", i), v, false, "unknown");
     p.def(`N.cast${s}`, p.name("c", i), `${p.name("u", i)} as ${precise.t}`);

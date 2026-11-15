@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/string-union-collection-keys-round-trip.ts"
+ ],
+ "diags": []
+}

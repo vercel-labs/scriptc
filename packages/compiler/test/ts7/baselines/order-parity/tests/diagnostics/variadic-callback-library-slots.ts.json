@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/variadic-callback-library-slots.ts"
+ ],
+ "diags": []
+}

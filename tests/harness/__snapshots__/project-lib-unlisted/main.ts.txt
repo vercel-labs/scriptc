@@ -1,0 +1,15 @@
+project-lib-unlisted/main.ts:3:26 - error SC0001: Cannot find name 'HTMLElement'.
+
+  2 | // declares stay errors, with a hint that names the setting.
+  3 | function widthOf(target: HTMLElement): number {
+    |                          ^~~~~~~~~~~
+  4 |   return target.offsetWidth;
+
+  hint: 'HTMLElement' comes from the DOM library, which the project's tsconfig does not name in "lib" (scriptc checks with the ES2025 library, Node types and the names of the libraries "lib" lists) — add "dom" to "lib": the name then type-checks as under the project's tsc, and at run time it is absent as under Node.js (a read throws ReferenceError, typeof answers "undefined"); or declare the shape you need locally
+
+project-lib-unlisted/main.ts:6:36 - error SC0001: Cannot find name 'document'. Do you need to change your target library? Try changing the 'lib' compiler option to include 'dom'.
+
+  5 | }
+  6 | console.log(typeof widthOf, typeof document);
+    |                                    ^~~~~~~~
+  7 | 

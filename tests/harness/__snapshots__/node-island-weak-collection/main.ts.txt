@@ -1,0 +1,35 @@
+node-island-weak-collection/main.ts:12:15 - error SC8010: a 'string | WeakSet<object>' value (its 'WeakSet<object>' arm has no island export) cannot cross into or out of a Node island yet
+
+  11 | function pass(either: WeakSet<object> | string): string {
+  12 |   return take(either);
+     |               ^~~~~~
+  13 | }
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-weak-collection/main.ts:15:18 - error SC8010: a 'WeakMap<object, string>' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  14 | 
+  15 | console.log(take(labels));
+     |                  ^~~~~~
+  16 | console.log(take(seen));
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-weak-collection/main.ts:16:18 - error SC8010: a 'WeakSet<object>' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  15 | console.log(take(labels));
+  16 | console.log(take(seen));
+     |                  ^~~~
+  17 | console.log(pass(seen));
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-weak-collection/main.ts:18:33 - error SC8010: a 'WeakMap<object, string>' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  17 | console.log(pass(seen));
+  18 | console.log(line({ user: "ada", labels }));
+     |                                 ^~~~~~
+  19 | // What the table holds still crosses: a Map, a Set, bytes.
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

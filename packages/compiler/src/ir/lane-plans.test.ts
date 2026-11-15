@@ -4,6 +4,8 @@
  * tests/harness/lane-loops.test.ts. */
 import { expect, test } from "vitest";
 import {
+  type LaneNum,
+  type LaneOuterPlan,
   type LanePlan,
   type LaneShape,
   type LaneStorePlan,
@@ -15,9 +17,11 @@ import {
   BOOL,
   F64,
   type IrBytesElem,
+  type IrClassDef,
   type IrExpr,
   type IrFunction,
   type IrLocal,
+  type IrParam,
   type IrStmt,
   type IrType,
   arrayOf,
@@ -638,7 +642,7 @@ test("SCRIPTC_LANES_PLAN names the shapes", () => {
   expect([...parseLaneShapes("")]).toEqual([]);
   expect([...parseLaneShapes("sum")]).toEqual(["sum"]);
   expect([...parseLaneShapes(" count , sum ")]).toEqual(["count", "sum"]);
-  expect([...parseLaneShapes("all")]).toEqual(["sum", "count", "store"]);
+  expect([...parseLaneShapes("all")]).toEqual(["sum", "count", "store", "outer"]);
   expect([...parseLaneShapes("sum,nonsense")]).toEqual(["sum"]);
 });
 
@@ -646,4 +650,605 @@ test("a build without plans keeps the cache keys it had", () => {
   expect(laneShapesKeyParts(new Set())).toEqual([]);
   expect(laneShapesKeyParts(new Set(["sum", "count"]))).toEqual(["lane-plans-sum+count"]);
   expect(laneShapesKeyParts(new Set(["store"]))).toEqual(["lane-plans-store"]);
+});
+
+/* Outer rows: a `for` whose body declares the row's own state, runs one
+ * inner `while` to that row's own exit, and counts the rows whose test held.
+ * The plan records the row's slots, the inner test, the steps in source
+ * order, and the trailing count. Everything the lane body may not read keeps
+ * the row scalar. */
+
+const OUTER: ReadonlySet<LaneShape> = new Set<LaneShape>(["outer"]);
+const objOf = (className: string): IrType => ({ kind: "object", className });
+const newOf = (className: string, args: IrExpr[]): IrExpr => ({
+  kind: "new",
+  className,
+  args,
+  type: objOf(className),
+  loc,
+});
+const callOf = (callee: string, args: IrExpr[]): IrExpr => ({
+  kind: "call",
+  callee,
+  args,
+  type: F64,
+  loc,
+});
+const fieldOf = (objExpr: IrExpr, className: string, field: string): IrExpr => ({
+  kind: "fieldGet",
+  obj: objExpr,
+  className,
+  field,
+  type: F64,
+  loc,
+});
+const setField = (className: string, objExpr: IrExpr, field: string, value: IrExpr): IrStmt => ({
+  kind: "fieldSet",
+  className,
+  obj: objExpr,
+  field,
+  value,
+  loc,
+});
+const whileOf = (cond: IrExpr, body: IrStmt[]): IrStmt => ({ kind: "while", cond, body, loc });
+const ifOf = (cond: IrExpr, then: IrStmt[]): IrStmt => ({
+  kind: "if",
+  cond,
+  then,
+  else_: null,
+  loc,
+});
+const paramOf = (localId: string, type: IrType): IrParam => ({ localId, name: localId, type });
+const logical = (op: "&&" | "||", left: IrExpr, right: IrExpr): IrExpr => ({
+  kind: "logical",
+  op,
+  left,
+  right,
+  type: BOOL,
+  loc,
+});
+
+const PAIR = "Pair";
+const pairType = objOf(PAIR);
+const PAIR_CLASS: IrClassDef = {
+  name: PAIR,
+  methods: ["plus", "times", "norm"],
+  fields: [
+    { name: "re", type: F64 },
+    { name: "im", type: F64 },
+  ],
+  loc,
+};
+const field2 = (field: string): IrExpr => fieldOf(ref("self"), PAIR, field);
+const product = (left: string, right: string): IrExpr => bin("*", field2(left), field2(right));
+const pairCtor: IrFunction = {
+  name: "%Pair.constructor",
+  params: [paramOf("self", pairType), paramOf("re", F64), paramOf("im", F64)],
+  returnType: { kind: "undefinedT" },
+  locals: [
+    { id: "self", name: "self", type: pairType, mutable: false },
+    { id: "re", name: "re", type: F64, mutable: false },
+    { id: "im", name: "im", type: F64, mutable: false },
+  ],
+  body: [
+    setField(PAIR, ref("self"), "re", ref("re")),
+    setField(PAIR, ref("self"), "im", ref("im")),
+  ],
+  loc,
+};
+const pairNorm: IrFunction = {
+  name: "%Pair.norm",
+  params: [paramOf("self", pairType)],
+  returnType: F64,
+  locals: [{ id: "self", name: "self", type: pairType, mutable: false }],
+  body: [{ kind: "return", value: bin("+", product("re", "re"), product("im", "im")), loc }],
+  loc,
+};
+const pairTimes: IrFunction = {
+  name: "%Pair.times",
+  params: [paramOf("self", pairType), paramOf("o", pairType)],
+  returnType: pairType,
+  locals: [
+    { id: "self", name: "self", type: pairType, mutable: false },
+    { id: "o", name: "o", type: pairType, mutable: false },
+  ],
+  body: [
+    {
+      kind: "return",
+      value: newOf(PAIR, [
+        bin(
+          "-",
+          bin("*", field2("re"), fieldOf(ref("o"), PAIR, "re")),
+          bin("*", field2("im"), fieldOf(ref("o"), PAIR, "im")),
+        ),
+        bin(
+          "+",
+          bin("*", field2("re"), fieldOf(ref("o"), PAIR, "im")),
+          bin("*", field2("im"), fieldOf(ref("o"), PAIR, "re")),
+        ),
+      ]),
+      loc,
+    },
+  ],
+  loc,
+};
+const pairFunctions = [pairCtor, pairNorm, pairTimes];
+
+const rowLocals: IrLocal[] = [
+  { id: "x", name: "x", type: F64, mutable: true },
+  { id: "size", name: "size", type: F64, mutable: false },
+  { id: "limit", name: "limit", type: F64, mutable: false },
+  { id: "total", name: "total", type: F64, mutable: true },
+  { id: "inside", name: "inside", type: F64, mutable: true },
+  { id: "c", name: "c", type: pairType, mutable: false },
+  { id: "z", name: "z", type: pairType, mutable: true },
+  { id: "n", name: "n", type: F64, mutable: true },
+  { id: "j", name: "j", type: F64, mutable: true },
+];
+
+function rowPlan(
+  body: IrStmt[],
+  opts: {
+    shapes?: ReadonlySet<LaneShape>;
+    locals?: IrLocal[];
+    classes?: IrClassDef[];
+    functions?: IrFunction[];
+  } = {},
+): LanePlan | undefined {
+  const locals = opts.locals ?? rowLocals;
+  const f: IrFunction = {
+    name: "row",
+    params: [],
+    returnType: F64,
+    body,
+    locals,
+    loc,
+  };
+  const plans = planLaneLoops(
+    f,
+    new Map(locals.map((l) => [l.id, l] as const)),
+    opts.shapes ?? OUTER,
+    opts.classes ?? [PAIR_CLASS],
+    opts.functions ?? pairFunctions,
+  );
+  return [...plans.values()][0];
+}
+
+/** `for (let x = 0; x < bound; x++) body`. */
+function row(body: IrStmt[], bound: string = "size"): IrStmt {
+  return {
+    kind: "for",
+    init: decl("x", num(0)),
+    cond: bin("<", ref("x"), ref(bound)),
+    update: assign("x", bin("+", ref("x"), num(1))),
+    body,
+    loc,
+  };
+}
+
+/** The value-object row: the row's constant, a carried instance, the inner
+ * test, and the counted rows. */
+function rowBody(): IrStmt[] {
+  return [
+    decl(
+      "c",
+      newOf(PAIR, [
+        bin("-", bin("*", bin("/", ref("x"), ref("size")), num(3)), num(2)),
+        ref("limit"),
+      ]),
+    ),
+    decl("z", newOf(PAIR, [num(0), num(0)])),
+    decl("n", num(0)),
+    whileOf(
+      logical(
+        "&&",
+        bin("<", ref("n"), ref("limit"), BOOL),
+        bin("<=", callOf("%Pair.norm", [ref("z")]), num(4), BOOL),
+      ),
+      [
+        assign("z", callOf("%Pair.times", [ref("z"), ref("z")])),
+        assign("n", bin("+", ref("n"), num(1))),
+      ],
+    ),
+    ifOf(bin("===", ref("n"), ref("limit"), BOOL), [
+      assign("inside", bin("+", ref("inside"), num(1))),
+    ]),
+  ];
+}
+
+const slotName = (v: { id: string; field: string | null }): string =>
+  v.field === null ? v.id : `${v.id}.${v.field}`;
+
+test("a value-object row gets an outer plan", () => {
+  const p = rowPlan([row(rowBody())]);
+  expect(p?.shape).toBe("outer");
+  if (p?.shape !== "outer") return;
+  expect(p.induction).toBe("x");
+  expect(p.bound).toEqual(ref("size"));
+  // The row's declarations start every group: the constant's two fields, the
+  // carried instance's two, and the inner counter.
+  expect(p.initial.map(slotName)).toEqual(["c.re", "c.im", "z.re", "z.im", "n"]);
+  // Each inner assignment is a group of its own, so the second one reads what
+  // the first stored.
+  expect(p.steps.map((v) => `${slotName(v)}@${v.group}`)).toEqual(["z.re@0", "z.im@0", "n@1"]);
+  expect(p.tail).toEqual({
+    accumulator: "inside",
+    test: {
+      kind: "cmp",
+      op: "===",
+      left: { kind: "state", id: "n", field: null },
+      right: { kind: "invariant", expr: ref("limit") },
+    },
+  });
+});
+
+test("an inner assignment reads the slots the earlier groups stored", () => {
+  const plain = rowBody();
+  const loop = plain[3] as IrStmt & { kind: "while" };
+  expect(loop.kind).toBe("while");
+  const p = rowPlan([
+    row([
+      ...plain.slice(0, 3),
+      whileOf(loop.cond, [
+        assign("z", callOf("%Pair.times", [ref("z"), ref("c")])),
+        assign("z", callOf("%Pair.times", [ref("z"), ref("z")])),
+        assign("n", bin("+", ref("n"), num(1))),
+      ]),
+      plain[4]!,
+    ]),
+  ]);
+  if (p?.shape !== "outer") throw new Error("expected an outer plan");
+  expect(p.steps.map((v) => `${slotName(v)}@${v.group}`)).toEqual([
+    "z.re@0",
+    "z.im@0",
+    "z.re@1",
+    "z.im@1",
+    "n@2",
+  ]);
+  // The second assignment's `z` reads what the first group stored; the trees
+  // the first assignment was built from would read the updated slots instead.
+  expect(p.steps[2]!.value).toEqual({
+    kind: "op",
+    op: "-",
+    left: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "z", field: "re" },
+      right: { kind: "state", id: "z", field: "re" },
+    },
+    right: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "z", field: "im" },
+      right: { kind: "state", id: "z", field: "im" },
+    },
+  });
+});
+
+test("a row's test reads the slots and its constant keeps the counter", () => {
+  const p = rowPlan([row(rowBody())]);
+  if (p?.shape !== "outer") throw new Error("expected an outer plan");
+  expect(p.cond).toMatchObject({
+    kind: "and",
+    left: {
+      kind: "cmp",
+      op: "<",
+      left: { kind: "state", id: "n", field: null },
+      right: { kind: "invariant" },
+    },
+    right: {
+      kind: "cmp",
+      op: "<=",
+      left: {
+        kind: "op",
+        op: "+",
+        left: { kind: "op", op: "*", left: { kind: "state", id: "z", field: "re" } },
+        right: { kind: "op", op: "*", left: { kind: "state", id: "z", field: "im" } },
+      },
+      right: { kind: "const", value: 4 },
+    },
+  });
+  // `(x / size) * 3 - 2`: the row's constant follows the counter.
+  expect(p.initial[0]!.value).toMatchObject({
+    kind: "op",
+    op: "-",
+    left: { kind: "op", op: "*", left: { kind: "op", op: "/", left: { kind: "induction" } } },
+    right: { kind: "const", value: 2 },
+  });
+  // The carried instance starts from its own constructor's field writes.
+  expect(p.initial[2]!.value).toEqual({ kind: "const", value: 0 });
+});
+
+test("a chained initializer reads the earlier initializer's slot", () => {
+  // `let t1 = t0 * t0 + t0 + 1`, through `t8`, then a row whose constant is
+  // `t8`. A declaration's slots are stored before the next declaration's
+  // values are computed, so each initializer can read the one before it from
+  // its slot. Carrying the trees instead would inline the whole chain at each
+  // use, and the last row's constant would hold a copy of every step.
+  const locals = [
+    ...rowLocals,
+    ...Array.from({ length: 9 }, (_, i): IrLocal => ({
+      id: `t${i}`,
+      name: `t${i}`,
+      type: F64,
+      mutable: false,
+    })),
+  ];
+  const rowOf = (length: number): LaneOuterPlan => {
+    const body: IrStmt[] = [
+      decl("t0", bin("-", bin("*", bin("/", ref("x"), ref("size")), num(3)), num(2))),
+    ];
+    for (let i = 1; i <= length; i++) {
+      const prev = ref(`t${i - 1}`);
+      body.push(decl(`t${i}`, bin("+", bin("*", prev, ref(`t${i - 1}`)), bin("+", prev, num(1)))));
+    }
+    // The row's constant and everything after it, with `t<length>` for the
+    // counter expression the plain row starts from.
+    body.push(decl("c", newOf(PAIR, [ref(`t${length}`), ref("limit")])));
+    body.push(...rowBody().slice(1));
+    const p = rowPlan([row(body)], { locals });
+    if (p?.shape !== "outer") throw new Error("expected an outer plan");
+    return p;
+  };
+  const nodes = (v: LaneNum): number => {
+    switch (v.kind) {
+      case "op":
+        return 1 + nodes(v.left) + nodes(v.right);
+      case "neg":
+        return 1 + nodes(v.operand);
+      default:
+        return 1;
+    }
+  };
+  // Every step adds the same seven nodes whatever the chain's length: the two
+  // reads of the previous temp, its product, the term's read, `1`, the sum,
+  // and the assignment. Inlining the previous trees instead doubled the count
+  // with each declaration.
+  const initial = (length: number) => rowOf(length).initial;
+  expect([2, 4, 8].map((n) => nodes(initial(n)[n]!.value))).toEqual([7, 7, 7]);
+  expect(initial(8)[8]!.value).toMatchObject({
+    kind: "op",
+    op: "+",
+    left: {
+      kind: "op",
+      op: "*",
+      left: { kind: "state", id: "t7" },
+      right: { kind: "state", id: "t7" },
+    },
+    right: {
+      kind: "op",
+      op: "+",
+      left: { kind: "state", id: "t7" },
+      right: { kind: "const", value: 1 },
+    },
+  });
+  // The constant after the chain reads the last temp's slot.
+  expect(initial(8)[9]).toEqual({
+    id: "c",
+    field: "re",
+    group: 9,
+    value: { kind: "state", id: "t8", field: null },
+  });
+});
+
+test("a row without the trailing count still plans, and one statement too many does not", () => {
+  const plain = rowBody().slice(0, 4);
+  const p = rowPlan([row(plain)]);
+  expect(p).toMatchObject({ shape: "outer", tail: null });
+  // Anything after the inner loop but `acc++` under one test keeps the row
+  // scalar: the lanes would have to run it once per row.
+  expect(rowPlan([row([...plain, assign("total", num(0))])])).toBeUndefined();
+  // The count may write any number local the row does not carry, so the
+  // accumulator is that local.
+  expect(
+    rowPlan([
+      row([
+        ...plain,
+        ifOf(bin("===", ref("n"), ref("limit"), BOOL), [
+          assign("total", bin("+", ref("total"), num(1))),
+        ]),
+      ]),
+    ]),
+  ).toMatchObject({ shape: "outer", tail: { accumulator: "total" } });
+  // A trailing statement under the test that is not an increment keeps the
+  // row scalar: its effect is not one the lane tail can count.
+  expect(
+    rowPlan([
+      row([...plain, ifOf(bin("===", ref("n"), ref("limit"), BOOL), [assign("total", num(0))])]),
+    ]),
+  ).toBeUndefined();
+  expect(
+    rowPlan([
+      row([
+        ...plain,
+        ifOf(bin("===", ref("n"), ref("limit"), BOOL), [
+          assign("inside", bin("+", ref("inside"), num(1))),
+          assign("inside", bin("+", ref("inside"), num(1))),
+        ]),
+      ]),
+    ]),
+  ).toBeUndefined();
+});
+
+test("a row the lane body cannot run keeps its scalar form", () => {
+  const body = rowBody();
+  const inner = body[3] as IrStmt & { kind: "while" };
+  const cases: [string, IrStmt[]][] = [
+    // Two inner loops.
+    [
+      "two whiles",
+      [
+        ...body.slice(0, 3),
+        inner,
+        whileOf(bin("<", ref("j"), num(4), BOOL), [assign("j", bin("+", ref("j"), num(1)))]),
+      ],
+    ],
+    // A branch inside the inner loop.
+    [
+      "branch",
+      [
+        ...body.slice(0, 3),
+        whileOf(inner.cond, [
+          ...inner.body,
+          ifOf(bin("<", ref("n"), num(2), BOOL), [assign("n", bin("+", ref("n"), num(1)))]),
+        ]),
+      ],
+    ],
+    // A declaration inside the inner loop: every step must be an assignment.
+    ["decl inside", [...body.slice(0, 3), whileOf(inner.cond, [decl("j", num(1)), ...inner.body])]],
+    // An inner assignment to a local the row did not declare.
+    [
+      "escapes",
+      [
+        ...body.slice(0, 3),
+        whileOf(inner.cond, [...inner.body, assign("total", bin("+", ref("total"), num(1)))]),
+      ],
+    ],
+    // A carried instance that changes class.
+    [
+      "changes class",
+      [
+        ...body.slice(0, 3),
+        whileOf(inner.cond, [...inner.body, assign("z", newOf("Other", [num(1)]))]),
+      ],
+    ],
+    // The first body statement is not a declaration.
+    ["no leading decl", [assign("total", num(0)), ...body.slice(0, 4)]],
+    // The inner loop never runs a step.
+    ["empty inner", [...body.slice(0, 3), whileOf(inner.cond, []), body[4]!]],
+    // The accumulator is the row's own state.
+    ["accumulator declared in the row", [decl("inside", num(0)), ...body]],
+  ];
+  for (const [name, stmts] of cases) expect(rowPlan([row(stmts)]), name).toBeUndefined();
+});
+
+test("a row counter must be an ordinary number stepped by one", () => {
+  const body = rowBody();
+  const base = row(body);
+  const for_ = (patch: Partial<IrStmt & { kind: "for" }>): IrStmt => ({
+    ...(base as IrStmt & { kind: "for" }),
+    ...patch,
+  });
+  // `<` with an f64 bound the row never writes.
+  expect(rowPlan([for_({})])).toBeDefined();
+  // `<=` is not the exclusive form the group guard reads.
+  expect(rowPlan([for_({ cond: bin("<=", ref("x"), ref("size"), BOOL) })])).toBeUndefined();
+  // A bound computed in the header is evaluated once; the guard reads a value.
+  expect(
+    rowPlan([for_({ cond: bin("<", ref("x"), bin("+", ref("size"), num(1)), BOOL) })]),
+  ).toBeUndefined();
+  // A bound the row writes changes under the lanes.
+  expect(
+    rowPlan([
+      for_({
+        body: [decl("size", ref("limit")), ...body],
+      }),
+    ]),
+  ).toBeUndefined();
+  // A stride of two, a negative step and a missing start keep it scalar.
+  expect(rowPlan([for_({ update: assign("x", bin("+", ref("x"), num(2))) })])).toBeUndefined();
+  expect(rowPlan([for_({ update: assign("x", bin("-", ref("x"), num(1))) })])).toBeUndefined();
+  expect(rowPlan([for_({ init: decl("x", null) })])).toBeUndefined();
+  expect(rowPlan([for_({ init: null })])).toBeUndefined();
+  // `-0` is not the step one.
+  expect(rowPlan([for_({ update: assign("x", bin("+", ref("x"), num(-0))) })])).toBeUndefined();
+});
+
+test("only a numeric class's fields can ride the lanes", () => {
+  const method = (
+    name: string,
+    body: IrStmt[],
+    params: IrParam[] = [paramOf("self", pairType)],
+  ): IrFunction => ({
+    name,
+    params,
+    returnType: F64,
+    locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+    body,
+    loc,
+  });
+  const rowOf = (
+    className: string,
+    functions: IrFunction[],
+    classes: IrClassDef[],
+  ): LanePlan | undefined =>
+    rowPlan(
+      [
+        row([
+          decl("c", newOf(className, [num(0), num(0)])),
+          decl("n", num(0)),
+          whileOf(bin("<", ref("n"), ref("limit"), BOOL), [
+            assign("n", bin("+", ref("n"), num(1))),
+          ]),
+          ifOf(bin("===", ref("n"), ref("limit"), BOOL), [
+            assign("inside", bin("+", ref("inside"), num(1))),
+          ]),
+        ]),
+      ],
+      { classes, functions },
+    );
+  const NUMERIC: IrClassDef = {
+    name: "Num",
+    fields: [
+      { name: "re", type: F64 },
+      { name: "im", type: F64 },
+    ],
+    loc,
+  };
+  const ctor = (name: string): IrFunction => ({
+    name: `%${name}.constructor`,
+    params: [paramOf("self", objOf(name)), paramOf("re", F64), paramOf("im", F64)],
+    returnType: { kind: "undefinedT" },
+    locals: [
+      { id: "self", name: "self", type: objOf(name), mutable: false },
+      { id: "re", name: "re", type: F64, mutable: false },
+      { id: "im", name: "im", type: F64, mutable: false },
+    ],
+    body: [
+      setField(name, ref("self"), "re", ref("re")),
+      setField(name, ref("self"), "im", ref("im")),
+    ],
+    loc,
+  });
+  expect(rowOf("Num", [ctor("Num")], [NUMERIC])).toMatchObject({ shape: "outer" });
+  // A field that is not a number.
+  const mixed: IrClassDef = {
+    ...NUMERIC,
+    fields: [
+      { name: "re", type: F64 },
+      { name: "tag", type: { kind: "string" } },
+    ],
+  };
+  expect(rowOf("Num", [ctor("Num")], [mixed])).toBeUndefined();
+  // A class in a hierarchy, and one evaluated inside a function.
+  expect(rowOf("Num", [ctor("Num")], [{ ...NUMERIC, base: "Base" }])).toBeUndefined();
+  expect(
+    rowOf("Num", [ctor("Num")], [{ ...NUMERIC, localCaptures: [paramOf("cap", F64)] }]),
+  ).toBeUndefined();
+  // A class the module does not define.
+  expect(rowOf("Num", [ctor("Num")], [])).toBeUndefined();
+  // A method with more than a single return, and one with captures, cannot
+  // be read into a lane body.
+  const twoStatements = method("%Pair.norm", [
+    decl("t", num(0)),
+    { kind: "return", value: ref("t"), loc },
+  ]);
+  expect(
+    rowPlan([row(rowBody())], { functions: [pairCtor, twoStatements, pairTimes] }),
+  ).toBeUndefined();
+  const capturing = { ...pairNorm, captures: [paramOf("cap", F64)] };
+  expect(
+    rowPlan([row(rowBody())], { functions: [pairCtor, capturing, pairTimes] }),
+  ).toBeUndefined();
+  const async_ = { ...pairNorm, async: true as const };
+  expect(rowPlan([row(rowBody())], { functions: [pairCtor, async_, pairTimes] })).toBeUndefined();
+});
+
+test("an outer row is planned only when the outer shape is enabled", () => {
+  expect(
+    rowPlan([row(rowBody())], { shapes: new Set<LaneShape>(["sum", "count", "store"]) }),
+  ).toBeUndefined();
+  expect(rowPlan([row(rowBody())], { shapes: new Set<LaneShape>() })).toBeUndefined();
+  expect([...parseLaneShapes("outer")]).toEqual(["outer"]);
+  expect(laneShapesKeyParts(new Set(["outer"]))).toEqual(["lane-plans-outer"]);
 });

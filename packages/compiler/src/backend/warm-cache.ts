@@ -1,4 +1,5 @@
 import { buildCacheRoot, prepareBuildCacheRoot } from "./build-cache.js";
+import { noLinkFeatures } from "./native-link-info-core.js";
 import { loadRuntimePack } from "./runtime-pack.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./targets.js";
 import {
@@ -32,52 +33,7 @@ export async function warmNativeCaches(
     await loadRuntimePack({
       target,
       optimization: options.optimization ?? "release",
-      features: {
-        fetch: profile === "tls",
-        regex: false,
-        copying: false,
-        textDecoderLegacy: false,
-        bigintBytes: false,
-        fileHandle: false,
-        zlib: false,
-        assert: false,
-        inspect: false,
-        dynInvoke: false,
-        dc: false,
-        dynAsync: false,
-        events: false,
-        emitter: false,
-        symbol: false,
-        bigint: false,
-        searchParams: false,
-        qs: false,
-        utilPromisify: false,
-        dynBuiltinClass: false,
-        dynBuiltinStream: false,
-        parseArgs: false,
-        stream: false,
-        net: false,
-        http: false,
-        http2: false,
-        dgram: false,
-        dnsPromises: false,
-        dgramDyn: false,
-        textCodecDyn: false,
-        watch: false,
-        watchFile: false,
-        foreignFfi: false,
-        nodeTest: false,
-        tls: false,
-        cipher: false,
-        ecdh: false,
-        dh: false,
-        pki: false,
-        ed25519: false,
-        x509: false,
-        webcrypto: false,
-        perfLoop: false,
-        tlsCa: false,
-      },
+      features: { ...noLinkFeatures(), fetch: profile === "tls" },
     });
     results.push({ profile, elapsedMs: Math.round((performance.now() - started) * 10) / 10 });
   }

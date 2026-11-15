@@ -1,0 +1,26 @@
+record-width-alias-declaration.ts:8:23 - error SC2021: declaring a '{ next: string; count: number; }' value as 'Wide' copies the object, and the program writes through it: the declared field 'next' is 'string | number' and the value's field is 'string', so a write through the declared name would reach only the copy
+
+  7 |   const value = { next: "x", count: 0 };
+  8 |   const alias: Wide = value;
+    |                       ^~~~~
+  9 |   alias.next = 42;
+
+  hint: declare the value with the declared type ('Wide') so both names are the same object, or make the shape a class
+
+record-width-alias-declaration.ts:9:3 - error SC2004: uses of 'alias' inherit the blocker on its declaration
+
+   8 |   const alias: Wide = value;
+   9 |   alias.next = 42;
+     |   ^~~~~
+  10 |   return alias.next;
+
+  hint: the declaration of 'alias' did not compile — fix the diagnostic reported there and these sites clear with it
+
+record-width-alias-declaration.ts:10:10 - error SC2004: uses of 'alias' inherit the blocker on its declaration
+
+   9 |   alias.next = 42;
+  10 |   return alias.next;
+     |          ^~~~~
+  11 | }
+
+  hint: the declaration of 'alias' did not compile — fix the diagnostic reported there and these sites clear with it

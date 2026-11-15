@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9656-promise-state-beside-the-promise.ts"
+ ],
+ "diags": []
+}

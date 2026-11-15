@@ -91,8 +91,12 @@ const SAMPLES: Record<string, Json> = {
   target_cpu: "baseline",
   profile_generate: join(scratch, "run-%p.profraw"),
   profile_use: join(scratch, "merged.profdata"),
+  emit_lowered: join(scratch, "main.lowered"),
+  from_lowered: join(scratch, "main.lowered"),
+  from_lowered_accept: ["compiler"],
   ffi: join(scratch, "ffi.json"),
   npm_static: ["auto"],
+  define: ['process.env.NODE_ENV="production"'],
   external_types: [`host-module=${declaration}`],
   tier: "auto",
   explain_dynamic: "",
@@ -104,6 +108,7 @@ const SAMPLES: Record<string, Json> = {
   range: "^1.0.0",
   profile: join(scratch, "profile.json"),
   fail_on: "blockers",
+  coverage: "reached",
 };
 
 function sample(name: string, schema: JsonObject): Json {
@@ -145,10 +150,16 @@ test("a tool's properties are unique and its required names exist", () => {
 });
 
 test("every CLI option belongs to a command or is --help or --version", () => {
-  const used = new Set(CLI_COMMANDS.flatMap((cmd) => [...cmd.options, ...cmd.argv]));
+  // A command name such as `coverage` is not its option: only `--` words of argv count.
+  const used = new Set(
+    CLI_COMMANDS.flatMap((cmd) => [
+      ...cmd.options,
+      ...cmd.argv.filter((word) => word.startsWith("--")).map((word) => word.slice(2)),
+    ]),
+  );
   for (const option of Object.keys(CLI_OPTIONS)) {
     if (option === "help" || option === "version") continue;
-    expect(used.has(option) || used.has(`--${option}`), option).toBe(true);
+    expect(used.has(option), option).toBe(true);
   }
 });
 

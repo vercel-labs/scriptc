@@ -14,6 +14,12 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
 `alt.pem`/`alt-key.pem` (the SNI fixtures' second identity: CN=alt.localhost, SAN DNS:alt.localhost) repeats the leaf recipe against the same `ca.pem`, with an ext section whose subjectAltName is `DNS:alt.localhost`.
 
+`localhost-rsa.pem`/`localhost-rsa-key.pem` is a second localhost leaf with the same subject and SAN whose key is RSA 2048, signed by `ca.pem`, for the cipher suites that authenticate with RSA (the finite-field Diffie-Hellman suites have no ECDSA form):
+
+    openssl genrsa -traditional -out localhost-rsa-key.pem 2048
+    openssl req -new -key localhost-rsa-key.pem -out rsa.csr -subj "/CN=localhost" -config san.cnf
+    openssl x509 -req -in rsa.csr -CA ca.pem -CAkey ca-key.pem -set_serial 4243 -out localhost-rsa.pem -days 36500 -extfile san.cnf -extensions ext
+
 `client.pem`/`client-key.pem` (CN=scriptc test client) is a client certificate for the mutual-TLS fixtures: a P-256 leaf signed by `ca.pem` whose extended key usage is clientAuth (`client.cnf`, section `ext`):
 
     openssl ecparam -genkey -name prime256v1 -noout -out client-key.pem

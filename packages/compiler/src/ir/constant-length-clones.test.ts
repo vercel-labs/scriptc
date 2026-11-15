@@ -355,3 +355,87 @@ test("an argument array passed on to a callee that grows it does not specialize"
   const out = specializeConstantArrayLengths(mod);
   expect(out.functions.map((candidate) => candidate.name)).toEqual(["%init", "grow", "reader"]);
 });
+
+/** `arr.push(1)` on a binding. */
+const push = (localId: string): IrStmt => ({
+  loc,
+  kind: "exprStmt",
+  expr: {
+    loc,
+    kind: "arrIntrinsic",
+    method: "push",
+    receiver: ref(localId, ARR),
+    args: [num(1)],
+    type: F64,
+  },
+});
+/** `caller.0 = reader(<global>)` in a loop. */
+const loopingRead = (global: string): IrStmt =>
+  loop([
+    assign("caller.0", {
+      loc,
+      kind: "call",
+      callee: "reader",
+      args: [ref(global, ARR)],
+      type: F64,
+    }),
+  ]);
+
+test("a global that a function elsewhere in the module grows does not specialize", () => {
+  const mod = moduleWith(
+    [
+      init([assign("%g.e.arr", arrayOf(3)), loopingRead("%g.e.arr")]),
+      reader(),
+      fn("bystander", [], [localOf("x.0")], [decl("x.0", num(1))]),
+      fn("grower", [], [], [push("%g.e.arr")]),
+    ],
+    [arrayGlobal("%g.e.arr")],
+  );
+  const out = specializeConstantArrayLengths(mod);
+  expect(out.functions.map((candidate) => candidate.name)).toEqual([
+    "%init",
+    "reader",
+    "bystander",
+    "grower",
+  ]);
+});
+
+test("a global that a function elsewhere in the module writes again does not specialize", () => {
+  const mod = moduleWith(
+    [
+      init([assign("%g.e.arr", arrayOf(3)), loopingRead("%g.e.arr")]),
+      reader(),
+      fn("rewriter", [], [], [assign("%g.e.arr", arrayOf(3))]),
+    ],
+    [arrayGlobal("%g.e.arr")],
+  );
+  const out = specializeConstantArrayLengths(mod);
+  expect(out.functions.map((candidate) => candidate.name)).toEqual(["%init", "reader", "rewriter"]);
+});
+
+test("each global is judged by the functions that name it", () => {
+  // Two globals in one module: the functions that only read one of them, or
+  // neither, do not stop the other from specializing, and the one a function
+  // grows keeps the general callee.
+  const mod = moduleWith(
+    [
+      init([
+        assign("%g.e.three", arrayOf(3)),
+        assign("%g.e.grown", arrayOf(4)),
+        loopingRead("%g.e.three"),
+        loopingRead("%g.e.grown"),
+      ]),
+      reader(),
+      fn("bystander", [], [localOf("x.0")], [decl("x.0", num(1))]),
+      fn("looker", [], [localOf("n.1")], [decl("n.1", length(ref("%g.e.three", ARR)))]),
+      fn("grower", [], [], [push("%g.e.grown")]),
+    ],
+    [arrayGlobal("%g.e.three"), arrayGlobal("%g.e.grown")],
+  );
+  const out = specializeConstantArrayLengths(mod);
+  const clones = out.functions.filter((candidate) => candidate.name.startsWith("reader.constLen"));
+  expect(clones.map((clone) => clone.params[0]!.constLength)).toEqual([3]);
+  const calls = JSON.stringify(out.functions[0]!.body);
+  expect(calls.match(/"callee":"reader\.constLen"/g)).toHaveLength(1);
+  expect(calls.match(/"callee":"reader"/g)).toHaveLength(1);
+});

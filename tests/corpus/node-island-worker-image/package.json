@@ -1,0 +1,1 @@
+{ "name": "island-worker-image", "private": true, "type": "module", "scriptc": { "packages": { "picture-pkg": "node" } } }

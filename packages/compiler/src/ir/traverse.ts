@@ -363,6 +363,8 @@ export function everyExprChild(
     case "dynScalarEq":
       return expr(node.left) && expr(node.right);
     case "upcast":
+    case "viewOf":
+    case "viewSource":
       return expr(node.value);
     case "bin":
       return expr(node.left) && expr(node.right);
@@ -759,7 +761,9 @@ export function mapExprChildren(
       if (kept2(a, node.left, b, node.right)) return node;
       return { ...node, left: a, right: b };
     }
-    case "upcast": {
+    case "upcast":
+    case "viewOf":
+    case "viewSource": {
       a = expr(node.value);
       if (kept(a, node.value)) return node;
       return { ...node, value: a };

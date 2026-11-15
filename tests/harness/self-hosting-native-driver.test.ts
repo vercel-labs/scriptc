@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { WASI } from "node:wasi";
 import { expect, test } from "vitest";
@@ -25,6 +25,8 @@ import {
   runNativeBootstrapChecks,
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
+import { libnodePack } from "./libnode.js";
+import { checkBuildCacheContracts } from "./native-build-cache-contracts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
 import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
@@ -54,6 +56,18 @@ function absoluteCommand(command: string): string {
   }
   throw new Error(`native tool is not on PATH: ${command}`);
 }
+
+// The seed build is the compiler compiling itself, so it grows with main: on
+// 32-vCPU Sandboxes its fastest plain build went from 471 s (base of
+// 2026-10-27) to 712 s (2026-11-07), about 145 s a week, and the same tree
+// takes up to 1.66 times as long on one machine as on another. Of 244 plain
+// builds on 2026-11-07 the median took 1009 s and the slowest tenth 1447 s
+// or more, and eight were stopped at the 1800 s every step is allowed. Its
+// own limit is twice that, which the fastest build reaches after about ten
+// more weeks of the same growth on the slowest machine; the limit is the
+// place to look when it does. CI builds the seed in a job of its own
+// (bootstrap_seed) and never runs this step.
+const seedBuildTimeoutMs = sanitize ? 5_400_000 : 3_600_000;
 
 test(
   `the production CLI passes ${phase} bootstrap contracts with Node unavailable`,
@@ -90,6 +104,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
+              timeout: seedBuildTimeoutMs,
               env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
@@ -211,6 +226,14 @@ test(
       // (diagnostics/dynamic-tier.ts). The contracts compare stderr exactly,
       // so its self-builds leave that performance note out.
       const quiet = "--no-dynamic-tier-warning";
+      // It also converts values between layouts at several thousand places
+      // SC6001 reports (frontend/lowering/width-copies.ts): its IR nodes
+      // are records of many shapes. The self-builds leave that out too.
+      const copies = "--no-copy-warning";
+      // Several of those record types are built in more than one key order
+      // (spreads of IR nodes), which SC6014 reports once per type
+      // (frontend/lowering/key-order-witness.ts). Left out as well.
+      const keyOrders = "--no-key-order-warning";
       const ffi = join(directory, ".scriptc/distribution-seed/compiler.ffi.json");
       const rebuilt = executable("scriptc-rebuilt");
       const checkProgram = async (compiler: string, source: string, extra: string[] = []) => {
@@ -286,6 +309,44 @@ test(
         await checkProgram(probe, join(root, "tests/corpus/4591-weak-keys-union-records.ts"));
         await checkProgram(probe, join(root, "tests/corpus/4593-weak-keys-empty-objects.ts"));
 
+        // A build from a lowered program (executable/lowered.ts) writes the
+        // executable a build from the sources writes, and refuses the file
+        // once a source changed.
+        const loweredSource = join(directory, "lowered-probe.ts");
+        writeFileSync(
+          loweredSource,
+          'const parts: string[] = ["lowered", "program"];\nconsole.log(parts.join(" "));\n',
+        );
+        const loweredFile = join(directory, "lowered-probe.lowered");
+        const loweredOutput = executable("lowered-probe");
+        const loweredArgs = [
+          "build",
+          loweredSource,
+          "-o",
+          loweredOutput,
+          "--optimization=dev",
+          "--strip",
+        ];
+        await invoke(probe, [...loweredArgs, "--emit-lowered", loweredFile]);
+        const fromSources = readFileSync(loweredOutput);
+        const loweredLlvm = readFileSync(join(directory, "lowered-probe.ll"));
+        await invoke(probe, [...loweredArgs, "--from-lowered", loweredFile]);
+        expect(readFileSync(join(directory, "lowered-probe.ll")).equals(loweredLlvm)).toBe(true);
+        expect(readFileSync(loweredOutput).equals(fromSources)).toBe(true);
+        expect(spawnSync(loweredOutput, [], nativeOptions).stdout.toString()).toBe(
+          "lowered program\n",
+        );
+        writeFileSync(loweredSource, readFileSync(loweredSource, "utf8") + "// edited\n");
+        const stale = spawnSync(
+          probe,
+          [...loweredArgs, "--from-lowered", loweredFile],
+          nativeOptions,
+        );
+        expect(stale.status).toBe(1);
+        expect(stale.stderr.toString()).toContain(
+          `--from-lowered: ${loweredFile} does not match this build's inputs: ${loweredSource} changed since it was lowered`,
+        );
+
         const fetchOptions = join(directory, "fetch-options.ts");
         writeFileSync(
           fetchOptions,
@@ -308,6 +369,51 @@ test(
         expect(
           await invoke(probe, ["run", comptime, "-o", executable("comptime"), "--strip"]),
         ).toBe("42\n");
+        // The evaluator this compiler starts is the Node host's: it holds no
+        // host object and bakes the values Node computes.
+        const isolated = join(directory, "comptime-isolated.ts");
+        writeFileSync(
+          isolated,
+          `const reached = comptime(() => {
+  const g: any = globalThis;
+  return String(g.constructor.constructor("return typeof process === 'object' ? 'host process' : 'no host'")());
+});
+const table = comptime(() => [Math.sin(0.5), Math.cbrt(2), Math.hypot(1, 2, 3)]);
+console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), table[2] === Math.hypot(1, 2, 3));
+`,
+        );
+        expect(
+          await invoke(probe, ["run", isolated, "-o", executable("comptime-isolated"), "--strip"]),
+        ).toBe("no host true true true\n");
+        for (const program of [
+          "1050-comptime-tables.ts",
+          "1051-comptime-strings.ts",
+          "1052-comptime-records.ts",
+          "1053-comptime-json.ts",
+          "1054-comptime-modules/main.ts",
+          "8961-comptime-node-values.ts",
+          "8962-comptime-result-data.ts",
+        ]) {
+          const source = join(root, "tests/corpus", program);
+          const oracle = spawnSync(
+            process.execPath,
+            ["--import", join(root, "tests/harness/comptime-shim.mjs"), source],
+            options,
+          );
+          expect(oracle.status, oracle.stderr.toString()).toBe(0);
+          expect(
+            await invoke(probe, ["run", source, "-o", executable("comptime-corpus"), "--strip"]),
+            program,
+          ).toBe(oracle.stdout.toString());
+        }
+
+        // A rebuild answers as a cold build does, whatever was edited.
+        await checkBuildCacheContracts({
+          compiler: probe,
+          directory: join(directory, "build-cache"),
+          env: nativeOptions.env,
+          run: (file, args, env) => exec(file, args, { ...nativeOptions, env }),
+        });
 
         const object = join(directory, "program.obj");
         const linkInfo = JSON.parse(
@@ -486,6 +592,209 @@ test(
         expect(failed.status).toBe(1);
         expect(failed.stderr.toString()).toContain("not assignable");
         expect(readFileSync(retained, "utf8")).toBe("existing output");
+
+        // Programs that need a Node island. The island steps of a build are
+        // one function both drivers call (executable/islands.ts), so this
+        // compiler builds them as the Node-hosted one does: each executable
+        // runs like the program under Node, and each one whose islands are
+        // npm packages also writes the LLVM and IR the Node-hosted compiler
+        // writes. A module of the program itself is the exception: the
+        // static effect gate that admits one to the probe parses with the
+        // TypeScript 5 JavaScript parser, which only the Node-hosted
+        // compiler has, so this one keeps such a load eager. The program is
+        // the same; the load runs when Node starts instead of at its import.
+        const pack = libnodePack();
+        if (pack === null) {
+          // No libnode pack on this machine (libnode.ts; CI requires one).
+          console.log("bootstrap: Node island programs skipped (SCRIPTC_LIBNODE names no pack)");
+        } else {
+          const flagged = join(directory, "island-flag");
+          mkdirSync(join(flagged, "node_modules/tiny"), { recursive: true });
+          writeFileSync(join(flagged, "package.json"), '{ "type": "module" }\n');
+          writeFileSync(
+            join(flagged, "main.ts"),
+            'import { greet } from "tiny";\nconsole.log(greet("island"));\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/package.json"),
+            '{ "name": "tiny", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/index.js"),
+            '"use strict";\nexports.greet = (name) => "hello from " + name;\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/index.d.ts"),
+            "export declare function greet(name: string): string;\n",
+          );
+          const islandPrograms: { program: string; extra: string[]; same: boolean }[] = [
+            // a package marked "node" in package.json
+            {
+              program: "tests/corpus/6870-node-island-server-fibers/main.ts",
+              extra: [],
+              same: true,
+            },
+            // a package whose lowering is refused
+            {
+              program: "tests/corpus/8810-node-island-sdk-request-values/main.ts",
+              extra: [],
+              same: true,
+            },
+            // a package the pre-scan finds outside the native subset
+            { program: "tests/corpus/6817-node-island-esm/main.ts", extra: [], same: true },
+            // a package that would compile only with runtime fences
+            { program: "tests/corpus/6819-node-island-fenced/main.ts", extra: [], same: true },
+            // a module of the program (sloppy-mode JavaScript): eager here
+            {
+              program: "tests/corpus/8424-sloppy-annexb-block-function-island/main.js",
+              extra: [],
+              same: false,
+            },
+            // an explicit load through @scriptc/node
+            {
+              program: "tests/corpus/6850-node-island-shared-singleton/main.mjs",
+              extra: [],
+              same: true,
+            },
+            // a packaged installed in the project, named on the command line
+            { program: join(flagged, "main.ts"), extra: ["--node-island=tiny"], same: true },
+          ];
+          // The deferral probe builds its host with a C compiler. PATH is
+          // empty here, so the build names it (and, on Linux, the linker
+          // clang delegates to), for both compilers alike.
+          let islandCompiler = absoluteCommand(process.env["CC"] ?? "clang");
+          if (process.platform === "linux") {
+            const linker = await exec(islandCompiler, ["--print-prog-name=ld"], options);
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+            const wrapper = join(directory, "island-cc");
+            writeFileSync(
+              wrapper,
+              `#!/bin/sh\nexec ${quote(islandCompiler)} ${quote("--ld-path=" + absoluteCommand(linker.stdout.trim()))} "$@"\n`,
+            );
+            chmodSync(wrapper, 0o755);
+            islandCompiler = wrapper;
+          }
+          const islandEnv = { SCRIPTC_LIBNODE: pack, CC: islandCompiler };
+          // The Node-hosted compiler, from source, with the same environment
+          // the native one gets apart from PATH (it runs under Node).
+          const hosted = (args: string[]) =>
+            spawnSync(
+              process.execPath,
+              ["--import", "tsx", join(root, "packages/cli/src/main.ts"), ...args],
+              {
+                ...options,
+                env: {
+                  ...process.env,
+                  ...islandEnv,
+                  SCRIPTC_CACHE_DIR: join(directory, "island-hosted-cache"),
+                },
+              },
+            );
+          const native = (args: string[]) => {
+            // As invoke(): a sanitized compiler needs the larger stack.
+            const [file, argv] =
+              sanitize && process.platform !== "win32"
+                ? [
+                    "/bin/sh",
+                    ["-c", 'ulimit -s "$(ulimit -H -s)" && exec "$0" "$@"', probe, ...args],
+                  ]
+                : [probe, args];
+            return spawnSync(file, argv, {
+              ...nativeOptions,
+              env: { ...nativeOptions.env, ...islandEnv },
+            });
+          };
+          await bootstrapStep(
+            "Node island programs match Node and the Node-hosted compiler",
+            async () => {
+              for (const [index, { program, extra, same }] of islandPrograms.entries()) {
+                const source = resolve(root, program);
+                const stem = source.replace(/^.*[\\/]/, "").replace(/\.(ts|mjs|js)$/, "");
+                const flags = [
+                  "--optimization=dev",
+                  "--strip",
+                  "--keep-llvm",
+                  "--emit-ir",
+                  ...extra,
+                ];
+                const built = join(directory, "island-native", String(index));
+                const oracleBuilt = join(directory, "island-hosted", String(index));
+                for (const directoryOf of [built, oracleBuilt])
+                  mkdirSync(directoryOf, { recursive: true });
+                const output = join(built, "program");
+                const build = native(["build", source, "-o", output, ...flags]);
+                expect(build.status, `${program}\n${build.stderr.toString()}`).toBe(0);
+                // Without Node on PATH: the executable loads the recorded pack.
+                const oracle = spawnSync(process.execPath, [source], options);
+                const actual = spawnSync(output, [], nativeOptions);
+                for (const result of [oracle, actual]) {
+                  expect(result.error, program).toBeUndefined();
+                  expect(result.signal, program).toBeNull();
+                }
+                expect(actual.status, `${program}\n${actual.stderr.toString()}`).toBe(
+                  oracle.status,
+                );
+                expect(actual.stdout.toString(), program).toBe(oracle.stdout.toString());
+                expect(actual.stderr.toString(), program).toBe(oracle.stderr.toString());
+                if (!same) continue;
+                // The same build by the Node-hosted compiler writes the same
+                // LLVM, byte for byte, and the same IR: the libnode record, the
+                // deferral snapshots and the module tree's bytes included. The
+                // IR is compared as a value, as the compiler's own is below: the
+                // two compilers serialize a module's members in different orders.
+                const hostedBuild = hosted([
+                  "build",
+                  source,
+                  "-o",
+                  join(oracleBuilt, "program"),
+                  ...flags,
+                ]);
+                expect(hostedBuild.status, `${program}\n${hostedBuild.stderr.toString()}`).toBe(0);
+                const hostedLlvm = readFileSync(join(oracleBuilt, `${stem}.ll`));
+                const hostedIr = readFileSync(join(oracleBuilt, `${stem}.ir.json`), "utf8");
+                // The comparison is over a build that does call into Node.
+                expect(hostedLlvm.includes("@scr_node_island_"), program).toBe(true);
+                expect(hostedIr.includes('"nodeIsland.'), program).toBe(true);
+                expect(
+                  readFileSync(join(built, `${stem}.ll`)).equals(hostedLlvm),
+                  `${program}: the native and the Node-hosted compiler emit different LLVM`,
+                ).toBe(true);
+                expect(
+                  isDeepStrictEqual(
+                    JSON.parse(readFileSync(join(built, `${stem}.ir.json`), "utf8")),
+                    JSON.parse(hostedIr),
+                  ),
+                  `${program}: the native and the Node-hosted compiler lower to different IR`,
+                ).toBe(true);
+              }
+            },
+          );
+        }
+
+        // Which options a command takes is read from the command table
+        // (cli/usage.ts): the native CLI refuses the same ones with the same line.
+        for (const [args, refusal] of [
+          [
+            ["cache", "warm", "--strip"],
+            "scriptc cache warm takes only native optimization/sanitizer options and profile names",
+          ],
+          [
+            ["merge-profiles", "-o", join(directory, "merged.profdata"), "--tier=auto", "a"],
+            "scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles",
+          ],
+          [
+            ["build", "--lib", "--profile", profile, "--node-island=left-pad"],
+            "scriptc build --lib takes no --backend/--emit/--print/",
+          ],
+          [["build", "--wasm=module.wasm", hello], "--wasm is a coverage-only option"],
+        ] as const) {
+          const refused = spawnSync(probe, args, nativeOptions);
+          expect(refused.status, args.join(" ")).toBe(1);
+          expect(
+            comparableStderr(refused.stderr.toString()).split("\n")[0],
+            args.join(" "),
+          ).toContain(refusal);
+        }
       };
       // The production chain owns the complete frontend and emitter proof:
       // compare the Node seed's IR and LLVM with the native self-rebuild, then
@@ -578,6 +887,8 @@ test(
               "--ffi",
               ffi,
               quiet,
+              copies,
+              keyOrders,
             ],
             "scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n",
           ),
@@ -596,7 +907,18 @@ test(
           await bootstrapStep("rebuilt compiler emits itself", () =>
             invoke(
               rebuilt,
-              ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi, quiet],
+              [
+                "build",
+                entry,
+                "--emit=llvm",
+                "-o",
+                rebuiltLlvm,
+                "--ffi",
+                ffi,
+                quiet,
+                copies,
+                keyOrders,
+              ],
               "",
               { SCRIPTC_EMIT_WORKER_FAIL: "all" },
             ),
@@ -630,7 +952,18 @@ test(
       const rebuildFrontend = async () => {
         const lowered = join(directory, "cli.ir.json");
         const output = await bootstrapStep("sanitized native frontend lowers the compiler", () =>
-          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi, quiet]),
+          invoke(seed, [
+            "build",
+            entry,
+            "--emit=ir",
+            "-o",
+            lowered,
+            "--ffi",
+            ffi,
+            quiet,
+            copies,
+            keyOrders,
+          ]),
         );
         expect(output.trim()).toBe(lowered);
         await compareArtifacts({ ir: true, llvm: false });
@@ -650,10 +983,26 @@ test(
               ffi,
               "--sanitize",
               "--optimization=dev",
+              // The seed's IR, lowered by the JavaScript compiler with the
+              // seed build's options: an IR artifact records none of what a
+              // lowered program depends on, so each kind is accepted here,
+              // and the two comparisons around this build stand in for them.
+              "--from-lowered",
+              seedIr,
+              "--from-lowered-accept=compiler,options,inputs",
               quiet,
+              copies,
+              keyOrders,
             ],
-            "",
-            { SCRIPTC_BOOTSTRAP_IR_INPUT: seedIr },
+            "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its compiler differs: the file holds only an IR module, which does not record its compiler\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its options differ: the file holds only an IR module, which does not record its options\n" +
+              "scriptc: warning: --from-lowered: building from " +
+              seedIr +
+              " although its inputs differ: the file holds only an IR module, which does not record its inputs\n",
           ),
         );
         expect(self.trim()).toBe(rebuilt);
@@ -669,5 +1018,6 @@ test(
       rmSync(directory, { recursive: true, force: true });
     }
   },
-  sanitize ? 10_800_000 : 5_400_000,
+  // The plain rebuild phase took up to 3892 s with a seed built in 1800 s or less.
+  sanitize ? 10_800_000 : 7_200_000,
 );

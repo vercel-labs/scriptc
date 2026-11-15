@@ -659,8 +659,9 @@ double scr_math_min_arr(ScrArr *a);
 double scr_math_hypot_arr(ScrArr *a);
 /* The scalar Math statics (scr_lib.c): min/max are the ECMA two-argument
  * folds (NaN poisons; max prefers +0, min prefers -0 — NOT C's fmin/fmax);
- * random is a uniform [0,1) double at 53-bit granularity from
- * arc4random_buf (SEMANTICS.md 62: Node's distribution, not its sequence). */
+ * random is a uniform [0,1) double at 53-bit granularity from a per-thread
+ * xorshift128+ seeded once from arc4random_buf (Node's distribution, not its
+ * sequence; not a cryptographic source, as in Node). */
 double scr_math_min(double a, double b);
 double scr_math_round(double x);
 double scr_math_pow(double base, double exponent);
@@ -849,6 +850,11 @@ bool scr_arr_includes_ref(ScrArr *a, void *v);
  * verbatim — with sep between. f64/bool/str element kinds only (the
  * compiler rejects the rest). Borrows both args; returns +1. */
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep);
+/* join(sep) where the compiler knows the elements are strings
+ * (scr_arr_join_str.c, an optional unit): a hole-free string array is sized
+ * and copied in two passes, and every other array goes to scr_arr_join.
+ * Borrows both args; returns +1. */
+ScrStr *scr_arr_join_str(ScrArr *a, ScrStr *sep);
 /* String.raw over the raw literals and pre-stringified substitutions
  * (both SCR_ELEM_STR): the spec's interleave — extra substitutions drop,
  * missing ones skip. Borrows both; +1 result; never throws. */

@@ -160,7 +160,7 @@ static ScrDyn *scr_graphemes_invoke(void *ptr, ScrDyn *self, const char *method,
   }
   if (!value->input && strcmp(method, "resolvedOptions") == 0) {
     static const char msg[] = "Intl.Segmenter locale negotiation is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   ScrJsonBuf message;
@@ -177,7 +177,7 @@ static ScrDyn *scr_graphemes_get(void *ptr, const char *key, size_t len) {
       (len == 15 && memcmp(key, "resolvedOptions", len) == 0))) ||
       (value->input && len == 10 && memcmp(key, "containing", len) == 0)) {
     static const char msg[] = "stored Intl.Segmenter methods are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   }
   return NULL;
 }

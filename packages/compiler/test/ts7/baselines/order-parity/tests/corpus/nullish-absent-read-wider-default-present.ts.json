@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nullish-absent-read-wider-default-present.ts"
+ ],
+ "diags": []
+}

@@ -9,56 +9,12 @@ import {
   nativeCodegenTarget,
 } from "../../packages/compiler/src/backend/targets.js";
 import type { NativeLinkFeatures } from "../../packages/compiler/src/backend/native-link-info.js";
+import { noLinkFeatures } from "../../packages/compiler/src/backend/native-link-info-core.js";
 import type { RuntimePackManifest } from "../../packages/compiler/src/backend/runtime-pack-core.js";
 
 const root = join(import.meta.dirname, "../..");
 const entry = join(root, "tests/fixtures/self-hosting/runtime-pack.ts");
-const base: NativeLinkFeatures = {
-  regex: false,
-  copying: false,
-  textDecoderLegacy: false,
-  bigintBytes: false,
-  fileHandle: false,
-  fetch: false,
-  zlib: false,
-  assert: false,
-  inspect: false,
-  dynInvoke: false,
-  dc: false,
-  dynAsync: false,
-  events: false,
-  emitter: false,
-  symbol: false,
-  bigint: false,
-  searchParams: false,
-  qs: false,
-  utilPromisify: false,
-  dynBuiltinClass: false,
-  dynBuiltinStream: false,
-  parseArgs: false,
-  stream: false,
-  net: false,
-  http: false,
-  http2: false,
-  dgram: false,
-  dnsPromises: false,
-  dgramDyn: false,
-  textCodecDyn: false,
-  watch: false,
-  watchFile: false,
-  foreignFfi: false,
-  nodeTest: false,
-  tls: false,
-  tlsCa: false,
-  cipher: false,
-  ecdh: false,
-  dh: false,
-  pki: false,
-  ed25519: false,
-  x509: false,
-  webcrypto: false,
-  perfLoop: false,
-};
+const base: NativeLinkFeatures = noLinkFeatures();
 
 test("runtime manifest validation and selection are entirely static", async () => {
   const coverage = await analyzeInChild(entry, {});

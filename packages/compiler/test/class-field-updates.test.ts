@@ -46,7 +46,7 @@ test("refuses updates to readonly static fields", () => {
   }
 });
 
-test("covariant returns do not allow narrower method parameter storage", () => {
+test("a narrower method parameter is checked at the slot, never stored unchecked", () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-override-parameter-"));
   try {
     const entry = join(dir, "main.ts");
@@ -63,12 +63,16 @@ const receiver: Base = new Child();
 console.log(receiver.copy(new Item()).value);
 `,
     );
+    // The override compiles: its slot checks the argument into the declared
+    // subclass and throws for the base instance before the body could read
+    // a field it does not have (override-parameter-narrowing.ts; the run is
+    // pinned in tests/harness/override-parameter-narrowing.test.ts).
     const { coverage } = analyze(entry);
     expect(
-      coverage.diagnostics.some(
-        (d) => d.code === "SC1090" && d.message.includes("different signature"),
+      [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])].filter(
+        (d) => d.code === "SC1090",
       ),
-    ).toBe(true);
+    ).toEqual([]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

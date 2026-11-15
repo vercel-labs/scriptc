@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9973-class-member-refusal-override.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,7 @@
+node-island-marked-entry/main.ts:1:1 - error SC8006: scriptc.nodeIslands.modules marks the entry module to run in a Node island, and the entry module stays native
+
+  1 | // The project marks the entry module itself to run in a Node island. The
+    | ^
+  2 | // entry is the program the build compiles and stays native, so the mark
+
+  hint: move the code that needs Node into a module of its own and mark that module; the entry module node-island-marked-entry/main.ts is the program the build compiles

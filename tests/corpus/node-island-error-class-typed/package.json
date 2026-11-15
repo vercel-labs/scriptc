@@ -1,0 +1,1 @@
+{ "name": "node-island-error-class-typed", "private": true, "type": "module", "scriptc": { "packages": { "err-view": "node" } } }

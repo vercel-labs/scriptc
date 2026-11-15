@@ -126,7 +126,7 @@ static ScrDyn *scr_set_prop(const ScrDyn *object, const char *key) {
   size_t len = strlen(key);
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrStr *name = scr_str_new(key, len);
-    ScrDyn *fast = scr_dyn_typed_ref_key_get(object, name);
+    ScrDyn *fast = scr_dyn_typed_ref_own_get(object, name);
     scr_str_release(name);
     if (fast) return fast;
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);

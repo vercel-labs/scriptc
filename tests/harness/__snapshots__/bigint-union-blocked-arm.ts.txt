@@ -5,4 +5,4 @@ bigint-union-blocked-arm.ts:9:62 - error SC2020: 'BigInt of number values' is pa
      |                                                              ^~~~~
   10 | }
 
-  hint: the checker narrows the argument to number, but the stored value can also hold () => void at run time; string, number, boolean, bigint, byte views, and array arguments are supported
+  hint: the checker narrows the argument to number, but the value's storage keeps every arm its reads and call sites can produce, so () => void can still arrive at run time; bind the guarded value to a local declared as the narrowed type and convert that (string, number, boolean, bigint, byte views, and array arguments are supported)

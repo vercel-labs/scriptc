@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8881-child-stream-pause-backpressure.ts"
+ ],
+ "diags": []
+}

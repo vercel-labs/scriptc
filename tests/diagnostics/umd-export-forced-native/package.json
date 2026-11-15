@@ -1,0 +1,1 @@
+{ "name": "umd-export-forced-native", "private": true, "type": "module", "scriptc": { "packages": { "wordform": "native" } } }

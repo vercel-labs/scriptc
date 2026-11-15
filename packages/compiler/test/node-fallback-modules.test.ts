@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import {
+  domExceptionDtsPath,
   fallbackDtsPath,
   fallbackModulePath,
   fallbackModulesNamedIn,
@@ -40,4 +41,12 @@ test("a module named in a string literal selects its file, under either spelling
   expect(
     fallbackModulesNamedIn(`require("http2"); import("node:v8");`).map((file) => basename(file)),
   ).toEqual(["http2.d.ts", "v8.d.ts"]);
+});
+
+test("the DOMException declaration beside an older @types/node is the fallback's own", () => {
+  // The declaration's code, without its comment: the same text in both files.
+  const supplement = readFileSync(domExceptionDtsPath(), "utf8");
+  const declaration = supplement.slice(supplement.indexOf("interface DOMException"));
+  expect(declaration).toContain("declare var DOMException");
+  expect(readFileSync(fallbackDtsPath(), "utf8")).toContain(declaration);
 });

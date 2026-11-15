@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/parallel-reduce-chunk-order.ts"
+ ],
+ "diags": []
+}

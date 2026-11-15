@@ -3,5 +3,6 @@
   "tarballSha256": "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231",
   "moduleVersion": 137,
   "configureFlags": ["--shared", "--ninja"],
+  "linuxConfigureFlags": ["--partly-static"],
   "icu": "full"
 }

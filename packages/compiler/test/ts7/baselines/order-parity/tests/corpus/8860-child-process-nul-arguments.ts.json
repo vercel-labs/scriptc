@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8860-child-process-nul-arguments.ts"
+ ],
+ "diags": []
+}

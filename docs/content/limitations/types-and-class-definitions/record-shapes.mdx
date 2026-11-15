@@ -1,3 +1,6 @@
 - **Record shapes:** Records use exact native layouts.
   Passing `{ a, b }` where `{ a }` is expected can produce `SC2002`.
   Accepted flows into a strict field-subset shape copy the record; see [Record identity and property order](#record-identity-and-property-order).
+  A type that reaches a graph of types so large or so entangled that one mapping of it takes more than 500,000 steps ends the build with `SC2016`, which names the type and points at its declaration.
+  This holds under every tier, because the checked-dynamic form of the same value maps the same types.
+  Declaring the value with a narrower type, or with `unknown` where the graph of types closes, compiles.

@@ -40,6 +40,13 @@ double scr_os_get_priority(double pid);
  * -20..19), then the scheduling priority; failures throw Node's RangeError
  * or SystemError (ERR_SYSTEM_ERROR). */
 void scr_os_set_priority(double pid, double priority);
+/* The checked-dynamic forms: os.getPriority/os.setPriority called with
+ * arguments that are not statically numbers (untyped JavaScript). Node's
+ * whole argument ladder runs in the runtime — the default pid, the
+ * one-argument shift, validateInteger's type error rendered from the boxed
+ * value, then the range checks and the call. May throw. */
+double scr_os_get_priority_chk(const struct ScrDyn *pid);
+void scr_os_set_priority_chk(const struct ScrDyn *pid, const struct ScrDyn *priority);
 /* os.cpus(): take answers the CPU count of a fresh snapshot; model and
  * field (0 speed, 1 user, 2 nice, 3 sys, 4 idle, 5 irq) read it. */
 double scr_os_cpus_take(void);

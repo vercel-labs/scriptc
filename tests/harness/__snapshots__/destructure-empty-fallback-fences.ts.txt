@@ -1,0 +1,49 @@
+destructure-empty-fallback-fences.ts:10:47 - error SC2001: values of type '[string, number]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+   9 | function rest(side: string): number {
+  10 |   const [first, ...others] = corners[side] ?? [];
+     |                                               ^~
+  11 |   return others.length + (first ?? "").length;
+
+destructure-empty-fallback-fences.ts:11:27 - error SC2004: uses of 'first' inherit the blocker on its declaration
+
+  10 |   const [first, ...others] = corners[side] ?? [];
+  11 |   return others.length + (first ?? "").length;
+     |                           ^~~~~
+  12 | }
+
+  hint: the declaration of 'first' did not compile — fix the diagnostic reported there and these sites clear with it
+
+destructure-empty-fallback-fences.ts:17:42 - error SC2001: values of type '[string, [number, number]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  16 | function inner(side: string): number {
+  17 |   const [, [low, high]] = boxes[side] ?? [];
+     |                                          ^~
+  18 |   return low + high;
+
+destructure-empty-fallback-fences.ts:18:10 - error SC2004: uses of 'low' inherit the blocker on its declaration
+
+  17 |   const [, [low, high]] = boxes[side] ?? [];
+  18 |   return low + high;
+     |          ^~~
+  19 | }
+
+  hint: the declaration of 'low' did not compile — fix the diagnostic reported there and these sites clear with it
+
+destructure-empty-fallback-fences.ts:23:38 - error SC2009: values of type '[any, any]' cannot be compiled: the tuple shape is supported, but its element type 'any' does not compile
+
+  22 | function listed(list: string[] | undefined): string {
+  23 |   const [head, next] = list ? list : [];
+     |                                      ^~
+  24 |   return `${head} ${next}`;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+destructure-empty-fallback-fences.ts:24:13 - error SC2004: uses of 'head' inherit the blocker on its declaration
+
+  23 |   const [head, next] = list ? list : [];
+  24 |   return `${head} ${next}`;
+     |             ^~~~
+  25 | }
+
+  hint: the declaration of 'head' did not compile — fix the diagnostic reported there and these sites clear with it

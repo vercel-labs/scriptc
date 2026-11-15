@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 // per node. `--check` fails when the file is stale.
 const root = fileURLToPath(new URL("..", import.meta.url));
 const require = createRequire(join(root, "package.json"));
-const ts = require("typescript");
+const ts = require("typescript5");
 const irPath = join(root, "packages/compiler/src/ir/ir.ts");
 const target = join(root, "packages/compiler/src/ir/fields.generated.ts");
 const samePath = (a, b) => a.replace(/\\/g, "/") === b.replace(/\\/g, "/");

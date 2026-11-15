@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9372-promise-all-tuple-plain-and-tuple-values.ts"
+ ],
+ "diags": []
+}

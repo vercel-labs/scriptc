@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import ts from "typescript";
+import ts from "typescript5";
 import {
   buildTree,
   expandableIds,

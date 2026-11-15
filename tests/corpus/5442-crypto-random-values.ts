@@ -119,20 +119,34 @@ show("v7 time", () => {
 });
 
 // Callback order: randomFill and randomInt against nextTick and promises.
-// A fill of zero bytes calls back synchronously.
+// A fill of zero bytes calls back synchronously. Node runs fills on its
+// thread pool and answers int calls from its own byte cache, so each start
+// sits in the previous one's callback and the whole order prints from the
+// last callback — a wall-clock wait would print a partial order on a busy
+// machine.
 const order: string[] = [];
-// Node runs fills on its thread pool, so each starts in the previous one's
-// callback to keep the order fixed.
 const target = new Float32Array(16);
-randomFill(new Uint16Array(8), (err, buf) => {
-  order.push(`fill ${errorText(err)} ${buf.length} ${touched(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength))}`);
-  randomFill(target, 4, (err2, buf2) => {
-    order.push(`fill offset ${errorText(err2)} ${buf2 === target} ${touched(new Uint8Array(buf2.buffer, buf2.byteOffset, buf2.byteLength))}`);
-    randomFill(new DataView(new ArrayBuffer(32)), 8, 16, (err3, buf3) => {
-      order.push(`fill dataview ${errorText(err3)} ${buf3.byteLength} ${touched(new Uint8Array(buf3.buffer, buf3.byteOffset, buf3.byteLength))}`);
+
+function warmInt(): void {
+  randomInt(100, (err, n) => {
+    order.push(`int warm ${err ? "error" : "no error"} ${n < 100}`);
+    process.nextTick(() => {
+      order.push("tick after warm int");
+      console.log(order.join("\n"));
     });
   });
-});
+}
+
+function nestedInt(): void {
+  randomInt(5, 7, (err, m) => {
+    order.push(`int nested ${err ? "error" : "no error"} ${m === 5 || m === 6}`);
+    process.nextTick(() => {
+      order.push("tick after nested int");
+      warmInt();
+    });
+  });
+}
+
 randomFill(new Uint8Array(8), 2, 0, (err, buf) => {
   order.push(`fill empty ${errorText(err)} ${touched(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength))}`);
 });
@@ -141,19 +155,22 @@ show("fill bad offset", () => {
   randomFill(new Uint8Array(2), 3, () => {});
   return "no error";
 });
-randomInt(10, (err, n) => {
-  order.push(`int ${err ? "error" : "no error"} ${n >= 0 && n < 10}`);
-  randomInt(5, 7, (err2, m) => order.push(`int nested ${err2 ? "error" : "no error"} ${m === 5 || m === 6}`));
-  process.nextTick(() => order.push("tick after nested int"));
-});
 show("int callback bad range", () => {
   randomInt(3, 3, () => {});
   return "no error";
 });
 process.nextTick(() => order.push("tick"));
 Promise.resolve().then(() => order.push("promise"));
-setTimeout(() => {
-  randomInt(100, (err, n) => order.push(`int warm ${err ? "error" : "no error"} ${n < 100}`));
-  process.nextTick(() => order.push("tick after warm int"));
-  setTimeout(() => console.log(order.join("\n")), 20);
-}, 20);
+randomFill(new Uint16Array(8), (err, buf) => {
+  order.push(`fill ${errorText(err)} ${buf.length} ${touched(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength))}`);
+  randomFill(target, 4, (err2, buf2) => {
+    order.push(`fill offset ${errorText(err2)} ${buf2 === target} ${touched(new Uint8Array(buf2.buffer, buf2.byteOffset, buf2.byteLength))}`);
+    randomFill(new DataView(new ArrayBuffer(32)), 8, 16, (err3, buf3) => {
+      order.push(`fill dataview ${errorText(err3)} ${buf3.byteLength} ${touched(new Uint8Array(buf3.buffer, buf3.byteOffset, buf3.byteLength))}`);
+      randomInt(10, (err4, n) => {
+        order.push(`int ${err4 ? "error" : "no error"} ${n >= 0 && n < 10}`);
+        nestedInt();
+      });
+    });
+  });
+});

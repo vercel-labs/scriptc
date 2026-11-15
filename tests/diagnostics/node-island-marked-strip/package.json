@@ -1,0 +1,10 @@
+{
+  "name": "node-island-marked-strip",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "nodeIslands": {
+      "modules": ["levels.ts"]
+    }
+  }
+}

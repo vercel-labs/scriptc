@@ -42,6 +42,7 @@ import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
+import { NULLABLE_NULL } from "./nullable-unions.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
@@ -1285,11 +1286,16 @@ export function emitClassShapes(
     // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
     // trace also visits its elements by their current element ops
     // (scr_arr_subclass_trace), so it is never acyclic.
+    // A class traced only for the weak analysis (ShapeHost.weakOnly) is
+    // never on a cycle either, whatever its fields hold: it is emitted the
+    // same way, and the weak analysis reads its trace from scr_weak_traces.
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`object:${cls.name}`);
     const acyclic =
       traced &&
       runtimePrefix === null &&
       !isStreamRooted &&
-      tracedFields.length === 0 &&
+      (tracedFields.length === 0 || weakOnly) &&
       cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
@@ -1323,11 +1329,23 @@ export function emitClassShapes(
     // An instance that keeps its class id in the rc word counts in the
     // low half (CLASS_ID_OFFSET).
     const count = meta.idInRc ? "i32" : host.sizeType;
+    // A lifetime-region instance has no header word to test immortality in,
+    // so a class that is the arm of a `C | null | undefined` union must skip
+    // the null sentinel explicitly; it reaches retain and release as an
+    // owned value of that union, whose unit arm the sentinel encodes.
+    const nullSentinel = lifetime && host.nullableUnions.classMayBeNullSentinel(cls.name);
     // A tree class's retain is the no-op the tree branch below emits: a
     // tree value has one owner, so nothing ever raises its count.
     if (!meta.tree)
       defs.push(
-        ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
+        ...retainBody(
+          host,
+          mangleClassRetain(cls.name),
+          `retain ${cls.name}`,
+          lifetime,
+          count,
+          nullSentinel,
+        ),
         ``,
       );
 
@@ -1465,15 +1483,29 @@ export function emitClassShapes(
                 struct,
                 refFields.map((f) => f.index),
                 "weak",
+                refFields.map((f) => host.nullableUnions.mayHoldNullSentinel(f.type)),
               )
             : destroyDefinitions(destroy, destroyBody, false, null)),
         ``,
       );
+      // A tree value of a two-unit nullable union (`C | null | undefined`)
+      // reaches this release as the immortal null sentinel, which carries no
+      // count word to recognise it by (a counted instance's -1 count is how
+      // its release skips). NULL is `undefined` in that union, so the
+      // sentinel is the only other value that is not an instance.
+      const sentinelArm = host.nullableUnions.classMayBeNullSentinel(cls.name);
       defs.push(
         `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (a tree: destroy the subtree)`,
         `entry:`,
         `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %free`,
+        `  br i1 %isnull, label %done, label %${sentinelArm ? "notunit" : "free"}`,
+        ...(sentinelArm
+          ? [
+              `notunit: ; the null arm of a two-unit nullable union`,
+              `  %isunit = icmp eq ptr %o, ${NULLABLE_NULL}`,
+              `  br i1 %isunit, label %done, label %free`,
+            ]
+          : []),
         `free:`,
         budgeted
           ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`
@@ -1648,6 +1680,7 @@ export function emitClassShapes(
               )
             : null,
           count,
+          nullSentinel,
         ),
         ``,
       );
@@ -1854,10 +1887,14 @@ export function emitClassShapes(
       // trace: visit exactly the cycle-capable fields; gcFree: release
       // exactly the complement, then free (the trace/teardown complement
       // contract in scr_runtime.h).
+      // An acyclic class's descriptor names no trace, so for the collector
+      // every reference is the teardown's.
       const indexed = indexedFields;
       const untracedRefFields = indexed.filter(
-        (f) => isRefCounted(f.type) && traceAdapter(host, f.type) === null,
+        (f) => isRefCounted(f.type) && (acyclic || traceAdapter(host, f.type) === null),
       );
+      if (acyclic && tracedFields.length > 0)
+        host.weakOnly!.trace(cycType, `@${mangleClassTrace(cls.name)}`);
       const tr: string[] = [
         `define internal void @${mangleClassTrace(cls.name)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; trace ${cls.name}`,
         `entry:`,

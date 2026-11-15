@@ -32,7 +32,7 @@
 static bool al_iteration(size_t step) {
   if (step < 1000000) return true;
   static const char msg[] = "array-like iteration over one million entries is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -194,7 +194,7 @@ static void al_refuse_primitive(const ScrStr *method) {
   scr_jb_puts(&b, "Array.prototype.");
   scr_jb_write(&b, method->data, method->len);
   scr_jb_puts(&b, " on a primitive receiver is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 /* IsConcatSpreadable(value) for concat's receiver: an array is spreadable;

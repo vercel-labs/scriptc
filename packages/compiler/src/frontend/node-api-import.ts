@@ -63,6 +63,20 @@ export function nodeApiCalleeOf(program: ts.Program, callee: ts.Expression): Nod
   return isNodeApiNamespace(program, callee.expression) ? member : null;
 }
 
+/** Whether any source file of the program imports @scriptc/node, so its
+ * checked-dynamic values may be Node island values (a requireModule result
+ * or anything reached from one). The lowerer keeps the answer
+ * (Lowerer.importsNodeApi). */
+export function programImportsNodeApi(program: ts.Program): boolean {
+  return program
+    .getSourceFiles()
+    .some(
+      (sf) =>
+        !sf.isDeclarationFile &&
+        sf.statements.nodes.some((stmt) => moduleSpecifierText(stmt) === NODE_API_MODULE),
+    );
+}
+
 /** Whether an expression evaluates to a value owned by a Node island: a
  * requireModule(...) result or anything reached from one through member
  * reads, element reads, destructuring or a const alias (`const { Point } =

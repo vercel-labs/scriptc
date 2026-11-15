@@ -15,13 +15,16 @@ import {
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
-import { buildRuntimeUnit, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
+import { probeHardeningSupport, runtimeHardeningFlags } from "./hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
+import { profileMatchSummary } from "./profile-match.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
+import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
 const run = promisify(execFile);
 
@@ -77,6 +80,11 @@ async function build() {
   const compilerArgs = config.compilerArgs ?? [];
   const archiver = process.env.AR ?? config.archiver ?? "ar";
   const archiverArgs = config.archiverArgs ?? [];
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: [...compilerArgs, ...config.targetArgs, ...(config.compilerFlags ?? [])],
+  });
   const commonFlags = [
     ...config.targetArgs,
     ...(config.compilerFlags ?? []),
@@ -119,7 +127,6 @@ async function build() {
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
     ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"));
-  const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
   const zstdBuild = zstdInputs(config.target.llvm_triple);
@@ -127,6 +134,16 @@ async function build() {
     createHash("sha256")
       .update(await readFile(path))
       .digest("hex");
+  // Every ELF object of the pack ends its unwind table with the entry of a
+  // function no executable links (unwind-tail.mjs), so that an edit to one
+  // function of a unit leaves the unwind entries of the unit's other
+  // functions, and every executable that links only those, byte-identical.
+  const unwindTailFlags = unwindTailCompileFlags(matrix.target.object_format);
+  const endUnwindTable = async (object) => {
+    if (unwindTailFlags.length === 0) return;
+    const bytes = await readFile(object);
+    if (moveUnwindTailLast(bytes)) await writeFile(object, bytes);
+  };
   const compile = async (source, output, flags) => {
     await mkdir(dirname(output), { recursive: true });
     // Zig emits DWARF by default even for optimized C. Packaged runtime
@@ -135,6 +152,7 @@ async function build() {
     await run(compiler, [
       ...compilerArgs,
       ...sourcePathFlags,
+      ...unwindTailFlags,
       ...flags,
       "-g0",
       "-c",
@@ -142,6 +160,7 @@ async function build() {
       "-o",
       output,
     ]);
+    await endUnwindTable(output);
   };
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -337,6 +356,7 @@ async function build() {
       await run(cxx[0], [
         ...cxx.slice(1),
         ...sourcePathFlags,
+        ...unwindTailFlags,
         ...unit.flags,
         ...(unit.define === undefined ? [] : [`-D${unit.define}`]),
         "-g0",
@@ -345,6 +365,7 @@ async function build() {
         "-o",
         output,
       ]);
+      await endUnwindTable(output);
       return output;
     });
     const output = join(root, "libscriptc-icu.a");
@@ -383,6 +404,28 @@ async function build() {
     // The executable `speed` flavor (--optimization=speed) exists only when
     // it differs from release: its static units are emitted through the host
     // LLVM helper.
+    // Without that helper no build of the pack can link the flavor, and every
+    // --optimization=speed build of the pack silently links its release
+    // runtime units instead, which is slower at run time. Say why it is
+    // missing here, where the pack is made.
+    if ("release" in matrix.flavors && unitHelper === null) {
+      // The reason mirrors resolveRuntimeUnitHelper's own refusals, in its
+      // order.
+      const helper = process.env.SCRIPTC_LLVM_CODEGEN ?? hostHelperPath(repoRoot);
+      const reason =
+        process.env.SCRIPTC_RUNTIME_BITCODE === "0"
+          ? "runtime bitcode output is disabled (SCRIPTC_RUNTIME_BITCODE=0)"
+          : config.bitcode === false
+            ? "the pack's build configuration disables runtime bitcode"
+            : helper === null
+              ? "this host has no LLVM codegen helper package"
+              : `the LLVM codegen helper at ${helper} is not usable for ${matrix.target.llvm_triple}`;
+      process.stdout.write(
+        `skipping the speed runtime flavor of ${packageManifest.name}: ${reason}; ` +
+          "build the helper with scripts/build-llvm-dist.mjs, then rebuild the pack to include it. " +
+          "--optimization=speed builds of this pack will link the release runtime units\n",
+      );
+    }
     const flavorPlan = [
       ...Object.entries(matrix.flavors),
       ...("release" in matrix.flavors && unitHelper !== null
@@ -466,6 +509,11 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...tlsFlags,
               ...includeFlags,
+              // Zero-initialized small locals and, on Linux, stack-clash probes.
+              ...runtimeHardeningFlags(config, {
+                optimized: flavorSpec.optimization !== "-O0",
+                ...hardeningSupport,
+              }),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             let unitBuild = false;
@@ -477,6 +525,7 @@ async function build() {
                   run(compiler, [
                     ...compilerArgs,
                     ...sourcePathFlags,
+                    ...unwindTailFlags,
                     ...unitFlags,
                     "-g0",
                     ...(speedProfile === null ? [] : ["-Xclang", "-disable-llvm-passes"]),
@@ -499,6 +548,7 @@ async function build() {
                   ),
               }))
             ) {
+              await endUnwindTable(output);
               if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
               for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
             } else {
@@ -524,14 +574,7 @@ async function build() {
         // (scripts/refresh-runtime-profile.mjs refreshes it).
         ...(profileMatches.length === 0
           ? {}
-          : {
-              runtime_profile: {
-                annotated: profileMatches.reduce((sum, match) => sum + match.annotated, 0),
-                mismatched: profileMatches.reduce((sum, match) => sum + match.mismatched, 0),
-                missing: profileMatches.reduce((sum, match) => sum + match.missing, 0),
-                ...profileWeights(profileMatches),
-              },
-            }),
+          : { runtime_profile: profileMatchSummary(profileMatches) }),
       };
     }
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
@@ -548,9 +591,9 @@ async function build() {
     )
       .flat()
       .sort();
-    // Vendored QuickJS reads `clock_gettime` for its monotonic clock. WASI
-    // exposes that declaration only when its process-clock emulation ABI is
-    // selected, so vendor sources inherit the target's runtime defines too.
+    // Vendor sources inherit the target's runtime defines too: WASI exposes
+    // some declarations (`clock_gettime` among them) only when its emulation
+    // ABIs are selected.
     const vendorTarget = [
       ...config.targetArgs,
       ...(config.compilerFlags ?? []),
@@ -559,27 +602,18 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
+    // zlib, brotli, zstd and mbedtls parse untrusted input and get every
+    // protection; libregexp keeps its flags (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(config, {
+      optimized: true,
+      vendor: true,
+      ...hardeningSupport,
+    });
     const requestedArchives = new Set(matrix.archives.map((entry) => entry.id));
     const archives =
       config.vendorArchives === false
         ? []
         : [
-            ...(requestedArchives.has("quickjs")
-              ? [
-                  await archive("quickjs", qjsSources, quickjs, [
-                    ...vendorTarget,
-                    "-std=gnu11",
-                    "-fvisibility=hidden",
-                    "-funsigned-char",
-                    "-DQUICKJS_NG_BUILD",
-                    "-D_GNU_SOURCE",
-                    "-DNDEBUG",
-                    "-Os",
-                    "-I",
-                    quickjs,
-                  ]),
-                ]
-              : []),
             ...(requestedArchives.has("libregexp")
               ? [
                   await archive("libregexp", lreSources, quickjs, [
@@ -604,6 +638,7 @@ async function build() {
                     ...zlibBuild.defines.map((define) => `-D${define}`),
                     "-I",
                     zlib,
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -615,6 +650,7 @@ async function build() {
                     "-Os",
                     "-I",
                     join(brotli, "include"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -626,6 +662,7 @@ async function build() {
                     "-O3",
                     ...zstdBuild.defines.map((define) => `-D${define}`),
                     ...zstdBuild.compileFlags,
+                    ...vendorHardening,
                     ...codeAlignment,
                     "-I",
                     zstd,
@@ -643,6 +680,7 @@ async function build() {
                     join(mbedtls, "include"),
                     "-I",
                     join(mbedtls, "library"),
+                    ...vendorHardening,
                   ]),
                 ]
               : []),
@@ -710,6 +748,7 @@ async function build() {
       stagedOutputRoot,
       runtimeForbiddenStrings(config.forbiddenArtifactStrings),
     );
+    if (unwindTailFlags.length > 0) await assertUnwindTails(stagedOutputRoot);
     const archiveSpecs = new Map(matrix.archives.map((entry) => [entry.id, entry]));
     const licensed = [
       [join(runtimeRoot, "LICENSE"), "artifacts/licenses/scriptc-runtime.txt", "Apache-2.0"],
@@ -766,15 +805,16 @@ async function build() {
         executable: [
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
-          "SCR_STDIO_EXTENDED",
           "SCR_STREAM_WRITE_ERRORS",
-          "SCR_STDIO_WRITE_SLOT",
-          "SCR_NATIVE_REACTIONS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
+          "SCR_CHILD_STREAM_FLOW",
+          "SCR_TTY_COLORS",
           "SCR_NODE_ISLANDS",
+          "SCR_NODE_ISLAND_STDIO",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",
@@ -815,32 +855,3 @@ async function build() {
   }
 }
 await withBuildLock(join(packageRoot, ".runtime-pack-build.lock"), build);
-
-/** The profile's counters on the functions the speed units' annotation
- * matched (annotated_counts) and on the functions whose control flow changed
- * since the profile was collected (mismatched_counts), from helpers that
- * report them per function. A function the profile describes for one unit
- * variant (default or workers) only reads as mismatched in the other one, so
- * a name annotated in any unit counts as annotated. `stale` names the
- * mismatched functions with the most counts. */
-function profileWeights(matches) {
-  if (!matches.every((match) => match.annotated_counts !== undefined)) return {};
-  const annotated = new Map();
-  const mismatched = new Map();
-  for (const match of matches) {
-    for (const [name, counts] of Object.entries(match.annotated_counts))
-      annotated.set(name, counts);
-    for (const [name, counts] of Object.entries(match.mismatched_counts))
-      mismatched.set(name, counts);
-  }
-  for (const name of annotated.keys()) mismatched.delete(name);
-  const sum = (map) => [...map.values()].reduce((total, counts) => total + counts, 0);
-  return {
-    annotated_counts: sum(annotated),
-    mismatched_counts: sum(mismatched),
-    stale: [...mismatched]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name]) => name),
-  };
-}

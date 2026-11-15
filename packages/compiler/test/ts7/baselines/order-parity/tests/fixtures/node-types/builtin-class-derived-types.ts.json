@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/builtin-class-derived-types.ts"
+ ],
+ "diags": []
+}

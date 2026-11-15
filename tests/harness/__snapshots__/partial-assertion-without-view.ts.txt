@@ -1,0 +1,44 @@
+partial-assertion-without-view.ts:14:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
+
+  13 | function handler(): Handler {
+  14 |   const h = { run: () => 41 } as Handler;
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 |   h.label = "h";
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and values of the asserted type may be part of a reference cycle, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
+
+partial-assertion-without-view.ts:29:13 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:shared)
+
+  28 | function circle(radius: number): Circle | Square {
+  29 |   const c = { kind: "circle" } as Circle;
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  30 |   c.radius = radius;
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and the asserted type is one arm of a union of object types or its values can be published to other threads, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
+
+partial-assertion-without-view.ts:40:16 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:cyclic)
+
+  39 | function item(name: string, next: Item | undefined): Item {
+  40 |   const made = {} as Item;
+     |                ^~~~~~~~~~
+  41 |   made.name = name;
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and values of the asserted type may be part of a reference cycle, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
+
+partial-assertion-without-view.ts:51:18 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:layout)
+
+  50 |   const backward: Span = { to: 3, from: 4 };
+  51 |   const filled = {} as Span;
+     |                  ^~~~~~~~~~
+  52 |   filled.to = 5;
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and the asserted type is a tuple, has an index signature or accessors, or its values keep more than one property order, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete
+
+partial-assertion-without-view.ts:62:18 - error SC3001: the LLVM backend does not support this construct yet (partialRecordAssertion:shared)
+
+  61 |   publish(fixed);
+  62 |   const filled = {} as Shared;
+     |                  ^~~~~~~~~~~~
+  63 |   filled.hits = 3;
+
+  hint: this object literal leaves required properties of the asserted type unwritten, and the asserted type is one arm of a union of object types or its values can be published to other threads, so the object cannot be completed in place: write every required property in the literal, or collect the properties in a Record<string, T> or Partial<T> value and assert that once it is complete

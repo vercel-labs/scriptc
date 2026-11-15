@@ -390,39 +390,26 @@
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arraybuffer.control.-": {
-  "T.json": "unsupported",
   "T.clone": "throws",
-  "U.json": "unsupported",
   "U.forin": "unsupported",
   "U.clone": "throws"
  },
  "arraybuffer.p": {
-  "i2n/T.json": "unsupported",
   "i2n/T.clone": "throws",
-  "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
   "i2n/U.clone": "throws",
-  "i2n/U.json@isl": "unsupported",
-  "n2i2n/U.json": "unsupported",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "throws",
-  "clo-i2n/U.json": "unsupported",
   "clo-i2n/U.forin": "unsupported",
   "clo-i2n/U.clone": "throws"
  },
  "arraybuffer.u": {
-  "n2i/U.json@isl": "unsupported",
-  "i2n/T.json": "unsupported",
   "i2n/T.clone": "throws",
-  "i2n/U.json": "unsupported",
   "i2n/U.forin": "unsupported",
   "i2n/U.clone": "throws",
-  "i2n/U.json@isl": "unsupported",
-  "n2i2n/U.json": "unsupported",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "throws",
-  "clo-n2i/N.callback": "clone=throws,forin=unsupported,json=unsupported",
-  "clo-i2n/U.json": "unsupported",
+  "clo-n2i/N.callback": "clone=throws,forin=unsupported",
   "clo-i2n/U.forin": "unsupported",
   "clo-i2n/U.clone": "throws"
  },
@@ -2350,9 +2337,7 @@
   "clo-i2n/I.taker": "throws"
  },
  "sab.control.-": {
-  "T.json": "unsupported",
   "T.clone": "throws",
-  "U.json": "unsupported",
   "U.forin": "unsupported",
   "U.clone": "throws"
  },
@@ -2384,7 +2369,6 @@
   "n2i/I.read": "throws",
   "n2i/I.keep": "throws",
   "n2i/I.same": "throws",
-  "n2i/U.json@isl": "unsupported",
   "n2i/I.read@nat": "bl=throws,first=wrong,isSAB=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
   "i2n/U.forin": "unsupported",

@@ -8,6 +8,7 @@ import { resolveNpmImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
+import { dynArgumentPack } from "./call-arguments.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   definitelyNoUndiciDispatcher,
@@ -510,7 +511,7 @@ function fenceRequestInitObject(
       `RequestInit option '${row.member}'${" in a static build"}`,
       blame,
       row.reason ??
-        "the native static RequestInit surface is method, headers, body, duplex, redirect, and signal",
+        "the native static RequestInit surface is method, headers, body, duplex, redirect, signal, cache, and credentials (priority is ignored, as Node ignores it)",
       sym,
     );
   };
@@ -2901,6 +2902,25 @@ export function lowerStdlibMethodCall(
         call.arguments.nodes.length > 1 &&
         call.arguments.nodes.some(ts.isSpreadElement)))
   ) {
+    // A spread whose operand is not statically a number[] (a Map's or Set's
+    // iterator, a generator, an untyped JS value) still contributes every
+    // value its iteration yields: the argument list packs into one
+    // checked-dynamic array in source order and the runtime folds it,
+    // applying ToNumber to each value as Math.max/Math.min/Math.hypot do.
+    const untypedSpread = call.arguments.nodes.some(
+      (a) => ts.isSpreadElement(a) && !staticallyNumericArraySpread(lowerer, a.expression),
+    );
+    if (untypedSpread) {
+      const { stmts, pack } = dynArgumentPack(lowerer, call.arguments.nodes, loc, { blame: call });
+      const mode = name === "max" ? 0 : name === "min" ? 1 : 2;
+      return afterArguments(stmts, {
+        kind: "libCall",
+        fn: "dyn.mathFoldMany",
+        args: [pack(), numLit(mode, loc)],
+        type: F64,
+        loc,
+      });
+    }
     const { stmts, values: elems } = mathArgs(call.arguments.nodes, (a) =>
       ts.isSpreadElement(a) ? lowerer.lowerExprExpecting(a.expression, arrayOf(F64)) : null,
     );
@@ -3058,6 +3078,19 @@ export function lowerStdlibMethodCall(
   if (!entry || call.arguments.nodes.length !== entry.args.length) return null;
   if (!lowerer.isStdlibMember(access)) return null;
   lowerer.refuseUnsupportedApi(`'.${name}()' on ${kind === "f64" ? "numbers" : "strings"}`, call);
+}
+
+/** Whether a call-argument spread operand is statically a `number[]` (or a
+ * numeric tuple): the element type is known, so the array a spread builds
+ * needs no checked conversion. Every other operand — a Map's or Set's
+ * iterator, a generator, an untyped JavaScript value — takes the
+ * checked-dynamic pack path, where its iteration feeds ToNumber. */
+function staticallyNumericArraySpread(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (type?.kind === "array") return type.elem.kind === "f64";
+  if (type?.kind !== "record") return false;
+  const shape = lowerer.shapes.get(type.shapeId);
+  return shape?.tuple === true && shape.fields.every((field) => field.type.kind === "f64");
 }
 
 export function lowerMathProperty(

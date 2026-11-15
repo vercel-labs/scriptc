@@ -292,6 +292,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "reprototyped-classes",
+    file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
+    symbol: "mayReplacePrototype",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an Object.setPrototypeOf or Reflect.setPrototypeOf call whose target's type admits instances of the class; a target whose type bounds nothing (`any`, `unknown`, a type parameter) or a reference to the function that is not a call sets it for every class",
+    gates:
+      "method calls and instanceof on instances of those classes test at run time whether the instance's prototype was replaced (after one global test), and take the checked-dynamic call or prototype walk when it was",
+    narrower:
+      "the instances that reach the call, by value flow; what is left is the run-time test on the instance",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "member-assigned",
     file: `${SRC}/frontend/lowering/lower-classes.ts`,
     symbol: "memberAssigned",
@@ -805,6 +820,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "only JavaScript adds properties to handles, so a program without a JavaScript file skips the census",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#bindingNeverWritten",
+    1,
+    "closed-world",
+    "whether one global binding is written after its declaration; it decides only whether a call that builds a class in an argument may read that name ahead of the class's statics",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#propertyMayBeWritten",
+    1,
+    "closed-world",
+    "whether one property of one receiver's type may be written, by name, by a computed key or through reflection; it decides only whether a call that builds a class in an argument may read that property ahead of the class's statics",
   ),
   scan(
     "frontend/lowering/js-collection-types.ts#inferProgram",

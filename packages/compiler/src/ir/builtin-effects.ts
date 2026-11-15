@@ -1065,6 +1065,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.iterPack",
   // ToNumber of each element can run valueOf
   "dyn.mathFold",
+  "dyn.mathFoldMany",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",

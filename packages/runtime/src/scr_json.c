@@ -1660,11 +1660,12 @@ static void scr_weak_disposed(void *key);
 static SCR_TL struct {
   uint64_t bits[SCR_DISPOSE_FILTER_BITS / 64];
   size_t noted;
-  size_t weak_keys, record_sources, record_links;
+  size_t weak_keys, record_sources, record_links, instance_protos;
 } scr_dispose_filter;
 #define scr_weak_keys_used (scr_dispose_filter.weak_keys)
 #define scr_record_source_count (scr_dispose_filter.record_sources)
 #define scr_record_link_count (scr_dispose_filter.record_links)
+#define scr_instance_proto_count (scr_dispose_filter.instance_protos)
 static inline size_t scr_dispose_filter_bit(const void *obj) {
   return ((uintptr_t)obj >> 4) & (SCR_DISPOSE_FILTER_BITS - 1);
 }
@@ -1702,12 +1703,155 @@ static inline void scr_dispose_note(const void *obj) {
  * table that empties on every removal pays. */
 static inline void scr_dispose_filter_emptied(void) {
   if (scr_dispose_filter.noted < SCR_DISPOSE_FILTER_STALE) return;
-  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count) return;
+  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count ||
+      scr_instance_proto_count)
+    return;
   memset(scr_dispose_filter.bits, 0, sizeof scr_dispose_filter.bits);
   scr_dispose_filter.noted = 0;
 }
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
+}
+
+/* Prototypes that Object.setPrototypeOf gave program class instances, by
+ * native instance. A class instance's checked-dynamic view is rebuilt from
+ * the instance each time the instance is boxed again, so the view alone
+ * cannot keep the change: this table does, for as long as the instance
+ * lives (the dispose hook drops its entry, scr_instance_proto_disposed).
+ * `prototype` is retained, or NULL for a null prototype. While the table
+ * is empty, every reader returns on its count.
+ *
+ * INVARIANT: releasing a prototype can free instances it owns, and their
+ * disposal (scr_instance_proto_disposed) moves entries. So every mutation
+ * finishes with the table before it releases anything, and nothing holds
+ * an entry pointer across a release. */
+typedef struct {
+  void *instance;
+  ScrDyn *prototype;
+  /* Private copies of the type keys the instance's capsules carry
+   * (scr_instance_proto_key): a capsule whose key is not the program's
+   * constant takes no class fast path that compares the key's address. */
+  char **keys;
+  size_t nkeys;
+} ScrInstanceProto;
+static SCR_TL ScrInstanceProto *scr_instance_protos; /* open addressing, linear probes */
+static SCR_TL size_t scr_instance_proto_capacity;      /* a power of two, or 0 */
+static void scr_dispose_observers(void *object);
+
+static inline size_t scr_instance_proto_bucket(const void *instance) {
+  uintptr_t h = (uintptr_t)instance >> 4;
+  h ^= h >> 17;
+  h *= (uintptr_t)0x9E3779B97F4A7C15ull;
+  return (size_t)(h ^ (h >> 29)) & (scr_instance_proto_capacity - 1);
+}
+
+static ScrInstanceProto *scr_instance_proto_find(const void *instance) {
+  if (!scr_instance_proto_count || !scr_dispose_maybe_observed(instance)) return NULL;
+  size_t mask = scr_instance_proto_capacity - 1;
+  for (size_t slot = scr_instance_proto_bucket(instance); scr_instance_protos[slot].instance;
+       slot = (slot + 1) & mask)
+    if (scr_instance_protos[slot].instance == instance) return &scr_instance_protos[slot];
+  return NULL;
+}
+
+/* The entry of the instance a class-instance capsule wraps, or NULL. */
+static inline ScrInstanceProto *scr_typed_ref_instance_proto(const ScrDyn *d) {
+  if (!scr_instance_proto_count || d->kind != SCR_DYN_TYPED_REF ||
+      d->v.typed_ref.type_key_len < 7 || memcmp(d->v.typed_ref.type_key, "object:", 7) != 0)
+    return NULL;
+  return scr_instance_proto_find(d->v.typed_ref.ptr);
+}
+
+static void scr_instance_proto_insert(ScrInstanceProto entry) {
+  size_t mask = scr_instance_proto_capacity - 1;
+  size_t slot = scr_instance_proto_bucket(entry.instance);
+  while (scr_instance_protos[slot].instance) slot = (slot + 1) & mask;
+  scr_instance_protos[slot] = entry;
+}
+
+static void scr_instance_proto_set(void *instance, ScrDyn *prototype) {
+  ScrDyn *held = prototype && prototype->kind != SCR_DYN_NULL ? scr_dyn_retain(prototype) : NULL;
+  scr_dispose_note(instance);
+  ScrInstanceProto *entry = scr_instance_proto_find(instance);
+  if (entry) {
+    /* The entry holds the replacement before the old prototype goes: the
+     * release can free other instances the old prototype owned, and their
+     * disposal moves entries of this table, so no entry pointer is used
+     * after it. */
+    ScrDyn *old = entry->prototype;
+    entry->prototype = held;
+    scr_dyn_release(old);
+    return;
+  }
+  /* Keep the table at most half full. */
+  if ((scr_instance_proto_count + 1) * 2 > scr_instance_proto_capacity) {
+    size_t old_capacity = scr_instance_proto_capacity;
+    ScrInstanceProto *old = scr_instance_protos;
+    size_t capacity = old_capacity ? old_capacity * 2 : 16;
+    scr_instance_protos = calloc(capacity, sizeof *scr_instance_protos);
+    if (!scr_instance_protos) scr_json_oom();
+    scr_instance_proto_capacity = capacity;
+    for (size_t i = 0; i < old_capacity; i++)
+      if (old[i].instance) scr_instance_proto_insert(old[i]);
+    free(old);
+  }
+  scr_instance_proto_insert((ScrInstanceProto){instance, held, NULL, 0});
+  scr_instance_proto_count++;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
+
+static void scr_instance_proto_disposed(void *instance) {
+  ScrInstanceProto *entry = scr_instance_proto_find(instance);
+  if (!entry) return;
+  ScrDyn *prototype = entry->prototype;
+  char **keys = entry->keys;
+  size_t nkeys = entry->nkeys;
+  /* Backward-shift deletion: move later members of the probe run into the
+   * hole so every remaining key stays reachable from its bucket. */
+  size_t mask = scr_instance_proto_capacity - 1;
+  size_t hole = (size_t)(entry - scr_instance_protos);
+  for (size_t next = (hole + 1) & mask; scr_instance_protos[next].instance; next = (next + 1) & mask) {
+    size_t home = scr_instance_proto_bucket(scr_instance_protos[next].instance);
+    bool movable = hole <= next ? (home <= hole || home > next) : (home <= hole && home > next);
+    if (!movable) continue;
+    scr_instance_protos[hole] = scr_instance_protos[next];
+    hole = next;
+  }
+  scr_instance_protos[hole] = (ScrInstanceProto){NULL, NULL, NULL, 0};
+  scr_instance_proto_count--;
+  if (!scr_instance_proto_count) scr_dispose_filter_emptied();
+  /* The instance is gone, and with it every capsule that wrapped it. */
+  for (size_t i = 0; i < nkeys; i++) free(keys[i]);
+  free(keys);
+  scr_dyn_release(prototype);
+}
+
+/* The entry's private copy of `type_key` (an "object:" key), made on first
+ * use. */
+static const char *scr_instance_proto_key(ScrInstanceProto *entry, const char *type_key,
+                                          size_t type_key_len) {
+  for (size_t i = 0; i < entry->nkeys; i++)
+    if (strlen(entry->keys[i]) == type_key_len && !memcmp(entry->keys[i], type_key, type_key_len))
+      return entry->keys[i];
+  char **grown = realloc(entry->keys, (entry->nkeys + 1) * sizeof *grown);
+  if (!grown) scr_json_oom();
+  entry->keys = grown;
+  char *copy = malloc(type_key_len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, type_key, type_key_len);
+  copy[type_key_len] = 0;
+  entry->keys[entry->nkeys++] = copy;
+  return copy;
+}
+
+/* Gives a class instance's view the prototype the table holds for it. */
+static void scr_instance_proto_apply(const ScrDyn *capsule, ScrDyn *view) {
+  ScrInstanceProto *entry = scr_typed_ref_instance_proto(capsule);
+  if (!entry || view->kind != SCR_DYN_OBJ || view->prototype == entry->prototype) return;
+  ScrDyn *old = view->prototype;
+  view->prototype = entry->prototype ? scr_dyn_retain(entry->prototype) : NULL;
+  view->null_proto = entry->prototype == NULL;
+  scr_dyn_release(old);
 }
 
 /* A disposed node's child: most getters, setters, prototypes and symbol
@@ -2576,6 +2720,82 @@ double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what) {
   return nan ? NAN : best;
 }
 
+/* Math.max/Math.min/Math.hypot over an argument list the compiler could not
+ * flatten statically (a spread of a Map/Set iterator, a generator, an
+ * untyped value): the pack holds the evaluated arguments in source order,
+ * and every one converts through ToNumber exactly once, in order. mode 0
+ * folds max, 1 min, 2 hypot — the same NaN-poisoning, ±0 and Infinity rules
+ * scr_math_max_arr and scr_math_hypot_arr apply to typed arrays. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode) {
+  if (pack == NULL || pack->kind != SCR_DYN_ARR) {
+    /* Only the compiler's own argument pack reaches here; an absent one is
+     * an empty argument list. */
+    if (pack != NULL && pack->kind != SCR_DYN_UNDEF && pack->kind != SCR_DYN_NULL) {
+      ScrStr *msg = scr_str_new("", 0);
+      ScrDyn *rest = scr_dyn_destructure_rest(pack, msg);
+      scr_str_release(msg);
+      if (!rest) return NAN;
+      double result = scr_dyn_math_fold_many(rest, mode);
+      scr_dyn_release(rest);
+      return result;
+    }
+    pack = NULL;
+  }
+  const size_t n = pack != NULL ? pack->v.arr.len : 0;
+  double *values = n > 0 ? malloc(n * sizeof *values) : NULL;
+  if (n > 0 && !values) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < n; i++) {
+    values[i] = scr_dyn_number_coerce(pack->v.arr.items[i]);
+    if (scr_exc_pending()) {
+      free(values);
+      return NAN;
+    }
+  }
+  double result;
+  if (mode == 2.0) {
+    /* Math.hypot: scale before summing to avoid intermediate overflow or
+     * underflow, and let Infinity win over NaN. */
+    double scale = 0.0;
+    bool has_nan = false;
+    for (size_t i = 0; i < n; i++) {
+      double v = fabs(values[i]);
+      if (isinf(v)) {
+        free(values);
+        return INFINITY;
+      }
+      if (isnan(v)) has_nan = true;
+      else if (v > scale) scale = v;
+    }
+    if (has_nan || scale == 0.0) {
+      free(values);
+      return has_nan ? NAN : 0.0;
+    }
+    double sum = 0.0;
+    double correction = 0.0;
+    for (size_t i = 0; i < n; i++) {
+      double v = values[i] / scale;
+      double term = v * v - correction;
+      double next = sum + term;
+      correction = (next - sum) - term;
+      sum = next;
+    }
+    free(values);
+    return scale * sqrt(sum);
+  }
+  const bool max = mode == 0.0;
+  double best = max ? -INFINITY : INFINITY;
+  bool nan = false;
+  for (size_t i = 0; i < n; i++) {
+    double v = values[i];
+    if (isnan(v)) nan = true;
+    else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
+                 : (v < best || (v == 0.0 && best == 0.0 && signbit(v))))
+      best = v;
+  }
+  free(values);
+  return nan ? NAN : best;
+}
+
 ScrDyn *scr_dyn_iter_pack(const ScrDyn *src, const ScrStr *msg) {
   if (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack)
     return scr_dyn_handle_ops_of(src)->iter_pack(src->v.handle.ptr);
@@ -3395,6 +3615,11 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
   if (scr_dyn_class_reflection_fence(object)) return NULL;
+  /* A program class instance whose prototype Object.setPrototypeOf
+   * replaced: the replacement (the class's own prototype is answered by
+   * the compiled class dispatch, which declines this instance). */
+  ScrInstanceProto *replaced = scr_typed_ref_instance_proto(object);
+  if (replaced) return replaced->prototype ? scr_dyn_retain(replaced->prototype) : scr_dyn_new_null();
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     /* A live record's snapshot is an ordinary object and a live array's an
      * ordinary array, each with the prototype it is born with. */
@@ -3482,6 +3707,17 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_dyn_release(view);
     if (!result) return NULL;
     scr_dyn_release(result);
+    /* A program class instance keeps the prototype past this boxing: the
+     * next view of the instance is built from the instance again. */
+    if (object->v.typed_ref.type_key_len >= 7 &&
+        memcmp(object->v.typed_ref.type_key, "object:", 7) == 0)
+    {
+      scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
+      ScrInstanceProto *entry = scr_instance_proto_find(object->v.typed_ref.ptr);
+      if (entry)
+        object->v.typed_ref.type_key = scr_instance_proto_key(entry, object->v.typed_ref.type_key,
+                                                              object->v.typed_ref.type_key_len);
+    }
     return scr_dyn_retain(object);
   }
   if (object->kind == SCR_DYN_FUNC) {
@@ -4188,7 +4424,8 @@ static bool scr_dyn_builtin_inherited(const ScrDyn *object, const ScrStr *key) {
   return !tail->null_proto && scr_dyn_object_proto_name(key);
 }
 
-static ScrDyn *scr_dyn_proxy_get_receiver(const ScrDyn *proxy, const ScrStr *key, const ScrDyn *receiver) {
+static ScrDyn *scr_dyn_proxy_get_receiver_held(const ScrDyn *proxy, const ScrStr *key,
+                                                const ScrDyn *receiver) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
   if (scr_exc_pending()) return NULL;
   if (!trap) {
@@ -4233,11 +4470,23 @@ static ScrDyn *scr_dyn_proxy_get_receiver(const ScrDyn *proxy, const ScrStr *key
   return result;
 }
 
+/* A trap or getter this operation runs can drop every other reference to
+ * the Proxy (deleting the only property that held it, say), and the
+ * operation still reads the Proxy's target and handler afterwards, for
+ * the next trap and the invariant checks. It holds its own reference
+ * until it returns. */
+static ScrDyn *scr_dyn_proxy_get_receiver(const ScrDyn *proxy, const ScrStr *key, const ScrDyn *receiver) {
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)proxy);
+  ScrDyn *result = scr_dyn_proxy_get_receiver_held(held, key, receiver);
+  scr_dyn_release(held);
+  return result;
+}
+
 ScrDyn *scr_dyn_proxy_get(const ScrDyn *proxy, const ScrStr *key) {
   return scr_dyn_proxy_get_receiver(proxy, key, proxy);
 }
 
-bool scr_dyn_proxy_has(const ScrDyn *proxy, const ScrStr *key) {
+static bool scr_dyn_proxy_has_held(const ScrDyn *proxy, const ScrStr *key) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "has");
   if (scr_exc_pending()) return false;
   if (!trap) return scr_dyn_in(proxy->v.proxy.target, key);
@@ -4252,7 +4501,17 @@ bool scr_dyn_proxy_has(const ScrDyn *proxy, const ScrStr *key) {
   return has;
 }
 
+/* Holds the Proxy across its traps (see scr_dyn_proxy_get_receiver). */
+bool scr_dyn_proxy_has(const ScrDyn *proxy, const ScrStr *key) {
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)proxy);
+  bool has = scr_dyn_proxy_has_held(held, key);
+  scr_dyn_release(held);
+  return has;
+}
+
 static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length);
+
+static ScrDyn *scr_dyn_proxy_own_descriptor_held(const ScrDyn *value, const ScrStr *key);
 
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
@@ -4387,6 +4646,13 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     scr_dyn_proxy_unsupported("property descriptors for this receiver kind");
     return NULL;
   }
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)value); /* see scr_dyn_proxy_get_receiver */
+  ScrDyn *out = scr_dyn_proxy_own_descriptor_held(held, key);
+  scr_dyn_release(held);
+  return out;
+}
+
+static ScrDyn *scr_dyn_proxy_own_descriptor_held(const ScrDyn *value, const ScrStr *key) {
   ScrDyn *trap = scr_dyn_proxy_trap(value, "getOwnPropertyDescriptor");
   if (scr_exc_pending()) return NULL;
   if (!trap) return scr_dyn_own_descriptor(value->v.proxy.target, key);
@@ -4456,7 +4722,7 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   return out;
 }
 
-void scr_dyn_proxy_set(ScrDyn *proxy, ScrStr *key, ScrDyn *value) {
+static void scr_dyn_proxy_set_held(ScrDyn *proxy, ScrStr *key, ScrDyn *value) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "set");
   if (scr_exc_pending()) return;
   if (!trap) {
@@ -4486,7 +4752,14 @@ void scr_dyn_proxy_set(ScrDyn *proxy, ScrStr *key, ScrDyn *value) {
   scr_dyn_release(result);
 }
 
-void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key) {
+/* Holds the Proxy across its traps (see scr_dyn_proxy_get_receiver). */
+void scr_dyn_proxy_set(ScrDyn *proxy, ScrStr *key, ScrDyn *value) {
+  ScrDyn *held = scr_dyn_retain(proxy);
+  scr_dyn_proxy_set_held(held, key, value);
+  scr_dyn_release(held);
+}
+
+static void scr_dyn_proxy_delete_held(ScrDyn *proxy, const ScrStr *key) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "deleteProperty");
   if (scr_exc_pending()) return;
   if (!trap) {
@@ -4505,6 +4778,13 @@ void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key) {
   ScrDynEntry *entry = scr_dyn_entry(proxy->v.proxy.target, key);
   if (!scr_exc_pending() && entry && !entry->configurable) scr_dyn_proxy_invariant();
   scr_dyn_release(result);
+}
+
+/* Holds the Proxy across its traps (see scr_dyn_proxy_get_receiver). */
+void scr_dyn_proxy_delete(ScrDyn *proxy, const ScrStr *key) {
+  ScrDyn *held = scr_dyn_retain(proxy);
+  scr_dyn_proxy_delete_held(held, key);
+  scr_dyn_release(held);
 }
 
 ScrDyn *scr_dyn_new_bytes(const ScrBytes *b) {
@@ -4669,6 +4949,7 @@ static __attribute__((noinline)) void scr_dispose_observed(void *object) {
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
+  if (scr_instance_proto_count) scr_instance_proto_disposed(object);
 }
 
 #ifdef SCR_JS_OBJECT_MODEL
@@ -5330,6 +5611,10 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.retain = retain;
   d->v.typed_ref.release = release;
   d->v.typed_ref.type_key = type_key;
+  if (scr_instance_proto_count && type_key_len >= 7 && memcmp(type_key, "object:", 7) == 0) {
+    ScrInstanceProto *entry = scr_instance_proto_find(ptr);
+    if (entry) d->v.typed_ref.type_key = scr_instance_proto_key(entry, type_key, type_key_len);
+  }
   d->v.typed_ref.type_key_len = (uint32_t)type_key_len;
   d->v.typed_ref.materialize = materialize;
   d->v.typed_ref.commit = commit;
@@ -5386,7 +5671,28 @@ bool scr_dyn_typed_ref_is(
          memcmp(d->v.typed_ref.type_key, type_key, type_key_len) == 0;
 }
 
+/* The class dispatch test (dyn.typedRefIs): a capsule of `type_key` whose
+ * instance answers through its class's prototype. An instance that
+ * Object.setPrototypeOf gave another prototype answers through that one, so
+ * the dispatch takes the checked-dynamic path, which reads it. */
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key) {
+  if (d && scr_typed_ref_instance_proto(d)) return false;
+  return scr_dyn_typed_ref_is(d, type_key->data, type_key->len);
+}
+
+/* Whether Object.setPrototypeOf has replaced the prototype of any program
+ * class instance that is still alive (dyn.prototypesReplaced): the test a
+ * typed call guards the per-instance one with, so it boxes nothing until
+ * then. */
+bool scr_dyn_prototypes_replaced(void) { return scr_instance_proto_count != 0; }
+
+/* Whether `d` wraps a program class instance whose prototype
+ * Object.setPrototypeOf replaced (dyn.prototypeReplaced). */
+bool scr_dyn_prototype_replaced(const ScrDyn *d) { return d && scr_typed_ref_instance_proto(d); }
+
+/* The brand test (dyn.typedRefBrandIs): what the capsule wraps, whatever
+ * its prototype is (`#x in value`, a method called on a receiver). */
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key) {
   return scr_dyn_typed_ref_is(d, type_key->data, type_key->len);
 }
 
@@ -5739,6 +6045,7 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     fresh->rc = fresh_rc;
     scr_dyn_release(fresh);
   }
+  scr_instance_proto_apply(capsule, capsule->v.typed_ref.materialized);
   if (scr_dyn_typed_ref_frozen(capsule)) scr_dyn_record_view_freeze(capsule->v.typed_ref.materialized);
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }
@@ -5837,7 +6144,9 @@ void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *o
  * data property before anything that needs more (an accessor, a function,
  * array or capsule link, Object.prototype). */
 ScrDyn *scr_dyn_typed_ref_bag_method(const ScrDyn *d, const char *key, size_t key_len) {
-  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.bag_class || d->prototype) return NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || !d->v.typed_ref.bag_class || d->prototype ||
+      scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedBagClassOps *ops = (const ScrDynTypedBagClassOps *)(const void *)d->v.typed_ref.array;
   void *instance = d->v.typed_ref.ptr;
   const ScrDyn *bag = ops->bag(instance);
@@ -5888,7 +6197,8 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
 }
 
 const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops ? ops->class_name : NULL;
 }
@@ -5902,19 +6212,22 @@ static bool scr_dyn_name_in_strs(const ScrStr *key, ScrStr *const *names, size_t
 }
 
 ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops && ops->string_tag ? ops->string_tag(d->v.typed_ref.ptr) : NULL;
 }
 
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
-  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype) return false;
+  if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return false;
   const ScrDynTypedClassOps *ops = scr_typed_ref_class_ops(d);
   return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
 }
 
 ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t key_len) {
-  if (d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
+    return NULL;
   if (!d->v.typed_ref.bag_class) {
     /* A class instance's view holds its own fields and the properties added
      * to it, and its class's prototype members stay off the view. A name
@@ -8542,16 +8855,27 @@ ScrDyn *scr_dyn_class_prototype(ScrDyn *value, ScrDyn *base) {
  * the exception pending. */
 ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const char *what) {
   if (d->kind == SCR_DYN_PROXY && scr_dyn_is_callable(d->v.proxy.target)) {
-    ScrDyn *trap = scr_dyn_proxy_trap(d, "apply");
-    if (scr_exc_pending()) return NULL;
-    if (!trap) return scr_dyn_call(d->v.proxy.target, args, argc, what);
+    /* The trap receives the target borrowed from the Proxy, which the
+     * trap can release (see scr_dyn_proxy_get_receiver). */
+    ScrDyn *held = scr_dyn_retain((ScrDyn *)d);
+    ScrDyn *trap = scr_dyn_proxy_trap(held, "apply");
+    if (scr_exc_pending()) {
+      scr_dyn_release(held);
+      return NULL;
+    }
+    if (!trap) {
+      ScrDyn *result = scr_dyn_call(held->v.proxy.target, args, argc, what);
+      scr_dyn_release(held);
+      return result;
+    }
     ScrDyn *receiver = scr_dyn_this_get();
     ScrDyn *arguments = scr_dyn_new_arr();
     for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(arguments, scr_dyn_retain(args[i]));
-    ScrDyn *trap_args[] = { d->v.proxy.target, receiver, arguments };
-    ScrDyn *result = scr_dyn_proxy_call(d, trap, trap_args, 3);
+    ScrDyn *trap_args[] = { held->v.proxy.target, receiver, arguments };
+    ScrDyn *result = scr_dyn_proxy_call(held, trap, trap_args, 3);
     scr_dyn_release(arguments);
     scr_dyn_release(receiver);
+    scr_dyn_release(held);
     return result;
   }
 
@@ -10379,6 +10703,11 @@ void scr_dyn_native_iterator_state(const ScrDyn *value, unsigned *kind, unsigned
   *index = iterator->index;
 }
 
+ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *value) {
+  const ScrNativeIterator *iterator = value->v.handle.ptr;
+  return iterator->source ? scr_dyn_retain(iterator->source) : NULL;
+}
+
 double scr_dyn_collection_iterator_index(const ScrDyn *value) {
   ScrNativeIterator *iterator = value->v.handle.ptr;
   ScrDyn *source = iterator->source;
@@ -11461,8 +11790,8 @@ static const char *scr_dyn_fn_kind_tag(const ScrDyn *value) {
  * symbol property of the target, the same invariant the string-key path
  * checks. `receiver` is the Proxy for an ordinary read, and Reflect.get's
  * third argument for that call. */
-static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional,
-                                        const ScrDyn *receiver) {
+static ScrDyn *scr_dyn_proxy_symbol_get_held(const ScrDyn *proxy, const ScrDyn *key, bool optional,
+                                             const ScrDyn *receiver) {
   ScrDyn *trap = scr_dyn_proxy_trap(proxy, "get");
   if (scr_exc_pending()) return NULL;
   if (!trap) {
@@ -11485,6 +11814,15 @@ static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, 
     scr_dyn_proxy_invariant();
     return NULL;
   }
+  return result;
+}
+
+/* Holds the Proxy across its traps (see scr_dyn_proxy_get_receiver). */
+static ScrDyn *scr_dyn_proxy_symbol_get(const ScrDyn *proxy, const ScrDyn *key, bool optional,
+                                        const ScrDyn *receiver) {
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)proxy);
+  ScrDyn *result = scr_dyn_proxy_symbol_get_held(held, key, optional, receiver);
+  scr_dyn_release(held);
   return result;
 }
 
@@ -14164,7 +14502,7 @@ static ScrDyn *scr_dyn_exotic_to_primitive(const ScrDyn *value, const char *hint
  * trap and calls each with the Proxy as `this`. An object
  * answer passes to the next method; exhaustion throws Node's "Cannot
  * convert object to primitive value" TypeError. Returns the primitive, +1. */
-static ScrDyn *scr_dyn_proxy_to_primitive(const ScrDyn *proxy, const char *hint) {
+static ScrDyn *scr_dyn_proxy_to_primitive_held(const ScrDyn *proxy, const char *hint) {
   scr_dyn_proxy_conversion_symbols();
   bool handled = false;
   ScrDyn *primitive = scr_dyn_exotic_to_primitive(proxy, hint, &handled);
@@ -14204,6 +14542,14 @@ static ScrDyn *scr_dyn_proxy_to_primitive(const ScrDyn *proxy, const char *hint)
   static const char message[] = "Cannot convert object to primitive value";
   scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
   return NULL;
+}
+
+/* Holds the Proxy across its traps (see scr_dyn_proxy_get_receiver). */
+static ScrDyn *scr_dyn_proxy_to_primitive(const ScrDyn *proxy, const char *hint) {
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)proxy);
+  ScrDyn *primitive = scr_dyn_proxy_to_primitive_held(held, hint);
+  scr_dyn_release(held);
+  return primitive;
 }
 
 /* ToString of a native Proxy (scr_dyn.h): ToPrimitive with the string hint
@@ -14924,7 +15270,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
-    const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
+    const ScrDynTypedClassOps *klass = scr_typed_ref_instance_proto(v) ? NULL : scr_typed_ref_class_ops(v);
     bool out;
     if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
       /* a compiled method or accessor of the class or a base class, also
@@ -15734,13 +16080,16 @@ void scr_dyn_check_fail(const ScrDynPath *path, const char *want, const ScrDyn *
   if (scr_ni_dyn_handle(got))
     scr_jb_puts(&b, " from a Node island (an island object stays an island value: declare the island's "
                     "type or 'unknown' for it, or copy it with structuredClone)");
-  /* A native Proxy is a live object whose traps are the value: only an
-   * untyped slot or a string-keyed dictionary can hold one (the frontend
-   * marks the dictionary type), so a fixed-shape record conversion is a
-   * recognized limitation with a name, not a bare type mismatch. */
+  /* A native Proxy is a live object whose traps are the value: an untyped
+   * slot, an interface or object type, or a string-keyed dictionary holds
+   * one (the frontend marks the dictionary type). A program class type is
+   * the class's native layout, which only its instances have, so a
+   * conversion to one is a recognized limitation with a name, not a bare
+   * type mismatch, and the message names the types that do hold it. */
   if (proxy)
-    scr_jb_puts(&b, " (a native Proxy keeps its traps only in an untyped value or a "
-                    "dictionary: declare the value 'any', or a Record<string, T>)");
+    scr_jb_puts(&b, " (a native Proxy keeps its traps only in an untyped value, an interface or object "
+                    "type, or a dictionary, and a class type holds only instances of the class: declare "
+                    "the value 'any', an interface, or a Record<string, T>)");
   ScrStr *message = scr_jb_finish(&b);
   if (proxy) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "SC2020");
@@ -19549,6 +19898,11 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       return NULL;
     }
     if (current->kind == SCR_DYN_FUNC) {
+      /* A class with no static property table answers name and length and
+       * refuses every other key (scr_dyn_fn_get), as a keyed read does: an
+       * empty table would report its statics as undefined. */
+      if (current->v.fn.class_obj && !current->v.fn.class_obj->static_data)
+        return scr_dyn_fn_get(current, key, key_len);
       ScrDyn *table = scr_dyn_fn_properties(current);
       ScrDyn *result = scr_dyn_obj_read_receiver(table, key, key_len, receiver);
       scr_dyn_release(table);
@@ -19969,16 +20323,18 @@ bool scr_dyn_reflect_set(ScrDyn *target, ScrDyn *raw_key, ScrDyn *value, ScrDyn 
     if (!scr_exc_pending()) ok = scr_dyn_reflect_set(view, key, value, receiver);
     scr_dyn_release(view);
   } else if (target->kind == SCR_DYN_PROXY) {
-    ScrDyn *trap = scr_dyn_proxy_trap(target, "set");
-    if (!scr_exc_pending() && !trap) ok = scr_dyn_reflect_set(target->v.proxy.target, key, value, receiver);
+    ScrDyn *held = scr_dyn_retain(target); /* see scr_dyn_proxy_get_receiver */
+    ScrDyn *trap = scr_dyn_proxy_trap(held, "set");
+    if (!scr_exc_pending() && !trap) ok = scr_dyn_reflect_set(held->v.proxy.target, key, value, receiver);
     else if (trap) {
-      ScrDyn *args[] = {target->v.proxy.target, key, value, receiver};
-      ScrDyn *result = scr_dyn_proxy_call(target, trap, args, 4);
+      ScrDyn *args[] = {held->v.proxy.target, key, value, receiver};
+      ScrDyn *result = scr_dyn_proxy_call(held, trap, args, 4);
       ok = result && scr_dyn_truthy(result);
       scr_dyn_release(result);
-      ScrDynEntry *entry = key->kind == SCR_DYN_STR ? scr_dyn_entry(target->v.proxy.target, key->v.str) : NULL;
+      ScrDynEntry *entry = key->kind == SCR_DYN_STR ? scr_dyn_entry(held->v.proxy.target, key->v.str) : NULL;
       if (ok && entry && !entry->configurable && ((entry->accessor && !entry->setter) || (!entry->accessor && !entry->writable && !scr_dyn_property_same_value(entry->value, value)))) scr_dyn_proxy_invariant();
     }
+    scr_dyn_release(held);
   } else if (target->kind == SCR_DYN_FUNC) {
     ScrDyn *table = scr_dyn_fn_properties(target);
     ok = scr_dyn_reflect_set(table, key, value, receiver);
@@ -20339,6 +20695,101 @@ static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
   return out;
 }
 
+/* Object.keys/values/entries of a native Proxy: its ownKeys,
+ * getOwnPropertyDescriptor and get traps. */
+static ScrDyn *scr_dyn_proxy_objwalk_held(const ScrDyn *v, ScrObjWalk mode) {
+  ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
+  if (scr_exc_pending()) return NULL;
+  ScrDyn *raw;
+  if (trap) {
+    ScrDyn *args[] = { v->v.proxy.target };
+    raw = scr_dyn_proxy_call(v, trap, args, 1);
+  } else if (v->v.proxy.target->kind != SCR_DYN_OBJ) {
+    /* Native record and function targets list their own property names. */
+    raw = scr_dyn_get_own_property_names(v->v.proxy.target);
+  } else {
+    /* [[OwnPropertyKeys]] includes non-enumerable properties too. Use
+     * the shared numeric/insertion ordering over a names-only table. */
+    ScrDyn *names = scr_dyn_new_obj();
+    for (size_t i = 0; i < v->v.proxy.target->v.obj.len; i++) {
+      const ScrDynProp entry_prop = scr_dyn_obj_prop_at(v->v.proxy.target, i);
+      const ScrDynProp *entry = &entry_prop;
+      scr_dyn_obj_set(names, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
+    }
+    raw = scr_dyn_obj_keys(names);
+    scr_dyn_release(names);
+  }
+  if (!raw) return NULL;
+  if (raw->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(raw)) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(raw);
+    scr_dyn_release(raw);
+    raw = view;
+    if (scr_exc_pending()) { scr_dyn_release(raw); return NULL; }
+  }
+  if (raw->kind != SCR_DYN_ARR) {
+    if (scr_dyn_to_primitive_result_is_object(raw)) scr_dyn_proxy_unsupported("array-like ownKeys results");
+    else {
+      static const char msg[] = "CreateListFromArrayLike called on non-object";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    }
+    scr_dyn_release(raw);
+    return NULL;
+  }
+  /* Snapshot and validate the key list before invoking any descriptor
+   * or get trap. Those callbacks may mutate the array returned above. */
+  ScrDyn *keys = scr_dyn_new_arr();
+  for (size_t i = 0; i < raw->v.arr.len; i++) {
+    ScrDyn *key = raw->v.arr.items[i];
+    const char *error = key->kind != SCR_DYN_STR ? "Proxy ownKeys result contains a non-string key" : NULL;
+    for (size_t j = 0; !error && j < keys->v.arr.len; j++) {
+      if (scr_str_eq(key->v.str, keys->v.arr.items[j]->v.str)) error = "'ownKeys' on proxy: trap returned duplicate entries";
+    }
+    if (error) {
+      scr_throw_error_msg(SCR_ERR_TYPE, error, strlen(error));
+      scr_dyn_release(keys);
+      scr_dyn_release(raw);
+      return NULL;
+    }
+    scr_dyn_arr_push(keys, scr_dyn_retain(key));
+  }
+  scr_dyn_release(raw);
+  const ScrDyn *target = v->v.proxy.target;
+  for (size_t i = 0; target->kind == SCR_DYN_OBJ && i < target->v.obj.len; i++) {
+    const ScrDynProp entry_prop = scr_dyn_obj_prop_at(target, i);
+    const ScrDynProp *entry = &entry_prop;
+    if (entry->configurable) continue;
+    bool found = false;
+    for (size_t j = 0; j < keys->v.arr.len; j++) {
+      const ScrStr *key = keys->v.arr.items[j]->v.str;
+      if (key->len == entry->key_len && memcmp(key->data, entry->key, key->len) == 0) { found = true; break; }
+    }
+    if (!found) { scr_dyn_release(keys); scr_dyn_proxy_invariant(); return NULL; }
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    ScrStr *key = keys->v.arr.items[i]->v.str;
+    ScrDyn *desc = scr_dyn_own_descriptor(v, key);
+    if (!desc) { scr_dyn_release(keys); scr_dyn_release(out); return NULL; }
+    ScrDyn *enumerable = desc->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(desc, "enumerable", 10) : NULL;
+    bool include = enumerable && scr_dyn_truthy(enumerable);
+    scr_dyn_release(desc);
+    if (!include) continue;
+    ScrDyn *value = mode == SCR_OBJWALK_KEYS ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_proxy_get(v, key);
+    if (!value) { scr_dyn_release(keys); scr_dyn_release(out); return NULL; }
+    scr_dyn_objwalk_push(out, mode, key->data, key->len, value);
+    scr_dyn_release(value);
+  }
+  scr_dyn_release(keys);
+  return out;
+}
+
+static ScrDyn *scr_dyn_proxy_objwalk(const ScrDyn *v, ScrObjWalk mode) {
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)v); /* see scr_dyn_proxy_get_receiver */
+  ScrDyn *out = scr_dyn_proxy_objwalk_held(held, mode);
+  scr_dyn_release(held);
+  return out;
+}
+
 static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
   if (scr_typed_ref_linked_live(v)) {
@@ -20379,91 +20830,7 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     if (scr_dyn_handle_props_hooks->objwalk(v, (int)mode, &out)) return out;
   }
 #endif
-  if (v->kind == SCR_DYN_PROXY) {
-    ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
-    if (scr_exc_pending()) return NULL;
-    ScrDyn *raw;
-    if (trap) {
-      ScrDyn *args[] = { v->v.proxy.target };
-      raw = scr_dyn_proxy_call(v, trap, args, 1);
-    } else if (v->v.proxy.target->kind != SCR_DYN_OBJ) {
-      /* Native record and function targets list their own property names. */
-      raw = scr_dyn_get_own_property_names(v->v.proxy.target);
-    } else {
-      /* [[OwnPropertyKeys]] includes non-enumerable properties too. Use
-       * the shared numeric/insertion ordering over a names-only table. */
-      ScrDyn *names = scr_dyn_new_obj();
-      for (size_t i = 0; i < v->v.proxy.target->v.obj.len; i++) {
-        const ScrDynProp entry_prop = scr_dyn_obj_prop_at(v->v.proxy.target, i);
-        const ScrDynProp *entry = &entry_prop;
-        scr_dyn_obj_set(names, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
-      }
-      raw = scr_dyn_obj_keys(names);
-      scr_dyn_release(names);
-    }
-    if (!raw) return NULL;
-    if (raw->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(raw)) {
-      ScrDyn *view = scr_dyn_typed_ref_materialize(raw);
-      scr_dyn_release(raw);
-      raw = view;
-      if (scr_exc_pending()) { scr_dyn_release(raw); return NULL; }
-    }
-    if (raw->kind != SCR_DYN_ARR) {
-      if (scr_dyn_to_primitive_result_is_object(raw)) scr_dyn_proxy_unsupported("array-like ownKeys results");
-      else {
-        static const char msg[] = "CreateListFromArrayLike called on non-object";
-        scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
-      }
-      scr_dyn_release(raw);
-      return NULL;
-    }
-    /* Snapshot and validate the key list before invoking any descriptor
-     * or get trap. Those callbacks may mutate the array returned above. */
-    ScrDyn *keys = scr_dyn_new_arr();
-    for (size_t i = 0; i < raw->v.arr.len; i++) {
-      ScrDyn *key = raw->v.arr.items[i];
-      const char *error = key->kind != SCR_DYN_STR ? "Proxy ownKeys result contains a non-string key" : NULL;
-      for (size_t j = 0; !error && j < keys->v.arr.len; j++) {
-        if (scr_str_eq(key->v.str, keys->v.arr.items[j]->v.str)) error = "'ownKeys' on proxy: trap returned duplicate entries";
-      }
-      if (error) {
-        scr_throw_error_msg(SCR_ERR_TYPE, error, strlen(error));
-        scr_dyn_release(keys);
-        scr_dyn_release(raw);
-        return NULL;
-      }
-      scr_dyn_arr_push(keys, scr_dyn_retain(key));
-    }
-    scr_dyn_release(raw);
-    const ScrDyn *target = v->v.proxy.target;
-    for (size_t i = 0; target->kind == SCR_DYN_OBJ && i < target->v.obj.len; i++) {
-      const ScrDynProp entry_prop = scr_dyn_obj_prop_at(target, i);
-      const ScrDynProp *entry = &entry_prop;
-      if (entry->configurable) continue;
-      bool found = false;
-      for (size_t j = 0; j < keys->v.arr.len; j++) {
-        const ScrStr *key = keys->v.arr.items[j]->v.str;
-        if (key->len == entry->key_len && memcmp(key->data, entry->key, key->len) == 0) { found = true; break; }
-      }
-      if (!found) { scr_dyn_release(keys); scr_dyn_proxy_invariant(); return NULL; }
-    }
-    ScrDyn *out = scr_dyn_new_arr();
-    for (size_t i = 0; i < keys->v.arr.len; i++) {
-      ScrStr *key = keys->v.arr.items[i]->v.str;
-      ScrDyn *desc = scr_dyn_own_descriptor(v, key);
-      if (!desc) { scr_dyn_release(keys); scr_dyn_release(out); return NULL; }
-      ScrDyn *enumerable = desc->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(desc, "enumerable", 10) : NULL;
-      bool include = enumerable && scr_dyn_truthy(enumerable);
-      scr_dyn_release(desc);
-      if (!include) continue;
-      ScrDyn *value = mode == SCR_OBJWALK_KEYS ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_proxy_get(v, key);
-      if (!value) { scr_dyn_release(keys); scr_dyn_release(out); return NULL; }
-      scr_dyn_objwalk_push(out, mode, key->data, key->len, value);
-      scr_dyn_release(value);
-    }
-    scr_dyn_release(keys);
-    return out;
-  }
+  if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_objwalk(v, mode);
   if (v->kind == SCR_DYN_TYPED_REF) {
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) return scr_typed_ref_record_walk(v, record, (int)mode);
@@ -21886,7 +22253,12 @@ ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options) {
      * Node — and `cause` records own-property PRESENCE (undefined-valued
      * members count, like `'cause' in options`). */
     ScrDyn *nm = scr_dyn_obj_get(no, "name", 4);
+    /* The conversion can run code (a Proxy's traps, a toString) that
+     * deletes `name` from the options, which may hold the only other
+     * reference to the value being converted. */
+    if (nm) scr_dyn_retain(nm);
     d->name = nm ? scr_dyn_string_coerce(nm) : scr_str_new("undefined", 9);
+    scr_dyn_release(nm);
     ScrDyn *cause = scr_dyn_obj_get(no, "cause", 5); /* borrowed; NULL = absent */
     if (cause) {
       d->has_cause = true;

@@ -6,7 +6,6 @@ import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
 import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
-import { extendsElementOf } from "../heritage-elements.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -191,9 +190,14 @@ import {
   decoratorNodesOf,
   genericIfaceBindingKeepsClass,
   guaranteedDecorationThrow,
-  storedClassValueType,
+  computedHeritageOf,
+  lowerComputedClassHeritage,
 } from "./lower-classes.js";
-import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
+import {
+  isMixinFnBinding,
+  mixinInstantiationNewType,
+  mixinResultBindingClassOf,
+} from "./lower-mixins.js";
 import { cjsModuleRef, cjsModuleRegistryPrelude } from "./lower-node-module.js";
 import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
@@ -595,10 +599,16 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   const computed = new Set<ts.ClassDeclaration>();
   for (const fp of parts)
     for (const decl of fp.classDecls) {
-      const heritage = decl.heritageClauses?.nodes.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-      )?.types?.nodes[0]?.expression;
-      if (heritage && ts.isCallExpression(heritage) && !builtinRequireBaseOf(lowerer, heritage))
+      // A conditional heritage selects between class values at run time
+      // (`class X extends (config.form ? tagged(Base) : Base)`), the same
+      // shape a call heritage has: the base is a value the class statement
+      // itself evaluates, so the class collects after its heritage lowers.
+      const heritage = computedHeritageOf(decl);
+      if (
+        heritage &&
+        (ts.isCallExpression(heritage) || ts.isConditionalExpression(heritage)) &&
+        !builtinRequireBaseOf(lowerer, heritage)
+      )
         computed.add(decl);
     }
   // Descendants need the computed ancestor's completed layout before
@@ -675,62 +685,28 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     const previousSink = lowerer.diagSink;
     const deferred: import("../../diagnostics/diagnostic.js").ScrDiagnostic[] = [];
     lowerer.diagSink = deferred;
-    const expression = extendsElementOf(decl)!.expression;
+    const expression = computedHeritageOf(decl)!;
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
+    let heritageFailed = false;
     try {
-      let value = lowerer.lowerExpr(expression);
-      const known = value.type.kind === "dyn" ? storedClassValueType(lowerer, expression) : null;
-      if (known?.kind === "classval") value = lowerer.coerceToExpected(value, known);
-      if (value.type.kind === "dyn" || value.type.kind === "func") {
-        const name = `%class.base.${lowerer.classNamer(decl)}`;
-        const loc = locOf(expression);
-        lowerer.liftedFns.push({
-          name,
-          params: [],
-          returnType: value.type,
-          locals: context.locals,
-          body: [{ kind: "return", value, loc }],
-          loc,
-        });
-        lowerer.computedCallableBases.set(decl, {
-          kind: "call",
-          callee: name,
-          args: [],
-          type: value.type,
-          loc,
-        });
-      }
-      if (value.type.kind === "classval") {
-        const classInfo = lowerer.classes.get(value.type.className);
-        if (classInfo) {
-          const name = `%class.base.${lowerer.classNamer(decl)}`;
-          const loc = locOf(expression);
-          lowerer.liftedFns.push({
-            name,
-            params: [],
-            returnType: value.type,
-            locals: context.locals,
-            body: [{ kind: "return", value, loc }],
-            loc,
-          });
-          lowerer.computedClassBases.set(lowerer.classNamer(decl), {
-            value: { kind: "call", callee: name, args: [], type: value.type, loc },
-            classInfo,
-          });
-        }
-      }
+      lowerComputedClassHeritage(lowerer, decl, expression, context);
     } catch (error) {
       if (!(error instanceof PoisonError)) throw error;
+      heritageFailed = true;
     } finally {
       lowerer.fnStack.pop();
       lowerer.diagSink = previousSink;
     }
-    lowerer.diagSink = deferred;
-    try {
-      lowerer.collectClassShape(decl);
-    } finally {
-      lowerer.diagSink = previousSink;
+    // A heritage the diagnostic refused has no base to collect against: the
+    // class reports that one diagnostic, and its uses inherit the blocker.
+    if (!heritageFailed) {
+      lowerer.diagSink = deferred;
+      try {
+        lowerer.collectClassShape(decl);
+      } finally {
+        lowerer.diagSink = previousSink;
+      }
     }
     if (symbol && deferred.length) {
       lowerer.deferredDiags.set(symbol, [
@@ -3489,6 +3465,20 @@ export function collectGlobals(
           )
             continue;
           let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // `const made = new V()` where V is a mixin RESULT binding: the
+          // checker types the value by the class expression the mixin body
+          // returns, but the binding holds the call site's INSTANTIATION
+          // (lowerVarDecl takes the same rule for locals —
+          // mixinInstantiationNewType).
+          if (
+            !decl.type &&
+            type.kind === "object" &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name
+          ) {
+            const constructed = mixinInstantiationNewType(lowerer, decl);
+            if (constructed) type = constructed;
+          }
           // An initializer-less `let` without an annotation takes its
           // writes' type, as a function's local does (lowerVarDecl's own
           // binding path): `let stat; try { stat = lstatSync(".") } catch
@@ -4407,6 +4397,11 @@ export function lowerFileInit(
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
     let funduleAt = 0;
+    // Mixin instantiations the statics list above already carries. One the
+    // program discovers LATER — a class expression's heritage lowers with
+    // its statement, after the list was built — is placed by the statement
+    // that builds it, and never twice.
+    const placedStatics = new Set<ClassInfo>();
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
       // — its statics run mid-statement in JS (the call), before
@@ -4415,6 +4410,7 @@ export function lowerFileInit(
       // changes nothing for them.
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(...lowerStaticsAt(statics[at]!));
+        if (statics[at]!.info) placedStatics.add(statics[at]!.info!);
         at++;
       }
       // A hoisted function member's property assignment runs where its
@@ -4444,10 +4440,23 @@ export function lowerFileInit(
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
       if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
+      // Mixin instantiations created while THIS statement lowered (a class
+      // expression's heritage is such a call) evaluate at this statement,
+      // so their declaration-time code lands here, before the statement's
+      // own IR — the same point the statics list places them for a class
+      // declaration.
+      const lateStatics: IrStmt[] = [];
+      for (const c of lowerer.classes.values()) {
+        if (placedStatics.has(c) || c.mixinInstance?.statics === undefined) continue;
+        if (c.mixinInstance.statics.sf !== sf) continue;
+        if (c.mixinInstance.statics.pos > ts.tokenStartOfNode(stmt)) continue;
+        placedStatics.add(c);
+        lateStatics.push(...withClassInitFlag(lowerer, c, lowerer.lowerStaticFieldInits(c)));
+      }
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.
-      body.push(...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
+      body.push(...lateStatics, ...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
     }
     while (at < statics.length) {
       body.push(...lowerStaticsAt(statics[at]!));

@@ -6426,7 +6426,12 @@ const SYNC_CALLBACK_HOST_APIS7 = new Set([
 /** True for a reference whose value the lowering can take from the
  * binding's checker type instead of its storage: a property key (element
  * access argument, computed name, `in` operand, through parentheses,
- * casts and template spans) or a `typeof` operand. */
+ * casts and template spans). A `typeof` operand is not one: the typeof
+ * lowering keeps the read of a flagged binding, so its initialization
+ * check runs (Node's typeof throws for a binding not yet initialized).
+ * That holds for every answer it folds from the binding's type, through
+ * type wrappers, and in the `typeof x === "lit"` tests
+ * (withCycleBindingRead, typeof.ts). */
 function foldablePosition7(ref: ts.Identifier): boolean {
   let child: ts.Node = ref;
   for (let p: ts.Node | undefined = ref.parent; p !== undefined; p = p.parent) {
@@ -6441,7 +6446,7 @@ function foldablePosition7(ref: ts.Identifier): boolean {
       child = p;
       continue;
     }
-    if (ts.isTypeOfExpression(p)) return true;
+    if (ts.isTypeOfExpression(p)) return false;
     if (ts.isElementAccessExpression(p)) return p.argumentExpression === child;
     if (ts.isComputedPropertyName(p)) return true;
     if (ts.isBinaryExpression(p))

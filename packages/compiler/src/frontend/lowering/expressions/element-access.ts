@@ -166,6 +166,21 @@ function assertedProbeElementRead(
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
+/** The answer of a keyed read of a class instance's checked-dynamic view.
+ * A read its index signature answers is a JavaScript property read: a
+ * missing property answers undefined, so the read keeps the value type armed
+ * with undefined (Lowerer.classIndexSignatureRead), as a record's
+ * index-signature read does. Other reads narrow to the checker's type. */
+function classKeyedReadResult(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  read: IrExpr,
+): IrExpr {
+  const indexValue = lowerer.classIndexSignatureRead(expr);
+  const optional = indexValue ? lowerer.withUndefinedArmOf(indexValue) : null;
+  return optional ? lowerer.coerceInto(expr, read, optional) : lowerer.maybeNarrow(read, expr);
+}
+
 export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpression): IrExpr {
   // The bracket spelling of the mutableBuffers fact (`b["transfer"]()`,
   // buffers.ts, t262-dc §2.4).
@@ -547,10 +562,13 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (receiverIr.className === "%Error" || isDynTypedRefType(receiverIr)) {
       const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
       const key = lowerer.lowerExprExpecting(expr.argumentExpression, DYN);
-      return lowerer.maybeNarrow(
-        { kind: "dynKeyGet", value: receiver, key, type: DYN, loc: locOf(expr) },
-        expr,
-      );
+      return classKeyedReadResult(lowerer, expr, {
+        kind: "dynKeyGet",
+        value: receiver,
+        key,
+        type: DYN,
+        loc: locOf(expr),
+      });
     }
   }
 
@@ -803,17 +821,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           : lowerRecordPropertyKey(lowerer, rawKey, expr.argumentExpression);
       if (key.type.kind === "string" || key.type.kind === "dyn") {
         const opt = hasOptionalChainGuard(expr.expression, lowerer);
-        return lowerer.maybeNarrow(
-          {
-            kind: "dynKeyGet",
-            key,
-            ...(opt ? { optional: true as const } : {}),
-            value: lowerer.coerceToExpected(obj, DYN),
-            type: DYN,
-            loc: locOf(expr),
-          },
-          expr,
-        );
+        const read: IrExpr = {
+          kind: "dynKeyGet",
+          key,
+          ...(opt ? { optional: true as const } : {}),
+          value: lowerer.coerceToExpected(obj, DYN),
+          type: DYN,
+          loc: locOf(expr),
+        };
+        return obj.type.kind === "object"
+          ? classKeyedReadResult(lowerer, expr, read)
+          : lowerer.maybeNarrow(read, expr);
       }
     }
     // A checker-`any` receiver that LOWERS to a static ARRAY

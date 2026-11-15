@@ -86,88 +86,81 @@ class-member-refusals.ts:52:27 - error SC2004: uses of 'Plotter.print' inherit t
 
   hint: the declaration of 'Plotter.print' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:61:7 - error SC1090: getter/setter pairs with different types (the property 'v' must have one type) are not supported yet
+class-member-refusals.ts:61:9 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
   60 |   }
-  61 |   set v(x: string | number) {
-     |       ^
+  61 |   set v(x: BigInt64Array<ArrayBuffer>) {
+     |         ^
   62 |     this.raw = String(x);
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 class-member-refusals.ts:67:6 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
 
   66 | console.log(cell.v);
-  67 | cell.v = 3;
+  67 | cell.v = new BigInt64Array(1);
      |      ^
-  68 | // a compound assignment reads the getter and writes the setter
+  68 | 
 
   hint: the declaration of 'Cell.v' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:70:1 - error SC2004: uses of 'Cell.v' inherit the blocker on its declaration
+class-member-refusals.ts:72:7 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
-  69 | const other = new Cell();
-  70 | other.v += "!";
-     | ^~~~~~~
-  71 | 
-
-  hint: the declaration of 'Cell.v' did not compile — fix the diagnostic reported there and these sites clear with it
-
-class-member-refusals.ts:75:7 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
-
-  74 |   n = 1;
-  75 |   get held(): BigInt64Array<ArrayBuffer> {
+  71 |   n = 1;
+  72 |   get held(): BigInt64Array<ArrayBuffer> {
      |       ^~~~
-  76 |     throw new Error("never");
+  73 |     throw new Error("never");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-class-member-refusals.ts:80:23 - error SC2004: uses of 'Holder.held' inherit the blocker on its declaration
+class-member-refusals.ts:77:23 - error SC2004: uses of 'Holder.held' inherit the blocker on its declaration
 
-  79 | const holder = new Holder();
-  80 | console.log(holder.n, holder.held);
+  76 | const holder = new Holder();
+  77 | console.log(holder.n, holder.held);
      |                       ^~~~~~~~~~~
-  81 | 
+  78 | 
 
   hint: the declaration of 'Holder.held' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:86:16 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
+class-member-refusals.ts:83:16 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
-  85 |   static count = 0;
-  86 |   static watch(target: BigInt64Array<ArrayBuffer>): number {
+  82 |   static count = 0;
+  83 |   static watch(target: BigInt64Array<ArrayBuffer>): number {
      |                ^~~~~~
-  87 |     return target.length === 0 ? 0 : 1;
+  84 |     return target.length === 0 ? 0 : 1;
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-class-member-refusals.ts:91:38 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
+class-member-refusals.ts:88:38 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
 
-  90 | class Local extends Registry {}
-  91 | console.log(Registry.count, Registry.watch(ref));
+  87 | class Local extends Registry {}
+  88 | console.log(Registry.count, Registry.watch(ref));
      |                                      ^~~~~
-  92 | console.log(Local.watch(ref));
+  89 | console.log(Local.watch(ref));
 
   hint: the declaration of 'Registry.watch' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:92:19 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
+class-member-refusals.ts:89:19 - error SC2004: uses of 'Registry.watch' inherit the blocker on its declaration
 
-  91 | console.log(Registry.count, Registry.watch(ref));
-  92 | console.log(Local.watch(ref));
+  88 | console.log(Registry.count, Registry.watch(ref));
+  89 | console.log(Local.watch(ref));
      |                   ^~~~~
-  93 | 
+  90 | 
 
   hint: the declaration of 'Registry.watch' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-member-refusals.ts:99:3 - error SC1071: generators are not supported yet
+class-member-refusals.ts:96:3 - error SC1071: generators are not supported yet
 
-   98 |   n = 1;
-   99 |   each = function* <T>(x: T): Generator<T> {
-      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  100 |     yield x;
+  95 |   n = 1;
+  96 |   each = function* <T>(x: T): Generator<T> {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  97 |     yield x;
 
-class-member-refusals.ts:105:17 - error SC2004: uses of 'Feed.each' inherit the blocker on its declaration
+class-member-refusals.ts:102:17 - error SC2004: uses of 'Feed.each' inherit the blocker on its declaration
 
-  104 | console.log(feed.n);
-  105 | console.log([...feed.each("a")].length);
+  101 | console.log(feed.n);
+  102 | console.log([...feed.each("a")].length);
       |                 ^~~~~~~~~~~~~~
-  106 | 
+  103 | 
 
   hint: the declaration of 'Feed.each' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -109,7 +109,7 @@ test("a refused setter and a refused getter reached through an untyped value thr
 class Cell {
   private raw = "1";
   get v(): string { return this.raw; }
-  set v(x: string | number) { this.raw = String(x); }
+  set v(x: BigInt64Array<ArrayBuffer>) { this.raw = String(x); }
 }
 class Holder {
   n = 1;
@@ -124,7 +124,7 @@ console.log(holder.n);
 `);
   expect(lines(stdout)).toEqual([
     "read 1",
-    "write threw getter/setter pairs with different types (the property 'v' must have one type) are not supported yet [SC1090] SC1090",
+    "write threw 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
     "held threw 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet [SC2020] SC2020",
     "1",
     "",

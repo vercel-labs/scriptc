@@ -71,6 +71,12 @@ export interface VarReadAnalysis {
    * store, whatever their declared type (an unannotated one has `any`):
    * the binding is never observed in its unassigned state. */
   storedBeforeRead: Set<ts.Symbol>;
+  /** Typed `var` bindings with a reference lexically ABOVE the declaration
+   * whose every read still runs after the first store: a function declared
+   * above the variable (or a later statement of the same scope) can only
+   * read the assigned storage, so the hoisted slot needs no undefined arm
+   * and a forward reference may declare it empty. */
+  forwardStored: Set<ts.Symbol>;
 }
 
 export function analyzeVarReads(
@@ -80,6 +86,7 @@ export function analyzeVarReads(
   const checker = lowerer.checker;
   const out = new Map<ts.Symbol, ts.Identifier>();
   const stored = new Set<ts.Symbol>();
+  const forward = new Set<ts.Symbol>();
   const neverReturns = (call: ts.CallExpression): boolean => {
     try {
       return (lowerer.typeOf(call).flags & ts.TypeFlags.Never) !== 0;
@@ -226,6 +233,9 @@ export function analyzeVarReads(
       // early read could contradict.
       if (!binding.typed) continue;
       const settle = analysis.settleIndex(binding.scope, symbol);
+      // The declaration's own position: a reference before it is the
+      // forward shape the lowering meets before the statement lowers.
+      const firstPos = Math.min(...binding.names.map((n) => n.getStart()));
       const early =
         references.find(
           (ref) =>
@@ -242,10 +252,16 @@ export function analyzeVarReads(
       if (early) {
         out.set(symbol, early);
         stored.delete(symbol);
+      } else if (references.some((ref) => !binding.names.includes(ref) && ref.pos < firstPos)) {
+        // Every read of the binding settles after the first store. A
+        // reference lexically above the declaration therefore reads the
+        // assigned storage, never the unassigned state: the forward
+        // predeclaration can register the slot empty.
+        forward.add(symbol);
       }
     }
   }
-  return { early: out, storedBeforeRead: stored };
+  return { early: out, storedBeforeRead: stored, forwardStored: forward };
 }
 
 /** The function body or source file a `var` hoists to. */

@@ -2138,11 +2138,12 @@ function hoistVarBinding(
  * such reads `undefined`, never a TDZ error, so the hoisted slot must
  * hold `undefined` from function entry — which is only honest for
  * undefined-armed union types (the interned arm) and checked-dynamic
- * bindings (the dyn undefined). Everything else returns false
- * and the reference lands on the named fence in rejectUnresolvedSymbol:
- * a slot of a narrower type has no bit pattern for the `undefined` Node
- * would yield if the capture ran early, and guessing "it won't" would
- * produce wrong output without an error. */
+ * bindings (the dyn undefined). A narrower type starts the slot EMPTY
+ * (no bit pattern for `undefined`) when var-hoisting proved every read of
+ * the binding runs after its first store: the forward reference can only
+ * observe the assigned value, exactly as its own declaration's hoisting
+ * relies on. Anything else returns false and the reference lands on the
+ * named fence in rejectUnresolvedSymbol. */
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   // Module-scope vars already have their global storage.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
@@ -2168,14 +2169,16 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   const ctx = owner.ctx;
   if (ctx.hoistedVars.has(symbol)) return false; // would have resolved
   // Only a slot that can hold `undefined` can carry pre-initialization
-  // reads: an undefined-armed union or a native checked-value binding.
+  // reads: an undefined-armed union or a native checked-value binding. A
+  // narrow type predeclares too when every read of the binding runs after
+  // its first store — the slot then starts empty, unobservable there.
   const type = varBindingType(lowerer, nameNode);
   if (!type) return false;
   const wrapped =
     type.kind === "dyn"
       ? dynUndefinedExpr(locOf(decl))
       : lowerer.unassignedSlotInit(type, locOf(decl));
-  if (!wrapped) return false;
+  if (!wrapped && !lowerer.forwardStoredVars.has(symbol)) return false;
   const root = lowerer.activeStmtLists.find((e) => e.ctx === ctx)!;
   const name = nameNode.text;
   const count = ctx.localCounters.get(name) ?? 0;

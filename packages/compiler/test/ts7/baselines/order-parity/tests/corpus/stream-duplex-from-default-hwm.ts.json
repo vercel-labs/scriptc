@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-duplex-from-default-hwm.ts"
+ ],
+ "diags": []
+}

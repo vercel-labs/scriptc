@@ -68,8 +68,26 @@ typedef void (*ScrStreamErrInv)(ScrClosure *cb, ScrStream *s, ScrError *err);
 /* writev(chunks, callback): chunks is the batch's dyn array (borrowed). */
 typedef void (*ScrStreamWritevInv)(ScrClosure *cb, ScrStream *s, struct ScrDyn *chunks);
 
+/* stream.get/setDefaultHighWaterMark: the per-isolate defaults streams
+ * built afterwards take. The setter runs Node's validateInteger(value,
+ * 'value', 0) and throws catchably (no return on failure); the dyn twin
+ * takes the JS lane's arguments unchecked — objectMode by truthiness, a
+ * non-number value failing ERR_INVALID_ARG_TYPE exactly as Node. */
+double scr_stream_get_default_hwm(bool object_mode);
+double scr_stream_get_default_hwm_dyn(struct ScrDyn *object_mode);
+void scr_stream_set_default_hwm(bool object_mode, double value);
+void scr_stream_set_default_hwm_dyn(struct ScrDyn *object_mode, struct ScrDyn *value);
+
+/* A constructor's object-mode default request: the sides do not know their
+ * mode before the constructor runs, so the caller passes this and the
+ * constructor resolves it against setDefaultHighWaterMark's current value.
+ * (-2 is the option ladders' "validation failed" marker, not a default.) */
+#define SCR_STREAM_HWM_OBJECT_DEFAULT (-3.0)
+
 /* Constructors (+1 result; option callbacks MOVE; NULL = absent). hwm < 0
- * means the byte default (65536 — Node 24's getDefaultHighWaterMark). */
+ * means a default resolved at construction time: -1 the byte-mode one
+ * (65536, 16384 on win32) and -3 (SCR_STREAM_HWM_OBJECT_DEFAULT) the
+ * object-mode one (16), whichever setDefaultHighWaterMark last set. */
 ScrStream *scr_stream_new_readable(double hwm, bool auto_destroy, bool emit_close,
     ScrClosure *read, ScrStreamReadInv read_inv,
     ScrClosure *destroy, ScrStreamErrInv destroy_inv);
@@ -176,6 +194,17 @@ ScrStream *scr_stream_dyn_native(const struct ScrDyn *value, double side);
 void scr_stream_pipe_dyn(ScrStream *src, struct ScrDyn *src_box, struct ScrDyn *dest, bool end);
 void scr_stream_unpipe_dyn(ScrStream *src, struct ScrDyn *dest);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
+/* stream.duplexPair: Node's DuplexSide pair. The first call makes one side
+ * from the options; the second makes its peer and links the two (each side
+ * holds the other). Options callbacks shadow the pair's own methods, as
+ * Node's instance properties shadow DuplexSide's prototype. */
+ScrStream *scr_stream_duplex_pair_side(struct ScrDyn *opts);
+ScrStream *scr_stream_duplex_pair_peer(struct ScrDyn *opts, ScrStream *first);
+/* readable.wrap(src): the receiver answers for an old-style source. Its push
+ * of each 'data' chunk pauses the source over the high-water mark, and its
+ * _read resumes it; 'end' is EOF, 'error' destroys the receiver with the
+ * error, and the source closing or being destroyed destroys the receiver. */
+ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_passthrough_dyn(struct ScrDyn *opts);
 void scr_stream_init_readable_dyn(ScrStream *s, struct ScrDyn *opts,
@@ -289,14 +318,24 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str);
 /* push(chunk, enc): the per-call literal encoding (canonical); overrides
  * the stream's defaultEncoding. Borrows both. */
 bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
+/* push(chunk, encoding) with both values as checked-dynamic values, as
+ * Node's method dispatches them by type. Borrows both. */
+bool scr_stream_push_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding);
 /* The defaultEncoding option's push side: how push(string) decodes chunks
  * (Buffer.from(chunk, enc)). Canonical literal, never "utf8". Receiver
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+/* unshift(chunk, enc): the per-call literal encoding (canonical). The chunk
+ * is read with it, then converted to the stream's decoder encoding. Borrows
+ * all three. */
+bool scr_stream_unshift_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+/* unshift(chunk, encoding) with both values as checked-dynamic values, as
+ * Node's method dispatches them by type. Borrows both. */
+bool scr_stream_unshift_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -342,6 +381,10 @@ struct ScrDyn *scr_stream_dyn_async_iterator_open(struct ScrDyn *value, ScrStr *
  * Streams borrowed; +1 promises. */
 ScrPromise *scr_sp_finished(ScrStream *s);
 ScrPromise *scr_sp_pipeline(double n, ScrStream **streams);
+/* pipelineImpl's fewer-than-two-stages ladder for the promise form: an
+ * already-rejected promise (ERR_MISSING_ARGS), where the callback form
+ * throws. */
+ScrPromise *scr_sp_pipeline_missing(void);
 /* node:stream/consumers — the promise consumers over the readable
  * machinery: accumulate every chunk (string chunks as their utf8 bytes)
  * and settle at the terminal point (right after 'close', the eos timing
@@ -442,6 +485,11 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s,
                            ScrClosure *cb /*moves*/); /* recv +1 */
 void scr_stream_cork(ScrStream *s);
 void scr_stream_uncork(ScrStream *s);
+/* The error the write/end completion running its callback published (Node's
+ * error-first callback argument), as a checked-dynamic value: +1, null when
+ * that completion had none. Callbacks that run outside a completion read
+ * null. */
+ScrDyn *scr_stream_cb_error_dyn(void);
 
 #ifdef SCR_STREAM_WRITE_ERRORS
 /* An error-first write callback: wraps the user's zero-argument closure
@@ -530,6 +578,12 @@ ScrClosure *scr_stream_finished_opts(ScrStream *s, ScrClosure *cb, ScrStreamErrI
 ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readable,
                                          double writable, bool on_error, ScrDyn *signal,
                                          ScrAbortAddFn add);
+/* eos with Node's kEosNodeSynchronousCallback: a stream that already
+ * settled what eos() waits for answers the callback before this returns
+ * (the web stream adapters). */
+ScrClosure *scr_stream_finished_opts_sync(ScrStream *s, ScrClosure *cb /*moves*/,
+                                          ScrStreamErrInv inv, double readable, double writable,
+                                          bool on_error, ScrDyn *signal, ScrAbortAddFn add);
 ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable, bool on_error,
                                  bool cleanup, ScrDyn *signal, ScrAbortAddFn add);
 /* stream/promises pipeline(...streams, { signal, end }): end false leaves
@@ -587,6 +641,12 @@ void scr_stream_set_flush_on_prefinish(ScrStream *s);
 void scr_stream_set_destroyed(ScrStream *s, bool destroyed);
 void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
 void *scr_stream_native(ScrStream *s, void (*release)(void *));
+/* An internal one-shot notification: fn(arg) runs at the stream's
+ * terminal close tick, once 'close' emitted and the option callbacks were
+ * dropped. The web-to-node adapters (scr_stream_web.c) use it to drop the
+ * context that otherwise keeps the node stream and the web reader or
+ * writer alive until process exit. */
+void scr_stream_set_closed_hook(ScrStream *s, void (*fn)(void *), void *arg);
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */
@@ -687,6 +747,16 @@ ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */
 ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, double hwm, ScrStr *encoding);
+/* The stream/web adapters of Node's internal/webstreams/adapters.js
+ * (scr_stream_web.c): the Readable/Writable/Duplex statics. The toWeb forms
+ * answer the +1 web stream or NULL with the error pending (Node's own
+ * validation messages and order); the fromWeb forms answer the +1 stream.
+ * `options` is borrowed and may be NULL for an omitted argument. */
+ScrDyn *scr_stream_readable_to_web(const ScrDyn *stream, const ScrDyn *options);
+ScrDyn *scr_stream_writable_to_web(const ScrDyn *stream);
+ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options);
+ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const ScrDyn *options);
+ScrStream *scr_stream_duplex_from_web(const ScrDyn *pair, const ScrDyn *options);
 /* Duplex.from over an async function (the compiled stage takes the source
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */
@@ -725,6 +795,17 @@ ScrStream *scr_stream_option_values(ScrStream *s, struct ScrDyn *decode_strings,
 void scr_stream_set_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_set_default_encoding(ScrStream *s, struct ScrDyn *enc);
+/* setEncoding(enc) with an encoding of any type: Node's StringDecoder
+ * argument — null, undefined and "" are utf8, an encoding name in any
+ * case installs its canonical decoder, anything else throws
+ * ERR_UNKNOWN_ENCODING formatted with %s. Borrows enc; answers the stream
+ * (+1), or NULL with the exception pending. */
+ScrStream *scr_stream_set_encoding_value(ScrStream *s, struct ScrDyn *enc);
+/* The Readable.from `encoding` option: a falsy value installs no decoder
+ * (Node's `if (options.encoding)`), and a truthy one installs the decoder
+ * while readableEncoding answers the spelling as given. Borrows enc;
+ * answers the stream (+1), or NULL with the exception pending. */
+ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, struct ScrDyn *enc);
 ScrDyn *scr_stream_done_dyn_c(ScrClosure *clo, ScrDyn *const *args, size_t argc);
 /* The native state's extra operations: view adds its members to the
  * stream's untyped view and close is the view's close() (both NULL when

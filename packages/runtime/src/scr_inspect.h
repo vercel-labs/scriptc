@@ -102,6 +102,13 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
 /* new StringDecoder(encoding) for an encoding of any type: Node's
  * normalizeEncoding, ERR_UNKNOWN_ENCODING formatted with %s (+1 or NULL). */
 ScrStr *scr_strdec_encoding_value(const ScrDyn *enc);
+/* The ERR_UNKNOWN_ENCODING message for a value that never names an
+ * encoding, `Unknown encoding: %s` as util.format renders it (+1, or NULL
+ * with the exception pending). scr_json.c defines the same function weakly
+ * as the String() text, for a program whose stream use links this unit
+ * nowhere; the definition here is strong, so a link that includes this unit
+ * replaces that default. */
+ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc);
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);

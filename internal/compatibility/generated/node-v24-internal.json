@@ -91647,6 +91647,7 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/2100-stream-default-hwm.ts",
           "tests/corpus/2861-readable-iterator-close.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
@@ -91686,14 +91687,31 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-compose-forms.ts",
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/stream-duplex-pair-option-this.cjs",
+          "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-from-empty-encoding.ts",
+          "tests/corpus/stream-from-option-order.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/stream-operators-option-values.ts",
+          "tests/corpus/stream-pipeline-stream-list.ts",
           "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-readable-from-options.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-readable-wrap.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/stream-web-from-web.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-to-web.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-writable-state.ts",
           "tests/corpus/writable-error-callbacks.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -91809,20 +91827,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92017,20 +92024,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92057,7 +92053,8 @@
         "evidence": "compiler-feature:stream.stream.compose",
         "tests": [
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/stream-compose-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92083,12 +92080,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isDestroyed",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92114,12 +92111,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isErrored",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92145,12 +92142,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isReadable",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92176,12 +92173,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isWritable",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92213,7 +92210,10 @@
           "tests/corpus/5421-readable-from-generators.cjs",
           "tests/corpus/5610-readable-from-sets-and-views.ts",
           "tests/corpus/5611-readable-from-class-iterables.ts",
-          "tests/corpus/5612-readable-from-iterables.cjs"
+          "tests/corpus/5612-readable-from-iterables.cjs",
+          "tests/corpus/stream-readable-from-options.ts",
+          "tests/corpus/stream-from-empty-encoding.ts",
+          "tests/corpus/stream-from-option-order.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92265,12 +92265,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.Readable.isDisturbed",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92293,9 +92293,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
+          "tests/corpus/stream-web-to-web.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -92319,10 +92320,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92345,9 +92347,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
+          "tests/corpus/stream-web-to-web.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -92397,10 +92400,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92423,10 +92427,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92476,21 +92481,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:stream.getDefaultHighWaterMark",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.stream.getDefaultHighWaterMark",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92513,10 +92508,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92711,20 +92707,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92751,7 +92736,8 @@
         "evidence": "compiler-feature:stream.stream.compose",
         "tests": [
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/stream-compose-forms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92777,12 +92763,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isDestroyed",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92808,12 +92794,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isErrored",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92839,12 +92825,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isReadable",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92870,12 +92856,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.isWritable",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92907,7 +92893,10 @@
           "tests/corpus/5421-readable-from-generators.cjs",
           "tests/corpus/5610-readable-from-sets-and-views.ts",
           "tests/corpus/5611-readable-from-class-iterables.ts",
-          "tests/corpus/5612-readable-from-iterables.cjs"
+          "tests/corpus/5612-readable-from-iterables.cjs",
+          "tests/corpus/stream-readable-from-options.ts",
+          "tests/corpus/stream-from-empty-encoding.ts",
+          "tests/corpus/stream-from-option-order.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92959,12 +92948,12 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.stream.Readable.isDisturbed",
         "tests": [
-          "tests/corpus/stream-predicate-values.ts",
-          "tests/corpus/stream-web-predicates.ts",
-          "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/compat-stream-predicates.mjs",
           "tests/corpus/compat-stream-predicates.ts",
-          "tests/corpus/compat-stream-predicates-inherits.cjs"
+          "tests/corpus/compat-stream-predicates-inherits.cjs",
+          "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-web-predicates-js.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92987,9 +92976,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
+          "tests/corpus/stream-web-to-web.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -93013,10 +93003,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93039,9 +93030,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
+          "tests/corpus/stream-web-to-web.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -93091,10 +93083,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93117,10 +93110,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93170,21 +93164,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:stream.getDefaultHighWaterMark",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.stream.getDefaultHighWaterMark",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93207,10 +93191,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93319,10 +93304,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable.destroy",
         "tests": [
-          "tests/corpus/2897-child-stdin-destroy.ts"
+          "tests/corpus/2897-child-stdin-destroy.ts",
+          "tests/corpus/stream-writable-methods.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93456,9 +93442,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -93522,11 +93509,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.closed",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93549,11 +93546,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93576,11 +93583,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
-          "tests/corpus/2895-child-stdin-write-after-end.ts"
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93603,9 +93620,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableAborted",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -93632,10 +93657,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableEnded",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93658,11 +93694,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableCorked",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93685,10 +93731,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.errored",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93711,10 +93768,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableFinished",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93737,11 +93805,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableHighWaterMark",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93764,10 +93842,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableLength",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93790,11 +93879,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableNeedDrain",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93817,11 +93916,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableObjectMode",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93844,9 +93953,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'close'",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93871,10 +93987,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'drain'",
         "tests": [
-          "tests/corpus/2894-child-stdin-backpressure.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93897,10 +94021,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'error'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93923,10 +94055,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'finish'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93949,11 +94089,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'pipe'",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
           "tests/corpus/8884-stream-pipe-lifecycle.ts",
-          "tests/corpus/8884-stream-pipe-error-unhandled.ts"
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93976,11 +94123,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'unpipe'",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
           "tests/corpus/8884-stream-pipe-lifecycle.ts",
-          "tests/corpus/8884-stream-pipe-error-unhandled.ts"
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94477,10 +94631,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.wrap",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-readable-wrap.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94506,6 +94660,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -94530,9 +94685,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -94562,6 +94718,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable.compose",
         "tests": [
+          "tests/corpus/stream-compose-forms.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -94589,6 +94746,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable.iterator",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -94616,11 +94774,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.map",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94646,11 +94804,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.filter",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94676,11 +94834,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.forEach",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94706,11 +94864,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.toArray",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94736,11 +94894,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.some",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94766,11 +94924,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.find",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94796,11 +94954,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.every",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94826,11 +94984,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.flatMap",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94856,11 +95014,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.drop",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94886,11 +95044,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.take",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94916,11 +95074,11 @@
         "status": "supported",
         "evidence": "compiler-feature:stream.readable.reduce",
         "tests": [
-          "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/5335-stream-operators-values.ts",
           "tests/corpus/5336-stream-operators-promise-timing.ts",
           "tests/corpus/5337-stream-operators-concurrency.ts",
-          "tests/corpus/5338-stream-operators-checks.cjs"
+          "tests/corpus/5338-stream-operators-checks.cjs",
+          "tests/corpus/stream-operators-option-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94943,11 +95101,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.closed",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -94970,10 +95138,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -94996,11 +95175,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95023,9 +95212,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableAborted",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -95052,9 +95249,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableDidRead",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -95081,9 +95286,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEncoding",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -95110,10 +95323,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEnded",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95136,10 +95360,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.errored",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95162,10 +95397,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableFlowing",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95188,11 +95434,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableHighWaterMark",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95215,10 +95471,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableLength",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95241,11 +95508,21 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableObjectMode",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/2893-child-stdin-duplex.ts",
+          "tests/corpus/2895-child-stdin-write-after-end.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/compat-stream-state.ts",
+          "tests/corpus/compat-stream-getters.mjs",
+          "tests/corpus/compat-stream-getters.ts",
+          "tests/corpus/compat-stream-async-dispose.mjs",
+          "tests/corpus/compat-stream-async-dispose.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -95268,10 +95545,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'close'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95294,10 +95579,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'data'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95320,10 +95613,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'end'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95346,10 +95647,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'error'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95372,10 +95681,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'pause'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95398,9 +95715,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'readable'",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95425,10 +95749,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'resume'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -95500,9 +95832,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.allowHalfOpen",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -95552,9 +95885,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform.destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95579,10 +95913,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.duplexPair",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-duplex-pair.ts",
+          "tests/corpus/stream-duplex-pair-option-this.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -95743,9 +96078,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._construct",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95770,9 +96107,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._write",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -95796,9 +96135,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._writev",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95823,9 +96164,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95850,9 +96193,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._final",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -95922,9 +96267,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._construct",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -95949,9 +96296,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._read",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -95975,9 +96324,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -96131,10 +96482,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.PassThrough",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-compose-forms.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -96157,9 +96510,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._flush",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96183,9 +96538,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._transform",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96209,10 +96566,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'end'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.mjs",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -96235,9 +96600,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'finish'",
         "tests": [
+          "tests/corpus/stream-writable-state.ts",
+          "tests/corpus/stream-readable-state.ts",
+          "tests/corpus/stream-state-edge-behaviors.ts",
+          "tests/corpus/8884-stream-pipe-lifecycle.ts",
+          "tests/corpus/8884-stream-pipe-error-unhandled.ts",
+          "tests/corpus/2894-child-stdin-backpressure.ts",
+          "tests/corpus/compat-stream-classes.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -96474,8 +96846,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:stream.highWaterMark"
       },
       "anchorSource": "exact"
     },

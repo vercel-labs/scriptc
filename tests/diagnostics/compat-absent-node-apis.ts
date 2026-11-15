@@ -6,12 +6,6 @@ import { AsyncResource } from "node:async_hooks";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
-import { Readable, Writable } from "node:stream";
-
-// stream: the web-stream adapters going out.
-const webReadable = Readable.toWeb(Readable.from(["a"]));
-const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
-console.log(typeof webReadable, typeof webWritable);
 
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);

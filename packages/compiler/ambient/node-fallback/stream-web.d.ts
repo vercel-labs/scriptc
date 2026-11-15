@@ -20,6 +20,10 @@ declare module "stream/web" {
   export type WritableStreamDefaultWriter<W = unknown> = globalThis.WritableStreamDefaultWriter<W>;
   export const WritableStreamDefaultController: typeof globalThis.WritableStreamDefaultController;
   export type WritableStreamDefaultController = globalThis.WritableStreamDefaultController;
+  export type ReadableWritablePair<R = unknown, W = unknown> = globalThis.ReadableWritablePair<
+    R,
+    W
+  >;
   export const TransformStream: typeof globalThis.TransformStream;
   export type TransformStream<I = unknown, O = unknown> = globalThis.TransformStream<I, O>;
   export const TransformStreamDefaultController: typeof globalThis.TransformStreamDefaultController;

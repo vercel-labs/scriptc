@@ -218,7 +218,7 @@ ScrStream *scr_stream_readable_from_web(ScrDyn *web, bool object_mode, double hw
   if (!c) abort();
   c->rc = 1;
   c->reader = reader;
-  ScrStream *r = scr_stream_new_readable(hwm < 0 ? (object_mode ? 16 : -1) : hwm, true, true,
+  ScrStream *r = scr_stream_new_readable(hwm < 0 ? (object_mode ? -3 : -1) : hwm, true, true,
                                          sfw_closure((void *)&sfw_read_inv, c), &sfw_read_inv,
                                          sfw_closure((void *)&sfw_destroy_inv, c), &sfw_destroy_inv);
   if (object_mode) scr_stream_set_object_mode(r, true, false);

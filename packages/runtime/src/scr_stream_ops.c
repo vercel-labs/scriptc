@@ -2861,8 +2861,12 @@ static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source,
     op_unref(c);
     return NULL;
   }
-  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }) */
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, false, true, NULL, NULL,
+  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }):
+   * the constructor's defaults, so a preceding setDefaultHighWaterMark(true,
+   * value) applies as it does to Node's object-mode Duplex. */
+  ScrStream *d = scr_stream_new_duplex(SCR_STREAM_HWM_OBJECT_DEFAULT,
+                                       SCR_STREAM_HWM_OBJECT_DEFAULT, true, true, true, false,
+                                       true, NULL, NULL,
                                        op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
                                        op_chan_closure((void *)&op_chan_final_async_inv, c),
                                        &op_chan_final_async_inv,

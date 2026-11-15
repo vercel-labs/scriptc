@@ -232,6 +232,10 @@ declare module "stream" {
     setEncoding(encoding: string): this;
     pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
     unpipe(destination?: NodeJS.WritableStream): this;
+    /* An old-style source's 'data'/'end'/'error'/'close'/'destroy' events
+     * drive this stream; a push over the high-water mark pauses the source
+     * and the next read resumes it. */
+    wrap(stream: NodeJS.ReadableStream): this;
     destroy(error?: Error): this;
     readonly readable: boolean;
     readonly readableEnded: boolean;
@@ -254,6 +258,8 @@ declare module "stream" {
     static from(iterable: unknown, options?: ReadableOptions): Readable;
     /* stream.isDisturbed. */
     static isDisturbed(stream: unknown): boolean;
+    /* A web ReadableStream over the stream's events. */
+    static toWeb(streamReadable: Readable, options?: { type?: "bytes" }): ReadableStream;
     /* A Readable over a web ReadableStream's reader. */
     static fromWeb(
       readableStream: globalThis.ReadableStream,
@@ -402,6 +408,18 @@ declare module "stream" {
     [Symbol.asyncDispose](): Promise<void>;
     /* stream.isDisturbed (the classes inherit the module's functions). */
     static isDisturbed(stream: unknown): boolean;
+    /* A web WritableStream over the stream's writes, and the Writable over
+     * a web WritableStream's writer. */
+    static toWeb(streamWritable: Writable): globalThis.WritableStream;
+    static fromWeb(
+      writableStream: globalThis.WritableStream,
+      options?: {
+        decodeStrings?: boolean;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Writable;
     on(event: "drain" | "finish" | "close", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     on(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
@@ -439,6 +457,27 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* A ReadableWritablePair of web streams over the duplex's halves, and
+     * the Duplex over a pair of web streams. At runtime the pair is a
+     * plain `{ readable, writable }` object, and a bare ReadableStream is
+     * Node's ERR_INVALID_ARG_TYPE. Both signatures are widened just enough
+     * to stay assignable to the inherited Readable statics, because
+     * `typeof Duplex` is a `typeof Readable` when class values are. */
+    static toWeb(
+      duplex: Duplex,
+      options?: { readableType?: "bytes"; type?: "bytes" },
+    ): ReadableWritablePair & ReadableStream;
+    static fromWeb(
+      pair: ReadableWritablePair | ReadableStream,
+      options?: {
+        allowHalfOpen?: boolean;
+        decodeStrings?: boolean;
+        encoding?: string;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Duplex;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
@@ -574,6 +613,13 @@ declare module "stream" {
       ? PassThrough
       : D
     : unknown;
+  /* pipeline(streams, callback): the stream list form. Node expands a lone
+   * array argument into the stages, so the answer is the list's
+   * destination. */
+  function pipeline(
+    streams: ReadonlyArray<Readable | Writable | Duplex>,
+    callback: (err?: Error | null) => void,
+  ): Writable;
   function pipeline<T extends unknown[]>(...streams: T): PipelineResult<T>;
   /* util.promisify's pipeline overload matches only pipeline itself: a
    * generic signature alone admits every function. */
@@ -607,9 +653,20 @@ declare module "stream" {
     options: FinishedOptions | null,
     callback: (err?: Error | null) => void,
   ): () => void;
-  /* Folds to the TARGET platform's default at compile time (win32 16384,
-   * else 65536 — Node's own state.js split); literal argument only. */
+  /* stream.duplexPair: two Duplexes that move chunks written to one side
+   * into the other, one chunk at a time — a write completes when the other
+   * side is read, so a slow reader back-pressures the writer. The options
+   * are the Duplex constructor's (a read/write/final/destroy option
+   * shadows the pair's method, as Node's instance fields do). */
+  function duplexPair(options?: DuplexOptions): [Duplex, Duplex];
+
+  /* The process-wide (per-isolate) defaults: every stream built afterwards
+   * takes the current one. The byte-mode default follows the TARGET
+   * platform (win32 16384, else 65536 — Node's own state.js split);
+   * object mode starts at 16. setDefaultHighWaterMark validates the value
+   * like Node's validateInteger(value, 'value', 0). */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  function setDefaultHighWaterMark(objectMode: boolean, value: number): void;
   /* Node's duck-typed state predicates. A native stream answers from its
    * state, and a primitive as Node's property reads do; isDestroyed,
    * isReadable and isWritable answer null for a value without that side.
@@ -635,6 +692,11 @@ declare module "stream" {
       ? Promise<P>
       : Promise<void>;
   namespace promises {
+    /* The stream list form: the stages in one array, then the options. */
+    function pipeline(
+      streams: ReadonlyArray<Readable | Writable | Duplex>,
+      options?: { signal?: AbortSignal; end?: boolean },
+    ): Promise<void>;
     function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
       stream: unknown,
@@ -651,10 +713,12 @@ declare module "stream" {
     PassThrough,
     Stream,
     addAbortSignal,
+    duplexPair,
     pipeline,
     compose,
     finished,
     getDefaultHighWaterMark,
+    setDefaultHighWaterMark,
     isDestroyed,
     isErrored,
     isReadable,

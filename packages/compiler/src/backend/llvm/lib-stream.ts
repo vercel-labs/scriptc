@@ -667,6 +667,16 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "sp.pipelineMissing") {
+    // pipeline() with fewer than two stages, promise form: the runtime
+    // rejects with ERR_MISSING_ARGS.
+    host.declare(`declare ptr @scr_sp_pipeline_missing()`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_sp_pipeline_missing()`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "sp.pipeline") {
     // pipeline(count, s1..sn) settling a void promise: the stream list
     // rides the callback form's stack array, no callback slot.

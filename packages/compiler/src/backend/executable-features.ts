@@ -98,6 +98,7 @@ export function executableLinkFeatures(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.streamWeb ? { streamWeb: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
     // A Node island can hand its own AbortSignal to any native receiver of
     // one, and a native signal then stands for it (scr_node_island_abort.c):

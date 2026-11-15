@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-default-high-water-mark-errors.cjs"
+ ],
+ "diags": []
+}

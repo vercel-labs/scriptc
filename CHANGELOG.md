@@ -6,6 +6,15 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.15
+
+### Highlights
+
+- **TypeScript parity:**
+  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
+
+<!-- release:end -->
+
 ## 0.4.14
 
 ### Highlights
@@ -15,8 +24,6 @@ All notable changes to scriptc will be documented in this file.
   - A call resolved to an overload that names a subclass of the class its implementation returns, such as a DOM factory's `createElement("canvas")` returning the canvas element class over an element implementation, checks the value against the subclass as an assertion does instead of refusing to build; a value of another class throws the assertion's `TypeError`.
 - **Fixes:**
   - A class with static fields whose getter names a subclass declared later in the same module, used as a value from another module, no longer throws `ReferenceError: Cannot access 'Element' before initialization` at startup and prints what Node prints. The compiler-generated class helpers no longer receive the checks that guard a reference to a class made before its definition ran; the program's own references keep their checks.
-
-<!-- release:end -->
 
 ## 0.4.13
 

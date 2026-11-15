@@ -303,6 +303,7 @@ import {
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
+import { checkedClassAssertion } from "./class-assertions.js";
 import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
   emitOverrideAtOrAbove,
@@ -7221,6 +7222,20 @@ function reconcileOverloadReturn(
   if (call.type.kind === "union" && rt.kind !== "union") {
     const helper = lowerer.narrowedArmHelper(call.type.unionId, rt, call.loc);
     if (helper) return lowerer.checkedNarrowCall(helper, call, rt, call.loc);
+  }
+  // An overload that names a subclass of the class the implementation
+  // returns (`createElement(tag: "canvas"): HTMLCanvasElement` over an
+  // `HTMLElement` implementation): the value is the subclass when the
+  // implementation made one, which the call checks, as an assertion to the
+  // subclass does. Any other instance has no subclass layout to read, so the
+  // call throws the assertion's TypeError.
+  if (
+    call.type.kind === "object" &&
+    rt.kind === "object" &&
+    lowerer.isSubclassOf(rt.className, call.type.className)
+  ) {
+    const checked = checkedClassAssertion(lowerer, call, rt, call.loc);
+    if (checked) return checked;
   }
   return lowerer.coerceInto(expr, call, rt);
 }

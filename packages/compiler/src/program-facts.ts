@@ -292,6 +292,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "reprototyped-classes",
+    file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
+    symbol: "mayReplacePrototype",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an Object.setPrototypeOf or Reflect.setPrototypeOf call whose target's type admits instances of the class; a target whose type bounds nothing (`any`, `unknown`, a type parameter) or a reference to the function that is not a call sets it for every class",
+    gates:
+      "method calls and instanceof on instances of those classes test at run time whether the instance's prototype was replaced (after one global test), and take the checked-dynamic call or prototype walk when it was",
+    narrower:
+      "the instances that reach the call, by value flow; what is left is the run-time test on the instance",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "member-assigned",
     file: `${SRC}/frontend/lowering/lower-classes.ts`,
     symbol: "memberAssigned",

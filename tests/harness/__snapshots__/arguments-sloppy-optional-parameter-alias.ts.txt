@@ -1,0 +1,15 @@
+arguments-sloppy-optional-parameter-alias.ts:5:1 - error SC1090: parameterized 'arguments' outside an ES module (sloppy-mode parameter aliases) is not supported yet
+
+  4 | // call's arguments is a copy, so it would print `1` where Node prints `5`.
+  5 | function alias(value?: number): string {
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  6 |   value = 5;
+
+arguments-sloppy-optional-parameter-alias.ts:9:13 - error SC2004: uses of 'alias' inherit the blocker on its declaration
+
+   8 | }
+   9 | console.log(alias(1));
+     |             ^~~~~
+  10 | 
+
+  hint: the declaration of 'alias' did not compile — fix the diagnostic reported there and these sites clear with it

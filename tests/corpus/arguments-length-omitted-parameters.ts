@@ -46,3 +46,16 @@ later(9).then((result) => console.log(result));
 const none: string[] = [];
 const one: string[] = ["y"];
 console.log(defaulted(...none), defaulted(...one), optional(...none), optional(...one));
+
+// A defaulted parameter makes the parameter list non-simple, so even in a
+// script `arguments` is a copy that a write to the parameter leaves alone,
+// and an optional parameter that is never written cannot observe aliasing.
+function unaliased(value: number = 1): string {
+  value = 7;
+  return `${arguments.length}:${String(arguments[0])}:${value}`;
+}
+
+function readOnly(value?: number): string {
+  return `${arguments.length}:${String(arguments[0])}:${String(value)}`;
+}
+console.log(unaliased(), unaliased(2), readOnly(), readOnly(3));

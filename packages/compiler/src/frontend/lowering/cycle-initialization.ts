@@ -567,9 +567,22 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
     return;
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
-  for (const fn of mod.functions) rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+  for (const fn of mod.functions) {
+    if (fn.name.startsWith(GENERATED_CLASS_HELPER)) continue;
+    rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+  }
   markUninitializedWrites(lowerer, mod);
 }
+
+/** The helpers class dispatch and class reflection generate
+ * (class-dynamic-dispatch.ts, class-static-tables.ts): their IR is the
+ * compiler's, not the program's, and carries the location of the class
+ * declaration it derives from, which contains every reference that
+ * declaration makes. Matching those locations against source references
+ * would check a class the helper never reads (the static table of a class
+ * whose getter names a subclass, guarded on the subclass). The source
+ * references that reach a helper are checked where they are. */
+const GENERATED_CLASS_HELPER = "%dyn.class.";
 
 /** Writes to a binding declared without an initializer that run after its
  * declaration store into an initialized binding whose slot may still be

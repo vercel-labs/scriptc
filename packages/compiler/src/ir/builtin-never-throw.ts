@@ -141,6 +141,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",
+  // Emitted inline but for scr_dyn_typed_ref_brand_is_key, which compares a
+  // capsule's type key with a string and allocates nothing.
+  "dyn.typedRefBrandIs",
+  // A count and a table lookup by the wrapped instance's address.
+  "dyn.prototypesReplaced",
+  "dyn.prototypeReplaced",
   // scr_module_compile_cache_dir answers the undefined value, and
   // scr_module_constants builds two objects of constants once per thread;
   // neither takes an argument, and running out of memory ends the process.

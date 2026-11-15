@@ -5035,6 +5035,12 @@ export class Lowerer {
   readonly protocolOwnedBindings = new Map<ts.Symbol, boolean>();
   /** Field names whose complete source census stores only lexical arrows. */
   readonly receiverFreeCallbackFields = new Set<string>();
+  /** The classes an Object.setPrototypeOf or Reflect.setPrototypeOf call may
+   * give an instance of another prototype (class-method-mutations.ts), by
+   * declaration; `all` when a call's target may hold an instance of any
+   * class, or a reference to the function leaves the census. A typed method
+   * call or instanceof on such a class asks the instance at run time. */
+  readonly reprototypedClasses = { all: false, decls: new Set<ts.Node>() };
   /** Inferred JS methods participating in an override chain keep a vtable
    * ABI instead of call-site specialization. Filled before class collection. */
   readonly virtualJsMethods = new Set<ts.MethodDeclaration>();
@@ -6048,6 +6054,7 @@ export class Lowerer {
       checkedTable("protocolDispatches", () => this.protocolDispatches.size),
       checkedTable("protocolOwnedBindings", () => this.protocolOwnedBindings.size),
       checkedTable("receiverFreeCallbackFields", () => this.receiverFreeCallbackFields.size),
+      checkedTable("reprototypedClasses", () => this.reprototypedClasses.decls.size),
       checkedTable("virtualJsMethods", () => this.virtualJsMethods.size),
       checkedTable("inheritedJsFieldWrites", () => this.inheritedJsFieldWrites.size),
       checkedTable("virtualJsMethodArity", () => this.virtualJsMethodArity.size),
@@ -21289,14 +21296,20 @@ export class Lowerer {
     };
     decls.forEach((decl, i) => {
       // A fixed-tuple rest parameter owns every remaining (flattened)
-      // shape, possibly none for `[]` (restTupleShapes).
+      // shape, possibly none for `[]` (restTupleShapes). A trailing hidden
+      // arguments array (appendArgumentsParameter) is not one of its
+      // positions: the caller binds it after these parameters.
+      const tupleEnd = shapes.findIndex((shape, at) => at >= i && shape.restTuple !== true);
+      const tupleShapes = shapes.slice(i, tupleEnd < 0 ? shapes.length : tupleEnd);
       if (
         decl.dotDotDotToken !== undefined &&
         ts.isIdentifier(decl.name) &&
         i === decls.length - 1 &&
-        (shapes[i] === undefined ? shapes.length === i : shapes[i]!.restTuple === true)
+        (tupleShapes.length > 0 ||
+          shapes.length === i ||
+          (shapes.length === i + 1 && shapes[i]!.mode === "arguments"))
       ) {
-        this.declareRestTupleParam(decl, decl.name, shapes.slice(i), params, prologue);
+        this.declareRestTupleParam(decl, decl.name, tupleShapes, params, prologue);
         return;
       }
       const shape = shapes[i]!;

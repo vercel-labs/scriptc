@@ -1,4 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { withoutParentheses } from "../../outer-expressions.js";
+import { reprototypedGuard, reprototypedReceiver } from "../reprototyped-reads.js";
+import { mayReplacePrototype } from "../class-method-mutations.js";
 import { consoleHasKey, isConsoleExpression } from "../coercions/console-records.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
@@ -1337,6 +1340,36 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   ) {
     return classInstanceOf(lowerer, left, target, loc);
   }
+  // An instance of a class a setPrototypeOf call may reprototype answers
+  // through its prototype chain, which the class test of the checked view
+  // reads (and answers natively for an instance whose prototype is its
+  // class's).
+  if (
+    left.type.kind === "object" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass
+  ) {
+    const lhs = lowerer.classes.get(left.type.className);
+    if (lhs && mayReplacePrototype(lowerer, lhs))
+      return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
+  }
+  if (
+    left.type.kind === "union" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass &&
+    lowerer.dynConvertible(left.type) &&
+    lowerer.unions.get(left.type.unionId)?.arms.some((arm) => {
+      const armClass = arm.kind === "object" ? lowerer.classes.get(arm.className) : undefined;
+      return armClass !== undefined && mayReplacePrototype(lowerer, armClass);
+    })
+  )
+    return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
   if (left.type.kind === "dyn" && target.def.name === "%Error" && !lowerer.errorPrototypeValues) {
     return { kind: "dynTest", test: "error", value: left, type: BOOL, loc };
   }
@@ -1968,7 +2001,7 @@ function lowerPrivateIn(
     }
     const typedRefIs = (className: string): IrExpr => ({
       kind: "libCall",
-      fn: "dyn.typedRefIs",
+      fn: "dyn.typedRefBrandIs",
       args: [
         recv,
         { kind: "strLit", value: typeKey({ kind: "object", className }), type: STRING, loc },
@@ -2660,6 +2693,58 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // `key in value` on an instance whose prototype may have been replaced
+  // (reprototyped-reads.ts). The key is evaluated first: one that can run
+  // code is held in a local, and the dynamic `in` answers for every
+  // instance; a literal or a name is read where the guard needs it.
+  const keyNode = withoutParentheses(expr.left);
+  const keyType = lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind;
+  if (keyType === "string" && !ts.isStringLiteralLike(keyNode) && !ts.isIdentifier(keyNode)) {
+    const receiver = reprototypedReceiver(lowerer, expr.right);
+    if (receiver !== null) {
+      const key = lowerer.declareHiddenLocal("%inKey", STRING);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: key.id,
+            init: lowerer.lowerExprExpecting(expr.left, STRING),
+            loc,
+          },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "dyn.in",
+          args: [
+            lowerer.coerceToExpected(lowerer.lowerExpr(receiver), DYN),
+            varRef(key.id, STRING, loc),
+          ],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+  }
+  if (keyType === "string") {
+    const answer = reprototypedGuard(
+      lowerer,
+      expr,
+      expr.right,
+      loc,
+      (boxed) => ({
+        kind: "libCall",
+        fn: "dyn.in",
+        args: [boxed, lowerer.lowerExprExpecting(expr.left, STRING)],
+        type: BOOL,
+        loc,
+      }),
+      () => lowerInExpression(lowerer, expr, loc),
+    );
+    if (answer !== null) return answer;
   }
   {
     const inGlobal = lowerInGlobalObject(lowerer, expr.left, expr.right, loc);

@@ -886,7 +886,9 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
       params,
       prologue,
       locOf(decl),
-      sig.params.length > decl.parameters.nodes.length &&
+      // A slot past those the parameters bound (a tuple rest binds one per
+      // position, `[]` none).
+      sig.params.length > params.length &&
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );

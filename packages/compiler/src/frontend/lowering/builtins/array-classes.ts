@@ -15,6 +15,9 @@ import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
 import { storedClassValueType, type ClassInfo } from "../lower-classes.js";
+import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
+import { mapExprChildren, mapStmtChildren } from "../../../ir/traverse.js";
+import { v8CalleeText } from "../expressions/narrowing.js";
 import {
   BOOL,
   DYN,
@@ -114,6 +117,7 @@ export function arrayClassReceiver(
   node: ts.Expression,
   member: string,
   action: "read" | "set" = "read",
+  deferred?: DeferredArrayClassCheck[],
 ): IrExpr {
   const root = arrayRootOf(info);
   if (value.type.kind === "union" && root?.extendsArray !== undefined) {
@@ -133,7 +137,177 @@ export function arrayClassReceiver(
       node,
       "members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class)",
     );
-  return arrayClassView(info, value, locOf(node));
+  return checkedArrayClassView(lowerer, info, value, node, member, action, deferred);
+}
+
+/** The class test of a method call's receiver that waits for its
+ * arguments (applyDeferredArrayClassCheck): `local` holds the receiver
+ * array, which `value` computes. */
+export interface DeferredArrayClassCheck {
+  local: string;
+  value: IrExpr;
+  info: ClassInfo;
+  message: string;
+  loc: SrcLoc;
+  /** The call whose written arguments evaluate before the TypeError. */
+  call: ts.CallExpression;
+}
+
+/** The class object of `value`, an array the checker types as an instance
+ * of `info`. The class's type is its array type, so a plain array reaches
+ * here as well: one parsed from JSON into a `C[]` parameter, or an array
+ * asserted to be the class (`xs as C`). Only an array whose class is `info`
+ * has the class's fields after its header, so any other array throws the
+ * catchable TypeError: Node's "is not a function" for a method call, and
+ * for a field or accessor, which Node would read as a missing property of
+ * the plain array, a TypeError naming the member. `this` inside the class
+ * (an instance viewed as its array) is an instance already. */
+function checkedArrayClassView(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  node: ts.Expression,
+  member: string,
+  action: "read" | "set",
+  deferred: DeferredArrayClassCheck[] | undefined,
+): IrExpr {
+  const loc = locOf(node);
+  if (
+    value.kind === "upcast" &&
+    value.value.type.kind === "object" &&
+    value.value.type.className === info.def.name
+  )
+    return value.value;
+  const objectType: IrType = { kind: "object", className: info.def.name };
+  const repeat = isSafeToRepeat(value);
+  const stable = repeat ? null : lowerer.declareHiddenLocal("%arrayClassRecv", value.type);
+  const ref = (): IrExpr =>
+    repeat ? value : { kind: "varRef", localId: stable!.id, type: value.type, loc };
+  const access = node.parent;
+  const callExpr =
+    access !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+      ? access.parent
+      : null;
+  const className = info.def.jsName ?? info.def.name;
+  const message = callExpr
+    ? `${v8CalleeText(callExpr.expression)} is not a function`
+    : `Cannot ${action} '${member}' of an array that is not a ${className} instance`;
+  // A method call reads the callee, then evaluates the arguments, and only
+  // then finds the callee is not a function: the call's lowering tests the
+  // class after the arguments (applyDeferredArrayClassCheck).
+  if (callExpr !== null && deferred !== undefined) {
+    const local = lowerer.declareHiddenLocal("%arrayClassRecv", value.type);
+    deferred.push({ local: local.id, value, info, message, loc, call: callExpr });
+    return arrayClassView(info, { kind: "varRef", localId: local.id, type: value.type, loc }, loc);
+  }
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "instanceOf", value: ref(), className: info.def.name, type: BOOL, loc },
+    then: arrayClassView(info, ref(), loc),
+    else_: nodeThrowExpr(1, "", message, objectType, loc),
+    type: objectType,
+    loc,
+  };
+  if (stable === null) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: value, loc }],
+    result,
+    type: objectType,
+    loc,
+  };
+}
+
+/** The method call `result` with its receiver's deferred class test: the
+ * receiver array and each argument evaluate in order into locals, and the
+ * call runs on the class view only when the array is an instance, where
+ * Node's "is not a function" TypeError is thrown otherwise. For a call
+ * shape without the receiver in its first argument, an array that is not
+ * an instance evaluates the arguments on a path of its own before the
+ * TypeError. */
+export function applyDeferredArrayClassCheck(
+  lowerer: Lowerer,
+  result: IrExpr,
+  check: DeferredArrayClassCheck,
+): IrExpr {
+  const { local, value, info, message, loc } = check;
+  const array: IrExpr = { kind: "varRef", localId: local, type: value.type, loc };
+  const isInstance: IrExpr = {
+    kind: "instanceOf",
+    value: array,
+    className: info.def.name,
+    type: BOOL,
+    loc,
+  };
+  const failUnless: IrStmt = {
+    kind: "if",
+    cond: { kind: "unary", op: "!", operand: isInstance, type: BOOL, loc },
+    then: [{ kind: "exprStmt", expr: nodeThrowExpr(1, "", message, { kind: "void" }, loc), loc }],
+    else_: null,
+    loc,
+  };
+  const holdsReceiver = (arg: IrExpr | undefined): boolean => {
+    let e = arg;
+    while (e?.kind === "upcast") e = e.value;
+    return e?.kind === "downcast" && e.value.kind === "varRef" && e.value.localId === local;
+  };
+  let found = false;
+  const rewriteStmt = (stmt: IrStmt): IrStmt => mapStmtChildren(stmt, rewrite, rewriteStmt);
+  const rewrite = (expr: IrExpr): IrExpr => {
+    if (found) return expr;
+    if ((expr.kind === "call" || expr.kind === "virtualCall") && holdsReceiver(expr.args[0])) {
+      found = true;
+      const stmts: IrStmt[] = [{ kind: "varDecl", localId: local, init: value, loc }];
+      const args = expr.args.map((arg, i) => {
+        // A literal keeps its value; any other argument is held, since a
+        // later argument can change what it reads (`m(x, x = 2)`).
+        if (i === 0 || arg.kind === "numLit" || arg.kind === "strLit" || arg.kind === "boolLit")
+          return arg;
+        const held = lowerer.declareHiddenLocal("%arrayClassArg", arg.type);
+        stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
+        return { kind: "varRef", localId: held.id, type: arg.type, loc } as IrExpr;
+      });
+      // A statement throws, so a method that returns nothing needs no value
+      // on the failing path.
+      stmts.push(failUnless);
+      return { kind: "seqExpr", stmts, result: { ...expr, args }, type: expr.type, loc };
+    }
+    return mapExprChildren(expr, rewrite, rewriteStmt);
+  };
+  const rewritten = rewrite(result);
+  if (found) return rewritten;
+  // Another call shape (a method a program can replace through its
+  // prototype reads its slot from the instance before the arguments): an
+  // array that is not an instance evaluates the written arguments, packed
+  // as the dynamic arguments of a call, and then throws, and an instance
+  // runs the call as it was lowered.
+  const effects = lowerer.completeArgs(
+    check.call.arguments.nodes,
+    [{ type: DYN, mode: "dynRest" }],
+    loc,
+    check.call,
+  );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local, init: value, loc },
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: isInstance, type: BOOL, loc },
+        then: [
+          ...effects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc })),
+          { kind: "exprStmt", expr: nodeThrowExpr(1, "", message, { kind: "void" }, loc), loc },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    result,
+    type: result.type,
+    loc,
+  };
 }
 
 function thisArray(info: ClassInfo, thisLocal: IrLocal, loc: SrcLoc): IrExpr {

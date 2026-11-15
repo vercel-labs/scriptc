@@ -1218,20 +1218,23 @@ function appendArgumentsParameter(
     !bodyReadsArguments(node)
   )
     return;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) {
+  const typed = !isJsSourceFile(ts.getSourceFileOfNode(node));
+  if (typed) {
     // Typed sources stay zero-cost for a fixed-arity signature: its count is
     // the declared count (property-access.ts folds it). Only a parameter
-    // that can be absent makes the count a per-call fact.
+    // that can be absent makes the count a per-call fact. The array follows
+    // every declared slot, a rest array or the flattened positions of a
+    // tuple rest included (declareParams binds those first).
     if (
       !node.parameters.nodes.some(
         (param) => param.questionToken || param.initializer || param.dotDotDotToken,
       )
     )
       return;
-    shapes.push({ type: DYN, mode: "arguments" });
-    return;
-  }
-  if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  } else if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  // The array is a copy of the call's arguments, so a sloppy-mode function
+  // whose `arguments` would alias its parameters keeps the refusal, typed
+  // or not.
   if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
@@ -1251,7 +1254,7 @@ function appendArgumentsParameter(
       );
     }
   }
-  shapes.push({ type: DYN, mode });
+  shapes.push({ type: DYN, mode: typed ? "arguments" : mode });
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code

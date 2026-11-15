@@ -87,6 +87,27 @@ for (const write of [
   }
 }
 
+// Frozen through an untyped parameter: the same writes throw.
+function freezeUntyped(value) {
+  Object.freeze(value);
+}
+const frozenLater = new Listy();
+freezeUntyped([frozenLater][0]);
+for (const write of [
+  () => setByName(frozenLater, "label", "keyed"),
+  () => setByName(frozenLater, "size", 0),
+  () => {
+    [frozenLater][0].label = "named";
+  },
+]) {
+  try {
+    write();
+    console.log("wrote", frozenLater.label);
+  } catch (e) {
+    console.log(String(e), frozenLater.label);
+  }
+}
+
 function callThrough(value, ...args) {
   return value.refresh(...args).length;
 }

@@ -260,6 +260,12 @@ function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): 
     if (lowerer.freezableArrays.has(typeKey(arrayType))) arrayTypes.set(info.def.name, arrayType);
   }
   if (arrayTypes.size === 0) return;
+  // The guarded stores this pass builds, which the walk then visits as
+  // children. A store CLASS_ATTRIBUTES guarding already checked
+  // (attributesChecked) is still guarded here: that word answers
+  // defineProperty and the integrity calls of compiled classes, while
+  // Object.freeze of an Array subclass instance sets the array's bit.
+  const guardedStores = new Set<IrStmt>();
   for (const fn of functions) {
     const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
       const id = `%frozenFieldWrite.${fn.locals.length}`;
@@ -269,7 +275,7 @@ function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): 
     fn.body = transformStmtList(fn.body, {
       expr: (expr) => expr,
       stmt: (statement) => {
-        if (statement.kind !== "fieldSet" || statement.define || statement.attributesChecked)
+        if (statement.kind !== "fieldSet" || statement.define || guardedStores.has(statement))
           return statement;
         const arrayType = arrayTypes.get(statement.className);
         if (arrayType === undefined || !isClassOwnEnumerableFieldName(statement.field))
@@ -277,6 +283,8 @@ function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): 
         const loc = statement.loc;
         const receiver = local(statement.obj.type, loc);
         const value = local(statement.value.type, loc);
+        const store: IrStmt = { ...statement, obj: receiver, value };
+        guardedStores.add(store);
         const reject: IrStmt[] = statement.sloppy
           ? []
           : [
@@ -311,7 +319,7 @@ function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): 
                 loc,
               },
               then: reject,
-              else_: [{ ...statement, obj: receiver, value, attributesChecked: true }],
+              else_: [store],
               loc,
             },
           ],

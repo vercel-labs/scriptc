@@ -34,5 +34,16 @@ function run() {
   console.log("after keyed", f.label);
   f.label = "typed";
   console.log("after typed", f.label, Object.isFrozen(f), f.length);
+
+  // Frozen through an untyped parameter: the same writes are skipped.
+  const g = new Listy();
+  freezeUntyped([g][0]);
+  write([g][0], "label", "keyed");
+  write([g][0], "count", 5);
+  [g][0].label = "named";
+  console.log("after untyped freeze", g.label, g.count, Object.isFrozen(g));
+}
+function freezeUntyped(value) {
+  Object.freeze(value);
 }
 run();

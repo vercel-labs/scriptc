@@ -167,8 +167,7 @@ import {
   lowerClassPrototypeData,
   prototypeMadeClass,
   prototypeViewable,
-  prototypeViewStart,
-  reflectClassPrototype,
+  receiverPrototypeView,
 } from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
@@ -6493,14 +6492,16 @@ export function fieldGetExpr(
         stable === null ? receiverValue : varRef(stable.id, DYN, loc);
       // Node's [[Get]] starts at the receiver: the receiver's own class's
       // prototype may replace what the class that declares the getter put
-      // there.
-      const viewStart = prototypeViewStart(
+      // there, and a base-class parameter can hold any subclass instance.
+      const view = receiverPrototypeView(
         lowerer,
         lowerer.classes.get(target.className) ?? null,
         getF.declarer,
+        receiver(),
+        loc,
       );
-      const prototype = reflectClassPrototype(lowerer, viewStart, loc, receiver());
-      if (prototype && viewStart.prototypeReflectionRefusal === undefined) {
+      if (view && view.start.prototypeReflectionRefusal === undefined) {
+        const prototype = view.prototype;
         // [[Get]] starts at the receiver: an own property the program wrote
         // shadows the prototype's, whatever the definition put there.
         const key: IrExpr = { kind: "strLit", value: target.field, type: STRING, loc };

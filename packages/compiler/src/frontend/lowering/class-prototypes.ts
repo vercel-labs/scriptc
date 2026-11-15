@@ -326,6 +326,117 @@ export function prototypeViewStart(
   return lowerer.isSubclassOf(receiver.def.name, declarer.def.name) ? receiver : declarer;
 }
 
+/** The constructible, reflectable classes below `info`, the most derived
+ * first: a receiver's own class answers before the classes it extends. */
+function reflectableDescendants(lowerer: Lowerer, info: ClassInfo): ClassInfo[] {
+  const found: ClassInfo[] = [];
+  const visit = (current: ClassInfo): void => {
+    for (const child of current.subclasses) {
+      if (prototypeViewable(child) && lowerer.classCanBeConstructed(child)) found.push(child);
+      visit(child);
+    }
+  };
+  visit(info);
+  // Preorder reversed puts every descendant before its ancestors.
+  return found.reverse();
+}
+
+/** The prototype view a reflected member read or write starts from for a
+ * receiver statically typed `receiver`. Node's [[Get]] and [[Set]] start at
+ * the receiver's own prototype, so an instance of a subclass passed through
+ * a base-class parameter answers what the subclass prototype holds. The view
+ * is the static class's own when no constructible subclass can exist; a
+ * shared helper otherwise selects the value's own class at run time. */
+export function receiverPrototypeView(
+  lowerer: Lowerer,
+  receiver: ClassInfo | null,
+  declarer: ClassInfo,
+  value: IrExpr,
+  loc: SrcLoc,
+): { prototype: IrExpr; start: ClassInfo } | null {
+  const start = prototypeViewStart(lowerer, receiver, declarer);
+  const staticView = reflectClassPrototype(lowerer, start, loc, value);
+  if (!staticView) return null;
+  // Only a value on the static class's own chain can be unboxed as one: a
+  // structural receiver that names the member without being an instance of
+  // that class keeps the declaring class's view.
+  const onChain =
+    receiver !== null &&
+    prototypeViewable(receiver) &&
+    (receiver.def.name === declarer.def.name ||
+      lowerer.isSubclassOf(receiver.def.name, declarer.def.name));
+  const descendants = onChain ? reflectableDescendants(lowerer, start) : [];
+  if (descendants.length === 0) return { prototype: staticView, start };
+  const name = `%class.prototypeView:${start.def.name}`;
+  lowerer.shareHelper(name);
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const instanceId = "%prototype.instance";
+    const params = [{ localId: "value", name: "value", type: DYN }];
+    const instance: IrExpr = {
+      kind: "varRef",
+      localId: instanceId,
+      type: { kind: "object", className: start.def.name },
+      loc,
+    };
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: instanceId,
+        init: {
+          kind: "dynCheck",
+          value: varRef("value", DYN, loc),
+          type: { kind: "object", className: start.def.name },
+          loc,
+        },
+        loc,
+      },
+    ];
+    for (const descendant of descendants) {
+      const view = reflectClassPrototype(lowerer, descendant, loc, {
+        kind: "dynCheck",
+        value: varRef("value", DYN, loc),
+        type: { kind: "object", className: descendant.def.name },
+        loc,
+      });
+      if (!view || descendant.prototypeReflectionRefusal !== undefined) continue;
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "instanceOf",
+          value: instance,
+          className: descendant.def.name,
+          type: BOOL,
+          loc,
+        },
+        then: [{ kind: "return", value: view, loc }],
+        else_: null,
+        loc,
+      });
+    }
+    if (body.length > 1) {
+      body.push({ kind: "return", value: staticView, loc });
+      lowerer.liftedFns.push({
+        name,
+        params,
+        locals: [
+          { id: "value", name: "value", type: DYN, mutable: false },
+          {
+            id: instanceId,
+            name: instanceId,
+            type: { kind: "object", className: start.def.name },
+            mutable: false,
+          },
+        ],
+        returnType: DYN,
+        body,
+        loc,
+      });
+    }
+  }
+  if (lowerer.liftedFnNamed(name) === undefined) return { prototype: staticView, start };
+  return { prototype: { kind: "call", callee: name, args: [value], type: DYN, loc }, start };
+}
+
 export function hasClassPrototypeData(info: ClassInfo): boolean {
   return (
     info.callableBase !== undefined ||

@@ -103,7 +103,8 @@ export class NarrowingStability {
     if (this.files === null) return null;
     const e = withoutParenthesesTypeWrappers(expression);
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
-      return this.widenedType(e) !== null && isNothing(this.lowerer.checker.getTypeAtLocation(e))
+      return (this.widenedType(e) !== null || this.jsWidenedRead(e)) &&
+        isNothing(this.lowerer.checker.getTypeAtLocation(e))
         ? e
         : null;
     }
@@ -121,6 +122,16 @@ export class NarrowingStability {
       }
     }
     return null;
+  }
+
+  /** A read of a JavaScript binding assigned values outside the type its
+   * initializer gives it (`let c = void 0; c = 4`: Lowerer
+   * analyzeJsWidenedBindings). The binding holds what the program stored, so
+   * the checker's type at the read does not describe the value. */
+  private jsWidenedRead(e: ts.Expression): boolean {
+    if (!ts.isIdentifier(e) || this.lowerer.jsWidenedBindings.size === 0) return false;
+    const symbol = this.lowerer.resolveValueSymbol(e);
+    return symbol !== null && symbol !== undefined && this.lowerer.jsWidenedBindings.has(symbol);
   }
 
   /** Whether `expression` can evaluate to the right operand of an `&&`

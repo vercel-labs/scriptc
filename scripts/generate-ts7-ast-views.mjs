@@ -6,7 +6,7 @@ import { join } from "node:path";
  * The build-time parser reads declarations only; no parser joins the client. */
 export function generateAstViews(root, packageRoot, version, check) {
   const require = createRequire(join(root, "package.json"));
-  const ts = require("typescript");
+  const ts = require("typescript5");
   const read = (name) => readFileSync(join(packageRoot, "dist/ast", name), "utf8");
   const parse = (name, source = read(name)) =>
     ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true);

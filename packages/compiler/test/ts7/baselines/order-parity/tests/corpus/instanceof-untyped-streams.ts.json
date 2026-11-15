@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/instanceof-untyped-streams.ts"
+ ],
+ "diags": []
+}

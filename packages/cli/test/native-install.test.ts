@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   mkdtempSync,
@@ -281,3 +281,24 @@ test("npm links the installed native executable without an interpreter", () => {
     }
   }
 }, 60_000);
+
+test.skipIf(process.platform === "win32")(
+  "the staged command tells you to enable install scripts",
+  () => {
+    const f = fixture();
+    prepareNativeCommand(f.directory);
+    // npm links bin/scriptc.exe before it runs postinstall. When install
+    // scripts are blocked, this placeholder is what the user runs, so it
+    // names the fix instead of failing with a missing file.
+    // The placeholder is a shell script with no shebang (a shebang would
+    // pin npm's Windows shim to an interpreter, prepare-native.mjs), so it
+    // runs through a shell's ENOEXEC fallback: bash and zsh from a prompt,
+    // and nothing at all from a direct exec on macOS, whose posix_spawn has
+    // no such fallback. Run it the way the user's shell does.
+    const result = spawnSync("/bin/sh", [join(f.directory, "bin", "scriptc.exe")], {
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("enable install scripts and reinstall scriptc");
+  },
+);

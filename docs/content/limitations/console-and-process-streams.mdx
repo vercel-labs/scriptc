@@ -3,7 +3,10 @@ They accept `unknown`, printing strings verbatim and other values through native
 Console methods never color their output on their own: where Node colors numbers, booleans and the values inside objects and arrays, on a color terminal or with `FORCE_COLOR` set, the executable prints them plain.
 Direct calls support global `console` and `node:console` imports.
 Console output, `util.format`, and `util.formatWithOptions` with a format string known only at run time, spread arguments, or an options object format their arguments at run time.
-There, `%s` of a function or of a class instance whose class defines `toString` throws `SC2020`.
+There, `%s` of a class instance runs the class's `toString` or `[Symbol.toPrimitive]` conversion, declared or inherited, and uses its answer.
+An answer that is an object or a symbol throws Node's `TypeError`.
+A conversion the compiled program cannot call throws `SC2020`: a `toString` the program replaces at run time, or one that needs arguments Node does not pass.
+`%s` of a function throws `SC2020`, because a compiled binary does not keep the source text Node prints.
 `util.inspect` with `colors`, with `showHidden`, with option values known only at run time, or in the `inspect(value, showHidden, depth, colors)` form renders the value's untyped view in the runtime with Node's styles.
 Colored output of errors, promises, regular expressions, `DataView`, `ArrayBuffer`, weak collections, iterators, and other native objects throws `SC2020`.
 Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` and `maxStringLength` (a non-negative integer or `null`), `getters` (a boolean, `'get'` or `'set'`), `sorted` (a boolean), and `numericSeparator` (a boolean) throw `SC2020` when they are set to a value other than Node's default.

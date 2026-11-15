@@ -54,8 +54,11 @@ importers:
         specifier: ^4.19.0
         version: 4.23.0
       typescript:
-        specifier: 5.9.3
-        version: 5.9.3
+        specifier: 7.1.0-beta
+        version: 7.1.0-beta
+      typescript5:
+        specifier: npm:typescript@5.9.3
+        version: typescript@5.9.3
       vercel:
         specifier: 58.1.0
         version: 58.1.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(rollup@4.62.2)

@@ -1,6 +1,9 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
-import { lowerMonitorEventLoopDelayCall } from "./builtins/performance.js";
+import {
+  lowerEventLoopUtilizationCall,
+  lowerMonitorEventLoopDelayCall,
+} from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
@@ -10,7 +13,7 @@ import {
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { BOOL, DYN, type IrExpr, STRING, type SrcLoc } from "../../ir/ir.js";
-import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter.js";
+import { lowerEventsEmitterHelper, lowerEventsOn, lowerEventsOnce } from "./lower-event-emitter.js";
 import { lowerBase64Call } from "./lower-calls.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
@@ -169,11 +172,15 @@ export function lowerBuiltinCall(
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "events" && bi.member === "on") return lowerEventsOn(lowerer, expr, loc);
   if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
     return lowerBase64Call(lowerer, expr, bi.member, loc);
   }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
+    return lowerEventLoopUtilizationCall(lowerer, expr);
   }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);

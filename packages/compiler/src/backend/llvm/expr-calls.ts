@@ -186,6 +186,7 @@ export function emitCallExpr(
             if (
               (a.kind === "optChain" ||
                 a.kind === "nullish" ||
+                a.kind === "logical" ||
                 a.kind === "ternary" ||
                 a.kind === "arrIntrinsic") &&
               isScalarOptionalSource(a, host.unionSources)

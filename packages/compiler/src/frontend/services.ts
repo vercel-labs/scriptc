@@ -22,6 +22,11 @@ import {
   mayHoldNamespaceDefault,
   rewriteNamespaceDefaults,
 } from "./npm-static-namespace-defaults.js";
+import {
+  castVoidInitializers,
+  mayHoldVoidInitializer,
+  type VoidInitializerCasts,
+} from "./js-void-initializers.js";
 import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-tsc-helpers.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
@@ -231,6 +236,14 @@ export class FrontendServices {
     return rewriteBuiltinAliasRequires(this.parse(path, source, "js"), (specifier) =>
       builtinPackageAliasFor(path, specifier),
     );
+  }
+  /** A JavaScript module with the `void <literal>` initializers of its
+   * unannotated `var` and `let` declarators served as casts to the open
+   * type, and the spans the casts inserted (null: none). */
+  voidInitializerCasts(source: string, path: string): VoidInitializerCasts | null {
+    this.ensureOpen();
+    if (!mayHoldVoidInitializer(source)) return null;
+    return castVoidInitializers(this.parse(path, source, path.endsWith("x") ? "jsx" : "js"));
   }
   /** A JavaScript module with the `if` statements `--define` decides
    * resolved to their taken branches (null: none). */

@@ -21,14 +21,7 @@ import {
 } from "../node-islands/policy.js";
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
-import {
-  renderConfigWarnings,
-  renderStartupWarnings,
-  renderTypePatchWarnings,
-  renderWarnings,
-} from "../diagnostics/render.js";
-import { isTypePatchCode } from "../diagnostics/diagnostic.js";
-import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
+import { buildWarnings, renderBuildWarnings } from "../diagnostics/build-warnings.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { renderNativeProfileMatch } from "../backend/native-profile.js";
 import {
@@ -739,12 +732,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
     }
-    const warnings = (result.warnings ?? []).filter(
-      (d) =>
-        (dynamicTierWarning || !isPerformanceCode(d.code)) &&
-        (copyWarning || d.code !== "SC6001") &&
-        (keyOrderWarning || d.code !== "SC6014"),
-    );
+    const warnings = buildWarnings(result.warnings ?? [], {
+      dynamicTier: dynamicTierWarning,
+      copy: copyWarning,
+      keyOrder: keyOrderWarning,
+    });
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
         compilerVersion: host.version(),
@@ -761,45 +753,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
       // warning names likely-hot functions that use untyped values. `run`
       // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      const config = warnings.filter((d) => d.code === "SC8004");
-      const patches = warnings.filter((d) => isTypePatchCode(d.code));
-      const startup = warnings.filter((d) => d.code === "SC6201");
-      const divergences = warnings.filter(
-        (d) =>
-          !isPerformanceCode(d.code) &&
-          d.code !== "SC8004" &&
-          d.code !== "SC6201" &&
-          !isTypePatchCode(d.code),
+      process.stderr.write(
+        renderBuildWarnings(warnings, result.sourceTexts ?? new Map(), { color }) + "\n",
       );
-      const performance = warnings.filter((d) => isPerformanceCode(d.code));
-      if (config.length > 0)
-        process.stderr.write(
-          renderConfigWarnings(config, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      if (patches.length > 0) {
-        if (config.length > 0) process.stderr.write("\n");
-        process.stderr.write(
-          renderTypePatchWarnings(patches, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      }
-      if (startup.length > 0) {
-        if (config.length > 0 || patches.length > 0) process.stderr.write("\n");
-        process.stderr.write(
-          renderStartupWarnings(startup, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      }
-      if (divergences.length > 0) {
-        if (config.length > 0 || patches.length > 0 || startup.length > 0)
-          process.stderr.write("\n");
-        process.stderr.write(
-          renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
-        );
-      }
-      if (performance.length > 0) {
-        if (divergences.length > 0 || config.length > 0 || patches.length > 0 || startup.length > 0)
-          process.stderr.write("\n");
-        process.stderr.write(renderPerformanceWarnings(performance) + "\n");
-      }
     }
     if (result.artifact.kind === "exe") {
       // How the profile matched the program's functions; `run` keeps stderr

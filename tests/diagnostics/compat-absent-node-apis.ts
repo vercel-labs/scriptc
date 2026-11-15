@@ -3,11 +3,9 @@
 // for marking the rows a verified absence instead of an unverified
 // registry gap.
 import { AsyncResource } from "node:async_hooks";
-import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
-import { PerformanceObserver, performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
 
 // stream: the web-stream adapters going out.
@@ -15,25 +13,10 @@ const webReadable = Readable.toWeb(Readable.from(["a"]));
 const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
 console.log(typeof webReadable, typeof webWritable);
 
-// url: object URLs.
-console.log(URL.createObjectURL(new Blob(["x"])));
-
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
 timer.close();
 
-// perf_hooks: the time origin and the observer.
-console.log(performance.timeOrigin);
-const observer = new PerformanceObserver(() => {});
-observer.observe({ entryTypes: ["mark"] });
-
-// process: source maps, the capture callback, finalization and ref counting.
-process.setSourceMapsEnabled(true);
-console.log(process.hasUncaughtExceptionCaptureCallback());
-process.setUncaughtExceptionCaptureCallback(() => {});
-process.finalization.register({ n: 1 }, () => {});
-process.ref(timer);
-process.unref(timer);
 
 // module: loader hooks and package lookup.
 register("./hooks.mjs", import.meta.url);
@@ -48,6 +31,7 @@ emitter.emit("x");
 // fs: Blob-backed opens.
 console.log(await openAsBlob("/tmp/x"));
 
-// dns: a resolver instance.
-const resolver = new Resolver();
-resolver.cancel();
+// process: the worker events and the execve entry point.
+process.on("worker", () => {});
+process.on("workerMessage", () => {});
+process.execve("/bin/true", []);

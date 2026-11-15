@@ -464,6 +464,22 @@ export function lowerArrayLiteral(
     )
   )
     mapped = DYN;
+  // An element the checker types as only `undefined` or `null` while the
+  // binding it reads holds another value (NarrowingStability
+  // restoredNothingRead: `let c = void 0; c = 4; [c]`): the checker's element
+  // type cannot hold the value, so the literal is checked-dynamic.
+  if (
+    !expected &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.nodes.some(
+      (element) =>
+        !ts.isSpreadElement(element) &&
+        !ts.isOmittedExpression(element) &&
+        lowerer.narrowing.restoredNothingRead(element) !== null,
+    )
+  )
+    mapped = DYN;
   // An EMPTY literal under a CONST ASSERTION whose type queries panicked
   // (tsgo's readonly-[] TupleType conversion) uses a unit-element array,
   // mapType's own `[] as const` rule.
@@ -622,16 +638,22 @@ export function lowerArrayLiteral(
       // `[...xs, b]`: xs must be an array of the literal's own element
       // type — its elements copy in at construction (a fresh array,
       // JS-exact). Iterables that aren't arrays (strings, Sets, Maps)
-      // and mismatched element types stay fenced. A TERNARY source gets
-      // the literal's own type as its expected type (the conditional-
-      // spread idiom — tsc surfaces no contextual type through spreads,
-      // and the arm literals must BUILD as this element type).
+      // and mismatched element types stay fenced. A TERNARY or ARRAY
+      // LITERAL source gets the literal's own type as its expected type
+      // (the conditional-spread idiom — tsc surfaces no contextual type
+      // through spreads, and the arm literals must BUILD as this element
+      // type). The array literal case covers a source of empty array
+      // literals (`[...[[], []]]` into a `string[][]` literal): tsc infers
+      // `never[][]`, which scriptc represents as `number[][]`, while the
+      // slot types each empty array as the literal's element type.
       let srcNode: ts.Expression = el.expression;
       while (ts.isParenthesizedExpression(srcNode)) srcNode = srcNode.expression;
       lowerer.fenceStaticHeadersIteration(el.expression);
       let src = ts.isConditionalExpression(srcNode)
         ? lowerTernary(lowerer, srcNode, type)
-        : lowerer.lowerExpr(el.expression);
+        : ts.isArrayLiteralExpression(srcNode)
+          ? lowerer.lowerArrayLiteral(srcNode, type)
+          : lowerer.lowerExpr(el.expression);
       src = lowerCollectionSpread(lowerer, src, el.expression) ?? src;
       // `[...new SymbolIterator]`: a CLASS ITERABLE drains through its
       // own protocol into a fresh element array (classIteratorDrainCall

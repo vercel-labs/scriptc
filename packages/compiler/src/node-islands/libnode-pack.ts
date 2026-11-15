@@ -16,8 +16,8 @@
  * notices a program that redistributes Node.js carries. */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { islandBuildHost } from "./host.js";
 
 export const LIBNODE_PACK_SCHEMA = "scriptc.libnode-pack.v1";
 
@@ -216,14 +216,13 @@ function findInstalled(name: string, from: string): string | null {
   }
 }
 
-function resolveNextToCompiler(name: string): string | null {
-  try {
-    const dir = dirname(createRequire(import.meta.url).resolve(`${name}/package.json`));
-    // An unbuilt workspace package is not a pack.
-    return existsSync(join(dir, "manifest.json")) ? dir : null;
-  } catch {
-    return null;
-  }
+function resolveNextToCompiler(
+  name: string,
+  compilerPackage: (name: string) => string | null,
+): string | null {
+  const dir = compilerPackage(name);
+  // An unbuilt workspace package is not a pack.
+  return dir !== null && existsSync(join(dir, "manifest.json")) ? dir : null;
 }
 
 /** The installed pack directory for `targetName`, or null when none is
@@ -231,14 +230,21 @@ function resolveNextToCompiler(name: string): string | null {
 export function findInstalledLibnodePack(options: {
   targetName: string;
   projectDir: string;
+  /** Where a package installed as a dependency of the compiler is; the
+   * island build host's answer (host.ts) by default. A caller that runs
+   * before the host is installed (CLI startup, startup-cache.ts) names it. */
+  compilerPackage?: ((name: string) => string | null) | undefined;
   /** Test hook for the compiler-relative lookup. */
   resolveInstalled?: ((name: string) => string | null) | undefined;
 }): string | null {
   const packageName = libnodePackPackage(options.targetName);
   if (packageName === null) return null;
+  const compilerPackage = options.compilerPackage ?? islandBuildHost().compilerPackage;
   return (
     findInstalled(packageName, options.projectDir) ??
-    (options.resolveInstalled ?? resolveNextToCompiler)(packageName)
+    (options.resolveInstalled ?? ((name) => resolveNextToCompiler(name, compilerPackage)))(
+      packageName,
+    )
   );
 }
 

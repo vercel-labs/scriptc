@@ -180,6 +180,16 @@ function jsUnaryNegate(lowerer: Lowerer, expr: ts.PrefixUnaryExpression, raw: Ir
   };
 }
 
+/** Whether `expr`'s own value is never consumed: it is the whole of an
+ * expression statement (through parentheses), where the boolean a `!`
+ * computes is thrown away. */
+function discardedNegation(expr: ts.PrefixUnaryExpression): boolean {
+  let outer: ts.Node = expr;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+}
+
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
   // Unary plus and minus convert with ToNumber, whose number hint reads the
@@ -272,6 +282,19 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // A DISCARDED negation of a void-typed operand (`!register();`,
+      // TS1345 admitted in a JavaScript source): the expression statement
+      // drops the boolean, so the operand evaluates once for its effects
+      // and its own lowering answers. Reached only through the admitted
+      // site (tsc-codes.ts), never by syntax. The site is the void-typed
+      // OPERAND, and the query names exactly that node: an admitted
+      // discarded negation nested inside this one (`!(() => { !voidCall();
+      // return false; })()`) must not consume a boolean this negation reads.
+      // A negation whose boolean IS consumed (`!this.route()`) takes the
+      // ordinary path below: the admitted site is the same OPERAND node, so
+      // the record alone cannot tell the two apart.
+      if (discardedNegation(expr) && lowerer.opinionAtNode(expr.operand, 1345))
+        return lowerer.lowerExpr(expr.operand);
       // `!runtimeBuffer` over an alias of the Buffer global: Node always
       // defines Buffer (the condition twin is lowerCondition's).
       if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))
@@ -428,6 +451,30 @@ export function lowerIncDec(
       return { kind: "seqExpr", stmts, result, type: result.type, loc };
     };
     const raw = lowerer.lowerExpr(access.expression);
+    // A native array's `length` is a writable number: `a.length++` writes
+    // length + 1, truncating or growing the storage as Node's length
+    // assignment does, and yields the old (postfix) or new (prefix) length.
+    if (
+      ts.isPropertyAccessExpression(access) &&
+      access.name.text === "length" &&
+      raw.type.kind === "array"
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      return finish(length, (value) => ({
+        kind: "arraySetLength",
+        arr: receiver,
+        length: value,
+        loc,
+      }));
+    }
     // Keep native array/byte storage: boxing a native array can create a
     // checked view, which is not a substitute for updating its slot.
     if (
@@ -1166,6 +1213,34 @@ export function lowerFieldCompoundValue(
     body.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
     return varRef(local.id, value.type, value.loc);
   };
+  // A native array's `length` is a writable number. `a.length op= rhs`
+  // reads the length, evaluates the right side, combines, then writes the
+  // result back through the same grow/truncate path as `a.length = n`
+  // (arraySetLength), yielding that result. The receiver and the length
+  // read are saved before the right side, as JavaScript's reference
+  // evaluation orders them.
+  if (ts.isPropertyAccessExpression(access) && access.name.text === "length" && rhsNode !== null) {
+    const probed = tryLowerExpression(lowerer, access.expression);
+    if (probed?.type.kind === "array") {
+      const receiver = save(lowerer.lowerExpr(access.expression), "%compoundArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      const old = save(length, "%compoundOld");
+      const rhs = save(lowerer.lowerExprExpecting(rhsNode, F64), "%compoundRhs");
+      const value = save(
+        { kind: "bin", op, left: old, right: rhs, type: F64, loc },
+        "%compoundResult",
+      );
+      body.push({ kind: "arraySetLength", arr: receiver, length: value, loc });
+      return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+    }
+  }
   // A CHECKED-DYNAMIC receiver (`context.actual++` — test/common's call
   // accounting; dot spelling only — symbol-keyed element targets are
   // static fields): read the member (dynKeyGet), VALIDATE it as a
@@ -1415,20 +1490,32 @@ export function lowerFieldCompoundValue(
   } else {
     compoundUnsupported(lowerer, access, op, read.type, rhs.type);
   }
-  if (storedString && rhs.type.kind === "string" && read.kind === "varRef" && appended !== null) {
+  if (
+    storedString &&
+    read.kind === "varRef" &&
+    appended !== null &&
+    appended.type.kind === "string"
+  ) {
     // The field gives up its value before the concat (no code runs in
     // between: both operands are already strings), and the concat is the
     // self-append `old = old + rhs`, which hands the local's reference to
     // the runtime: the old string is then uniquely owned unless something
     // else holds it, and is appended to in place. Repeated `this.text += s`
     // is linear rather than a copy per append.
+    //
+    // A right side that is not a string yet (a number, `string | undefined`,
+    // an object with its own toString) converts into a temporary FIRST: the
+    // conversion may run program code or throw, and it then still finds the
+    // old value in the field, as it does in JavaScript, where the field is
+    // written only after the conversion.
+    const suffix = rhs.type.kind === "string" ? appended : save(appended, "%compoundSuffix");
     const oldId = read.localId;
     const oldLoc = read.loc;
     const oldRef = (): IrExpr => varRef(oldId, STRING, oldLoc);
     const concat: IrExpr = {
       kind: "strConcat",
       left: oldRef(),
-      right: appended,
+      right: suffix,
       type: STRING,
       loc,
     };

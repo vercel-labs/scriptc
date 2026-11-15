@@ -196,12 +196,22 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
 /* .then/.catch/.finally over a dyn promise (scr_dyn_invoke's promise arm
- * and the compiled dyn-receiver path): one reaction fiber per
- * registration — awaits src, runs the checked-dynamic tree handler (non-callable handlers
- * pass the settlement through; a returned dyn promise is adopted), and
- * settles a fresh result promise, answered BOXED (+1). Microtask-exact
- * ordering rides the fiber machinery. */
+ * and the compiled dyn-receiver path): one native reaction per
+ * registration (scr_promise_react) — its job runs the checked-dynamic tree
+ * handler once src settles (non-callable handlers pass the settlement
+ * through; a returned dyn promise is adopted), and settles a fresh result
+ * promise, answered BOXED (+1). */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* When set, that reaction's job calls it in place of its steps. The test
+ * unit sets it to scr_dyn_then_spawn (scr_test.c), which runs the steps on
+ * a fiber of their own: a handler may then wait on the current fiber from
+ * synchronous code, as a node:test subtest started inside it does. Only
+ * that unit references scr_dyn_then_spawn, so a program without tests
+ * links neither it nor the fiber machinery. */
+extern SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src);
+#ifndef __wasi__
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src);
+#endif
 /* A native reaction to a promise's settlement, as PerformPromiseThen with
  * native steps: react(ctx, settled) runs as a reaction job once the promise
  * settles (from the next microtask checkpoint when it already has), in
@@ -216,6 +226,23 @@ typedef struct ScrPromiseReaction {
 /* Subscribes a native reaction to `p` (the descriptor outlives it) and
  * marks `p` handled, as a `then` does. */
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* The same without the mark: `p` counts as handled once the reaction's own
+ * steps observe it (scr_promise_settled_now), as it did when a fiber that
+ * awaited it resumed. A rejection already reported as unhandled therefore
+ * raises 'rejectionHandled' in the reaction's turn, never inside the call
+ * that registers it. */
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* Queues the reaction's job now, whatever the state of `p`: react(ctx, p)
+ * runs in the next microtask turn, and `p` stays alive until then. It is
+ * the turn of the job that resolves a promise with another one
+ * (NewPromiseResolveThenableJob): its steps subscribe to `p`
+ * (scr_promise_react_unmarked), which may still be pending. The loop needs
+ * nothing for it beyond the reaction job it already runs. */
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+#ifdef SCR_RC_AUDIT
+/* The dynamic promise unit's pending reactions (scr_async.c). */
+extern SCR_TL long scr_dyn_reactions_pending;
+#endif
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber
@@ -291,6 +318,31 @@ void scr_process_off_unhandled_rejection(ScrDyn *fn);
  * the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
+/* process.setUncaughtExceptionCaptureCallback/…hasUncaughtExceptionCapture-
+ * Callback: the capture callback replaces the 'uncaughtException'
+ * listeners for every uncaught exception (monitors still run first), and
+ * has… reports whether one is set. The setter validates like Node
+ * (ERR_INVALID_ARG_TYPE for a non-function, …ALREADY_SET when one is
+ * active, null clears). */
+bool scr_process_has_uncaught_capture(void);
+void scr_process_set_uncaught_capture(ScrDyn *fn);
+/* process.on/once/off('multipleResolves', fn): the third rejection-event
+ * registry (scr_async_dyn.c). A resolution or rejection that arrives at a
+ * promise which already resolved is reported as ('resolve' | 'reject',
+ * promise, value) — delivered on a nextTick queued at that settle, exactly
+ * Node's resolveErrorResolve/resolveErrorReject — and the first delivery
+ * that reaches a listener emits DEP0160 once per process. Throws Node's
+ * ERR_INVALID_ARG_TYPE for a non-function listener. */
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once);
+void scr_process_off_multiple_resolves(ScrDyn *fn);
+/* The settle-time hook the registration above installs (NULL while no
+ * listener is registered): `type` 0 = resolve / 1 = reject names the settle
+ * that lost, `value` is what it passed, +1 and owned by the hook.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value);
+/* Reports the value an exception cell carries as a losing settle (the
+ * executor-throw-after-settle path). Runtime-internal. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell);
 /* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */
@@ -309,6 +361,17 @@ void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for
  * dyn payloads and %Error instances). +1. */
 ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
+/* Reads a boxed promise for the inspect renderer: whether it is pending,
+ * whether it is rejected, and a settled promise's outcome as a dyn value
+ * (+1: the rejection reason, the fulfillment value otherwise). The box
+ * itself comes from scr_async_dyn.c, which installs this with the box hooks
+ * — the only way an inspector meets a SCR_DYN_PROMISE — so a program
+ * without that unit keeps the pointer NULL. The hook lives in scr_lib.c
+ * (always linked, including the library flavors that omit scr_async.c), so
+ * the inspect unit never references the async unit directly.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pending,
+                                                 bool *rejected, ScrDyn **value);
 /* process warnings (scr_lib.c — always linked so any unit can emit a
  * deprecation): dyn listeners plus Node's default stderr report
  * ("(node:pid) [CODE] Name: message" and a detail second line).
@@ -351,9 +414,10 @@ extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */
 extern SCR_TL bool scr_warning_trace_hint_shown;
-/* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
- * the stored value (+1; undefined until assigned), the assignment
- * (borrowed), and the truthiness the warning paths test. */
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3): the
+ * stored value (+1; undefined until assigned), the assignment (borrowed),
+ * and the truthiness the warning paths test. */
 ScrDyn *scr_process_deprecation_flag(double which);
 void scr_process_set_deprecation_flag(double which, ScrDyn *value);
 bool scr_process_deprecation_flag_on(int which);
@@ -363,6 +427,10 @@ bool scr_process_deprecation_flag_on(int which);
  * listeners run. scr_warning_new builds the string form's warning value
  * (borrows; +1). */
 void scr_warning_emit_deferred(ScrDyn *warning);
+/* The same tail for the deprecations Node emits through
+ * getDeprecationWarningEmitter, whose fourth argument (the deprecation
+ * constructor) is undefined (DEP0203). */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *warning);
 ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code);
 /* The promise-or-absent await's unit arm: one microtask hop, like JS's
  * await of any non-thenable (and like awaiting a settled promise). */

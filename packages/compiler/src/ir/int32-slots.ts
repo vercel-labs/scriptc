@@ -568,7 +568,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.getOwnPropertyDescriptor",
   "dyn.getOwnPropertyNames",
   "dyn.getPrototype",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classTestPrototype",
   "dyn.hasKey",
   // The computed forms convert the key with dyn.toStringCoerce's helpers
   // and then run dyn.in or dyn.hasOwn; a symbol key is looked up in the
@@ -618,6 +618,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.toString",
   "dyn.toStringCoerce",
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.typedRefKeyIn",
   "dyn.typeof",
@@ -700,6 +701,10 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   // a value.
   "weakMap.new",
   "weakSet.new",
+  // A WeakRef keeps its target and answers it from deref: the target gets a
+  // reference count, but no property.
+  "weakRef.new",
+  "weakRef.is",
   "worker.new",
 ]);
 /** Runtime helpers that do nothing with their dynamic arguments but call

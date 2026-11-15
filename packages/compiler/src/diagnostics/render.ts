@@ -67,9 +67,30 @@ export function renderDiagnostic(
       else hi = mid - 1;
     }
     lineNum = lo + 1;
-    colNum = diag.loc.start - lineStarts[lo]! + 1;
+    // What a source shadow inserted into the frame's lines is left out: the
+    // column and the lines are the file's as written.
+    const inserted = diag.inserted ?? [];
+    const insertedIn = (from: number, to: number): number => {
+      let n = 0;
+      for (const [start, length] of inserted)
+        n += Math.max(0, Math.min(to, start + length) - Math.max(from, start));
+      return n;
+    };
+    const written = (n: number): string | undefined => {
+      let text = lines[n - 1];
+      if (text === undefined || inserted.length === 0) return text;
+      const lineStart = lineStarts[n - 1]!;
+      for (let i = inserted.length - 1; i >= 0; i--) {
+        const from = inserted[i]![0] - lineStart;
+        const to = from + inserted[i]![1];
+        if (from >= 0 && to <= text.length) text = text.slice(0, from) + text.slice(to);
+      }
+      return text;
+    };
+    colNum = diag.loc.start - lineStarts[lo]! - insertedIn(lineStarts[lo]!, diag.loc.start) + 1;
+    const spanLength = diag.loc.end - diag.loc.start - insertedIn(diag.loc.start, diag.loc.end);
 
-    const lineText = lines[lineNum - 1] ?? "";
+    const lineText = written(lineNum) ?? "";
     // The window every frame line shows: the whole line, or for a long
     // line FRAME_MAX_WIDTH characters starting FRAME_LEAD before the column.
     const windowStart =
@@ -85,7 +106,7 @@ export function renderDiagnostic(
     };
     const gutterWidth = String(Math.min(lineNum + 1, lines.length)).length;
     const emitLine = (n: number) => {
-      const text = lines[n - 1];
+      const text = written(n);
       if (text === undefined) return;
       frame.push(c(DIM, `  ${String(n).padStart(gutterWidth)} | `) + shown(text));
     };
@@ -96,10 +117,7 @@ export function renderDiagnostic(
       windowStart === 0 && lineText.length <= FRAME_MAX_WIDTH
         ? lineText.length
         : Math.min(lineText.length, windowStart + FRAME_MAX_WIDTH);
-    const spanOnLine = Math.max(
-      1,
-      Math.min(diag.loc.end - diag.loc.start, visibleEnd - (colNum - 1)),
-    );
+    const spanOnLine = Math.max(1, Math.min(spanLength, visibleEnd - (colNum - 1)));
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +

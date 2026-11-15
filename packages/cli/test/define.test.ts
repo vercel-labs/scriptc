@@ -77,7 +77,10 @@ console.log(module.exports.mode);
     async (_dir, scriptc) => {
       const define = `--define=process.env.NODE_ENV="production"`;
       expect(await scriptc(["run", "main.cjs", define])).toBe("production build\n");
-      const refusal = "replacing module.exports outside a top-level statement";
+      // Without the flag the branch that fills the export is unknown, so the
+      // read of `module.exports` at line 7 stays a named refusal; the flag
+      // settles the branch and the read lowers.
+      const refusal = "the CommonJS 'module' object in this position";
       expect(await scriptc(["coverage", "main.cjs", define])).not.toContain(refusal);
       // The bootstrap's replayed verdict of a coverage run without the flag.
       expect(await scriptc(["coverage", "main.cjs"], true)).toContain(refusal);

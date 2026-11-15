@@ -161,6 +161,9 @@ function linksDynPromiseUnit(opts: CcOptions): boolean {
     opts.fileHandle === true ||
     // Fetch settles its promises through the unit.
     opts.fetch === true ||
+    // The dns resolve family settles its promise results through the unit
+    // (scr_dns_resolve.c).
+    opts.dnsResolve === true ||
     // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
     opts.nodeIsland === true ||
     // t.waitFor polls a dyn condition and returns a dyn promise
@@ -190,6 +193,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   // The kept-source read a record width copy emits (scr_record_source_get.c).
   unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
+  // The join of an array of strings (scr_arr_join_str.c).
+  unit((u) => u.opts.arrJoinStr === true, "scr_arr_join_str.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -360,9 +365,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
-  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
+  // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
+  // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
+  unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
+  unit((u) => u.opts.utilTraceSigInt === true, "scr_util_trace_sigint.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -379,13 +388,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
   unit((u) => u.opts.parseArgs, "scr_util.c"),
   unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
-  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  unit((u) => u.opts.inspect, "scr_util_style.c"),
   unit(
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",
   ),
   // util.promisify over an untyped function: dyn promises and calls.
   unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  // util.promisify's custom protocol, which the typed lowering reads over
+  // the boxed function; both lowerings share it.
+  unit((u) => u.opts.utilPromisify === true, "scr_util_promisify_custom.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&
@@ -428,6 +443,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // The prototype read of a class test's walk.
+  unit((u) => u.opts.classTestPrototype === true, "scr_dyn_class_test.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
   // Record views of types whose values may also be frozen.
@@ -460,6 +477,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.http2, "scr_http2.c"),
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsResolve, "scr_dns_resolve.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
@@ -593,10 +611,8 @@ const RUNTIME_DEFINES: readonly {
   // scr_fs_stream.c's `signal` option, whose abort listener comes from the
   // event-target unit.
   { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
-  // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
-  // bodies of its streams.
-  { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
+  // scr_dyn_builtin_class.c's instanceof over the web streams unit's classes,
+  // and scr_fetch.c's bodies of its streams.
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
   // as Content-Type when the request sets none.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/npm-island-package-dts-node-types/main.mjs"
+ ],
+ "diags": []
+}

@@ -10,20 +10,30 @@ import {
   VOID,
   canBoxFuncIntoDyn,
 } from "../../ir/ir.js";
-import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { type ConsoleMethodMember } from "./builtins/console.js";
 import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
+import { ensureBool } from "./lower-exprs.js";
 import {
   heldFormatArgs,
   lowerConsoleInspectArg,
   lowerFormatCall,
   lowerInspectValue,
   lowerRuntimeFormat,
+  lowerRuntimeInspectDir,
   runtimeFormatString,
   formatStringConverts,
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
+import { programTouchesInspectTables } from "./inspect-tables.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
  * representation the stdlib Console type maps to) over two output
@@ -107,7 +117,13 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     entries.push({ role: "ignoreErrors", node: args[2] });
   }
   const stmts: IrStmt[] = [];
-  const target = (node: ts.Expression, role: string): Target => {
+  /** Node's constructor takes a target when `typeof stream.write ===
+   * 'function'`. A value whose static type cannot carry one is rejected at
+   * run time with ERR_CONSOLE_WRITABLE_STREAM (its expression still
+   * evaluates); a value that might carry one — an untyped value, or an
+   * object with a write member this runtime has no stream binding for —
+   * keeps the compile-time boundary. */
+  const target = (node: ts.Expression, role: string): Target | null => {
     if (ts.isPropertyAccessExpression(node)) {
       const member = lowerer.stdlibGlobalMember(node, "process");
       if (member === "stdout") return { fd: 1 };
@@ -117,19 +133,30 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     const info =
       value.type.kind === "object" ? lowerer.classes.get(value.type.className) : undefined;
     const sides = streamSidesOf(lowerer, info);
-    if (sides !== "w" && sides !== "rw") {
+    if (sides === "w" || sides === "rw") {
+      const local = lowerer.declareHiddenLocal(`%console${role}`, value.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return { local: local.id, type: value.type };
+    }
+    const t = lowerer.typeOf(node);
+    const maybeWritable =
+      (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0 ||
+      lowerer.checker.getPropertyOfType(t, "write") !== undefined;
+    if (maybeWritable) {
       lowerer.noLowering(
         `a Console ${role} of type '${lowerer.fmt(value.type)}'`,
         node,
         "process.stdout, process.stderr, and node:stream writables (Writable, Duplex, Transform, PassThrough, and their subclasses) are the supported Console streams",
       );
     }
-    const local = lowerer.declareHiddenLocal(`%console${role}`, value.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-    return { local: local.id, type: value.type };
+    // The expression still evaluates in source order; Node's constructor
+    // throws only after every option initializer has run.
+    if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    return null;
   };
   let out: Target | null = null;
   let err: Target | null = null;
+  let errBad = false;
   let ignore: IrExpr | null = null;
   for (const entry of entries) {
     const node = entry.node;
@@ -139,34 +166,41 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(node), loc });
       }
       if (entry.role === "stdout") out = null;
-      else if (entry.role === "stderr") err = null;
-      else ignore = null;
+      else if (entry.role === "stderr") {
+        err = null;
+        errBad = false;
+      } else ignore = null;
       continue;
     }
     if (entry.role === "stdout") {
       out = target(node!, "stdout");
     } else if (entry.role === "stderr") {
       err = target(node!, "stderr");
+      errBad = err === null;
     } else {
-      const value = lowerer.lowerExpr(node!);
-      if (value.type.kind !== "bool") {
-        lowerer.noLowering(
-          `ignoreErrors of type '${lowerer.fmt(value.type)}'`,
-          node!,
-          "pass a boolean",
-        );
-      }
+      // Node stores Boolean(ignoreErrors): any value is accepted, and only
+      // a false one turns the error handling off.
+      const value = ensureBool(lowerer, lowerer.lowerExpr(node!), node!);
       const local = lowerer.declareHiddenLocal("%consoleIgnoreErrors", BOOL);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       ignore = varRef(local.id, BOOL, loc);
     }
   }
-  if (out === null) {
-    return lowerer.noLowering(
-      "new Console without a stdout stream",
-      expr,
-      "pass the stdout stream",
+  const writableError = (role: string): IrExpr =>
+    nodeThrowExpr(
+      1,
+      "ERR_CONSOLE_WRITABLE_STREAM",
+      `Console expects a writable stream instance for ${role}`,
+      DYN,
+      loc,
     );
+  if (out === null) {
+    // No stdout, or a value Node's writable check rejects: Node validates
+    // stdout first, then stderr.
+    return { kind: "seqExpr", stmts, result: writableError("stdout"), type: DYN, loc };
+  }
+  if (errBad) {
+    return { kind: "seqExpr", stmts, result: writableError("stderr"), type: DYN, loc };
   }
   const stdoutTarget: Target = out;
   const stderrTarget: Target = err ?? stdoutTarget;
@@ -352,7 +386,25 @@ export function lowerConsoleOutput(
   stdout: boolean,
   surface: string,
   loc: SrcLoc,
+  intrinsic: "console.log" | "console.error" | "console.trace" = stdout
+    ? "console.log"
+    : "console.error",
 ): IrExpr {
+  /** One write of the formatted line: the console.log/error intrinsic, or
+   * console.trace for trace's stderr line. */
+  const emitLine = (args: IrExpr[]): IrExpr => ({
+    kind: "intrinsic",
+    name: intrinsic,
+    args,
+    type: VOID,
+    loc,
+  });
+  // A program that reads util.inspect's value can change the tables every
+  // console line's inspection reads (defaultOptions, colors, styles), so
+  // the whole line renders through the runtime formatter, which reads them
+  // per call.
+  if (programTouchesInspectTables(lowerer))
+    return emitLine([lowerRuntimeFormat(lowerer, expr.arguments.nodes, loc)]);
   // A LITERAL format string with %-specifiers and further arguments
   // (`console.log('Mismatched %s function calls. Expected %s, actual
   // %d.', name, seg, n)` — test/common's exit report): Node's console
@@ -365,35 +417,34 @@ export function lowerConsoleOutput(
     isStringLiteralLike(first) &&
     hasFormatSpecifier(first.text)
   ) {
-    return consoleWrite(stdout, [lowerFormatCall(lowerer, expr, loc, false)], loc);
+    return emitLine([lowerFormatCall(lowerer, expr, loc, false)]);
   }
   const nodes = expr.arguments.nodes;
   // Spread arguments and format strings that may hold a substitution at
   // run time go through the runtime formatter. A string first argument
   // without a '%' keeps the space-joined write below.
-  if (nodes.some(ts.isSpreadElement))
-    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+  if (nodes.some(ts.isSpreadElement)) return emitLine([lowerRuntimeFormat(lowerer, nodes, loc)]);
   const runtime =
     nodes.length > 1 && !isStringLiteralLike(first) ? runtimeFormatString(lowerer, first!) : null;
   if (runtime === "other" && !formatStringConverts(lowerer, first!))
-    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+    return emitLine([lowerRuntimeFormat(lowerer, nodes, loc)]);
   if (runtime !== null) {
     const held = heldFormatArgs(lowerer, nodes, loc);
-    if (!held.joinable) return seq(held.stmts, consoleWrite(stdout, [held.format()], loc), loc);
+    if (!held.joinable) return seq(held.stmts, emitLine([held.format()]), loc);
     const joined = held.args.map((arg) =>
       lowerConsoleArg(lowerer, arg.node, arg.ref(), surface, loc),
     );
     const write: IrStmt = {
       kind: "if",
       cond: held.specifies,
-      then: [{ kind: "exprStmt", expr: consoleWrite(stdout, [held.format()], loc), loc }],
-      else_: [{ kind: "exprStmt", expr: consoleWrite(stdout, joined, loc), loc }],
+      then: [{ kind: "exprStmt", expr: emitLine([held.format()]), loc }],
+      else_: [{ kind: "exprStmt", expr: emitLine(joined), loc }],
       loc,
     };
     return seq([...held.stmts, write], noop(loc), loc);
   }
   const args = nodes.map((a) => lowerConsoleArg(lowerer, a, lowerer.lowerExpr(a), surface, loc));
-  return consoleWrite(stdout, args, loc);
+  return emitLine(args);
 }
 
 /* ── the rest of the global console ──────────────────────────────────── */
@@ -746,6 +797,10 @@ export function lowerConsoleMethodCall(
 ): IrExpr {
   const args = expr.arguments.nodes;
   switch (member) {
+    case "trace":
+      // Node's console.trace: the stderr line "Trace[: args]", then the
+      // captured frames (scriptc's own frames; SEMANTICS divergence 11).
+      return lowerConsoleOutput(lowerer, expr, false, "console.trace", loc, "console.trace");
     case "dirxml":
       return lowerConsoleOutput(lowerer, expr, true, "console.dirxml", loc);
     case "group":
@@ -834,7 +889,9 @@ export function lowerConsoleMethodCall(
       const rendered =
         valueNode === undefined
           ? strLit("undefined", loc)
-          : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
+          : programTouchesInspectTables(lowerer)
+            ? lowerRuntimeInspectDir(lowerer, valueNode, optionsNode, args.length, loc)
+            : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
       if (rest.length === 0) return consoleWrite(true, [rendered], loc);
       const text = hoist(lowerer, stmts, "%consoleDir", rendered, loc);
       evaluateIgnored(lowerer, rest, stmts, loc);

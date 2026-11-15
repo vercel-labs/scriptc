@@ -26,12 +26,15 @@ typedef void (*ScrRlHistoryFn)(ScrClosure *, ScrArr *); /* borrows the history *
 
 /* One listener: a user closure (fn: the line, error or history adapter;
  * NULL for the zero-argument events), or the async iterator's own
- * handler. */
+ * handler. A checked-dynamic 'history' listener has no adapter: `box` is
+ * the typed-ref recipe its argument (the history array itself) is boxed
+ * with, so the listener reads and writes the interface's array. */
 typedef struct {
   ScrClosure *cb;
   void *fn;
   bool once;
   bool iter;
+  const ScrDynTypedRefRecipe *box;
 } RlEntry;
 
 typedef struct {
@@ -122,6 +125,7 @@ typedef struct {
   void (*write_key)(ScrRl *rl, ScrStr *data, bool has_key, ScrStr *name, bool ctrl, bool meta,
                     bool shift);
   void (*resumed)(ScrRl *rl); /* resume(): process.stdin keys parked meanwhile flow */
+  void (*resize)(ScrRl *rl);  /* the output's 'resize': kRefreshLine */
 } ScrRlTtyOps;
 extern SCR_TL const ScrRlTtyOps *scr_rl_tty_ops;
 
@@ -134,6 +138,11 @@ void scr_rl_write_out(ScrRl *rl, ScrStr *text);
 /* kWriteToOutput(prompt)'s validateString: false with ERR_INVALID_ARG_TYPE
  * pending when the prompt is not a string. */
 bool scr_rl_prompt_writable(ScrRl *rl);
+/* The prompt text one use writes: String(prompt_value) when setPrompt or
+ * question took a non-string (Node coerces at each use, so a value's
+ * toString runs again on every refresh and getCursorPos), else the string
+ * prompt. +1; a symbol throws Node's TypeError. */
+ScrStr *scr_rl_prompt_text_now(ScrRl *rl);
 /* A prompt value whose String() the interface keeps in prompt. */
 static inline bool scr_rl_primitive_prompt(const ScrDyn *v) {
   return v->kind == SCR_DYN_NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_BOOL ||

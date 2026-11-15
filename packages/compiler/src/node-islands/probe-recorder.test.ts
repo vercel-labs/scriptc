@@ -195,7 +195,7 @@ test("a shared dependency's environment reads reach every load that gets its exp
   const calls = [call(first), call(second)];
   const mod = {
     entry: "%main",
-    functions: [{ name: "%main", body: calls }],
+    functions: [{ name: "%main", body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
     globals: [],
   } as unknown as IrModule;
   const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => out);
@@ -327,7 +327,7 @@ test("a global an earlier load wrote from the environment does not reach a later
   const calls = [call(ga), call(gb)];
   const mod = {
     entry: "%main",
-    functions: [{ name: "%main", body: calls }],
+    functions: [{ name: "%main", body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
     globals: [],
   } as unknown as IrModule;
   const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => out);

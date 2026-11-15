@@ -224,7 +224,12 @@ struct ScrHttpReq {
   ScrStr **hnames;  /* lowercased */
   ScrStr **hnames_raw; /* arrival case — rawHeaders */
   ScrStr **hvalues;
-  size_t nheaders;
+  size_t nheaders; /* every parsed line: rawHeaders, and the framing check */
+  /* A client response past request.maxHeadersCount keeps every line — Node's
+   * parser does, and its rawHeaders keeps them too — while headers,
+   * headersDistinct and getHeader stop at the limit. */
+  size_t nheaders_visible;
+  bool headers_truncated;
   ScrStr **tnames; /* parsed chunk trailers: lowercased, separate from headers */
   ScrStr **tnames_raw; /* wire case for rawTrailers */
   ScrStr **tvalues;
@@ -410,18 +415,27 @@ static ScrStr *scr_http_field_value(ScrStr *const *names, ScrStr *const *values,
   return value;
 }
 
+/* How many of the parsed lines the headers snapshot exposes. Always
+ * r->nheaders except on a client response whose head ran past
+ * request.maxHeadersCount: Node's parser consumes every line (rawHeaders
+ * and the body framing see them) but stops adding to `headers` there. */
+static size_t scr_http_req_visible(const ScrHttpReq *r) {
+  return r->headers_truncated ? r->nheaders_visible : r->nheaders;
+}
+
 /* The snapshot pairs behind `{ ...req.headers }` (the record-building
  * helper's feed): [lowercased name, value, ...] in arrival order — the
  * same keys the per-name reads answer: each name once, at its first
  * position, with scr_http_field_value's value. Always a fresh +1 array. */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, r->nheaders * 2);
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, visible * 2);
+  for (size_t i = 0; i < visible; i++) {
     bool seen = false;
     for (size_t k = 0; k < i && !seen; k++) seen = scr_http_name_eq(r->hnames[k], r->hnames[i]);
     if (seen) continue;
     scr_arr_push_ref(out, scr_str_retain(r->hnames[i]));
-    scr_arr_push_ref(out, scr_http_field_value(r->hnames, r->hvalues, r->nheaders, i, r->join_dup));
+    scr_arr_push_ref(out, scr_http_field_value(r->hnames, r->hvalues, visible, i, r->join_dup));
   }
   return out;
 }
@@ -430,8 +444,9 @@ ScrArr *scr_http_req_header_pairs(ScrHttpReq *r) {
  * repeated names included: the fetch Response's Headers feed. Always a
  * fresh +1 array. */
 ScrArr *scr_http_req_header_lines(ScrHttpReq *r) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, r->nheaders * 2);
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, visible * 2);
+  for (size_t i = 0; i < visible; i++) {
     scr_arr_push_ref(out, scr_str_retain(r->hnames[i]));
     scr_arr_push_ref(out, scr_str_retain(r->hvalues[i]));
   }
@@ -461,7 +476,7 @@ static ScrArr *scr_http_req_distinct_values(ScrStr *const *names, ScrStr *const 
 }
 
 ScrArr *scr_http_req_header_values(ScrHttpReq *r, ScrStr *name /*borrowed*/) {
-  return scr_http_req_distinct_values(r->hnames, r->hvalues, r->nheaders, name);
+  return scr_http_req_distinct_values(r->hnames, r->hvalues, scr_http_req_visible(r), name);
 }
 
 /* Every value of a header in arrival order, as Node stores set-cookie:
@@ -535,9 +550,10 @@ ScrStr *scr_http_req_status_message(ScrHttpReq *r) {
 /* Header lookup by (case-insensitively matched) name: +1 value, or NULL —
  * the compiler's undefined arm, exactly process.envGet's contract. */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name) {
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  for (size_t i = 0; i < visible; i++) {
     if (scr_http_name_eq(r->hnames[i], name))
-      return scr_http_field_value(r->hnames, r->hvalues, r->nheaders, i, r->join_dup);
+      return scr_http_field_value(r->hnames, r->hvalues, visible, i, r->join_dup);
   }
   return NULL;
 }
@@ -1041,6 +1057,15 @@ struct ScrHttpRes {
   bool strict_content_length;
   size_t strict_bytes_written; /* Node counts UTF-8 bytes, not JS characters */
   bool keep_alive; /* the REQUEST's verdict; Connection: close overrides */
+  /* server.maxRequestsPerSocket counted this request as the last the
+   * connection may serve: the head says Connection: close while the
+   * socket stays open for the idle timeout (Node's
+   * maxRequestsOnConnectionReached, which does not set _last). */
+  bool max_requests_reached;
+  /* server.maxRequestsPerSocket as the request was parsed (Node snapshots
+   * it onto the response as _maxRequestsPerSocket): the Keep-Alive hint's
+   * ", max=<value>" suffix, when `~~value > 0`. NULL when unset. */
+  ScrDyn *max_requests_per_socket;
   bool destroyed; /* res.destroy()/teardown — res.destroyed (true in 'close') */
   bool unflushed; /* the socket closed before the body went out: no 'finish' */
   bool socket_detached; /* finish/close removes the response's socket view */
@@ -1110,6 +1135,7 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_net_ls_drop(&r->wcb_ls);
     free(r->cork_buf);
     free(r->held_head);
+    if (r->max_requests_per_socket) scr_dyn_release(r->max_requests_per_socket);
     if (r->req_ref) scr_http_req_release(r->req_ref);
     if (r->sock) scr_net_sock_release(r->sock);
     if (r->h2_stream) scr_http_h2_ops->release(r->h2_stream);
@@ -1551,6 +1577,65 @@ static void scr_http_buf_uint(ScrHttpBuf *b, unsigned long long v) {
   scr_http_buf_append(b, digits + at, sizeof digits - at);
 }
 
+/* ECMAScript ToInt32: NaN and the infinities are 0; everything else
+ * truncates toward zero modulo 2^32. */
+static int32_t scr_http_to_int32(double d) {
+  if (!isfinite(d)) return 0;
+  double t = trunc(d);
+  double m = fmod(t, 4294967296.0);
+  if (m < 0) m += 4294967296.0;
+  return (int32_t)(uint32_t)(uint64_t)m;
+}
+
+/* The header-line budget Node's parser derives from a maxHeadersCount
+ * value: numbers go through `count << 1` (ToInt32, wrapping) into
+ * parser.maxHeaderPairs, and the parser counts two per header line, so a
+ * positive budget allows that many lines. Zero or below means no limit. A
+ * non-number (or an unset property) leaves the parser default,
+ * SCR_HTTP_MAX_HEADER_FIELDS lines. Both server.maxHeadersCount and the
+ * client's request.maxHeadersCount share this rule. */
+static size_t scr_http_header_pair_limit(const ScrDyn *value) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) return SCR_HTTP_MAX_HEADER_FIELDS;
+  int32_t pairs = (int32_t)((uint32_t)scr_http_to_int32(value->v.num) << 1);
+  if (pairs <= 0) return 0;
+  return (size_t)(pairs / 2);
+}
+
+/* server.maxRequestsPerSocket counts requests only while it is a positive
+ * number (Node's isRequestsLimitSet), read per request. */
+static bool scr_http_requests_limit(const ScrDyn *value, double *max) {
+  if (value == NULL || value->kind != SCR_DYN_NUM || !(value->v.num > 0)) return false;
+  *max = value->v.num;
+  return true;
+}
+
+/* `~~value > 0` over a stored property: ToInt32 of its numeric coercion
+ * (a string coerces, a boolean is 0/1, anything else is 0). */
+static bool scr_http_dyn_int32_positive(const ScrDyn *value) {
+  if (value == NULL) return false;
+  double n = 0;
+  if (value->kind == SCR_DYN_NUM) n = value->v.num;
+  else if (value->kind == SCR_DYN_BOOL) n = value->v.b ? 1 : 0;
+  else if (value->kind == SCR_DYN_STR) scr_dyn_number_coerce_js(value, &n);
+  return scr_http_to_int32(n) > 0;
+}
+
+/* A property value as a template literal would print it (Node's
+ * `\`, max=${this._maxRequestsPerSocket}`). */
+static void scr_http_buf_dyn_str(ScrHttpBuf *b, const ScrDyn *value) {
+  char num[48];
+  switch (value->kind) {
+  case SCR_DYN_NUM:
+    scr_http_buf_append(b, num, scr_f64_to_str(value->v.num, num));
+    break;
+  case SCR_DYN_STR: scr_http_buf_append(b, value->v.str->data, value->v.str->len); break;
+  case SCR_DYN_BOOL: scr_http_buf_str(b, value->v.b ? "true" : "false"); break;
+  case SCR_DYN_UNDEF: scr_http_buf_str(b, "undefined"); break;
+  case SCR_DYN_NULL: scr_http_buf_str(b, "null"); break;
+  default: scr_http_buf_str(b, "[object Object]"); break;
+  }
+}
+
 /* ASCII case-insensitive name compare against a lowercase literal. */
 static bool scr_http_name_is(const ScrStr *name, const char *lower) {
   size_t len = strlen(lower);
@@ -1876,15 +1961,25 @@ static bool scr_http_res_build_head(ScrHttpRes *r, long long body_len, ScrHttpBu
     if (user_close) r->keep_alive = false;
   } else if (r->removed_connection) {
     /* removeHeader('connection'): no Connection header */
+  } else if (r->keep_alive && r->max_requests_reached) {
+    /* maximum requests on this connection reached: close while the
+     * socket stays open for the idle timeout (Node sets the Connection
+     * header but not _last) */
+    scr_http_buf_str(&b, "Connection: close\r\n");
   } else if (r->keep_alive) {
     /* Node's Keep-Alive hint: whole seconds of server.keepAliveTimeout,
-     * omitted when it is 0 or the user set a Keep-Alive header. */
+     * omitted when it is 0 or the user set a Keep-Alive header; the
+     * maximum request count rides along while it is a positive int32. */
     scr_http_buf_str(&b, "Connection: keep-alive\r\n");
     ScrNetServer *srv = r->sock != NULL ? scr_net_sock_server(r->sock) : NULL;
     double ka = srv != NULL ? scr_net_server_keep_alive_timeout(srv) : 5000;
     if (ka > 0 && !user_keep_alive) {
       scr_http_buf_str(&b, "Keep-Alive: timeout=");
       scr_http_buf_uint(&b, (unsigned long long)floor(ka / 1000));
+      if (scr_http_dyn_int32_positive(r->max_requests_per_socket)) {
+        scr_http_buf_str(&b, ", max=");
+        scr_http_buf_dyn_str(&b, r->max_requests_per_socket);
+      }
       scr_http_buf_str(&b, "\r\n");
     }
   } else {
@@ -2163,6 +2258,25 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
       len = 0;
     }
     r->corked = 0;
+    if (r->head_sent && r->chunked && r->h2_stream == NULL && len == 0 && r->sock &&
+        (r->cork_len > 0 || (r->held_head_len > 0 && r->cork_wrote))) {
+      /* end() of a corked chunked message: the held head, the corked
+       * chunk and the terminator leave as one write, as Node's corked
+       * socket sends them (one writev instead of two sends). */
+      r->cork_wrote = false;
+      ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
+      r->held_head = NULL;
+      r->held_head_len = r->held_head_cap = 0;
+      char *held = r->cork_buf;
+      size_t held_len = r->cork_len;
+      r->cork_buf = NULL;
+      r->cork_len = r->cork_cap = 0;
+      scr_http_res_emit(r, head.len > 0 ? &head : NULL, held, held_len, true);
+      free(held);
+      free(head.data);
+      if (scr_exc_pending()) return;
+      goto finished;
+    }
     scr_http_res_cork_flush(r);
     if (scr_exc_pending()) return;
     if (r->finished) return; /* a teardown inside the flush */
@@ -2190,6 +2304,7 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     scr_http_res_emit(r, head.len > 0 ? &head : NULL, data, len, r->chunked);
     free(head.data);
   }
+finished:
   if (scr_http_res_expected_length(r, &expected) &&
       (double)r->strict_bytes_written != expected) {
     scr_http_res_length_mismatch(r, expected);
@@ -2753,9 +2868,17 @@ typedef struct ScrHttpConn {
                     * +1; NULL between requests / before the head */
   ScrHttpRes *res; /* +1; server mode only */
   bool close_after; /* the response said Connection: close */
+  /* HTTP/1.1 requests this connection has served (Node's
+   * state.requestsCount); counted only while maxRequestsPerSocket is a
+   * positive number, like Node. */
+  size_t requests_count;
   bool pumping; /* inside scr_http_conn_pump */
   bool keep_alive_timer; /* the socket's idle timer is the keep-alive timeout */
   size_t max_header_size; /* maxHeaderSize option; 0 = SCR_HTTP_MAX_HEADER_SIZE */
+  /* The header-line budget the parser enforces (Node's
+   * parser.maxHeaderPairs / 2, captured when the connection is set up);
+   * 0 = no limit. */
+  size_t max_header_pairs;
   struct ScrHttpSockCount *sock_count; /* client mode: the agent count that includes
                                         * this socket (+1), or NULL */
   struct ScrHttpAgent *pool_agent; /* client mode: the agent whose free list holds
@@ -3229,11 +3352,18 @@ typedef struct ScrHttpSrvCtx {
               * shared with scr_http2.c's ScrH2SrvCtx; each family checks
               * the tag before treating the ctx as its own */
   size_t rc;
+  ScrNetServer *server; /* BORROWED: the handle whose plain properties
+                         * (maxHeadersCount, maxRequestsPerSocket) the
+                         * parser reads — the ctx aliases may reach a
+                         * server other than the socket's owner (the
+                         * emitConnection demux) */
   ScrNetLs request_ls;
   ScrNetLs check_continue_ls;    /* 'checkContinue' (req, res) */
   ScrNetLs check_expectation_ls; /* 'checkExpectation' (req, res) */
   ScrNetLs upgrade_ls;
   ScrNetLs connect_ls; /* HTTP CONNECT — the upgrade machinery's twin */
+  ScrNetLs drop_request_ls; /* 'dropRequest' (req, socket): a request past
+                             * server.maxRequestsPerSocket, answered 503 */
   ScrNetLs client_error_ls; /* 'clientError' (err, socket) */
   bool join_dup; /* createServer({ joinDuplicateHeaders: true }) */
   size_t max_header_size; /* createServer({ maxHeaderSize }); 0 = the default */
@@ -3252,6 +3382,7 @@ static void scr_http_srv_ctx_release(ScrHttpSrvCtx *ctx) {
   scr_net_ls_drop(&ctx->check_expectation_ls);
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->drop_request_ls);
   scr_net_ls_drop(&ctx->client_error_ls);
   free(ctx);
 }
@@ -3270,6 +3401,7 @@ static void scr_http_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->check_expectation_ls);
   scr_net_ls_drop(&ctx->upgrade_ls);
   scr_net_ls_drop(&ctx->connect_ls);
+  scr_net_ls_drop(&ctx->drop_request_ls);
   scr_net_ls_drop(&ctx->client_error_ls);
 }
 
@@ -3715,7 +3847,8 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   }
   size_t header_size = req->url->len;
   for (size_t i = 0; i < req->nheaders; i++) header_size += req->hnames[i]->len + req->hvalues[i]->len;
-  if (!ok || req->nheaders > SCR_HTTP_MAX_HEADER_FIELDS || header_size >= scr_http_conn_header_limit(conn)) {
+  if (!ok || (conn->max_header_pairs != 0 && req->nheaders > conn->max_header_pairs) ||
+      header_size >= scr_http_conn_header_limit(conn)) {
     *overflow = ok;
     scr_http_req_release(req);
     return false;
@@ -3849,6 +3982,21 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
     return true;
   }
 
+  /* server.maxRequestsPerSocket: an HTTP/1.1 request past the limit is
+   * not delivered to 'request' — 'dropRequest' fires with (req, socket)
+   * and the server answers 503 itself. The counter lives on the
+   * connection and only counts while the limit is a positive number; the
+   * request that reaches the limit still runs, with Connection: close in
+   * its head (see scr_http_res_build_head). */
+  const ScrDyn *reqs_limit = conn->srv->server != NULL
+                                 ? scr_net_server_max_requests_per_socket_raw(conn->srv->server)
+                                 : NULL;
+  double reqs_max = 0;
+  bool reqs_limited = !http10 && scr_http_requests_limit(reqs_limit, &reqs_max);
+  conn->requests_count += reqs_limited ? 1 : 0;
+  bool reqs_reached = reqs_limited && reqs_max <= (double)conn->requests_count;
+  bool reqs_dropped = reqs_limited && reqs_max < (double)conn->requests_count;
+
   ScrHttpRes *res = calloc(1, sizeof *res);
   if (!res) scr_http_oom();
   res->rc = 1;
@@ -3859,6 +4007,8 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   res->sock = scr_net_sock_retain(conn->sock);
   res->conn = conn;
   res->keep_alive = req_keep_alive;
+  res->max_requests_reached = reqs_reached;
+  if (reqs_limit != NULL) res->max_requests_per_socket = scr_dyn_retain((ScrDyn *)reqs_limit);
   res->req_ref = scr_http_req_retain(req); /* res.req — req never points back */
   conn->req = req; /* conn's +1 */
   conn->res = res;
@@ -3876,6 +4026,31 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   /* consume the head bytes */
   memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
   conn->len -= head_len;
+
+  if (reqs_dropped) {
+    /* Past the limit: 'dropRequest' listeners get (req, socket) — there
+     * is no upgrade head, so the NULL travels through the same adapters
+     * — then the server answers 503 itself. Node still keeps the
+     * connection open here (the close header is maxRequestsOnConnection
+     * -Reached, which does not set _last), so the response body is dumped
+     * and the parser waits for the next request, which is dropped too. */
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&conn->srv->drop_request_ls, &snap);
+    scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrHttpUpgradeFn)snap[i].fn)(snap[i].cb, scr_http_req_retain(req),
+                                       scr_net_sock_retain(conn->sock), NULL);
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+    if (scr_exc_pending()) return true;
+    scr_http_res_write_head(res, 503);
+    scr_http_res_end(res);
+    return true;
+  }
 
   /* Expect on an HTTP/1.1 request, as Node's server handles it: with a
    * 'checkContinue' listener, 100-continue goes to it instead of
@@ -4356,6 +4531,8 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   conn->sock = sock; /* borrowed — see the struct comment */
   conn->srv = scr_http_srv_ctx_retain(srv);
   conn->max_header_size = srv->max_header_size;
+  conn->max_header_pairs =
+      scr_http_header_pair_limit(scr_net_server_max_headers_count_raw(srv->server));
   scr_net_sock_set_native_reader(sock, &scr_http_conn_data, &scr_http_conn_eof,
                                   &scr_http_conn_closed, conn, &scr_http_conn_free);
   scr_net_sock_set_native_idle_checker(sock, &scr_http_conn_is_idle);
@@ -4387,6 +4564,7 @@ ScrNetServer *scr_http_create_server(ScrClosure *handler /*moves, nullable*/, Sc
   if (!ctx) scr_http_oom();
   ctx->proto = SCR_NET_PROTO_HTTP1;
   ctx->rc = 1;
+  ctx->server = s;
   ctx->require_host_header = true;
   if (handler != NULL) scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
   scr_net_server_set_native_conn(s, &scr_http_on_connection, ctx, &scr_http_srv_ctx_free);
@@ -4513,6 +4691,7 @@ static ScrNetLs *scr_http_event_list(ScrHttpSrvCtx *ctx, double kind) {
   case SCR_HTTP_OFF_UPGRADE: return &ctx->upgrade_ls;
   case SCR_HTTP_OFF_CONNECT: return &ctx->connect_ls;
   case SCR_HTTP_OFF_CLIENT_ERROR: return &ctx->client_error_ls;
+  case SCR_HTTP_OFF_DROP_REQUEST: return &ctx->drop_request_ls;
   default: return NULL;
   }
 }
@@ -4698,6 +4877,18 @@ void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
   scr_net_ls_add(&ctx->client_error_ls, cb, (void *)fn, once);
 }
 
+/* server.on("dropRequest", (req, socket) => ...): a request past
+ * maxRequestsPerSocket. Only an HTTP/1 server ever emits it. */
+void scr_http_server_on_drop_request(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                     ScrHttpUpgradeFn fn, bool once) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_http_add_blocked(s, "dropRequest")) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->drop_request_ls, cb, (void *)fn, once);
+}
+
 /* The clientError adapters: (err, socket) and its prefixes. Both arrive
  * +1; unused ones release here. */
 void scr_http_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
@@ -4842,6 +5033,9 @@ struct ScrHttpClientReq {
   double timeout_ms;          /* the timeout option (0 = none), reapplied on a pooled socket */
   size_t max_header_size;     /* the maxHeaderSize option (0 = the default), applied to
                                * whichever parser serves the request */
+  ScrDyn *max_headers_count;  /* request.maxHeadersCount as assigned (+1, NULL =
+                               * unset): the response parser's header-line budget,
+                               * captured when the socket is assigned */
   bool reused;                /* req.reusedSocket: the socket came from an agent's free list */
   bool sock_pooled;           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
@@ -4865,6 +5059,7 @@ void scr_http_client_release(ScrHttpClientReq *c) {
   if (!c || c->rc == SIZE_MAX) return;
   if (--c->rc == 0) {
     scr_als_ctx_release(c->als);
+    scr_dyn_release(c->max_headers_count);
     scr_net_ls_drop(&c->resp_ls);
     scr_net_ls_drop(&c->err_ls);
     scr_net_ls_drop(&c->timeout_ls);
@@ -5499,6 +5694,19 @@ static void scr_http_client_emit_destroy_error(ScrHttpClientReq *c) {
   if (!scr_exc_pending()) scr_http_client_queue_close(c);
 }
 
+/* request.maxHeadersCount: Node's ordinary writable property (null until
+ * assigned, any value accepted). The response parser's header-line budget
+ * is derived from it when a socket is assigned. +1 for the getter. */
+ScrDyn *scr_http_client_max_headers_count_get(ScrHttpClientReq *c) {
+  return c->max_headers_count != NULL ? scr_dyn_retain(c->max_headers_count)
+                                      : scr_dyn_new_null();
+}
+
+void scr_http_client_max_headers_count_set(ScrHttpClientReq *c, const ScrDyn *value /*borrowed*/) {
+  scr_dyn_release(c->max_headers_count);
+  c->max_headers_count = scr_dyn_retain((ScrDyn *)value);
+}
+
 /* http.request({ maxHeaderSize }): the response head's size bound. */
 void scr_http_client_max_header_size(ScrHttpClientReq *c, double value) {
   if (!scr_http_max_header_size_valid(value)) {
@@ -5508,7 +5716,10 @@ void scr_http_client_max_header_size(ScrHttpClientReq *c, double value) {
     return;
   }
   c->max_header_size = (size_t)value;
-  if (c->conn != NULL) c->conn->max_header_size = c->max_header_size;
+  if (c->conn != NULL) {
+    c->conn->max_header_size = c->max_header_size;
+    c->conn->max_header_pairs = scr_http_header_pair_limit(c->max_headers_count);
+  }
 }
 
 /* req.destroy(err): tears the request down like destroy() and reports
@@ -5768,6 +5979,11 @@ static bool scr_http_client_response_upgrades(const ScrHttpReq *res) {
 static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHttpParseError *err) {
   ScrHttpClientReq *c = conn->client;
   if (!c) return false;
+  /* Node reads request.maxHeadersCount when it sets up the socket's parser;
+   * this runtime dials inside http.request(), so the head's own parse takes
+   * the budget instead — the assignment that follows the constructor lands
+   * before any response byte, as it does in Node's deferred dial. */
+  conn->max_header_pairs = scr_http_header_pair_limit(c->max_headers_count);
   const char *buf = conn->buf;
   const char *line_end = memchr(buf, '\r', head_len);
   if (!line_end || line_end + 1 >= buf + head_len || line_end[1] != '\n') return false;
@@ -5806,10 +6022,14 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     res->status_msg = scr_str_new(reason, (size_t)(line_end - reason));
   }
 
-  /* header lines until the blank line */
+  /* header lines until the blank line. request.maxHeadersCount is the
+   * CLIENT's cap only through truncation: Node's parserOnHeadersComplete
+   * stops at parser.maxHeaderPairs entries (two per line) and the rest of
+   * the head parses on, unread — no error, unlike the server's 431. */
   const char *p = line_end + 2;
   const char *end = buf + head_len;
   bool ok = true;
+  size_t header_size = res->status_msg->len;
   while (p < end) {
     const char *eol = memchr(p, '\r', (size_t)(end - p));
     if (!eol || eol + 1 >= end || eol[1] != '\n') {
@@ -5826,12 +6046,19 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     while (v < eol && (*v == ' ' || *v == '\t')) v++;
     const char *ve = eol;
     while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+    header_size += (size_t)(colon - p) + (size_t)(ve - v);
+    /* Node's parser keeps consuming the line past the limit: rawHeaders
+     * holds it, and Content-Length or Transfer-Encoding after the cutoff
+     * still frames the body. Only the headers snapshot stops. */
+    if (!res->headers_truncated && conn->max_header_pairs != 0 &&
+        res->nheaders >= conn->max_header_pairs) {
+      res->headers_truncated = true;
+      res->nheaders_visible = res->nheaders;
+    }
     scr_http_req_add_header(res, p, (size_t)(colon - p), v, (size_t)(ve - v));
     p = eol + 2;
   }
-  size_t header_size = res->status_msg->len;
-  for (size_t i = 0; i < res->nheaders; i++) header_size += res->hnames[i]->len + res->hvalues[i]->len;
-  if (!ok || res->nheaders > SCR_HTTP_MAX_HEADER_FIELDS || header_size >= scr_http_conn_header_limit(conn)) {
+  if (!ok || header_size >= scr_http_conn_header_limit(conn)) {
     conn->header_overflow = ok;
     scr_http_req_release(res);
     return false;
@@ -6652,6 +6879,7 @@ static void scr_http_client_rebind(ScrHttpClientReq *c, ScrHttpAgentFree *f, boo
   conn->pool_agent = NULL;
   /* the pooled parser still holds the previous request's limit */
   conn->max_header_size = c->max_header_size;
+  conn->max_header_pairs = scr_http_header_pair_limit(c->max_headers_count);
   conn->state = SCR_HTTP_HEAD;
   conn->len = 0;
   conn->body_remaining = 0;
@@ -7969,14 +8197,39 @@ static void scr_http_dynh_fire_reqres(ScrClosure *cb, ScrHttpReq *req /* +1 */,
   scr_http_res_release(res);
 }
 
+/* The 'dropRequest' fire for a listener registered through the handle
+ * dispatch: (request, socket). The ScrHttpUpgradeFn ABI with a NULL head
+ * — both handles arrive +1 and the adapter owns them. */
+static void scr_http_dynh_fire_dropped(ScrClosure *cb, ScrHttpReq *req /* +1 */,
+                                       ScrNetSocket *sock /* +1 */, ScrBytes *head /* +1 */) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *dreq = scr_dyn_new_handle(req, SCR_DYNH_HTTP_REQ);
+  ScrDyn *dsock = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
+  ScrDyn *args2[2] = { dreq, dsock };
+  ScrDyn *r = scr_dyn_call(fn, args2, 2, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(dsock);
+  scr_dyn_release(dreq);
+  scr_dyn_release(fn);
+  scr_bytes_release(head);
+  scr_net_sock_release(sock);
+  scr_http_req_release(req);
+}
+
 /* The netServer dyn dispatch's http-event hook (scr_net_set_dynh_http_on):
- * 'request' registers; anything else answers false and the net side
- * throws the "not supported yet" Error. */
+ * 'request' and 'dropRequest' register; anything else answers false and
+ * the net side throws the "not supported yet" Error. */
 static bool scr_http_dynh_server_on(ScrNetServer *s, const char *event, const ScrDyn *cb,
                                     bool once) {
   if (strcmp(event, "request") == 0) {
     scr_http_server_on_request(s, scr_dyn_listener_closure_fn(cb, (void *)&scr_http_dynh_fire_reqres),
                                (ScrHttpReqFn)&scr_http_dynh_fire_reqres, once);
+    return true;
+  }
+  if (strcmp(event, "dropRequest") == 0) {
+    scr_http_server_on_drop_request(
+        s, scr_dyn_listener_closure_fn(cb, (void *)&scr_http_dynh_fire_dropped),
+        (ScrHttpUpgradeFn)&scr_http_dynh_fire_dropped, once);
     return true;
   }
   return false;

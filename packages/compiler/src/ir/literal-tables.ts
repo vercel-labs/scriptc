@@ -124,8 +124,12 @@ function template(
   index: () => IrExpr,
 ): IrExpr {
   if (numberLeaf(row) !== null || row.kind === "strLit" || row.kind === "boolLit") {
-    const values = columns[next.at++]!;
-    if (values === null) return row;
+    // The column is null when every row agrees on its constant: the row
+    // then reads that constant itself. The pass runs inside the compiler,
+    // so a non-null assertion here would be a runtime check of the
+    // compiler's own value; test both absent arms instead.
+    const values = columns[next.at++];
+    if (values === null || values === undefined) return row;
     const loc = row.loc;
     if (row.kind === "strLit")
       return {

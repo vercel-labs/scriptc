@@ -1,6 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import { forwardedTupleType, pureForwardedValues } from "./typed-arguments.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
@@ -621,26 +621,59 @@ export function checkedRestCallArgs(
 ): IrExpr[] | null {
   const declared = funcType.params;
   const nodes = call.arguments.nodes;
+  // `arguments` holds every actual argument, so an argument the caller
+  // passed for a declared parameter is also one of its entries. Node passes
+  // the argument once: the parameter and the entry read the same value, and
+  // its side effects run once. Lower it once into a hidden local and pass
+  // the local to both slots.
+  const shared = funcType.argumentsAll === true;
+  if (shared) {
+    for (let i = 0; i < declared.length && i < nodes.length; i++) {
+      const type = declared[i]!;
+      if (type.kind !== "void" && !lowerer.dynConvertible(type)) return null;
+    }
+  }
   const args: IrExpr[] = [];
+  const values: IrExpr[] = [];
   for (let i = 0; i < declared.length; i++) {
     const node = nodes[i];
-    if (node) {
-      args.push(lowerer.lowerExprExpecting(node, declared[i]));
+    if (!node) {
+      const absent = omittedArgFor(lowerer, declared[i]!, loc);
+      if (!absent) return null;
+      args.push(absent);
       continue;
     }
-    const absent = omittedArgFor(lowerer, declared[i]!, loc);
-    if (!absent) return null;
-    args.push(absent);
+    const value = lowerer.lowerExprExpecting(node, declared[i]);
+    if (!shared) {
+      args.push(value);
+      continue;
+    }
+    const local = lowerer.declareHiddenLocal("%argument", value.type);
+    const ref = varRef(local.id, local.type, loc);
+    args.push({
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result: ref,
+      type: local.type,
+      loc,
+    });
+    values.push(ref);
   }
   // `arguments` holds every actual argument; a rest parameter only the
   // ones the declared parameters do not cover.
-  const tail = funcType.argumentsAll === true ? nodes : nodes.slice(declared.length);
-  args.push({
-    kind: "dynArrLit",
-    elems: tail.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
-    type: DYN,
-    loc,
-  });
+  let tail: IrExpr[];
+  if (shared) {
+    tail = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const value = values[i];
+      const boxed = value ? lowerer.coerceToExpected(value, DYN) : null;
+      if (boxed && !typeEquals(boxed.type, DYN)) return null;
+      tail.push(boxed ?? lowerer.lowerExprExpecting(nodes[i]!, DYN));
+    }
+  } else {
+    tail = nodes.slice(declared.length).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  }
+  args.push({ kind: "dynArrLit", elems: tail, type: DYN, loc });
   return args;
 }
 

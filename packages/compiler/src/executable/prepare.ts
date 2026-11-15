@@ -59,6 +59,7 @@ import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
+import { withInsertedSpans } from "../frontend/js-void-initializers.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -77,10 +78,25 @@ export interface PreparedExecutableModule {
   nodeIslandUse?: { file: string; api: string };
 }
 
+/** prepareRounds, with each diagnostic and warning on a line a source shadow
+ * wrote into (frontend/js-void-initializers.ts) carrying what was inserted,
+ * so it is reported at its column in the file as written. */
+export function prepareExecutableModule(
+  ...args: Parameters<typeof prepareRounds>
+): PreparedExecutableModule | CompileFailure {
+  const result = prepareRounds(...args);
+  if (!result.ok) {
+    const diagnostics = withInsertedSpans(result.diagnostics, result.sourceTexts);
+    return diagnostics === result.diagnostics ? result : { ...result, diagnostics };
+  }
+  result.warnings = withInsertedSpans(result.warnings, result.sourceTexts);
+  return result;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
-export function prepareExecutableModule(
+function prepareRounds(
   entryPath: string,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,

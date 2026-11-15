@@ -7,7 +7,7 @@ import {
   NATIVE_CODEGEN_LLVM_VERSION,
   NATIVE_CODEGEN_PROTOCOL_VERSION,
 } from "./native-codegen-core.js";
-import { verifyNativeHelper } from "./native-tools.js";
+import { emitNativeObject, verifyNativeHelper } from "./native-tools.js";
 import { LINUX_X64_GNU_TARGET } from "./targets.js";
 
 vi.mock("node:child_process", async (original) => ({
@@ -77,6 +77,69 @@ test("a helper whose version answer is rejected is not recorded", () => {
   ).toThrow(/incompatible/);
   expect(remember).not.toHaveBeenCalled();
 });
+
+/** The options of an emit whose helper the record already verified. */
+function emitOptions() {
+  const options = helperOptions();
+  return {
+    ...options,
+    verified: { known: () => true, remember: vi.fn() },
+    inputPath: join(options.packageRoot, "program.ll"),
+    outputPath: join(options.packageRoot, "program.o"),
+    sourcePath: "program.ts",
+    optimization: "release" as const,
+  };
+}
+
+test.skipIf(process.platform === "win32")(
+  "a helper killed without a diagnostic reports the signal that ended it",
+  () => {
+    const options = emitOptions();
+    vi.mocked(execFileSync).mockImplementation((() => {
+      throw Object.assign(new Error("Command failed: helper emit --input program.ll"), {
+        code: null,
+        signal: "SIGKILL",
+        stdout: "",
+        stderr: "",
+      });
+    }) as never);
+    expect(() => emitNativeObject(options)).toThrow(
+      /LLVM native helper failed: Command failed: helper emit --input program\.ll \(signal SIGKILL\)$/,
+    );
+  },
+);
+
+test("a helper's structured diagnostic reaches the build diagnostic", () => {
+  const options = emitOptions();
+  const stderr = '{"ok":false,"code":"verification_failed","message":"bad module"}';
+  vi.mocked(execFileSync).mockImplementation((() => {
+    throw Object.assign(new Error(`Command failed: helper emit --input program.ll\n${stderr}`), {
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr,
+    });
+  }) as never);
+  expect(() => emitNativeObject(options)).toThrow(
+    "LLVM native helper failed (verification_failed): bad module",
+  );
+});
+
+test.skipIf(process.platform === "win32")(
+  "a helper that exits without a diagnostic reports its exit status",
+  () => {
+    const options = emitOptions();
+    vi.mocked(execFileSync).mockImplementation((() => {
+      throw Object.assign(new Error("Command failed: helper emit --input program.ll\n"), {
+        status: 3,
+        signal: null,
+        stdout: "",
+        stderr: "",
+      });
+    }) as never);
+    expect(() => emitNativeObject(options)).toThrow(/\(exit status 3\)$/);
+  },
+);
 
 test("the package identity is checked even for a helper the record knows", () => {
   const options = helperOptions();

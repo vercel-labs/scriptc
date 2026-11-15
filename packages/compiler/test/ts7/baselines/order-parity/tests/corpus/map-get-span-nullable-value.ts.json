@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/map-get-span-nullable-value.ts"
+ ],
+ "diags": []
+}

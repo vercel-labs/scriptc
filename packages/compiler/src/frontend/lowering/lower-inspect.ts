@@ -2,15 +2,7 @@ import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { elementMayBeForeign } from "./array-values.js";
 import { classPrototypeView } from "./class-prototypes.js";
-import {
-  dynUndefinedExpr,
-  boolLit,
-  helperLoc,
-  nodeThrowExpr,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
 import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
@@ -63,7 +55,12 @@ import {
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { dateRootOf } from "./builtins/date-classes.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
-import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
+import {
+  isPerfEntryType,
+  isPerfNodeTimingType,
+  perfEntryJson,
+  perfNodeTimingJson,
+} from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
 import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
@@ -71,6 +68,7 @@ import { dynArgumentPack } from "./call-arguments.js";
 import { errorConstructionOrder } from "./error-name-order.js";
 import { classFieldWithoutJsonView } from "./builtins/json.js";
 import { builtinConstructorText } from "./held-constructors.js";
+import { programTouchesInspectTables } from "./inspect-tables.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -668,18 +666,6 @@ function jsonErrorHelper(
   return name;
 }
 
-/** `info` and its descendants that declare fields, most-derived first (a
- * runtime instance tests against its own class before an ancestor's). */
-function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
-  const out: ClassInfo[] = [];
-  const visit = (c: ClassInfo): void => {
-    for (const s of c.subclasses) visit(s);
-    if (!c.builtinError && !c.def.runtime && ownErrorFields(c).length > 0) out.push(c);
-  };
-  visit(info);
-  return out;
-}
-
 /** Why a fielded error class's own properties have no static rendering,
  * or null when every field renders. `visiting` and `out` are the caller's
  * inspectSupport walk: a field typed as the class itself (`next?: Chain`)
@@ -697,15 +683,24 @@ function fieldedErrorReason(
   }
   visiting.add(key);
   try {
+    // A JavaScript class's fields exist once its constructor creates them,
+    // which can be conditional; the layout reads every field. A field some
+    // class of the chain creates unconditionally — a declared field, or an
+    // assignment at the constructor's top level — is on every constructed
+    // instance, so only the rest fence.
+    let jsChain = false;
+    const created = new Set<string>();
+    for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+      if (c.decl && isJsSourceFile(c.decl.getSourceFile())) jsChain = true;
+      for (const f of c.fieldOrder) if (f.deferredCreation !== true) created.add(f.name);
+    }
+    if (jsChain && ownErrorFields(info).some((f) => !created.has(f.name)))
+      return "its fields are JavaScript properties, which its constructor may not create";
     for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
       // Node prints the own properties in creation order, which puts a
       // declared `cause` among the fields; the cause renders after them.
       if (c.fieldOrder.some((f) => f.errorCause))
         return "its field 'cause' is one Node's error inspector treats specially";
-      // A JavaScript class's fields exist once its constructor creates them,
-      // which can be conditional; the layout reads every field.
-      if (c.decl && isJsSourceFile(c.decl.getSourceFile()) && ownErrorFields(c).length > 0)
-        return "its fields are JavaScript properties, which its constructor may not create";
     }
     for (const f of ownErrorFields(info)) {
       if (ERROR_SPECIAL_KEYS.has(f.name))
@@ -721,13 +716,15 @@ function fieldedErrorReason(
 
 /** True when an instance of `c` can contain itself: its fields reach `c`
  * or one of its bases, whose slots can hold a `c` (`next: Chain` in a
- * subclass of Chain, a field typed as Error). */
+ * subclass of Chain, a field typed as Error), or a checked-dynamic field,
+ * whose box can hold any value. */
 function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
   const holders = new Set<string>();
   for (let a: ClassInfo | null = c; a; a = a.base) holders.add(a.def.name);
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
     for (const x of typeConstituents(lowerer, u)) {
+      if (x.kind === "dyn") return true;
       if (x.kind === "object" && holders.has(x.className)) return true;
       const k = typeKey(x);
       if (!seen.has(k)) {
@@ -948,18 +945,21 @@ function errorInspectHelper(
     const why = fields.length > 0 ? fieldedErrorReason(lowerer, c) : null;
     let arm: IrStmt[];
     if (why !== null) {
-      // An instance of a subclass whose own properties have no rendering
-      // throws a named refusal instead of printing a partial object.
+      // A subclass whose own properties have no static rendering — fields a
+      // JavaScript constructor creates conditionally, a declared `cause` among
+      // them, a field type the static walkers do not carry — renders through
+      // the checked-dynamic view, which lists exactly the own properties the
+      // instance has, in creation order, as Node does.
       arm = [
         {
           kind: "return",
-          value: nodeThrowExpr(
-            0,
-            "SC2020",
-            `inspecting a '${display}' error (${why}) is not supported yet`,
-            STRING,
+          value: {
+            kind: "libCall",
+            fn: "insp.dyn",
+            args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+            type: STRING,
             loc,
-          ),
+          },
           loc,
         },
       ];
@@ -1016,9 +1016,10 @@ function errorInspectHelper(
   };
   // Dynamic stores (a JavaScript class's `this.x = ...` outside its
   // declared fields, or a write through an untyped reference) add a
-  // property bag to a class after this helper was built. The rendering
-  // reads only a `cause` from it, so an instance whose bag holds another
-  // property throws a named refusal instead of printing a partial object.
+  // property bag to a class after this helper was built. The static
+  // rendering reads only the declared fields, so an instance whose bag
+  // holds properties renders through the checked-dynamic view, which lists
+  // them where Node does.
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const bagged = [info, ...userErrorClasses(info)].filter(
       (c) =>
@@ -1064,13 +1065,13 @@ function errorInspectHelper(
         then: [
           {
             kind: "return",
-            value: nodeThrowExpr(
-              0,
-              "SC2020",
-              `inspecting a '${c.def.jsName ?? c.def.name.replace(/^%/, "")}' error with properties created at run time is not supported yet`,
-              STRING,
+            value: {
+              kind: "libCall",
+              fn: "insp.dyn",
+              args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+              type: STRING,
               loc,
-            ),
+            },
             loc,
           },
         ],
@@ -1381,13 +1382,10 @@ function inspectSupport(
           return "error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet";
         if (errorRenderable(info)) return null;
         // Subclasses with declared fields render the error base followed
-        // by their own properties. The static class's own fields must
-        // render; a subclass whose fields cannot is a runtime refusal on
-        // its own instances only (see errorInspectHelper).
-        const own = fieldedErrorClasses(info).find((c) => c === info);
-        const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
-        if (ownWhy !== null)
-          return `'${t.className.replace(/^%(m\d+\.)?/, "")}' error values (${ownWhy})`;
+        // by their own properties; a class whose fields have no static
+        // rendering (a JavaScript field created conditionally, a declared
+        // `cause`) renders through its checked-dynamic view (see
+        // errorInspectHelper).
         return null;
       }
       // A class with subclasses, or a JavaScript class, renders through its
@@ -2184,10 +2182,6 @@ export function customInspectRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStm
   const stmts: IrStmt[] = [];
   for (const info of lowerer.classes.values()) {
     if (info.def.runtime || info.def.abstract) continue;
-    // Error classes register when their own properties render statically
-    // (fieldedErrorReason): the others keep no method to call.
-    if (isErrorClass(lowerer, info.def.name) && fieldedErrorReason(lowerer, info) !== null)
-      continue;
     if (!lowerer.findMethodOn(info, INSPECT_CUSTOM_MEMBER)) continue;
     // Only constructed classes have instances, and only their methods lower
     // (the constructor edge reaches the method).
@@ -2540,6 +2534,53 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         type,
         loc,
       });
+      if (isPerfNodeTimingType(lowerer, t)) {
+        // PerformanceNodeTiming's custom inspect: the class name and a
+        // nested inspect of toJSON() (which leaves uvMetricsInfo out) one
+        // level shallower, in its own context; `[PerformanceNodeTiming]`
+        // past the depth budget, like the entry classes.
+        const className = strLit("PerformanceNodeTiming", loc);
+        const json = perfNodeTimingJson(lowerer, v(), t, loc);
+        const dLess1: IrExpr = {
+          kind: "bin",
+          op: "-",
+          left: d(),
+          right: numLit(1, loc),
+          type: F64,
+          loc,
+        };
+        locals.push({ id: "in.0", name: "inner", type: STRING, mutable: false });
+        body = [
+          {
+            kind: "if",
+            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+            then: [ret(concatAll([strLit("[", loc), className, strLit("]", loc)], loc))],
+            else_: null,
+            loc,
+          },
+          exprStmt({
+            kind: "libCall",
+            fn: "insp.nestedBegin",
+            args: [],
+            type: { kind: "void" },
+            loc,
+          }),
+          {
+            kind: "varDecl",
+            localId: "in.0",
+            init: inspectExpr(lowerer, json.type, json, numLit(0, loc), dLess1, loc),
+            loc,
+          },
+          ret({
+            kind: "libCall",
+            fn: "insp.nestedEnd",
+            args: [className, varRef("in.0", STRING, loc)],
+            type: STRING,
+            loc,
+          }),
+        ];
+        break;
+      }
       if (isPerfEntryType(lowerer, t)) {
         // PerformanceEntry's custom inspect: `[PerformanceMark]` past the
         // depth budget, otherwise the class name and a nested inspect of
@@ -3738,19 +3779,13 @@ export function lowerConsoleInspectArg(
     return strLit(t.kind === "undefinedT" ? "undefined" : "null", loc);
   }
   if (t.kind === "bytes") {
-    // One runtime representation serves Buffer AND Uint8Array; their
-    // renderings differ, so the argument's checker type picks
-    // (lowerInspectCall's stance).
+    // One runtime representation serves Buffer, Uint8Array and DataView;
+    // their renderings differ, so the view's own flags pick: the checker
+    // type only distinguishes a Buffer from the two u8 views, and
+    // insp.bytes covers all three.
     const tname = lowerer.checker.typeToString(
       lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)),
     );
-    if (isDataViewTypeName(tname)) {
-      lowerer.unsupported(
-        "SC1090",
-        node,
-        `${surface} of '${tname}' values (Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet)`,
-      );
-    }
     if (!isBufferTypeName(tname)) {
       // A u8 value the checker types as a Uint8Array may still hold a
       // Buffer, which Node prints as one: the view's flags pick.
@@ -4313,7 +4348,15 @@ function lowerInspectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc
       "the supported forms are inspect(value), inspect(value, options) and inspect(value, showHidden, depth, colors)",
     );
   }
-  if (args.length <= 2 && !inspectOptionsAtRunTime(lowerer, args[1]))
+  // A program that reads util.inspect's value can change the tables a
+  // render reads (defaultOptions supplies the options the call does not,
+  // and colors/style pick the colored leaf's codes), so every rendering
+  // runs through the runtime reader.
+  if (
+    args.length <= 2 &&
+    !programTouchesInspectTables(lowerer) &&
+    !inspectOptionsAtRunTime(lowerer, args[1])
+  )
     return lowerInspectValue(lowerer, args[0]!, args[1], loc, false);
   return lowerRuntimeInspect(lowerer, args, loc);
 }
@@ -4376,6 +4419,56 @@ function lowerRuntimeInspect(
     kind: "seqExpr",
     stmts,
     result: { kind: "libCall", fn: "insp.inspect", args: operands, type: STRING, loc },
+    type: STRING,
+    loc,
+  };
+}
+
+/** console.dir(object[, options]) over the checked-dynamic view: the
+ * runtime reader picks the options (user's first, then
+ * inspect.defaultOptions) and turns custom inspection off, as Node's
+ * `inspect(object, { customInspect: false, ...options })` does. Used when
+ * the program can change the inspect tables, which a folded rendering
+ * cannot see. */
+export function lowerRuntimeInspectDir(
+  lowerer: Lowerer,
+  valueNode: ts.Expression,
+  optionsNode: ts.Expression | undefined,
+  argc: number,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.lowerExpr(valueNode);
+  if (value.type.kind !== "dyn") {
+    const reason = inspectSupport(lowerer, value.type, new Set(), { recursive: false });
+    if (reason !== null)
+      lowerer.noLowering(`console.dir of '${lowerer.fmt(value.type)}' values`, valueNode, reason);
+    if (!lowerer.dynConvertible(value.type))
+      lowerer.noLowering(
+        `console.dir of '${lowerer.fmt(value.type)}' values`,
+        valueNode,
+        "the options are read at run time, where the value renders through its checked-dynamic view",
+      );
+  }
+  const stmts: IrStmt[] = [];
+  const held = (init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%consoleDirArg", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  const valueArg = held(lowerer.coerceToExpected(value, DYN));
+  const optionsArg = optionsNode
+    ? held(lowerer.lowerExprExpecting(optionsNode, DYN))
+    : dynUndefinedExpr(loc);
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn: "insp.inspectDir",
+      args: [valueArg, optionsArg, numLit(argc, loc)],
+      type: STRING,
+      loc,
+    },
     type: STRING,
     loc,
   };
@@ -4474,17 +4567,10 @@ export function lowerInspectValue(
         "console.dir disables custom inspection, and the typed-array rendering it falls back to has no lowering yet — use console.log",
       );
     }
-    if (isDataViewTypeName(tname)) {
-      lowerer.noLowering(
-        `util.inspect of '${tname}' values`,
-        valueNode,
-        "Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet",
-      );
-    }
     const options = parseInspectOptions(lowerer, optionsNode, false, dir);
     if (!isBuffer) {
-      // A numeric typed array: Uint8Array(n) [ ... ] under the depth and
-      // layout options.
+      // A numeric typed array or a DataView: Uint8Array(n) [ ... ] and
+      // DataView { ... } under the depth and layout options.
       return withInspectLayout(
         lowerer,
         options,
@@ -4622,6 +4708,59 @@ function formatSArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return formatSValue(lowerer, node, lowerer.lowerExpr(node), depth, loc);
 }
 
+/** The kinds whose String() conversion the static path lowers
+ * (ensureString's rule set), for the conversions that parse the text. */
+function stringableType(t: IrType): boolean {
+  switch (t.kind) {
+    case "string":
+    case "url":
+    case "searchParams":
+    case "date":
+    case "regex":
+    case "bigint":
+    case "dyn":
+    case "bytes":
+    case "object":
+    case "union":
+    case "array":
+    case "record":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** String(arg) for the numeric conversions' parseFloat/parseInt: the
+ * static conversion where the type has one, else the checked-dynamic
+ * ToString (the value's own valueOf/toString) for the runtime handles with
+ * no static rule — String(new Map()) is "[object Map]". Null when neither
+ * applies. */
+function stringForParse(lowerer: Lowerer, value: IrExpr, node: ts.Expression): IrExpr | null {
+  if (stringableType(value.type)) return lowerer.ensureString(value, node);
+  if (!lowerer.dynConvertible(value.type)) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.toStringCoerce",
+    args: [lowerer.coerceToExpected(value, DYN)],
+    type: STRING,
+    loc: value.loc,
+  };
+}
+
+/** A conversion's constant text for an argument Node reads without
+ * converting it (a symbol in %d/%i/%f prints NaN): the argument still
+ * evaluates for its effects unless the value is a discard-safe read. */
+function discardAs(value: IrExpr, text: string, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(value)) return strLit(text, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: strLit(text, loc),
+    type: STRING,
+    loc,
+  };
+}
+
 /** formatSArg over the already-lowered value of `node`. */
 function formatSValue(
   lowerer: Lowerer,
@@ -4672,36 +4811,119 @@ function formatSValue(
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
   // quoting never applies at the top level), every other arm inspects.
   if (t.kind === "union") {
+    const declaresToString = (arm: IrType): boolean => {
+      if (arm.kind !== "object" || isErrorClass(lowerer, arm.className)) return false;
+      for (let info = lowerer.classes.get(arm.className) ?? null; info; info = info.base)
+        if (info.methods.has("toString") || info.methods.has("sym:toPrimitive")) return true;
+      return false;
+    };
+    if (lowerer.unions.get(t.unionId)?.arms.some(declaresToString)) {
+      lowerer.noLowering(
+        `util.format %s of a union with a class arm that declares toString`,
+        node,
+        "Node calls that arm's override (String(arg)) while the other arms inspect — convert the arm where its class is known",
+      );
+    }
     const walk = { recursive: false };
     const reason = inspectSupport(lowerer, t, new Set(), walk);
     if (reason !== null)
       lowerer.noLowering(`util.format %s of '${lowerer.fmt(t)}' values`, node, reason);
     return formatValueExpr(lowerer, t, value, depth, loc);
   }
+  // hasBuiltInToString walks the prototype chain for the owner of
+  // `toString` (or Symbol.toPrimitive) and answers true only for a
+  // built-in owner's constructor; a class with its OWN toString or
+  // Symbol.toPrimitive takes String(arg) in Node, not inspect, so the
+  // program's conversion is the answer. A program class that declares one
+  // lowers through the same class-to-primitive path as any other String()
+  // conversion.
   if (t.kind === "object" && !isErrorClass(lowerer, t.className)) {
-    // hasBuiltInToString: a class with its OWN toString goes through
-    // String(arg) in Node, not inspect — call it explicitly instead.
     for (
       let info: ClassInfo | null = lowerer.classes.get(t.className) ?? null;
       info;
       info = info.base
     ) {
-      if (info.methods.has("toString")) {
-        lowerer.noLowering(
-          "util.format %s over a class with its own toString",
-          node,
-          "Node calls the override (String(arg)) — call it explicitly",
-        );
-      }
+      if (info.methods.has("toString") || info.methods.has("sym:toPrimitive"))
+        return lowerer.ensureString(value, node);
     }
   }
-  if (t.kind === "bytes") {
-    lowerer.noLowering(
-      `util.format %s of typed-array values`,
-      node,
-      "pass util.inspect(buf) explicitly",
-    );
+  // A record with a `toString` member is a custom conversion too: a
+  // no-argument member returning a string is the conversion's exact shape
+  // (`{ toString() { return "..." } }`), and Node uses its result.
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    const member = shape?.fields.find((f) => f.name === "toString");
+    if (member !== undefined) {
+      if (
+        member.type.kind === "func" &&
+        member.type.params.length === 0 &&
+        member.type.ret.kind === "string"
+      ) {
+        // `this` is the record, and the object is read once. A record
+        // without a checked-dynamic form cannot be that receiver, exactly
+        // as a call through a function-typed field drops it (records keep
+        // no method storage, so the field's closure is unbound).
+        const held = lowerer.declareHiddenLocal("%formatSelf", t);
+        const self = (): IrExpr => varRef(held.id, t, loc);
+        const receiver = lowerer.dynConvertible(t)
+          ? lowerer.coerceToExpected(self(), DYN)
+          : undefined;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: held.id, init: value, loc }],
+          result: {
+            kind: "callValue",
+            callee: {
+              kind: "recordGet",
+              obj: self(),
+              shapeId: t.shapeId,
+              field: "toString",
+              type: member.type,
+              loc,
+            },
+            ...(receiver ? { receiver } : {}),
+            args: [],
+            type: member.type.ret,
+            loc,
+          },
+          type: STRING,
+          loc,
+        };
+      }
+      lowerer.noLowering(
+        `util.format %s of records with a 'toString' member of type '${lowerer.fmt(member.type)}'`,
+        node,
+      );
+    }
+    if (shape?.indexValue !== undefined) {
+      // An index-signature record can hold a `toString` no static member
+      // names; the checked-dynamic conversion reads the live member and
+      // calls it, or inspects the record when it is the built-in one.
+      return {
+        kind: "libCall",
+        fn: "insp.dynFormatS",
+        args: [lowerer.coerceToExpected(value, DYN), numLit(depth, loc)],
+        type: STRING,
+        loc,
+      };
+    }
   }
+  // A typed array is an object with the built-in TypedArray toString:
+  // String() joins its elements (a Buffer decodes its bytes). A DataView
+  // reaches Object.prototype's toString, and DataView is one of the
+  // ECMAScript globals hasBuiltInToString knows, so Node inspects there.
+  if (t.kind === "bytes") {
+    const tname = lowerer.checker.typeToString(
+      lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)),
+    );
+    if (isDataViewTypeName(tname)) return formatValueExpr(lowerer, t, value, depth, loc);
+    return lowerer.ensureString(value, node);
+  }
+  // A URL and a URLSearchParams print String(value) at %s: their
+  // prototypes own toString, and Node's hasBuiltInToString recognizes only
+  // the ECMAScript globals, so the href and the serialized list answer
+  // rather than the inspected shape.
+  if (t.kind === "url" || t.kind === "searchParams") return lowerer.ensureString(value, node);
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, t, new Set(), walk);
   if (reason !== null)
@@ -4718,14 +4940,6 @@ function formatSValue(
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
   if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
-    // The runtime's %o refuses every function value when it runs: the
-    // build names the statement (SC6015).
-    if (lowerer.isFunctionValue(node, value))
-      lowerer.noteDeferredRefusal(
-        node,
-        "util.format %o of function values is not supported yet",
-        "format the function's name instead (`%s` of `f.name`)",
-      );
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
@@ -4733,13 +4947,6 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
       type: STRING,
       loc,
     };
-  }
-  if (value.type.kind === "bytes") {
-    lowerer.noLowering(
-      `util.format %${depth === 4 ? "o" : "O"} of typed-array values`,
-      node,
-      "pass util.inspect(buf) explicitly",
-    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);
@@ -4852,18 +5059,22 @@ export function lowerFormatCall(
   literalPrefix = "",
 ): IrExpr {
   const argNodes = [...(argNodesOverride ?? expr.arguments.nodes)];
+  const optionsNode = withOptions ? argNodes.shift() : undefined;
   if (withOptions) {
-    const opts = argNodes.shift();
     // The empty literal {} is the defaults: exactly util.format.
-    if (!opts || !ts.isObjectLiteralExpression(opts) || opts.properties.nodes.length > 0) {
-      if (opts && ts.isSpreadElement(opts)) {
+    if (
+      !optionsNode ||
+      !ts.isObjectLiteralExpression(optionsNode) ||
+      optionsNode.properties.nodes.length > 0
+    ) {
+      if (optionsNode && ts.isSpreadElement(optionsNode)) {
         lowerer.noLowering(
           "util.formatWithOptions with a spread options argument",
-          opts,
+          optionsNode,
           "pass the options object as the first argument",
         );
       }
-      return lowerRuntimeFormat(lowerer, argNodes, loc, opts ?? null);
+      return lowerRuntimeFormat(lowerer, argNodes, loc, optionsNode ?? null);
     }
   }
   if (argNodes.length === 0) return strLit("", loc);
@@ -4874,10 +5085,19 @@ export function lowerFormatCall(
       throw new InternalCompilerError("a format prefix needs a literal format string");
     return lowerRuntimeFormat(lowerer, argNodes, loc, undefined, literalPrefix);
   }
+  // A program that reads util.inspect's value can change the tables every
+  // conversion reads (defaultOptions for %O/%o/%s of an object, the colors
+  // and styles of a colored render), so the whole substitution renders in
+  // the runtime, which reads them per call.
+  if (programTouchesInspectTables(lowerer))
+    return lowerRuntimeFormat(lowerer, argNodes, loc, optionsNode, literalPrefix);
 
   /** The rest-args tail: ` ` + (strings verbatim, everything else
-   * inspected at the default depth). */
-  const restArg = (node: ts.Expression): IrExpr => formatSArg(lowerer, node, 2, loc);
+   * inspected at the default depth). Node's `%s` conversion is NOT the
+   * rest-args rule: an object there takes `String(arg)` when its toString
+   * is the built-in one, while a rest argument always inspects. */
+  const restArg = (node: ts.Expression): IrExpr =>
+    formatRestValue(lowerer, node, lowerer.lowerExpr(node), loc);
 
   if (!firstIsLiteral) {
     const runtime = argNodes.length > 1 ? runtimeFormatString(lowerer, first) : null;
@@ -4970,12 +5190,31 @@ export function lowerFormatCall(
             loc,
           };
         }
+        // A symbol prints NaN (Node's early %d symbol check).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
         // A checked-dynamic argument (`console.log('... actual %d.',
         // context.actual)` — test/common's exit report): Number(arg).
         if (value.type.kind === "dyn") {
           return formatDynInteger(
             lowerer,
             value,
+            (held) => ({
+              kind: "libCall",
+              fn: "dyn.numberConstructor",
+              args: [held],
+              type: F64,
+              loc,
+            }),
+            loc,
+          );
+        }
+        // Any other object reaches Number() through its checked-dynamic
+        // conversion: ToPrimitive with the valueOf/toString the value
+        // actually carries (a record's members, a typed array's join).
+        if (lowerer.dynConvertible(value.type)) {
+          return formatDynInteger(
+            lowerer,
+            lowerer.coerceToExpected(value, DYN),
             (held) => ({
               kind: "libCall",
               fn: "dyn.numberConstructor",
@@ -5016,6 +5255,8 @@ export function lowerFormatCall(
           };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
         }
+        // A symbol prints NaN (Node's early %i symbol check, like %d).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
         // parseInt(String(arg)) over a checked-dynamic argument.
         if (value.type.kind === "dyn") {
           return formatDynInteger(
@@ -5034,8 +5275,30 @@ export function lowerFormatCall(
             loc,
           );
         }
+        // parseInt(String(arg)) for every other kind that has a String()
+        // conversion: a typed array joins its elements, a record calls its
+        // own toString, a URL prints its href, a Map prints
+        // "[object Map]".
+        {
+          const text = stringForParse(lowerer, value, node);
+          if (text !== null)
+            return {
+              kind: "libCall",
+              fn: "insp.f64",
+              args: [
+                {
+                  kind: "libCall",
+                  fn: "num.parseInt",
+                  args: [text, numLit(0, loc)],
+                  type: F64,
+                  loc,
+                },
+              ],
+              type: STRING,
+              loc,
+            };
+        }
         lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
-        break;
       }
       case 106: {
         // %j — JSON.stringify; undefined-valued args print "undefined"
@@ -5054,6 +5317,31 @@ export function lowerFormatCall(
             );
           }
           return strLit("undefined", loc);
+        }
+        // JSON.stringify(bigint) throws V8's TypeError ("Do not know how to
+        // serialize a BigInt"), and %j does not catch it: the boxed walk
+        // raises exactly that error at the point the argument is converted.
+        if (value.type.kind === "bigint") {
+          return {
+            kind: "libCall",
+            fn: "insp.jsonDyn",
+            args: [{ kind: "dynFrom", value, type: DYN, loc }],
+            type: STRING,
+            loc,
+          };
+        }
+        // A function or class value serializes to undefined, so %j prints
+        // the "undefined" text; the argument still evaluates for its
+        // effects, as the cursor advances either way.
+        if (value.type.kind === "func" || value.type.kind === "classval") {
+          if (isSafeToDiscard(value)) return strLit("undefined", loc);
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            result: strLit("undefined", loc),
+            type: STRING,
+            loc,
+          };
         }
         // A checked-dynamic argument (`console.error('headers: %j',
         // headers)` — the suite's http logging idiom): the runtime runs
@@ -5150,6 +5438,12 @@ export function lowerFormatCall(
             loc,
           });
         if (value.type.kind === "string") return parse(value);
+        // A symbol prints NaN (Node's early %f symbol check).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
+        // parseFloat(10n) is parseFloat("10") — Number's rounding of the
+        // bigint's decimal text (Node reads the primitive, not String()).
+        if (value.type.kind === "bigint")
+          return format({ kind: "libCall", fn: "bigint.toF64", args: [value], type: F64, loc });
         if (value.type.kind === "dyn") {
           return parse({
             kind: "libCall",
@@ -5178,6 +5472,14 @@ export function lowerFormatCall(
             type: STRING,
             loc,
           };
+        }
+        // Every other kind reaches parseFloat through its String()
+        // conversion: a typed array joins its elements, a record calls its
+        // own toString, a URL prints its href, a Map prints
+        // "[object Map]".
+        {
+          const text = stringForParse(lowerer, value, node);
+          if (text !== null) return parse(text);
         }
         lowerer.noLowering(
           `util.format %f of '${lowerer.fmt(value.type)}' values`,
@@ -5577,6 +5879,129 @@ export function lowerUtilModuleCall(
         stmts,
         result: { kind: "libCall", fn: `util.${bi.member}`, args, type, loc },
         type,
+        loc,
+      };
+    }
+    case "markPromiseAsHandled": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.markPromiseAsHandled with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
+    case "transferableAbortSignal": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortSignal with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [input],
+          type: DYN,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [varRef(saved.id, DYN, loc)],
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+    case "transferableAbortController": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortController with spread arguments", expr);
+      const result: IrExpr = {
+        kind: "libCall",
+        fn: "util.transferableAbortController",
+        args: [],
+        type: DYN,
+        loc,
+      };
+      const stmts: IrStmt[] = expr.arguments.nodes.map((arg) => ({
+        kind: "exprStmt",
+        expr: lowerer.lowerExpr(arg),
+        loc,
+      }));
+      // Node ignores surplus arguments; they are still evaluated.
+      return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+    }
+    case "setTraceSigInt": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.setTraceSigInt with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Node reads no argument; every one is evaluated and dropped.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
         loc,
       };
     }

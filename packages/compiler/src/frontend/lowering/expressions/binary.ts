@@ -27,6 +27,7 @@ import {
   DYN,
   DYN_HANDLE_KINDS,
   F64,
+  NULL_T,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -87,7 +88,7 @@ import {
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { throwTypeError } from "../primitive-throws.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
@@ -96,13 +97,17 @@ import { lowerEventObjectPropertyWrite } from "../lower-event-target.js";
 import { lowerFieldCompoundValue } from "./updates.js";
 import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
-import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
+import {
+  arrayValueStore,
+  arrayValueType,
+  tryLowerBytesReadNumberEquality,
+} from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
-import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
+import { lowerDynTypeofTest, lowerErrorCodeTypeofTest, withTypeofTestCycleRead } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
 import {
   lowerRuntimeConstructorIs,
@@ -1800,6 +1805,42 @@ function lowerBigIntOperandOperator(
   return { kind: "dynCheck", value, type: BIGINT_T, loc };
 }
 
+/** The value a chained JavaScript assignment holds in a temporary: the RHS's
+ * own value, except that a unit-typed RHS (`null`, `undefined`) or a void
+ * expression becomes the checked-dynamic null/undefined. A local cannot hold
+ * a bare unit type, and the assignment still yields exactly what was
+ * written. */
+function heldAssignValue(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const raw = lowerer.lowerExpr(node);
+  if (raw.type.kind === "void")
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: raw, loc: raw.loc }],
+      result: dynUndefinedExpr(raw.loc),
+      type: DYN,
+      loc: raw.loc,
+    };
+  return isUnitType(raw.type) ? lowerer.coerceInto(node, raw, DYN) : raw;
+}
+
+/** The value an assignment expression yields when its RIGHT side is a bare
+ * unit (`void 0`, `undefined`, `null`, a void-returning call): the unit
+ * itself, held checked-dynamic like every other unit-typed value, since a
+ * bare unit type has no local of its own. Null when the right side is not a
+ * unit, so the slot-typed value is the assignment's yield. */
+function unitYieldValue(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr | null {
+  const flags = lowerer.typeOf(expr).flags;
+  if ((flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0) return dynUndefinedExpr(loc);
+  if ((flags & ts.TypeFlags.Null) !== 0)
+    return {
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+      type: DYN,
+      loc,
+    };
+  return null;
+}
+
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
   fenceConsoleMutation(lowerer, expr);
   const loc = locOf(expr);
@@ -2024,18 +2065,73 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             refuseCopiedStore(lowerer, expr.left, recv.type.elem, expr.right);
           const key = lowerer.declareHiddenLocal("%setIndex", F64);
           const raw = lowerer.lowerExpr(expr.right);
-          const value = lowerer.declareHiddenLocal("%setValue", raw.type);
-          const result = varRef(value.id, raw.type, loc);
+          // A unit RHS (`void 0`, `undefined`, `null`) has no local of its
+          // own: a bare unit type has no representation to hold. The array
+          // store takes it in the element's undefined-armed slot type (its
+          // arraySetUndefined write), and the assignment yields that armed
+          // value — which is also what lets a chain (`a[0] = a[1] = void 0`)
+          // feed the outer store instead of a checked-dynamic value it would
+          // check against the bare element payload. A checked-dynamic RHS of
+          // an element-carrying array takes the same slot so a `undefined`
+          // held there lands as an absent element, not a failed check.
+          const unit = isUnitType(raw.type);
+          const decls: IrStmt[] = [];
+          let storeValue: IrExpr = raw;
+          let result: IrExpr;
+          if (unit && raw.kind !== "unitLit") {
+            // A non-literal unit value is run for its effects; the value it
+            // produces is the literal (Node evaluates the RHS exactly once).
+            decls.push({ kind: "exprStmt", expr: raw, loc });
+            storeValue = {
+              kind: "unitLit",
+              unit: raw.type.kind === "nullT" ? "null" : "undefined",
+              type: raw.type,
+              loc,
+            };
+          }
+          if (
+            recv.type.kind === "array" &&
+            (unit || (raw.type.kind === "dyn" && recv.type.optionalElements === true))
+          ) {
+            const slotT = arrayValueType(lowerer, recv.type.elem);
+            const held = lowerer.declareHiddenLocal("%setValue", slotT);
+            decls.push({
+              kind: "varDecl",
+              localId: held.id,
+              init: lowerer.coerceInto(expr.right, storeValue, slotT),
+              loc,
+            });
+            storeValue = varRef(held.id, slotT, loc);
+            result = storeValue;
+          } else if (unit) {
+            // A typed array stores ToNumber(undefined) (NaN), but the
+            // assignment's value is the unit itself, held checked-dynamic
+            // like every other undefined-typed value (`let u = void 0`).
+            result =
+              raw.type.kind === "nullT"
+                ? {
+                    kind: "dynFrom",
+                    value: { kind: "unitLit", unit: "null", type: raw.type, loc },
+                    type: DYN,
+                    loc,
+                  }
+                : dynUndefinedExpr(loc);
+          } else {
+            const held = lowerer.declareHiddenLocal("%setValue", raw.type);
+            decls.push({ kind: "varDecl", localId: held.id, init: storeValue, loc });
+            storeValue = varRef(held.id, raw.type, loc);
+            result = storeValue;
+          }
           const arr = varRef(receiver.id, recv.type, loc);
           const idx = varRef(key.id, F64, loc);
           const store: IrStmt =
             recv.type.kind === "array"
-              ? arrayValueStore(lowerer, arr, idx, result, recv.type.elem, loc)
+              ? arrayValueStore(lowerer, arr, idx, storeValue, recv.type.elem, loc)
               : {
                   kind: "bytesSet",
                   arr,
                   index: idx,
-                  value: lowerer.coerceInto(expr.right, result, F64),
+                  value: lowerer.coerceInto(expr.right, storeValue, F64),
                   loc,
                 };
           const write: IrStmt = split
@@ -2053,7 +2149,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               { kind: "varDecl", localId: receiver.id, init: recv, loc },
               ...(split?.stmts ?? []),
               { kind: "varDecl", localId: key.id, init: index, loc },
-              { kind: "varDecl", localId: value.id, init: raw, loc },
+              ...decls,
               write,
             ],
             result,
@@ -2091,6 +2187,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               stmts: [
                 { kind: "varDecl", localId: tmp.id, init: value, loc },
                 { kind: "assign", localId: g.id, value: result, loc },
+                // A conditional whole export that selected this table answers
+                // Node's shared exports object, so its slots follow the write.
+                ...lowerer.cjsConditionalExportMirrorStmts(g.id, result, expr.right, loc),
               ],
               result,
               type: value.type,
@@ -2110,13 +2209,23 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           const value = lowerer.lowerExprExpecting(expr.right, field.fieldType);
           refuseCopiedStore(lowerer, expr.left, field.fieldType, expr.right);
           const valTmp = lowerer.declareHiddenLocal("%setValue", value.type);
-          const result = varRef(valTmp.id, value.type, loc);
+          const stored = varRef(valTmp.id, value.type, loc);
+          // The chain's value is the RIGHT side's value (JS's GetValue of
+          // the assigned reference), not the slot's type. When the right
+          // side is a bare unit (`void 0`), the field keeps it in its
+          // undefined arm while the expression yields undefined itself —
+          // typed checked-dynamic, like every other unit-typed value, so an
+          // outer link whose destination is a DIFFERENT undefined-armed
+          // union (`this.ready = this.result = void 0` with `ready:
+          // boolean | undefined`) converts honestly instead of demanding a
+          // union-arm mapping that does not exist.
+          const result = unitYieldValue(lowerer, expr, loc) ?? stored;
           return {
             kind: "seqExpr",
             stmts: [
               { kind: "varDecl", localId: recvTmp.id, init: receiver, loc },
               { kind: "varDecl", localId: valTmp.id, init: value, loc },
-              lowerer.fieldSetStmt(field, result, loc, expr.left),
+              lowerer.fieldSetStmt(field, stored, loc, expr.left),
             ],
             result,
             type: result.type,
@@ -2151,7 +2260,6 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // must be a variable or `this`.
     if (
       op === ts.SyntaxKind.EqualsToken &&
-      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !expr.left.questionDotToken
     ) {
@@ -2163,7 +2271,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const stmts: IrStmt[] = [];
         const overrides: { node: ts.Expression; value: IrExpr }[] = [];
         const hold = (node: ts.Expression, name: string): IrExpr => {
-          const value = lowerer.lowerExpr(node);
+          const value = heldAssignValue(lowerer, node);
           const local = lowerer.declareHiddenLocal(name, value.type);
           stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
           const held = varRef(local.id, value.type, value.loc);
@@ -2281,7 +2389,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
       lowerUnionTypeofTest(lowerer, expr, loc);
-    if (test) return test;
+    // These tests can answer from the operand's type alone (a union
+    // whose arms all answer alike): a binding an import cycle can reach
+    // before its declaration ran keeps its checked read.
+    if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.
@@ -3362,10 +3473,16 @@ export function lowerStrictEquality(
       if (leftDef && rightDef) {
         const leftValues = leftDef.arms.filter((arm) => !isUnitType(arm));
         const rightValues = rightDef.arms.filter((arm) => !isUnitType(arm));
-        const sameValueArms =
-          leftValues.length === rightValues.length &&
-          leftValues.every((arm) => rightValues.some((candidate) => typeEquals(candidate, arm)));
-        if (sameValueArms) {
+        // One side's value arms may be a SUBSET of the other's (a
+        // `Readable | null` against a `Writable | Readable | null`
+        // element read, the way `child.stdio[1] === child.stdout`
+        // compares them): both sides convert into the common union and
+        // the tag comparison is then the identity test. Two disjoint
+        // value-arm sets still fence.
+        const covers = (superset: IrType[], subset: IrType[]): boolean =>
+          subset.every((arm) => superset.some((candidate) => typeEquals(candidate, arm)));
+        const subsetValueArms = covers(leftValues, rightValues) || covers(rightValues, leftValues);
+        if (subsetValueArms) {
           const arms = [...leftDef.arms];
           for (const arm of rightDef.arms) {
             if (!arms.some((candidate) => typeEquals(candidate, arm))) arms.push(arm);

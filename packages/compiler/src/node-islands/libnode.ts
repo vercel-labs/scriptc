@@ -164,17 +164,31 @@ function installedPackProblem(dir: string, packageName: string): string | null {
 }
 
 /** What to record for a program that calls into Node, or the reason the
- * build cannot (an SC8005 message). `option` is --libnode. */
+ * build cannot (an SC8005 message). `option` is --libnode. The native
+ * target is the one the environment selects (libnodeTarget). */
 export function libnodeRecord(
   option: string | undefined,
   outPath: string,
   env: NodeJS.ProcessEnv = process.env,
   projectDir: string = process.cwd(),
 ): LibnodeRecord | string {
+  return libnodeRecordFor(libnodeTarget(env), option, outPath, env, projectDir);
+}
+
+/** libnodeRecord for a build that emits for the native target `target`.
+ * A driver that has chosen its target calls this one: the self-hosted
+ * compiler's comes from its toolchain manifest, and it does not compile the
+ * host inspection libnodeTarget needs. */
+export function libnodeRecordFor(
+  target: string,
+  option: string | undefined,
+  outPath: string,
+  env: NodeJS.ProcessEnv,
+  projectDir: string,
+): LibnodeRecord | string {
   const fromEnv = env["SCRIPTC_LIBNODE"];
   const beside = option === "beside";
   const explicit = option !== undefined && !beside ? option : fromEnv;
-  const target = libnodeTarget(env);
   // Without an explicit pack, the installed @scriptc/libnode-<target>.
   const installed =
     explicit !== undefined && explicit !== ""
@@ -213,7 +227,12 @@ export function nodeIslandPackHint(
   use?: { file: string; api: string },
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const target = libnodeTarget(env);
+  return nodeIslandPackHintFor(libnodeTarget(env), use);
+}
+
+/** nodeIslandPackHint for a build that emits for the native target `target`
+ * (see libnodeRecordFor). */
+export function nodeIslandPackHintFor(target: string, use?: { file: string; api: string }): string {
   const pack = libnodePackPackage(target);
   const install =
     pack === null
@@ -232,18 +251,33 @@ export function nodeIslandPackHint(
  * directory (named by --libnode or SCRIPTC_LIBNODE, or the installed pack
  * found from `projectDir`), and a digest of the pack's manifest.json. A pack
  * upgraded in place, removed, or replaced by another installed pack changes
- * it. Undefined when no pack is named or installed. */
+ * it. Undefined when no pack is named or installed. `compilerPackage` finds
+ * a pack installed beside the compiler, for a caller that runs before the
+ * island build host is installed (findInstalledLibnodePack). */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
   projectDir: string = process.cwd(),
+  compilerPackage?: (name: string) => string | null,
+): string | undefined {
+  return libnodeCacheKeyFor(libnodeTarget(env), option, env, projectDir, compilerPackage);
+}
+
+/** libnodeCacheKey for a build that emits for the native target `target`
+ * (see libnodeRecordFor). */
+export function libnodeCacheKeyFor(
+  target: string,
+  option: string | undefined,
+  env: NodeJS.ProcessEnv,
+  projectDir: string,
+  compilerPackage?: (name: string) => string | null,
 ): string | undefined {
   const fromEnv = env["SCRIPTC_LIBNODE"];
   const explicit = option !== undefined && option !== "beside" ? option : fromEnv;
   const source =
     explicit !== undefined && explicit !== ""
       ? explicit
-      : findInstalledLibnodePack({ targetName: libnodeTarget(env), projectDir });
+      : findInstalledLibnodePack({ targetName: target, projectDir, compilerPackage });
   if (source === undefined || source === null) return option === undefined ? undefined : option;
   let manifest = "none";
   if (isAbsolute(source)) {

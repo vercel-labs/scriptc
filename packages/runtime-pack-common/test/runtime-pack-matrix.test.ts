@@ -110,15 +110,13 @@ test("a process stream held as a value selects the island build that shares its 
   });
 });
 
-test("web streams and Node islands select an async build that defines both", () => {
-  const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
-  expect(variant.defines).toEqual(
-    expect.arrayContaining(["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS"]),
-  );
-  // Each feature alone still selects its own build, byte for byte.
+test("web streams select no async build of their own: every build has native reactions", () => {
+  expect(
+    selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
   expect(
     selected("scr_async.c", { webStreams: true, nodeIsland: false, workers: false }).defines,
-  ).toEqual(["SCR_NATIVE_REACTIONS"]);
+  ).toEqual([]);
   expect(
     selected("scr_async.c", { webStreams: false, nodeIsland: true, workers: false }).defines,
   ).toEqual(["SCR_NODE_ISLANDS"]);
@@ -224,6 +222,33 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("scr_util_compare builds its object model twin for the detached-buffer check", () => {
+  // util.isDeepStrictEqual's ArrayBuffer arm asks the mutable-buffers registry
+  // whether either side is detached, and answers V8's construct TypeError when
+  // both report length 0. ScrJsBufferOps exists only in the object model build,
+  // so a program with the object model links this unit's twin and every other
+  // program keeps the default object.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_util_compare.c",
+  );
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "js-om",
+    "js-om-workers",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_util_compare.c", { workers: false, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+  expect(selected("scr_util_compare.c", { workers: true, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+    "SCR_WORKERS",
+  ]);
 });
 
 test("the dynamic call path reads an own call/apply/bind in one build", () => {

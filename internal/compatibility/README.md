@@ -5,6 +5,7 @@ This workspace package owns scriptc's Node.js parity system.
 - `node-v24.json` pins the Node release tag, commit, and canonical docs/source inputs.
 - `static-support.json` overlays dedicated compiler paths and their internal test evidence on the compiler's generated surface manifest.
 - `generated/node-v24-internal.json` is the engineering ledger, including implementation evidence and repository test paths.
+- `generated/node-v24-refusals.json` is the refusal table: every refused API row with the access that reaches it, plus every builtin module the compiler fences, with the code and message its diagnostic prints. The generator writes the same bytes to `packages/experimental/refusals.json`, which publishes it.
 - `pnpm node-compat:backlog` derives the internal tier-specific work queue from the ledger; it is not committed. It separates verification, implementation, explicit-refusal replacement, and partial-surface audit work, and prioritizes stable Node APIs above experimental, deprecated, and legacy APIs. `island-served` rows are not queued: an island build already answers them.
 - `docs/src/generated/node-v24-compatibility.json` is the stripped public artifact consumed by the docs website. It contains compiler-relevant runtime APIs, statuses, verification bases, and user-facing details; documentation, metadata, command-line/configuration entries, and rows that are N/A for native execution remain internal.
 

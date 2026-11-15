@@ -9,7 +9,13 @@ import * as ts from "./ts7/adapter.js";
 
 export const EXPERIMENTAL_MODULE = "@scriptc/experimental";
 
-export type ExperimentalMember = "LifetimeRegion" | "InternTable" | "ThreadSlots";
+export type ExperimentalMember =
+  | "LifetimeRegion"
+  | "InternTable"
+  | "ThreadSlots"
+  | "parallelInto"
+  | "parallelReduce"
+  | "parallelFor";
 
 /** The @scriptc/experimental export an identifier is a named-import binding of. */
 export function experimentalImportOf(
@@ -28,7 +34,12 @@ export function experimentalImportOf(
   )
     return null;
   const member = decl.propertyName?.text ?? decl.name.text;
-  return member === "LifetimeRegion" || member === "InternTable" || member === "ThreadSlots"
+  return member === "LifetimeRegion" ||
+    member === "InternTable" ||
+    member === "ThreadSlots" ||
+    member === "parallelInto" ||
+    member === "parallelReduce" ||
+    member === "parallelFor"
     ? member
     : null;
 }

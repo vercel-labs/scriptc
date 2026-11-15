@@ -450,6 +450,202 @@ static void accumulation_asserts(void) {
   scr_str_release(large);
 }
 
+/* A text as a builder leaves it: its bytes written, nothing known about
+ * them (JSON.stringify's result). */
+static ScrStr *unknown_text(const char *bytes, size_t n) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_write(&b, bytes, n);
+  return scr_jb_finish(&b);
+}
+
+#define APPEND_CHECK(cond, what)                                               \
+  do {                                                                         \
+    total++;                                                                   \
+    if (!(cond)) {                                                             \
+      failed++;                                                                \
+      fprintf(stderr, "IN-PLACE APPEND: %s (line %d)\n", what, __LINE__);      \
+    }                                                                          \
+  } while (0)
+
+/* The in-place append at its copy and growth boundaries against a
+ * reference buffer, in the moved form (a consumed text is appended to in
+ * its own block) and in the handoff form; a shared text is never mutated; and the
+ * proven-ASCII fact through appends and through the lazy proof. */
+static void in_place_append_asserts(void) {
+  static const size_t sizes[] = {1, 4, 5, 15, 16, 17, 31, 32, 33, 63, 64, 65, 200};
+  static char ref[1 << 15];
+  char piece_bytes[200];
+  /* Modes: the moved form or the handoff; and pieces and text proven ASCII
+   * before each append (the leaf path) or left as their constructor made
+   * them. */
+  for (int mode = 0; mode < 4; mode++) {
+    size_t n = 0;
+    bool same = true;
+    ScrStr *text = scr_str_new("", 0);
+    for (size_t round = 0; round < 40; round++) {
+      for (size_t k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
+        size_t m = sizes[k];
+        for (size_t j = 0; j < m; j++) piece_bytes[j] = (char)('a' + (round + k + j) % 26);
+        ScrStr *piece = scr_str_new(piece_bytes, m);
+        if (mode & 2) {
+          if (scr_str_utf16_len(piece) != (double)m || scr_str_utf16_len(text) != (double)n)
+            same = false;
+        }
+        memcpy(ref + n, piece_bytes, m);
+        n += m;
+        if (mode & 1) handoff_append(&text, piece);
+        else text = scr_str_concat_move(text, piece);
+        scr_str_release(piece);
+        if (text->len != n || text->data[n] != '\0' || text->rc != 1 ||
+            memcmp(text->data, ref, n) != 0)
+          same = false;
+      }
+    }
+    APPEND_CHECK(same, mode & 1 ? "handoff append differs from the reference"
+                                : "moved append differs from the reference");
+    APPEND_CHECK(scr_str_utf16_len(text) == (double)n, "length of an appended ASCII text");
+    APPEND_CHECK(scr_str_known_ascii(text), "an ASCII text is proven by its first length read");
+    scr_str_release(text);
+  }
+
+  /* A consumed text's block grows itself once it is past 128 KiB (a small
+   * full block is copied): 384 KiB of 200-byte pieces, proven ASCII (the
+   * leaf path does not take a piece this long) and with a non-ASCII start. */
+  for (int mode = 0; mode < 2; mode++) {
+    size_t n = mode ? 2 : 0;
+    bool same = true;
+    ScrStr *big = scr_str_new(mode ? "\xc3\xa9" : "", n);
+    for (size_t j = 0; j < 200; j++) piece_bytes[j] = (char)('a' + j % 26);
+    ScrStr *piece = scr_str_new(piece_bytes, 200);
+    if (scr_str_utf16_len(piece) != 200.0) same = false;
+    while (n < ((size_t)3 << 17)) {
+      big = scr_str_concat_move(big, piece);
+      n += 200;
+      /* The first append to the empty text is the piece itself, retained. */
+      if (big->len != n || (big != piece && big->rc != 1) || big->data[n] != '\0' ||
+          (size_t)big->cap < n ||
+          memcmp(big->data + n - 200, piece_bytes, 200) != 0)
+        same = false;
+    }
+    for (size_t at = mode ? 2 : 0; at < n; at += 200)
+      if (memcmp(big->data + at, piece_bytes, 200) != 0) same = false;
+    APPEND_CHECK(same, "a text grown past 128 KiB differs from its pieces");
+    APPEND_CHECK(scr_str_utf16_len(big) == (double)(mode ? n - 1 : n) &&
+                     scr_str_known_ascii(big) == !mode,
+                 "length of a text grown past 128 KiB");
+    scr_str_release(piece);
+    scr_str_release(big);
+  }
+
+  /* A shared text is copied by both forms and keeps its bytes. */
+  ScrStr *seed = scr_str_new("0123456789", 10);
+  APPEND_CHECK(scr_str_utf16_len(seed) == 10.0 && scr_str_known_ascii(seed), "10 ASCII bytes");
+  ScrStr *shared = scr_str_new("", 0);
+  for (int i = 0; i < 4; i++) handoff_append(&shared, seed);
+  ScrStr *alias = scr_str_retain(shared);
+  ScrStr *tail = scr_str_new("tail of twenty bytes", 20);
+  ScrStr *r1 = scr_str_concat(shared, tail);
+  ScrStr *r2 = scr_str_concat_move(scr_str_retain(shared), tail);
+  APPEND_CHECK(r1 != shared && r2 != shared && r1 != r2, "a shared text was appended to in place");
+  APPEND_CHECK(alias == shared && shared->len == 40 && shared->data[40] == '\0' &&
+                   memcmp(shared->data, "0123456789012345678901234567890123456789", 40) == 0,
+               "a shared text changed");
+  APPEND_CHECK(r1->len == 60 && r2->len == 60 && memcmp(r1->data, r2->data, 61) == 0 &&
+                   memcmp(r1->data + 40, "tail of twenty bytes", 20) == 0,
+               "the copies of a shared text's append");
+  scr_str_release(r1);
+  scr_str_release(r2);
+  scr_str_release(alias);
+  scr_str_release(tail);
+
+  /* ASCII appends keep the proven-ASCII fact; a non-ASCII piece drops it
+   * and later ASCII pieces do not bring it back. */
+  for (int i = 0; i < 4; i++) shared = scr_str_concat_move(shared, seed);
+  APPEND_CHECK(scr_str_utf16_len(shared) == 80.0 && scr_str_known_ascii(shared), "80 ASCII bytes");
+  shared = scr_str_concat_move(shared, seed);
+  shared = scr_str_concat_move_char_code(shared, 'x');
+  APPEND_CHECK(shared->len == 91 && scr_str_known_ascii(shared), "ASCII appends keep the fact");
+  ScrStr *acute = scr_str_new("\xc3\xa9", 2);
+  shared = scr_str_concat_move(shared, acute);
+  APPEND_CHECK(!scr_str_known_ascii(shared) && scr_str_utf16_len(shared) == 92.0,
+               "a non-ASCII piece drops the fact");
+  shared = scr_str_concat_move(shared, seed);
+  APPEND_CHECK(!scr_str_known_ascii(shared) && scr_str_utf16_len(shared) == 102.0 &&
+                   scr_str_char_code_at(shared, 91) == 233.0 &&
+                   scr_str_char_code_at(shared, 92) == 48.0 && !scr_str_known_ascii(shared),
+               "ASCII pieces after a non-ASCII piece");
+  scr_str_release(acute);
+  scr_str_release(shared);
+
+  /* A lone surrogate drops the fact; its other half joins it in place. */
+  ScrStr *sur = scr_str_new("", 0);
+  for (int i = 0; i < 8; i++) sur = scr_str_concat_move(sur, seed);
+  ScrStr *high = scr_str_from_char_code_one(0xD83D), *low = scr_str_from_char_code_one(0xDE00);
+  sur = scr_str_concat_move(sur, high);
+  APPEND_CHECK(!scr_str_known_ascii(sur) && scr_str_utf16_len(sur) == 81.0 &&
+                   scr_str_char_code_at(sur, 80) == (double)0xD83D,
+               "a lone surrogate drops the fact");
+  sur = scr_str_concat_move(sur, low);
+  sur = scr_str_concat_move(sur, seed);
+  APPEND_CHECK(!scr_str_known_ascii(sur) && scr_str_utf16_len(sur) == 92.0 &&
+                   scr_str_char_code_at(sur, 80) == (double)0xD83D &&
+                   scr_str_char_code_at(sur, 81) == (double)0xDE00 &&
+                   scr_str_char_code_at(sur, 82) == 48.0 && sur->len == 94,
+               "a surrogate pair completed by an append");
+  scr_str_release(high);
+  scr_str_release(low);
+  scr_str_release(sur);
+  scr_str_release(seed);
+
+  /* The lazy proof: a builder's result is unknown; its first length read
+   * proves an all-ASCII one (the text of an escape such as \ud83d is ASCII)
+   * and leaves any other unknown, with the right answers. The JSON unit
+   * installs the proof; a string that owns an index entry is not marked
+   * beside it, and a program without the proof gets the same answers. */
+  char doc[300];
+  for (size_t i = 0; i < sizeof doc; i++) doc[i] = (char)('A' + i % 26);
+  memcpy(doc + 100, "\\ud83d\\u0001", 12);
+  ScrStr *d1 = unknown_text(doc, 300), *d2 = unknown_text(doc, 300), *d3 = unknown_text(doc, 20);
+  APPEND_CHECK(scr_str_lazy_ascii == scr_str_prove_ascii, "the JSON unit installs the lazy proof");
+  APPEND_CHECK(!scr_str_known_ascii(d1), "a builder does not scan its result");
+  APPEND_CHECK(scr_str_utf16_len(d1) == 300.0 && scr_str_known_ascii(d1), "length proves 300 bytes");
+  APPEND_CHECK(scr_str_char_code_at(d2, 299) == (double)(unsigned char)doc[299] &&
+                   !scr_str_prove_ascii(d2) && !scr_str_known_ascii(d2),
+               "a text that owns an index entry is not marked beside it");
+  APPEND_CHECK(scr_str_utf16_len(d2) == 300.0 && scr_str_char_code_at(d2, 0) == (double)'A',
+               "length after an index read");
+  APPEND_CHECK(scr_str_utf16_len(d3) == 20.0 && scr_str_char_code_at(d3, 19) == (double)'T',
+               "a short text is counted directly");
+  ScrStr *d0 = unknown_text(doc, 300);
+  bool (*installed)(ScrStr *) = scr_str_lazy_ascii;
+  scr_str_lazy_ascii = NULL;
+  APPEND_CHECK(scr_str_utf16_len(d0) == 300.0 && scr_str_utf16_len(d0) == 300.0 &&
+                   scr_str_char_code_at(d0, 105) == (double)'d',
+               "length without the lazy proof");
+  scr_str_release(d0);
+  scr_str_lazy_ascii = installed;
+  memcpy(doc + 250, "\xc3\xa9", 2);
+  ScrStr *d4 = unknown_text(doc, 300), *d5 = unknown_text(doc, 300), *d6 = unknown_text(doc + 240, 20);
+  APPEND_CHECK(scr_str_utf16_len(d4) == 299.0 && scr_str_utf16_len(d4) == 299.0 &&
+                   !scr_str_known_ascii(d4) && scr_str_char_code_at(d4, 250) == 233.0 &&
+                   scr_str_char_code_at(d4, 298) == (double)(unsigned char)doc[299],
+               "a non-ASCII text stays unknown after its length");
+  APPEND_CHECK(scr_str_char_code_at(d5, 10) == (double)(unsigned char)doc[10] &&
+                   scr_str_char_code_at(d5, 251) == (double)(unsigned char)doc[252] &&
+                   !scr_str_known_ascii(d5) && scr_str_utf16_len(d5) == 299.0,
+               "a non-ASCII text stays unknown after an index read");
+  APPEND_CHECK(scr_str_utf16_len(d6) == 19.0 && !scr_str_known_ascii(d6) &&
+                   scr_str_char_code_at(d6, 10) == 233.0,
+               "a short non-ASCII text stays unknown");
+  scr_str_release(d1);
+  scr_str_release(d2);
+  scr_str_release(d3);
+  scr_str_release(d4);
+  scr_str_release(d5);
+  scr_str_release(d6);
+}
+
 static void short_string_asserts(void) {
   // Scalar construction shares ASCII without allocating, including NUL.
   ScrStr *ascii = scr_str_from_char_code_one(65.9);
@@ -1372,6 +1568,7 @@ int main(int argc, char **argv) {
   split_storage_asserts();
   split_scratch_asserts();
   accumulation_asserts();
+  in_place_append_asserts();
   short_string_asserts();
   scan_units_asserts();
 #ifdef SCR_SIDX_TEST

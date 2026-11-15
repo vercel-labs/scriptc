@@ -6,8 +6,8 @@
 // a method whose signature has no mapping
 class Store {
   count = 0;
-  watch(ref: WeakRef<object>): number {
-    return ref.deref() === undefined ? 0 : 1;
+  watch(ref: BigInt64Array<ArrayBuffer>): number {
+    return ref.length === 0 ? 0 : 1;
   }
   add(): number {
     return ++this.count;
@@ -22,7 +22,7 @@ class Shelf extends Store {
     return super.watch(undefined as never);
   }
 }
-declare const ref: WeakRef<object>;
+declare const ref: BigInt64Array<ArrayBuffer>;
 const store = new Store();
 console.log(store.add());
 console.log(store.watch(ref));
@@ -51,28 +51,25 @@ class Plotter extends Printer {
 console.log(new Printer().print("a", 1));
 console.log(new Plotter().print());
 
-// a getter/setter pair with different types: the getter compiles, the
+// a setter whose parameter type has no mapping: the getter compiles, the
 // setter is refused
 class Cell {
   private raw = "1";
   get v(): string {
     return this.raw;
   }
-  set v(x: string | number) {
+  set v(x: BigInt64Array<ArrayBuffer>) {
     this.raw = String(x);
   }
 }
 const cell = new Cell();
 console.log(cell.v);
-cell.v = 3;
-// a compound assignment reads the getter and writes the setter
-const other = new Cell();
-other.v += "!";
+cell.v = new BigInt64Array(1);
 
 // an accessor whose type has no mapping
 class Holder {
   n = 1;
-  get held(): WeakRef<object> {
+  get held(): BigInt64Array<ArrayBuffer> {
     throw new Error("never");
   }
 }
@@ -83,8 +80,8 @@ console.log(holder.n, holder.held);
 // through a subclass
 class Registry {
   static count = 0;
-  static watch(target: WeakRef<object>): number {
-    return target.deref() === undefined ? 0 : 1;
+  static watch(target: BigInt64Array<ArrayBuffer>): number {
+    return target.length === 0 ? 0 : 1;
   }
 }
 class Local extends Registry {}

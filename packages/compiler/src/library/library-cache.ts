@@ -83,6 +83,9 @@ export interface EarlyLibraryNativeFeatures {
   /** The kept-source read of a record-to-record conversion
    * (scr_record_source_get.c). Absent (false) otherwise. */
   recordSourceGet?: boolean;
+  /** A join of an array of strings (scr_arr_join_str.c). Absent (false)
+   * otherwise. */
+  arrJoinStr?: boolean;
   /** The buffer views registry (scr_js_buffers.c) and the archive's
    * JavaScript object model build of its bytes and json units. */
   mutableBuffers: boolean;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-execfile-env-timeout.ts"
+ ],
+ "diags": []
+}

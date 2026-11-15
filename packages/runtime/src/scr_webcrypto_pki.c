@@ -61,6 +61,11 @@ static SwKey *sw_key_of(const ScrDyn *value) {
 
 static bool sw_is_key(const ScrDyn *value) { return sw_key_of(value) != NULL; }
 
+static bool sw_key_is_private(const ScrDyn *value) {
+  SwKey *key = sw_key_of(value);
+  return key && scr_pki_key_is_private(key->key);
+}
+
 static ScrDyn *sw_key_algorithm(SwKey *k) {
   if (!k->algorithm) {
     ScrDyn *algorithm = scr_dyn_new_obj();
@@ -835,6 +840,7 @@ static const ScrWcAsymmetric sw_table = {
     .sign = sw_sign,
     .verify = sw_verify,
     .is_key = sw_is_key,
+    .key_is_private = sw_key_is_private,
 };
 
 /* Installed before main: scr_webcrypto.c dispatches these algorithms

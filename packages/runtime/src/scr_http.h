@@ -123,6 +123,7 @@ enum {
   SCR_HTTP_OFF_UPGRADE = 4,
   SCR_HTTP_OFF_CONNECT = 5,
   SCR_HTTP_OFF_CLIENT_ERROR = 6,
+  SCR_HTTP_OFF_DROP_REQUEST = 7,
 };
 void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
@@ -208,6 +209,10 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                  ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+/* server.on("dropRequest", (req, socket) => ...) — a request past
+ * maxRequestsPerSocket (HTTP/1.1 only). */
+void scr_http_server_on_drop_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
+                                     bool once);
 typedef void (*ScrHttpClientErrorFn)(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                      ScrHttpClientErrorFn fn, bool once);
@@ -321,6 +326,9 @@ void scr_http_client_destroy(ScrHttpClientReq *c);
 /* req.destroy(err): err (borrowed) becomes the request's 'error'. */
 void scr_http_client_destroy_error(ScrHttpClientReq *c, ScrError *err);
 void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see the server form */
+/* request.maxHeadersCount: Node's writable property, null until assigned. */
+ScrDyn *scr_http_client_max_headers_count_get(ScrHttpClientReq *c); /* +1 */
+void scr_http_client_max_headers_count_set(ScrHttpClientReq *c, const ScrDyn *value /*borrowed*/);
 /* http.request's `signal` option (borrowed), checked before the request
  * is built. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_signal_check(const ScrDyn *signal);

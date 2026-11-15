@@ -310,7 +310,18 @@ export function lowerBuiltinByteInput(
   module: "crypto" | "zlib",
 ): IrExpr {
   const value = lowerer.lowerExpr(node);
-  if (value.type.kind === "bytes" && value.type.elem === "u8") return value;
+  if (value.type.kind === "bytes") {
+    if (value.type.elem === "u8") return value;
+    // Another view's bytes: Node reads the view's memory, not its
+    // elements, so a no-copy u8 view of the same range is the input.
+    return {
+      kind: "libCall",
+      fn: "bytes.bufferSource",
+      args: [lowerer.coerceInto(node, value, DYN)],
+      type: BYTES_U8,
+      loc,
+    };
+  }
   if (value.type.kind === "string") {
     return {
       kind: "libCall",
@@ -323,6 +334,6 @@ export function lowerBuiltinByteInput(
   lowerer.noLowering(
     `${module} byte input of '${lowerer.fmt(value.type)}' values`,
     node,
-    "string and Buffer/Uint8Array values are supported",
+    "strings, Buffers, TypedArrays and DataViews are supported",
   );
 }

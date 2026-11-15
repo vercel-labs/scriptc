@@ -65,7 +65,7 @@
  * its snapshot text (format: runtime scr_node_island_boot.c), any other
  * becomes the eager `nodeIsland.require(path)`. Without a pack on the
  * build host there is no probe, and every island stays eager. */
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -78,36 +78,36 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
 import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
+import { everyStmtList } from "../ir/traverse.js";
 import { readProjectConfig } from "../project-config.js";
-import { effectGate } from "./effect-gate.js";
 import { probeCopy } from "./generated.js";
+import { islandBuildHost } from "./host.js";
 import { packageDirOf } from "./origin.js";
 import { PROBE_RECORDER } from "./probe-recorder.js";
 
 type DeferCall = Extract<IrExpr, { kind: "libCall" }>;
 
+/** The island loads of `mod` whose function is one of `fns`, each once, in
+ * module order. Every expression of a module is in a function body. */
+function islandLoads(mod: IrModule, fns: readonly string[]): DeferCall[] {
+  const found = new Set<DeferCall>();
+  for (const fn of mod.functions)
+    everyStmtList(fn.body, {
+      expr: (node) => {
+        if (node.kind === "libCall" && fns.includes(node.fn)) found.add(node);
+        return true;
+      },
+      stmt: () => true,
+    });
+  return [...found];
+}
+
 function deferCalls(mod: IrModule): DeferCall[] {
-  const found: DeferCall[] = [];
-  const seen = new Set<object>();
-  const walk = (v: unknown): void => {
-    if (v === null || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x);
-      return;
-    }
-    const o = v as Record<string, unknown>;
-    if (o["kind"] === "libCall" && o["fn"] === "nodeIsland.defer") found.push(o as DeferCall);
-    for (const k in o) if (k !== "loc" && k !== "type") walk(o[k]);
-  };
-  walk(mod.functions);
-  walk(mod.globals);
-  return found;
+  return islandLoads(mod, ["nodeIsland.defer"]);
 }
 
 /** A module initializer (`%init.<n>`, lowerFileInit). */
@@ -536,7 +536,7 @@ export function finalizeDeferredIslands(
    * would do to the machine, and its snapshot is guarded by the loads the
    * probe evaluated before it. */
   const own = (path: string): boolean => generated.has(path) || program.has(path);
-  const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
+  const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string | null }[] = [];
   for (const call of calls) {
     const path = fileOf(mod, pathOf(call));
     if (generated.has(path)) {
@@ -550,11 +550,20 @@ export function finalizeDeferredIslands(
       // gate admits the module's top level (declarations and pure
       // expressions), and it loads no other file of the program, whose
       // module the compiled program provides at run time.
-      const gate = effectGate(path);
-      const others = gate.ok
-        ? gate.files.filter((f) => f !== path && packageDirOf(f) === null)
-        : [];
-      if (!gate.ok)
+      // The static gate words the decision where the host has it (host.ts);
+      // without one the build takes no chances with the program's own code.
+      const gate = islandBuildHost().effectGate?.(path);
+      const others =
+        gate !== undefined && gate.ok
+          ? gate.files.filter((f) => f !== path && packageDirOf(f) === null)
+          : [];
+      if (gate === undefined)
+        decide(
+          call,
+          false,
+          "a module of the program, and this compiler has no static effect gate to admit it",
+        );
+      else if (!gate.ok)
         decide(
           call,
           false,
@@ -573,12 +582,12 @@ export function finalizeDeferredIslands(
       decide(call, false, `"evaluate": "eager"`);
       continue;
     }
-    const gate = effectGate(path);
+    const gate = islandBuildHost().effectGate?.(path);
     candidates.push({
       call,
       path,
       lazy: evaluate === "lazy",
-      gate: gate.ok ? "" : `${gate.reason} in ${gate.file}`,
+      gate: gate === undefined ? null : gate.ok ? "" : `${gate.reason} in ${gate.file}`,
     });
   }
   if (candidates.length === 0) return decisions;
@@ -709,7 +718,9 @@ export function finalizeDeferredIslands(
         ? "recorded evaluation is deterministic; guarded by the loads before it"
         : c.gate === ""
           ? "static gate"
-          : `recorded load is deterministic (static gate: ${c.gate})`;
+          : c.gate === null
+            ? "recorded load is deterministic"
+            : `recorded load is deterministic (static gate: ${c.gate})`;
     deferred.push({ call: c.call, result, at, why: how });
   }
   // The first deferred load that read something no guard covers (only
@@ -991,11 +1002,6 @@ globalThis.__scriptcNodeIsland = {
 `;
 }
 
-function runtimeSrc(): string {
-  const require = createRequire(import.meta.url);
-  return join(dirname(require.resolve("@scriptc/runtime/package.json")), "src");
-}
-
 /** Whether only the current user can write `path` (and it is theirs). */
 function writableByUserOnly(path: string): boolean {
   const info = statSync(path);
@@ -1026,9 +1032,15 @@ export function probeHostDirectory(hash: string): { dir: string; kept: boolean }
  * per probe source, bridge header and recorder (in the directory
  * probeHostDirectory picks). */
 function probeHost(): { exe: string; bootstrap: string; kept: boolean } | string {
-  const src = runtimeSrc();
+  // Where the runtime's sources are is the host's to answer (host.ts): a
+  // distribution ships them beside the compiler (the toolchain manifest's
+  // runtime_sources), and a workspace has the runtime package.
+  const src = islandBuildHost().runtimeSources();
+  if (src === null) return "cannot build the probe host (this installation has no runtime sources)";
   const source = join(src, "tools", "scr_node_island_probe.c");
   const header = join(src, "scr_node_bridge.h");
+  if (!existsSync(source) || !existsSync(header))
+    return `cannot build the probe host (its sources are not in ${src})`;
   const hash = createHash("sha256")
     .update(readFileSync(source))
     .update(readFileSync(header))
@@ -1077,18 +1089,20 @@ function runProbe(packDir: string, modules: string[], own: string[]): ProbeOutpu
   writeFileSync(input, JSON.stringify({ modules, own }), { mode: 0o600 });
   let out: string;
   try {
-    execFileSync(exe, [packDir, bootstrap, input, output], {
+    const run = spawnSync(exe, [packDir, bootstrap, input, output], {
+      encoding: "utf8",
       stdio: ["ignore", "ignore", "pipe"],
       timeout: 60_000,
     });
+    if (run.error !== undefined || run.status !== 0)
+      return `the probe failed: ${
+        (run.stderr ?? "").trim().split("\n")[0] ||
+        run.error?.message ||
+        (run.signal !== null ? `killed by ${run.signal}` : `exit status ${run.status}`)
+      }`;
     out = readFileSync(output, "utf8");
   } catch (e) {
-    const err = e as { stderr?: Buffer | string; message: string };
-    return `the probe failed: ${
-      String(err.stderr ?? "")
-        .trim()
-        .split("\n")[0] || err.message
-    }`;
+    return `the probe failed: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     for (const f of kept ? [input, output] : [dirname(exe)]) {
       try {

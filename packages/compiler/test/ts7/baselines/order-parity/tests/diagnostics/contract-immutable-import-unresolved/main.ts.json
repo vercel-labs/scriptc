@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/contract-immutable-import-unresolved/main.ts"
+ ],
+ "diags": []
+}

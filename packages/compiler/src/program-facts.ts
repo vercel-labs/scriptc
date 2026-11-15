@@ -216,7 +216,8 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     symbol: "unixListenReachable",
     source: "types",
     scope: "program",
-    setBy: "a `.listen(path)` call with a string argument on a server or an untyped value",
+    setBy:
+      "a `.listen(path)` call with a string argument, or a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
     gates: "every `server.address()` checks for a socket path",
     narrower: "the server",
     tracked: null,
@@ -291,6 +292,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "reprototyped-classes",
+    file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
+    symbol: "mayReplacePrototype",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an Object.setPrototypeOf or Reflect.setPrototypeOf call whose target's type admits instances of the class; a target whose type bounds nothing (`any`, `unknown`, a type parameter) or a reference to the function that is not a call sets it for every class",
+    gates:
+      "method calls and instanceof on instances of those classes test at run time whether the instance's prototype was replaced (after one global test), and take the checked-dynamic call or prototype walk when it was",
+    narrower:
+      "the instances that reach the call, by value flow; what is left is the run-time test on the instance",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "member-assigned",
     file: `${SRC}/frontend/lowering/lower-classes.ts`,
     symbol: "memberAssigned",
@@ -300,6 +316,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
       "an assignment, delete or reflective definition of a member with a method's name, on any receiver",
     gates: "the static answer for that method of every class that declares the name",
     narrower: "the receiver's class",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
+    name: "void-method-written",
+    file: `${SRC}/frontend/tsc-codes.ts`,
+    symbol: "methodNameWritten",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "in any implementation file, a write or `delete` of a member with a class method's name (by property access or string key, on any receiver), a call argument that is that name, or an object literal argument with a member of that name",
+    gates:
+      "in an unchecked JavaScript source, a truthiness test of a call of that method, when the checker types it `void` because the method's body returns no value, keeps its SC1090 refusal instead of testing `undefined`",
+    narrower:
+      "the receiver's class, for a write through a typed receiver; a write through an untyped receiver can reach any class",
     tracked: null,
     lowererFields: [],
   },
@@ -541,6 +572,51 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "js-widened-fields",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "jsWidenedFields",
+    source: "types",
+    scope: "shape",
+    setBy:
+      "a write of a value the checker cannot show fits the JSDoc type of a class field, in an unchecked JavaScript source",
+    gates:
+      "the field's storage is checked-dynamic for every instance of the class and every reader of its layout",
+    narrower:
+      "the write sites, where the receiver's class is known; a write the scan cannot type as a field of one class keeps the declared storage",
+    tracked: null,
+    lowererFields: ["jsWidenedFields"],
+  },
+  {
+    name: "global-object-writes",
+    file: `${SRC}/frontend/lowering/global-object-writes.ts`,
+    symbol: "globalObjectWrites",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a write of a property of the global object, by any spelling, in any source of the program",
+    gates:
+      "a call or read of a built-in through the global object answers the built-in for a member the program wrote (SC1090); in a JavaScript source, `typeof` of an undeclared name keeps its static answer only when the program never writes that name on the global object; and a declared global binding TypeScript erases (`declare var/const`, `declare global`) is read through the global object only when the program may write that name there (programMayWriteGlobalName, erasedGlobalBindingOf)",
+    narrower:
+      "the order of the write and the read at run time, which a census cannot know: a name the program writes anywhere is read at run time everywhere; a write through a spelling the census cannot type as the global object (an untyped binding); and a write in a source whose text contains neither `global` nor `this`, which the scan does not read",
+    tracked: null,
+    lowererFields: ["globalObjectWrites"],
+  },
+  {
+    name: "inspect-tables-read",
+    file: `${SRC}/frontend/lowering/inspect-tables.ts`,
+    symbol: "programTouchesInspectTables",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a read of util.inspect's function value anywhere in the program, other than as a direct call's callee, as a `.custom` member's base, or as an import binding",
+    gates:
+      "util.inspect, util.format, console.log and console.dir of a typed value render through the runtime, which reads inspect.defaultOptions, inspect.styles and inspect.colors per call; a program without such a read keeps the folded renderings",
+    narrower:
+      "the table members themselves (defaultOptions, colors, styles) and the value flow into their writes, which would need a points-to census over the program",
+    tracked: null,
+    lowererFields: ["inspectTablesTouched"],
+  },
+  {
     name: "computed-environment-write",
     file: `${SRC}/frontend/lowering/constant-conditions.ts`,
     symbol: "changesEnvironmentByComputedName",
@@ -600,12 +676,6 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan(
-    "frontend/contract-types.ts#collectContractAnnotations",
-    2,
-    "prefilter",
-    "a file that never names the contract-type modules imports none of them",
-  ),
-  scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,
     "discovery",
@@ -616,6 +686,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
+  ),
+  scan(
+    "frontend/import-type-indexed-access.ts#importTypeIndexedAccessSources",
+    2,
+    "discovery",
+    "the files that carry a type-position `import('spec')['name']`, each rewritten on its own for the lowering world (the file's text changes, no other file does), behind the prefilter that the file's text spells `import(`",
   ),
   scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
@@ -676,10 +752,22 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
+    1,
+    "prefilter",
+    "a conditional alias needs a `require()` write in the file; the walk behind it decides each write from the symbol and the required tables",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
     1,
     "prefilter",
     "a split require binding's own file has to spell `require`",
+  ),
+  scan(
+    "frontend/lowering/class-dynamic-dispatch.ts#ClassDynamicDispatch",
+    2,
+    "closed-world",
+    "whether the program can delete an error's own `stack` (a delete of a member named `stack` or of a computed key, or a use of deleteProperty): asked only for an Error subclass that declares a `stack` accessor, and only that class's `stack` read by name changes",
   ),
   scan(
     "frontend/lowering/construction-reads.ts#classHierarchyOf",
@@ -735,11 +823,10 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "closed-world",
     "the names the program assigns on the global object; only reads of those names change",
   ),
-  scan(
+  decides(
     "frontend/lowering/global-object-writes.ts#globalObjectWrites",
     2,
-    "closed-world",
-    "every write of the global object by any spelling; only calls and reads of a built-in through the global object change",
+    "global-object-writes",
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
@@ -748,6 +835,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "only JavaScript adds properties to handles, so a program without a JavaScript file skips the census",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#bindingNeverWritten",
+    1,
+    "closed-world",
+    "whether one global binding is written after its declaration; it decides only whether a call that builds a class in an argument may read that name ahead of the class's statics",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#propertyMayBeWritten",
+    1,
+    "closed-world",
+    "whether one property of one receiver's type may be written, by name, by a computed key or through reflection; it decides only whether a call that builds a class in an argument may read that property ahead of the class's statics",
   ),
   scan(
     "frontend/lowering/js-collection-types.ts#inferProgram",
@@ -833,6 +932,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "partial-assertion-targets",
   ),
+  decides("frontend/lowering/inspect-tables.ts#census", 1, "inspect-tables-read"),
   decides("frontend/lowering/member-call-receivers.ts#takeCensus", 1, "member-call-receivers"),
   decides("frontend/lowering/primitive-wrappers.ts#programCreatesWrappers", 1, "creates-wrappers"),
   scan(
@@ -928,6 +1028,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
+  decides("frontend/tsc-codes.ts#methodNameWritten", 2, "void-method-written"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

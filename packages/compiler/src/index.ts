@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { jsInferenceEnabled } from "./frontend/js-inference.js";
 import {
@@ -17,6 +16,7 @@ import { optimizationField, type NativeOptimization } from "./backend/optimizati
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
+import { finishNodeIslands } from "./executable/islands.js";
 import {
   loweringOptions,
   prepareLoweredProgram,
@@ -24,7 +24,7 @@ import {
 } from "./executable/lowered.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
 import { nodeIslandOptionsKey } from "./node-islands/policy.js";
-import { setIslandResolver } from "./node-islands/resolve.js";
+import { installNodeIslandBuildHost } from "./node-islands/host-node.js";
 import {
   prepareLibrary,
   libraryLocalizeSymbols,
@@ -88,7 +88,7 @@ import { InternalCompilerError } from "./errors.js";
 import { frontendProcessExecArgv } from "./frontend-process-args.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -170,19 +170,9 @@ import {
   ffiNativeBuildDiag,
   iceDiag,
   nativeCodegenDiag,
-  nodeIslandNodeDiag,
-  nodeIslandModuleDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import {
-  libnodeCacheKey,
-  libnodeProbePack,
-  libnodeRecord,
-  nodeIslandPackHint,
-} from "./node-islands/libnode.js";
-import { planNodeIslandLoads } from "./node-islands/load-plan.js";
-import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
-import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
+import { libnodeCacheKey, libnodeTarget } from "./node-islands/libnode.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -283,6 +273,7 @@ export {
 } from "./backend/external-c.js";
 export { emitLlvmModule, type LlvmTargetOptions } from "./backend/llvm/emitter.js";
 export type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
+import { warningSourceTexts } from "./diagnostics/build-warnings.js";
 export {
   renderDiagnostics,
   renderDiagnostics as renderAll,
@@ -510,9 +501,8 @@ export async function analyzeCached(
   return result;
 }
 
-// Island code resolves through Node (node-islands/resolve.ts; the
-// self-hosted compiler builds no islands).
-setIslandResolver((fromFile, spec) => createRequire(fromFile).resolve(spec));
+// Island builds ask Node where the compiler runs under it (node-islands/host.ts).
+installNodeIslandBuildHost();
 
 const nodeFrontend: FrontendFactory = (
   entry,
@@ -615,31 +605,6 @@ interface CompileWarningSink {
   islands?: { packages: string[]; modules: string[] };
   /** What the build's frontend pass lowered (CompileWarnings.stats). */
   stats?: LowerStats;
-}
-
-/** The texts a cache hit's warnings point into, re-read for their code
- * frames: the same files the build read, unchanged since (the entry's
- * frontend snapshot proved it). A file the frontend rewrote before the
- * warnings were located in it (its JSX) keeps the text the entry stores. */
-function cachedWarningSources(
-  warnings: readonly ScrDiagnostic[],
-  stored: Record<string, string> | undefined,
-): Map<string, string> {
-  const texts = new Map<string, string>();
-  for (const w of warnings) {
-    if (texts.has(w.loc.file)) continue;
-    const kept = stored?.[w.loc.file];
-    if (kept !== undefined) {
-      texts.set(w.loc.file, kept);
-      continue;
-    }
-    try {
-      texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
-    } catch {
-      // The frame is omitted; the message stands alone.
-    }
-  }
-  return texts;
 }
 
 /** The Node islands a build ran, stored with its cache entry so a cache hit
@@ -930,11 +895,13 @@ async function compileExecutableNative(
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.classTestPrototype ? { classTestPrototype: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
+    ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
@@ -944,6 +911,8 @@ async function compileExecutableNative(
     ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
+    ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
+    ...(features.utilTraceSigInt ? { utilTraceSigInt: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -972,6 +941,7 @@ async function compileExecutableNative(
     http2: features.http2,
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
+    dnsResolve: features.dnsResolve,
     dgramDyn: features.dgramDyn,
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,
@@ -1317,66 +1287,17 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
-  // Calls into Node record the libnode pack an executable loads at run
-  // time. IR, LLVM and object outputs need no pack: their record stays
-  // empty, and SCRIPTC_LIBNODE supplies the pack when such a program runs.
-  if (mod.nodeIsland !== undefined) {
-    if (!moduleRuntimeFeatures(mod).nodeIsland) {
-      delete mod.nodeIsland;
-    } else if (outputKind === "exe") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
-      if (typeof recorded === "string")
-        return {
-          ok: false,
-          diagnostics: [
-            nodeIslandNodeDiag(recorded, entryPath, nodeIslandPackHint(prepared.nodeIslandUse)),
-          ],
-          sourceTexts,
-        };
-      mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
-      // Deferred island modules (scope-B NI-7): probed in the same pack.
-      finalizeDeferredIslands(
-        mod,
-        entryPath,
-        libnodeProbePack(opts.libnode, process.env, dirname(entryPath)),
-      );
-    } else {
-      // IR, LLVM and object outputs have no pack to probe with: eager.
-      finalizeDeferredIslands(mod, entryPath, null);
-    }
-  }
-  // The island module tree ships with the program: beside the executable
-  // with --libnode=beside, else inside it (node-islands/modules.ts).
-  let nodeIslandModuleData: Uint8Array | undefined;
-  const islandModules = mod.nodeIsland?.modules;
-  if (islandModules !== undefined && outputKind !== "ir") {
-    // What Node's resolver answers for the tree, computed here once and
-    // shipped as one more of its files (node-islands/load-plan.ts).
-    const generated = planNodeIslandLoads(islandModules);
-    if (outputKind === "exe" && opts.libnode === "beside") {
-      const problem = placeNodeIslandModules(
-        islandModules,
-        `${opts.outPath}.libnode/modules`,
-        generated,
-      );
-      if (problem !== null)
-        return {
-          ok: false,
-          diagnostics: [nodeIslandModuleDiag(problem, { file: entryPath, start: 0, end: 0 })],
-          sourceTexts,
-        };
-      islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
-    } else {
-      const data = readNodeIslandModules(islandModules, generated);
-      if (typeof data === "string")
-        return {
-          ok: false,
-          diagnostics: [nodeIslandModuleDiag(data, { file: entryPath, start: 0, end: 0 })],
-          sourceTexts,
-        };
-      nodeIslandModuleData = data;
-    }
-  }
+  // The island steps (executable/islands.ts): the libnode record, the
+  // deferral probe and the module tree.
+  const islands = finishNodeIslands(mod, entryPath, {
+    outputKind,
+    outPath: opts.outPath,
+    libnode: opts.libnode,
+    target: () => libnodeTarget(process.env),
+    ...(prepared.nodeIslandUse !== undefined ? { nodeIslandUse: prepared.nodeIslandUse } : {}),
+  });
+  if (!islands.ok) return { ok: false, diagnostics: [islands.diagnostic], sourceTexts };
+  const nodeIslandModuleData = islands.moduleData;
   if (warningSink !== undefined && prepared.warnings.length > 0) {
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
@@ -2349,7 +2270,7 @@ async function compileTracked(
     // lowering must not hide a diagnostic.
     if (warningSink !== undefined && earlyHit.warnings !== undefined) {
       warningSink.warnings = earlyHit.warnings;
-      warningSink.sourceTexts = cachedWarningSources(earlyHit.warnings, earlyHit.warningSources);
+      warningSink.sourceTexts = warningSourceTexts(earlyHit.warnings, earlyHit.warningSources);
     }
     if (warningSink !== undefined && earlyHit.islands !== undefined)
       warningSink.islands = earlyHit.islands;
@@ -2715,6 +2636,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
     ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
+    ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     mutableBuffers: features.mutableBuffers,
@@ -2815,6 +2737,7 @@ async function compileLibraryNative(
     bigintBytes: features.bigintBytes,
     dynInvoke: features.dynInvoke,
     ...(features.recordSourceGet === true ? { recordSourceGet: true } : {}),
+    ...(features.arrJoinStr === true ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),

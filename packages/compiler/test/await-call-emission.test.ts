@@ -175,15 +175,17 @@ async function middle(x: number): Promise<number> {
   const z = await leaf(y);
   return y * 2 + z;
 }
-async function fibered(): Promise<any> {
+async function dynamic(): Promise<any> {
   let s = 0;
   for await (const t of tick()) s += t;
   return s + (await middle(1));
 }
 async function main(): Promise<void> {
-  console.log((await middle(2)) + (await fibered()));
+  console.log((await middle(2)) + (await dynamic()));
 }
 void main();
+console.log(await middle(3));
+export {};
 `;
 
 test("bodies that suspend only at their own awaits compile to stackless coroutines", async () => {
@@ -214,11 +216,15 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   expect(middle).not.toContain("@scr_await_f64(");
   expect(definition(llvm, "sc_as_middle")).toContain("@scr_async_spawn_stackless(");
   expect(definition(llvm, "sc_f_main")).toContain("@scr_coro_await_prepare(");
-  // A body with a dynamic result keeps its fiber, and still awaits a
-  // stackless callee in one call: spawn, then the ordinary await of its
-  // promise.
-  expect(definition(llvm, "sc_as_fibered")).toContain("@scr_async_spawn(");
-  expect(definition(llvm, "sc_f_fibered")).toContain("call double @sc_aw_middle(double");
+  // A body with a dynamic result is a coroutine like any other: its result
+  // settles the promise through the resolution procedure, which parks
+  // nothing.
+  expect(definition(llvm, "sc_as_dynamic")).toContain("@scr_async_spawn_stackless(");
+  const dynamic = definition(llvm, "sc_f_dynamic");
+  expect(dynamic).toContain("call ptr @sc_dw_middle(double");
+  expect(dynamic).toContain("call void @scr_promise_resolve_dyn(ptr");
+  // The module's own body keeps its fiber, and awaits a stackless callee in
+  // one call: spawn, then the ordinary await of its promise.
   const entry = definition(llvm, "sc_aw_middle");
   expect(entry).toContain("call ptr @sc_as_middle(double %a0)");
   expect(entry).toContain("call double @scr_await_f64(ptr %p)");

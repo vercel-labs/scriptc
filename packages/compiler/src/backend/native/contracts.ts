@@ -177,6 +177,9 @@ export interface CcOptions {
   /** Reflect.getPrototypeOf's primitive-target check: compiles
    * scr_dyn_reflect_proto.c. */
   reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk: compiles
+   * scr_dyn_class_test.c. */
+  classTestPrototype?: boolean;
   /** `delete` of a key a record's type does not declare: compiles
    * scr_record_source_delete.c. */
   recordSourceDelete?: boolean;
@@ -192,6 +195,8 @@ export interface CcOptions {
   /** A kept-source read of a record-to-record conversion: compiles
    * scr_record_source_get.c. */
   recordSourceGet?: boolean;
+  /** A join of an array of strings: compiles scr_arr_join_str.c. */
+  arrJoinStr?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -210,6 +215,10 @@ export interface CcOptions {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: compiles scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: compiles scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
@@ -399,6 +408,11 @@ export interface CcOptions {
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** The program uses dns.Resolver or the resolve/reverse/setServers
+   * forms (the dnsResolve runtime feature): compiles scr_dns_resolve.c
+   * over the dgram unit, so programs that only call dns.lookup keep
+   * their exact link line. */
+  dnsResolve?: boolean;
   /** A dgram socket converts to or from an untyped value: compiles
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
@@ -539,6 +553,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.recordSourceGet: the kept-source read of a
    * record-to-record conversion (scr_record_source_get.c). */
   recordSourceGet?: boolean;
+  /** See CcOptions.arrJoinStr: the join of an array of strings
+   * (scr_arr_join_str.c). */
+  arrJoinStr?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

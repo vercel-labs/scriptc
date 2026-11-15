@@ -20,8 +20,8 @@ class Drum extends Instrument {
 // a refused method that overrides nothing keeps its own parameter count
 class Shelf {
   count = 0;
-  watch(ref: WeakRef<object>, extra: number): number {
-    return ref.deref() === undefined ? extra : 1;
+  watch(ref: BigInt64Array<ArrayBuffer>, extra: number): number {
+    return ref.length === 0 ? extra : 1;
   }
 }
 const loose: any = new Drum();

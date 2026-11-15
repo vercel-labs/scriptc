@@ -496,12 +496,58 @@ static bool scr_rej_fire(ScrRejListener **list, size_t *n, ScrDyn **args, size_t
 static SCR_TL ScrRejListener *scr_uncaught_ls[2];
 static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
+static void scr_uncaught_sync_hook(void);
+
+/* process.setUncaughtExceptionCaptureCallback's callback: when set, it
+ * handles every uncaught exception INSTEAD of the 'uncaughtException'
+ * listeners (after the monitors), and its own throw is the fatal error. */
+static SCR_TL ScrDyn *scr_capture_fn = NULL;
+
+static void scr_capture_teardown(void) {
+  scr_dyn_release(scr_capture_fn);
+  scr_capture_fn = NULL;
+}
+
+bool scr_process_has_uncaught_capture(void) { return scr_capture_fn != NULL; }
+
+/* node:internal/process/execution's setUncaughtExceptionCaptureCallback:
+ * null clears (checked first, so it never validates); anything that is not
+ * a function throws ERR_INVALID_ARG_TYPE; a second callback while one is
+ * active throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET. */
+void scr_process_set_uncaught_capture(ScrDyn *fn) {
+  if (fn->kind == SCR_DYN_NULL) {
+    scr_dyn_release(scr_capture_fn);
+    scr_capture_fn = NULL;
+    scr_uncaught_sync_hook();
+    return;
+  }
+  if (!scr_dyn_is_callable(fn)) {
+    scr_dyn_arg_type_fail("fn", "of type function or null", fn);
+    return;
+  }
+  if (scr_capture_fn != NULL) {
+    static const char msg[] =
+        "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                             "ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET");
+    return;
+  }
+  static SCR_TL bool armed = false;
+  if (!armed) {
+    armed = true;
+    scr_atexit(scr_capture_teardown);
+  }
+  scr_capture_fn = scr_dyn_retain(fn);
+  scr_uncaught_sync_hook();
+}
 
 static void scr_uncaught_sync_hook(void) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_pe_node) return; /* the hook raises through Node's process */
 #endif
-  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1]) ? scr_uncaught_dispatch : NULL;
+  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1] || scr_capture_fn)
+                                    ? scr_uncaught_dispatch
+                                    : NULL;
 }
 
 static void scr_uncaught_teardown(void) {
@@ -658,8 +704,26 @@ static int scr_uncaught_dispatch(bool from_promise) {
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
   scr_str_release(text);
   bool ok = scr_rej_fire(&scr_uncaught_ls[1], &scr_uncaught_n[1], args, 2);
-  bool handled = ok && scr_uncaught_n[0] > 0;
-  if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  bool handled;
+  if (ok && scr_capture_fn != NULL) {
+    /* The capture callback replaces the 'uncaughtException' listeners: it
+     * receives the error alone, and answering handles the exception. Its
+     * own throw is the fatal one (the pending exception the fatal path
+     * below prints). */
+    ScrDyn *capture_args[1] = {error};
+    /* The call holds its own reference: a callback that clears itself
+     * (setUncaughtExceptionCaptureCallback(null)) drops the registry's,
+     * and its body still reads what it captured. */
+    ScrDyn *capture = scr_dyn_retain(scr_capture_fn);
+    ScrDyn *result = scr_dyn_call(capture, capture_args, 1, "callback");
+    ok = !scr_exc_pending();
+    scr_dyn_release(result);
+    scr_dyn_release(capture);
+    handled = ok;
+  } else {
+    handled = ok && scr_uncaught_n[0] > 0;
+    if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  }
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
@@ -717,6 +781,144 @@ static void scr_rjh_dispatch(ScrPromise *p) {
   SCR_PE_LEAVE();
 }
 
+/* ── process 'multipleResolves' ────────────────────────────────────────
+ * V8 reports a resolution or rejection that arrives at a promise which
+ * already resolved to Node's promiseRejectHandler, which — while a listener
+ * is registered — queues a nextTick emitting ('resolve' | 'reject',
+ * promise, value) and then, if that emit reached a listener, warns DEP0160
+ * ONCE per process. Node checks `hasMultipleResolvesListener` (its cached
+ * listener count) at the settle, so an unlistened promise schedules
+ * nothing; the tick re-checks the registry, so a listener removed before
+ * it runs sees nothing and warns nothing. The settle paths in scr_async.c
+ * call the hook; this unit owns the registry, the queued events and the
+ * deprecation. */
+static SCR_TL ScrRejListener *scr_mr_listeners = NULL;
+static SCR_TL size_t scr_nmr = 0, scr_mr_cap = 0;
+
+typedef struct {
+  ScrPromise *promise; /* +1 */
+  ScrDyn *value;       /* +1 */
+  int type;            /* 0 = resolve, 1 = reject */
+} ScrMrEvent;
+
+static SCR_TL ScrMrEvent *scr_mr_events = NULL;
+static SCR_TL size_t scr_mr_head = 0, scr_mr_len = 0, scr_mr_events_cap = 0;
+static SCR_TL bool scr_mr_events_armed = false;
+static SCR_TL bool scr_mr_warned = false;
+
+static void scr_mr_events_teardown(void) {
+  for (size_t i = scr_mr_head; i < scr_mr_len; i++) {
+    scr_promise_release(scr_mr_events[i].promise);
+    scr_dyn_release(scr_mr_events[i].value);
+  }
+  free(scr_mr_events);
+  scr_mr_events = NULL;
+  scr_mr_head = scr_mr_len = scr_mr_events_cap = 0;
+}
+
+static void scr_mr_teardown(void) {
+  for (size_t i = 0; i < scr_nmr; i++) scr_rej_release(&scr_mr_listeners[i]);
+  free(scr_mr_listeners);
+  scr_mr_listeners = NULL;
+  scr_nmr = scr_mr_cap = 0;
+}
+
+static void scr_mr_tick(void);
+
+/* A losing settle's value, already dyn (+1): dropped when nobody
+ * listens (scr_async.c's typed note has the same contract). */
+static void scr_mr_note_dyn(ScrPromise *p, int type, ScrDyn *value) {
+  if (scr_multiple_resolves_fn == NULL) {
+    scr_dyn_release(value);
+    return;
+  }
+  scr_multiple_resolves_fn(p, type, value);
+}
+
+/* The settle-time hook: the losing value moves into a queued event. */
+static void scr_mr_note(ScrPromise *p, int type, ScrDyn *value) {
+  if (!scr_mr_events_armed) {
+    scr_mr_events_armed = true;
+    scr_atexit(scr_mr_events_teardown);
+  }
+  if (scr_mr_len == scr_mr_events_cap) {
+    size_t cap = scr_mr_events_cap ? scr_mr_events_cap * 2 : 4;
+    ScrMrEvent *grown = realloc(scr_mr_events, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_mr_events = grown;
+    scr_mr_events_cap = cap;
+  }
+  scr_mr_events[scr_mr_len++] = (ScrMrEvent){scr_promise_retain(p), value, type};
+  scr_next_tick_raw(scr_mr_tick);
+}
+
+static void scr_mr_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* Node's own promise hooks report these */
+#endif
+  scr_multiple_resolves_fn = scr_nmr > 0 ? scr_mr_note : NULL;
+}
+
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once) {
+  if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "multipleResolves", fn)) return;
+  static SCR_TL bool teardown_armed = false;
+  if (!teardown_armed) {
+    teardown_armed = true;
+    scr_atexit(scr_mr_teardown);
+  }
+  scr_rej_push(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, fn, once);
+  scr_mr_sync_hook();
+}
+
+void scr_process_off_multiple_resolves(ScrDyn *fn) {
+  if (scr_pe_listen(3, "multipleResolves", fn)) return;
+  scr_rej_remove(scr_mr_listeners, &scr_nmr, fn);
+  scr_mr_sync_hook();
+}
+
+/* The DEP0160 report Node's deprecate() wrapper makes after a delivery
+ * reached a listener: once per process, dropped outright while
+ * process.noDeprecation is set (and then not marked, so a later delivery
+ * under a cleared flag still warns — Node's deprecated() wrapper checks
+ * the flag before its own once guard). */
+static void scr_mr_deprecate(void) {
+  if (scr_mr_warned || scr_process_deprecation_flag_on(0)) return;
+  scr_mr_warned = true;
+  static const char text[] = "The multipleResolves event has been deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0160", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+/* One queued event per losing settle, in settle order (Node's nextTick
+ * FIFO). The registry is re-read now: no listener left, no event. */
+static void scr_mr_tick(void) {
+  if (scr_mr_head == scr_mr_len) return;
+  ScrMrEvent ev = scr_mr_events[scr_mr_head++];
+  if (scr_mr_head == scr_mr_len) scr_mr_head = scr_mr_len = 0;
+  const char *name = ev.type == 0 ? "resolve" : "reject";
+  ScrStr *text = scr_str_new(name, ev.type == 0 ? 7 : 6);
+  ScrDyn *kind = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrDyn *boxed = scr_dyn_new_promise(ev.promise);
+  ScrDyn *args[3] = {kind, boxed, ev.value};
+  SCR_PE_ENTER();
+  bool listened = scr_nmr > 0;
+  bool ok = !listened || scr_rej_fire(&scr_mr_listeners, &scr_nmr, args, 3);
+  scr_mr_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
+  scr_dyn_release(kind);
+  scr_dyn_release(boxed);
+  if (listened && ok) scr_mr_deprecate();
+  scr_dyn_release(ev.value);
+  scr_promise_release(ev.promise);
+}
+
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
  * executor IS setImmediate, so resolve rides the immediate queue — a
  * fresh promise an armed immediate fulfills with the undefined dyn value
@@ -740,48 +942,114 @@ ScrPromise *scr_immediate_promise(void) {
 
 /* ── .then/.catch/.finally over dyn promises (scr_dyn_invoke's promise
  * arm and the dc tracePromise reactions) ──────────────────────────────
- * One reaction fiber per registration: it awaits src (the settled-await
- * microtask hop keeps JS's ordering — reactions never run synchronously
- * inside settle), runs the checked-dynamic tree handler, and settles dst. A handler
- * returning a dyn promise is ADOPTED (awaited in a loop, like JS's
- * resolve). Non-callable handlers pass the settlement through (JS's
- * PromisePrototypeThen over non-function reactions). The fiber's own
- * promise is dropped unobserved — the entry consumes every exception
- * into dst, so it can never reject. */
+ * One native reaction per registration (scr_promise_react): its job runs
+ * on the loop's stack one microtask turn after src settles (reactions
+ * never run synchronously inside settle), in the AsyncLocalStorage context
+ * of the registration, calls the checked-dynamic tree handler, and settles
+ * dst. A handler returning a dyn promise is ADOPTED (the resolution
+ * procedure, scr_promise_resolve_dyn). Non-callable handlers pass the
+ * settlement through (JS's PromisePrototypeThen over non-function
+ * reactions). The job consumes every exception into dst. Nothing here
+ * suspends in the middle, so no reaction takes a fiber. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_DYN_REACTIONS_ROOTED 1
+#endif
+#endif
+
+/* The collector does not trace a reaction's context, so one that never
+ * runs on a cycle through its handler stays allocated, as the parked fiber
+ * it replaces did. The sanitizer lane keeps the pending contexts on a list
+ * rooted in a global (their first member), so the leak check sees them
+ * reachable, as it saw that fiber's stack. The count audit takes one that
+ * is left when the loop has nothing more to run as that fiber never
+ * resumed (scr_dyn_reactions_pending). */
+#ifdef SCR_RC_AUDIT
+#define SCR_DYN_PENDING_COUNT(n) (scr_dyn_reactions_pending += (n))
+#else
+#define SCR_DYN_PENDING_COUNT(n) ((void)0)
+#endif
+#ifdef SCR_DYN_REACTIONS_ROOTED
+typedef struct ScrDynPending {
+  struct ScrDynPending *next, **previous;
+} ScrDynPending;
+static SCR_TL ScrDynPending *scr_dyn_pending = NULL;
+static void scr_dyn_pending_link(ScrDynPending *p) {
+  p->next = scr_dyn_pending;
+  p->previous = &scr_dyn_pending;
+  if (scr_dyn_pending) scr_dyn_pending->previous = &p->next;
+  scr_dyn_pending = p;
+}
+static void scr_dyn_pending_unlink(ScrDynPending *p) {
+  *p->previous = p->next;
+  if (p->next) p->next->previous = p->previous;
+}
+#define SCR_DYN_PENDING ScrDynPending pending;
+#define SCR_DYN_PENDING_LINK(pack) (scr_dyn_pending_link(&(pack)->pending), SCR_DYN_PENDING_COUNT(1))
+#define SCR_DYN_PENDING_UNLINK(pack) (scr_dyn_pending_unlink(&(pack)->pending), SCR_DYN_PENDING_COUNT(-1))
+#else
+#define SCR_DYN_PENDING
+#define SCR_DYN_PENDING_LINK(pack) SCR_DYN_PENDING_COUNT(1)
+#define SCR_DYN_PENDING_UNLINK(pack) SCR_DYN_PENDING_COUNT(-1)
+#endif
+
 typedef struct {
-  ScrPromise *src, *dst; /* owned */
+  SCR_DYN_PENDING
+  ScrPromise *dst;           /* owned */
   ScrDyn *onf, *onr, *onfin; /* owned or NULL */
+  ScrAlsCtx *als;            /* the registration's context, owned or NULL */
 } ScrDynThenPack;
 
+/* The wait of a finally callback's result. It does not own the promise it
+ * waits on: that promise owns the reaction, and a reference back would
+ * keep both alive when the promise never settles. */
 typedef struct {
-  ScrPromise *src, *dst;
-  ScrDyn *result;
+  SCR_DYN_PENDING
+  ScrPromise *src, *dst; /* owned */
 } ScrDynFinallyPack;
 
-static void scr_dyn_finally_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynFinallyPack *pack = opaque;
-  ScrDyn *result = scr_await_dyn(pack->result->v.promise);
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The promise a finally callback's result stands for has settled: its
+ * rejection replaces the original settlement, anything else passes the
+ * original on. */
+static void scr_dyn_finally_react(void *ctx, ScrPromise *settled) {
+  ScrDynFinallyPack *pack = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
   if (scr_exc_pending()) scr_promise_reject_pending(pack->dst);
   else scr_promise_adapt_copy(pack->dst, pack->src);
-  scr_dyn_release(result);
-  scr_dyn_release(pack->result);
+}
+
+static void scr_dyn_finally_drop(void *ctx) {
+  ScrDynFinallyPack *pack = ctx;
+  SCR_DYN_PENDING_UNLINK(pack);
   scr_promise_release(pack->src);
   scr_promise_release(pack->dst);
   free(pack);
 }
 
-static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
-  (void)self;
-  ScrDynThenPack *a = (ScrDynThenPack *)ap;
-  ScrDyn *v = scr_await_dyn(a->src);
+static const ScrPromiseReaction scr_dyn_finally_reaction = { scr_dyn_finally_react,
+                                                             scr_dyn_finally_drop };
+
+SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src) = NULL;
+
+static void scr_dyn_then_drop(void *ctx);
+
+/* The reaction's steps. Inlined into both callers, so that the reaction
+ * job stays one function in a program without tests. */
+static inline __attribute__((always_inline)) void scr_dyn_then_steps(ScrDynThenPack *a,
+                                                                     ScrPromise *src) {
+  scr_promise_settled_now(src); /* observes; a rejection re-throws */
   bool rejected = scr_exc_pending();
   ScrCaught *c = rejected ? scr_exc_take() : NULL;
+  ScrDyn *v = rejected ? NULL : scr_dyn_promise_payload(src);
   ScrDyn *handler = a->onfin ? a->onfin : (rejected ? a->onr : a->onf);
   if (handler != NULL && scr_dyn_is_callable(handler)) {
     ScrDyn *arg = NULL;
     if (a->onfin == NULL) arg = rejected ? scr_caught_to_dyn(c) : scr_dyn_retain(v);
+    ScrAlsCtx *outer = scr_als_dispatch_enter(a->als);
     ScrDyn *r = scr_dyn_call(handler, arg ? &arg : NULL, arg ? 1 : 0, "handler");
+    scr_als_dispatch_leave(outer);
     scr_dyn_release(arg);
     if (r == NULL) {
       /* The handler threw: dst rejects with that. */
@@ -799,11 +1067,11 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
       ScrPromise *passthrough = scr_promise_new();
       ScrDynFinallyPack *pack = malloc(sizeof *pack);
       if (!pack) scr_ad_oom();
-      pack->src = scr_promise_retain(a->src);
+      pack->src = scr_promise_retain(src);
       pack->dst = scr_promise_retain(passthrough);
-      pack->result = r;
-      ScrPromise *waiter = scr_async_spawn_after(r->v.promise, scr_dyn_finally_entry, pack);
-      scr_promise_release(waiter);
+      SCR_DYN_PENDING_LINK(pack);
+      scr_promise_react_unmarked(r->v.promise, &scr_dyn_finally_reaction, pack);
+      scr_dyn_release(r);
       scr_promise_resolve_dyn(a->dst, scr_dyn_new_promise(passthrough));
       scr_promise_release(passthrough);
     } else {
@@ -817,68 +1085,114 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
   }
   scr_caught_release(c);
   scr_dyn_release(v);
-  scr_promise_release(a->src);
+}
+
+#ifndef __wasi__
+/* The steps on a fiber of their own (scr_dyn_then_spawn): the fiber holds
+ * the source and a context of its own, because the reaction's context goes
+ * with the reaction when its job returns, and the handler may still be
+ * waiting then. */
+typedef struct {
+  ScrDynThenPack *pack; /* owned */
+  ScrPromise *src;      /* owned */
+} ScrDynThenFiber;
+
+static void scr_dyn_then_fiber_entry(ScrFiber *self, void *argpack) {
+  (void)self;
+  ScrDynThenFiber *job = argpack;
+  scr_dyn_then_steps(job->pack, job->src);
+  scr_dyn_then_drop(job->pack);
+  scr_promise_release(job->src);
+  free(job);
+}
+
+/* Referenced by the test unit alone, so that a program without tests links
+ * neither this copy nor the fiber machinery it starts. */
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src) {
+  ScrDynThenPack *a = ctx;
+  ScrDynThenFiber *job = malloc(sizeof *job);
+  ScrDynThenPack *own = malloc(sizeof *own);
+  if (!job || !own) scr_ad_oom();
+  own->dst = scr_promise_retain(a->dst);
+  own->onf = a->onf ? scr_dyn_retain(a->onf) : NULL;
+  own->onr = a->onr ? scr_dyn_retain(a->onr) : NULL;
+  own->onfin = a->onfin ? scr_dyn_retain(a->onfin) : NULL;
+  own->als = a->als ? scr_als_ctx_retain(a->als) : NULL;
+  SCR_DYN_PENDING_LINK(own);
+  job->pack = own;
+  job->src = scr_promise_retain(src);
+  scr_promise_release(scr_async_spawn(scr_dyn_then_fiber_entry, job));
+}
+#endif
+
+static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
+  if (scr_dyn_reaction_spawn != NULL) {
+    scr_dyn_reaction_spawn(ctx, src);
+    return;
+  }
+  scr_dyn_then_steps(ctx, src);
+}
+
+static void scr_dyn_then_drop(void *ctx) {
+  ScrDynThenPack *a = ctx;
+  SCR_DYN_PENDING_UNLINK(a);
   scr_promise_release(a->dst);
   scr_dyn_release(a->onf);
   scr_dyn_release(a->onr);
   scr_dyn_release(a->onfin);
+  scr_als_ctx_release(a->als);
   free(a);
 }
 
+static const ScrPromiseReaction scr_dyn_then_reaction = { scr_dyn_then_react, scr_dyn_then_drop };
+
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
   /* A rejection HANDLER marks the source handled at attach (Node's
-   * moment; the reaction fiber's await re-marks harmlessly) — this is
-   * also what lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' immediately at the attach point. */
+   * moment), which also lets a .catch inside an 'unhandledRejection'
+   * listener fire 'rejectionHandled' at the attach point. Without one the
+   * reaction's own steps observe the source in their turn. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();
-  a->src = scr_promise_retain(src);
   a->dst = scr_promise_new();
   a->onf = onf ? scr_dyn_retain(onf) : NULL;
   a->onr = onr ? scr_dyn_retain(onr) : NULL;
   a->onfin = onfin ? scr_dyn_retain(onfin) : NULL;
+  a->als = scr_als_capture();
   ScrDyn *boxed = scr_dyn_new_promise(a->dst);
-  ScrPromise *waiter = scr_async_spawn_after(src, scr_dyn_then_entry, a);
-  scr_promise_release(waiter); /* the entry never rejects; nobody awaits it */
+  SCR_DYN_PENDING_LINK(a);
+  scr_promise_react_unmarked(src, &scr_dyn_then_reaction, a);
   return boxed;
 }
-typedef struct {
-  ScrPromise *destination;
-  ScrDyn *value;
-} ScrDynResolvePack;
 
-static void scr_dyn_resolve_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynResolvePack *pack = opaque;
-#ifndef __wasi__
-  /* Promise resolution schedules a job before attaching its reaction. */
-  scr_await_hop();
-#endif
-  ScrDyn *value = scr_await_dyn(pack->value->v.promise);
-  if (scr_exc_pending()) scr_promise_reject_pending(pack->destination);
-  else scr_promise_resolve_dyn(pack->destination, value);
-  scr_dyn_release(pack->value);
-  scr_promise_release(pack->destination);
-  free(pack);
+/* The promise a resolution adopts has settled: a fulfilment resolves the
+ * destination in turn, a rejection rejects it with the same reason. */
+static void scr_dyn_adopt_react(void *ctx, ScrPromise *settled) {
+  ScrPromise *destination = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
+  if (scr_exc_pending()) scr_promise_reject_pending(destination);
+  else scr_promise_resolve_dyn(destination, scr_dyn_promise_payload(settled));
 }
 
-#ifdef __wasi__
-static void scr_dyn_resolve_job(ScrClosure *closure) {
-  ScrPromise *destination = scr_box_get_ref(closure->caps[0]);
-  ScrDyn *value = scr_box_get_ref(closure->caps[1]);
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = destination;
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn_after(value->v.promise, scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
+static void scr_dyn_adopt_drop(void *ctx) { scr_promise_release(ctx); }
+
+static const ScrPromiseReaction scr_dyn_adopt_reaction = { scr_dyn_adopt_react, scr_dyn_adopt_drop };
+
+/* The job that calls the adopted promise's `then`: the reaction above
+ * subscribes in this turn, with a reference of its own on the destination
+ * (the job's goes with the job). */
+static void scr_dyn_adopt_subscribe(void *ctx, ScrPromise *adopted) {
+  scr_promise_react_unmarked(adopted, &scr_dyn_adopt_reaction, scr_promise_retain(ctx));
 }
-#endif
+
+static const ScrPromiseReaction scr_dyn_adopt_job = { scr_dyn_adopt_subscribe, scr_dyn_adopt_drop };
 
 /* The destination is borrowed; value moves in. An async function may
  * return a native promise hidden behind any/unknown without an explicit
- * await, so its completion must use resolution rather than fulfillment. */
+ * await, so its completion must use resolution rather than fulfillment.
+ * A promise is adopted as JavaScript does it: one job calls its `then`
+ * (scr_promise_react_next), whose reaction settles the destination one
+ * turn after the promise settles, so two turns after a settled one. */
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
   if (value->kind != SCR_DYN_PROMISE) {
 #ifdef SCR_NODE_ISLANDS
@@ -900,21 +1214,8 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
     scr_dyn_release(value);
     return;
   }
-#ifdef __wasi__
-  ScrClosure *job = scr_closure_new((void *)scr_dyn_resolve_job, 2);
-  job->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
-  scr_box_set_ref(job->caps[0], scr_promise_retain(destination));
-  job->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-  scr_box_set_ref(job->caps[1], value);
-  scr_queue_microtask(job);
-#else
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = scr_promise_retain(destination);
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn(scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
-#endif
+  scr_promise_react_next(value->v.promise, &scr_dyn_adopt_job, scr_promise_retain(destination));
+  scr_dyn_release(value);
 }
 
 /* ── new Promise(executor) of a checked-dynamic value ─────────────────
@@ -928,6 +1229,7 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
 static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
   ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
   if (!scr_promise_is_pending(p)) {
+    scr_mr_note_dyn(p, 0, scr_dyn_retain(value));
     scr_dyn_release(value);
   } else {
     scr_promise_resolve_dyn(p, value); /* moves value in */
@@ -967,7 +1269,12 @@ void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *r
   if (scr_exc_pending()) {
     ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
     if (now == p) scr_promise_reject_pending(p);
-    else scr_exc_clear();
+    else {
+      /* The box swapped on a thenable adoption: the throw is the losing
+       * settle V8 reports as reject-after-resolve. */
+      scr_promise_multiple_resolves_note(p, 1, scr_exc_current_cell());
+      scr_exc_clear();
+    }
     scr_promise_release(now);
   }
   scr_box_release(target);
@@ -1025,6 +1332,9 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
       scr_promise_fulfill_void(resolved);
       scr_box_set_ref(box, resolved);
     }
+  } else {
+    /* resolve() again after the first resolution (any kind). */
+    scr_mr_note_dyn(p, 0, scr_dyn_new_promise(source));
   }
   scr_promise_release(p);
 }
@@ -1126,22 +1436,29 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
-/* process.noDeprecation (0) and process.throwDeprecation (1): ordinary
- * writable process properties, undefined until the program assigns them.
- * A compiled binary takes no Node command-line flags, so only those
- * assignments set them. */
-static SCR_TL ScrDyn *scr_deprecation_flags[2] = {NULL, NULL};
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3):
+ * ordinary writable process properties, undefined until the program
+ * assigns them. A compiled binary takes no Node command-line flags, so
+ * only those assignments set them. */
+static SCR_TL ScrDyn *scr_deprecation_flags[4] = {NULL, NULL, NULL, NULL};
 static SCR_TL bool scr_deprecation_flags_registered = false;
 
+static size_t scr_deprecation_flag_slot(double which) {
+  if (which == 0) return 0;
+  if (which == 1) return 1;
+  return which == 2 ? 2 : 3;
+}
+
 static void scr_deprecation_flags_teardown(void) {
-  for (size_t i = 0; i < 2; i++) {
+  for (size_t i = 0; i < 4; i++) {
     scr_dyn_release(scr_deprecation_flags[i]);
     scr_deprecation_flags[i] = NULL;
   }
 }
 
 ScrDyn *scr_process_deprecation_flag(double which) {
-  ScrDyn *value = scr_deprecation_flags[which != 0];
+  ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot(which)];
   return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
@@ -1150,15 +1467,23 @@ void scr_process_set_deprecation_flag(double which, ScrDyn *value) {
     scr_deprecation_flags_registered = true;
     scr_atexit(scr_deprecation_flags_teardown);
   }
-  size_t slot = which != 0;
+  size_t slot = scr_deprecation_flag_slot(which);
   ScrDyn *previous = scr_deprecation_flags[slot];
   scr_deprecation_flags[slot] = scr_dyn_retain(value);
   scr_dyn_release(previous);
 }
 
 bool scr_process_deprecation_flag_on(int which) {
-  const ScrDyn *value = scr_deprecation_flags[which != 0];
+  const ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot((double)which)];
   return value != NULL && scr_dyn_truthy(value);
+}
+
+/* Node's onWarning trace test: process.traceProcessWarnings for every
+ * warning, process.traceDeprecation for deprecations too. A set flag makes
+ * the report print the warning's own stack in place of its one-line
+ * "Name: message" and drops the one-time hint. */
+static bool scr_warning_trace_on(bool deprecation) {
+  return scr_process_deprecation_flag_on(3) || (deprecation && scr_process_deprecation_flag_on(2));
 }
 
 /* The warning's name as warning.toString() reads it: the own property, or
@@ -1229,7 +1554,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
     ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
     if (!scr_exc_pending())
       (void)scr_ni_warning(w, code, detail,
-                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0),
+                           scr_process_deprecation_flag_on(3) != 0,
+                           scr_process_deprecation_flag_on(2) != 0);
     scr_dyn_release(code);
     scr_dyn_release(detail);
     return;
@@ -1244,15 +1571,23 @@ static void scr_warning_dispatch(ScrDyn *w) {
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
   if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
+  /* process.traceProcessWarnings / process.traceDeprecation: the report
+   * prints the warning's own stack instead of the one-line heading (Node's
+   * onWarning). The stack carries the heading too, so the name and message
+   * reads stay for the untraced report and for a warning whose stack was
+   * deleted. */
+  bool trace = scr_warning_trace_on(deprecation);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
   ScrDyn *ed = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+  ScrDyn *es = trace && !scr_exc_pending() ? scr_warning_field(w, "stack", 5) : NULL;
   if (scr_exc_pending()) {
     /* A read that threw reports nothing; the exception propagates. */
     scr_str_release(name);
     scr_dyn_release(em);
     scr_dyn_release(ec);
     scr_dyn_release(ed);
+    scr_dyn_release(es);
     return;
   }
   ScrJsonBuf report;
@@ -1265,11 +1600,18 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_put_str(&report, ec->v.str);
     scr_jb_puts(&report, "] ");
   }
-  if (name) scr_jb_put_str(&report, name);
-  else scr_jb_puts(&report, "Warning");
+  if (es && es->kind == SCR_DYN_STR) {
+    /* The stack starts with the "Name: message" heading Node's untraced
+     * report spells out below. */
+    scr_jb_put_str(&report, es->v.str);
+  } else {
+    if (name) scr_jb_put_str(&report, name);
+    else scr_jb_puts(&report, "Warning");
+    scr_jb_puts(&report, ": ");
+    if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  }
   scr_str_release(name);
-  scr_jb_puts(&report, ": ");
-  if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  scr_dyn_release(es);
   if (ed && ed->kind == SCR_DYN_STR) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
@@ -1277,9 +1619,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_dyn_release(em);
   scr_dyn_release(ec);
   scr_dyn_release(ed);
-  /* Node's one-time trace hint, after the first report; deprecations
-   * name their own trace flag. */
-  if (!scr_warning_trace_hint_shown) {
+  /* Node's one-time trace hint, after the first untraced report;
+   * deprecations name their own trace flag. */
+  if (!trace && !scr_warning_trace_hint_shown) {
     scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
@@ -1337,6 +1679,7 @@ static void scr_pe_move_all(void) {
               SCR_UNCAUGHT_EVENT(false), front);
   scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection", front);
   scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled", front);
+  scr_pe_move(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, "multipleResolves", front);
   ScrDyn **warn = scr_warn_listeners;
   size_t nwarn = scr_nwarn;
   scr_warn_listeners = NULL;
@@ -1434,15 +1777,19 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
 
 /* A runtime-built warning while a replacement is installed: Node's modules
  * call process.emitWarning(message, type, code), so the replacement sees
- * those arguments; nothing is reported. A throw stays pending. */
-static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
-  ScrDyn *args[3];
+ * those arguments; nothing is reported. A throw stays pending.
+ * `undefined_ctor` adds Node's fourth argument (the deprecation
+ * constructor) as undefined, which getDeprecationWarningEmitter's callers
+ * pass that way (DEP0203). */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code, bool undefined_ctor) {
+  ScrDyn *args[4];
   size_t argc = 0;
   args[argc++] = scr_dyn_new_str(message);
   ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
   args[argc++] = scr_dyn_new_str(type ? type : fallback);
   scr_str_release(fallback);
   if (code) args[argc++] = scr_dyn_new_str(code);
+  if (undefined_ctor) args[argc++] = scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
   scr_dyn_release(r);
   for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
@@ -1452,12 +1799,12 @@ static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *cod
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
-void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+static void scr_emit_warning_impl(const char *name, const char *code, ScrStr *message) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
     ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
-    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_emit_warning_replaced(message, type_text, code_text, false);
     scr_str_release(type_text);
     scr_str_release(code_text);
     return;
@@ -1468,6 +1815,38 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   scr_str_release(code_text);
   scr_warning_dispatch(w);
   scr_dyn_release(w);
+}
+
+void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+  scr_emit_warning_impl(name, code, message);
+}
+
+/* DEP0203: node:crypto converting a CryptoKey key argument is deprecated.
+ * Node reports it once per process through
+ * getDeprecationWarningEmitter('DEP0203'), so a replacement sees it at the
+ * call (with the emitter's four arguments) and the default report comes on
+ * the next tick, dropped while process.noDeprecation is set and thrown
+ * while process.throwDeprecation is set, as for the other runtime
+ * deprecations. Every program that can hold a CryptoKey links this unit:
+ * the WebCrypto calls that produce one settle through an awaited or
+ * then-reaction value that selects it. */
+static SCR_TL bool scr_dep0203_emitted = false;
+
+static void scr_dep0203(void) {
+  if (scr_dep0203_emitted) return;
+  scr_dep0203_emitted = true;
+  static const char text[] = "Passing a CryptoKey to node:crypto functions is deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0203", sizeof "DEP0203" - 1);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred_undefined_ctor(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+__attribute__((constructor)) static void scr_dep0203_install(void) {
+  scr_crypto_deprecate_crypto_key = scr_dep0203;
 }
 
 /* Node's emitWarning tail for runtime-built warnings: deprecations are
@@ -1493,18 +1872,21 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
   scr_next_tick(c);
 }
 
-void scr_warning_emit_deferred(ScrDyn *w) {
+static void scr_warning_emit_deferred_impl(ScrDyn *w, bool undefined_ctor) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
     const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
     ScrStr *name = scr_warning_name(w);
     ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
-    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL,
+                              undefined_ctor);
     scr_str_release(message);
     scr_str_release(name);
     return;
   }
+#else
+  (void)undefined_ctor;
 #endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
@@ -1514,6 +1896,15 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+void scr_warning_emit_deferred(ScrDyn *w) { scr_warning_emit_deferred_impl(w, false); }
+
+/* The same, for a deprecation Node emits through getDeprecationWarningEmitter:
+ * a replacement sees its fourth argument (the deprecation constructor) as
+ * undefined. */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *w) {
+  scr_warning_emit_deferred_impl(w, true);
 }
 
 static SCR_TL bool scr_punycode_loaded = false;
@@ -1899,9 +2290,19 @@ static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
   return NULL;
 }
 
+/* The inspect unit reads a boxed promise through this reader: the state
+ * flags and, once settled, the outcome the boxed payload carries. */
+static void scr_dyn_promise_inspect(const ScrPromise *p, bool *pending, bool *rejected,
+                                    ScrDyn **value) {
+  *pending = scr_promise_is_pending(p);
+  *rejected = !*pending && scr_promise_is_rejected(p);
+  *value = *pending ? NULL : scr_promise_reason_dyn(p);
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_inspect_dyn_fn = scr_dyn_promise_inspect;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -1919,6 +2320,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_inspect_dyn_fn = scr_dyn_promise_inspect;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

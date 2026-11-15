@@ -47,6 +47,8 @@ import {
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
+  isPerfEntryShape,
+  isPerfNodeTimingShape,
   boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -60,6 +62,12 @@ import {
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
 import { mangleClassHeldTest, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
+import {
+  collectionKeyAccess,
+  decodeBorrowedKeyIn,
+  encodeCollectionKeyIn,
+  releaseKeyTemporary,
+} from "./string-union-keys.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
 import {
@@ -68,7 +76,6 @@ import {
   llFieldType,
   loadStructField,
   mapFlagsOffset,
-  mapKeyAccess,
   mapKeyParamType,
   releaseSym,
   traceAdapter,
@@ -340,6 +347,10 @@ export interface DynHost extends WalkerHost {
   /** The entry point and JavaScript name of each named function the module
    * makes closures of (LlEmitter.closureNames). */
   closureNames?(): readonly { entry: string; name: string }[];
+  /** The entry point and printed source text of each function the module
+   * boxes into a checked value that keeps its text
+   * (LlEmitter.closureSources). */
+  closureSources?(): readonly { entry: string; text: string }[];
   /** The module's mutable globals are per thread (a Worker program or a
    * thread-instanced library), so the state a helper keeps is too. */
   threadLocalState?: boolean;
@@ -1046,7 +1057,16 @@ export class LlDyn {
       // records/arrays inside unions, rather than a detached dyn snapshot.
       const B = new BlockBuilder();
       B.line(`%value = ${unpack}`);
-      if (
+      // A string-key union's collection stores key strings for its unit
+      // arms (string-union-keys.ts): the slot is decoded before it is boxed
+      // and encoded after it is unboxed.
+      const storesKeyStrings = role === "key" && this.host.nullableUnions.stringKey(type) !== null;
+      if (storesKeyStrings) {
+        const decoded = decodeBorrowedKeyIn(B, this.host, type, "%value");
+        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} ${decoded.value})`);
+        // The string of an escaped key is a temporary: the box holds its own.
+        if (decoded.temporary !== null) releaseKeyTemporary(B, this.host, decoded.temporary);
+      } else if (
         type.kind === "union" &&
         this.host.unionsById.get(type.unionId)?.arms.some(streamTypedRefEligible)
       ) {
@@ -1069,6 +1089,36 @@ export class LlDyn {
         B.render(),
         `}`,
         "",
+      );
+      if (storesKeyStrings) {
+        const U = new BlockBuilder();
+        U.line(`%value = call ptr @${unbox}(ptr %d, ptr null)`);
+        // The slot is owned: an escaped key (+1) takes the place of the
+        // unboxed string (+1), which is released.
+        const key = encodeCollectionKeyIn(U, this.host, type, "%value");
+        if (key.temporary !== null) {
+          this.host.declare(`declare void @scr_str_release(ptr)`);
+          const swapped = U.tmp();
+          U.line(`${swapped} = icmp ne ptr ${key.temporary}, null`);
+          const drop = U.newLabel("ukey.swap"),
+            done = U.newLabel("ukey.slot");
+          U.condBr(swapped, drop, done);
+          U.startBlock(drop);
+          U.line(`call void @scr_str_release(ptr %value)`);
+          U.br(done);
+          U.startBlock(done);
+        }
+        U.line(`%result = ptrtoint ptr ${key.stored} to i64`);
+        U.terminate("ret i64 %result");
+        this.defs.push(
+          `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
+          U.render(),
+          `}`,
+          "",
+        );
+        return;
+      }
+      this.defs.push(
         `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
         `  %value = call ${ty === "i1" ? "zeroext i1" : ty} @${unbox}(ptr %d, ptr null)`,
         `  %result = ${pack}`,
@@ -1773,7 +1823,7 @@ export class LlDyn {
     const valueKeeps = valueType !== null && this.entryKeepsReferences(valueType);
     const valueCheck =
       valueType === null ? null : this.dynCheckHelper(valueType, valueKeeps, valueKeeps);
-    const kAcc = mapKeyAccess(keyType);
+    const kAcc = collectionKeyAccess(host, keyType);
     const vAcc = valueType === null ? "f64" : elemAccess(valueType);
     const kTy = mapKeyParamType(kAcc);
     const vTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
@@ -1871,7 +1921,11 @@ export class LlDyn {
       }
       // The key is borrowed (the storage retains what it keeps); the value
       // moves in.
-      B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${k}, ${vTy} ${v})`);
+      const storedKey = encodeCollectionKeyIn(B, host, keyType, k);
+      B.line(
+        `call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${storedKey.stored}, ${vTy} ${v})`,
+      );
+      if (storedKey.temporary !== null) releaseKeyTemporary(B, host, storedKey.temporary);
       drop(keyType, k);
     });
     // The collection must still be, entry for entry, what was checked: a
@@ -2604,6 +2658,14 @@ export class LlDyn {
           readable = B.tmp();
           B.line(`${proxy} = icmp eq i32 ${kind}, ${DYN_KIND.PROXY}`);
           B.line(`${readable} = or i1 ${isObj}, ${proxy}`);
+          // A native handle (a URL, a MIMEType, a Set) is a JavaScript
+          // object: Node answers its members through the handle's getters,
+          // so a record shape matches it like a plain object.
+          const handle = B.tmp();
+          const withHandle = B.tmp();
+          B.line(`${handle} = icmp eq i32 ${kind}, ${DYN_KIND.HANDLE}`);
+          B.line(`${withHandle} = or i1 ${readable}, ${handle}`);
+          readable = withHandle;
           if (this.islandReads()) {
             const island = this.isIslandValue(B);
             const objectOrProxy = readable;
@@ -3139,8 +3201,11 @@ export class LlDyn {
     );
   }
 
-  /** `record.sourceNote(built, keys)`: the built record keeps `keys` as
-   * its source when they hold an undeclared key or another order. */
+  /** `record.sourceNote(built, keys)`: the built record keeps `keys` as its
+   * source when they hold an undeclared key (a width spread's copy) or
+   * another order: the declared keys a declared spread merge's sources
+   * supplied, in creation order, or a width spread's own keys in order
+   * (declared ones are placeholders; scr_record_source_note). */
   emitRecordSourceNote(B: BlockBuilder, built: string, keys: string, shapeId: string): void {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
@@ -4141,15 +4206,21 @@ export class LlDyn {
           const kind = this.kindOf(B, "%d"),
             object = B.tmp(),
             proxy = B.tmp(),
-            readable = B.tmp();
+            handle = B.tmp(),
+            readable = B.tmp(),
+            withHandle = B.tmp();
           B.line(`${object} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
           B.line(`${proxy} = icmp eq i32 ${kind}, ${DYN_KIND.PROXY}`);
+          // A native handle is a JavaScript object whose members its getters
+          // answer, so a record shape checks it like a plain object.
+          B.line(`${handle} = icmp eq i32 ${kind}, ${DYN_KIND.HANDLE}`);
           B.line(`${readable} = or i1 ${object}, ${proxy}`);
-          let accepts = readable;
+          B.line(`${withHandle} = or i1 ${readable}, ${handle}`);
+          let accepts = withHandle;
           if (this.islandReads()) {
             const island = this.isIslandValue(B);
             accepts = B.tmp();
-            B.line(`${accepts} = or i1 ${readable}, ${island}`);
+            B.line(`${accepts} = or i1 ${withHandle}, ${island}`);
           }
           const ok = B.newLabel("dcr.object"),
             fail = B.newLabel("dcr.fail");
@@ -5365,6 +5436,14 @@ export class LlDyn {
           host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
           B.line(`call void @scr_dyn_dirent_finish(ptr ${d})`);
         }
+        // A perf_hooks entry row takes the class prototype its entryType
+        // names (PerformanceMark or PerformanceMeasure, inheriting
+        // PerformanceEntry), so instanceof and util.inspect answer like
+        // Node's.
+        if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
+          host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+          B.line(`call void @scr_dyn_perf_entry_finish(ptr ${d})`);
+        }
         if (shape.indexValue) {
           const iv = shape.indexValue;
           host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
@@ -5823,9 +5902,23 @@ export class LlDyn {
       for (const [kind, label] of labels) branches.push(`i32 ${kind}, label %${label}`);
       B.terminate(`switch i32 ${kd}, label %${done} [ ${branches.join(" ")} ]`);
       B.startBlock(labels.get(DYN_KIND.PROXY)!);
-      host.declare(`declare void @scr_dyn_proxy_unsupported(ptr)`);
-      B.line(`call void @scr_dyn_proxy_unsupported(ptr ${host.cstr("string conversion")})`);
-      B.br(done);
+      {
+        // String(p) / `${p}`: ToPrimitive through the Proxy's own traps, then
+        // ToString of the primitive. Null leaves the exception the conversion
+        // threw pending.
+        host.declare(`declare ptr @scr_dyn_proxy_to_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_proxy_to_string(ptr %d)`);
+        const converted = B.tmp();
+        B.line(`${converted} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.px");
+        B.condBr(converted, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
+        B.br(done);
+      }
       B.startBlock(labels.get(DYN_KIND.TYPED_REF)!);
       {
         host.declare(`declare ptr @scr_dyn_typed_ref_string_view(ptr)`);
@@ -6018,7 +6111,23 @@ export class LlDyn {
       }
       B.startBlock(labels.get(DYN_KIND.FUNC)!);
       {
-        // Function.prototype.toString: the native-code form.
+        // Function.prototype.toString: the function's own source text when
+        // the program keeps it (a function the program wrote and boxes
+        // prints as Node prints it), else the native-code form.
+        if (this.fnSourceKept()) {
+          host.declare(`declare ptr @scr_dyn_fn_source_text(ptr)`);
+          const src = B.tmp();
+          B.line(`${src} = call ptr @scr_dyn_fn_source_text(ptr %d)`);
+          const kept = B.tmp();
+          B.line(`${kept} = icmp ne ptr ${src}, null`);
+          const lSource = B.newLabel("ds.fs");
+          const lNative = B.newLabel("ds.fn0");
+          B.condBr(kept, lSource, lNative);
+          B.startBlock(lSource);
+          B.line(`call void @scr_jb_puts(ptr %b, ptr ${src})`);
+          B.br(done);
+          B.startBlock(lNative);
+        }
         this.puts(B, "%b", "function ");
         const namep = B.tmp();
         const nm = B.tmp();
@@ -6400,7 +6509,26 @@ export class LlDyn {
       B.line(
         `${r} = call ptr @scr_dyn_obj_read(ptr %d, ptr ${kParts.data}, ${host.sizeType} ${kParts.len})`,
       );
+      // A program's non-constant key (`o[k]`, a Proxy get trap forwarding
+      // `t[k]`) that misses answers the Object.prototype member the object
+      // inherits, as a constant-key read does. Constant keys on an object
+      // read through the site cache instead and never reach this block, and
+      // only an undefined read pays the runtime call.
+      const lRead = B.newLabel("kg.ob.read");
+      const lInherit = B.newLabel("kg.ob.inherit");
+      const lMiss = B.newLabel("kg.ob.miss");
+      const present = B.tmp();
+      B.line(`${present} = icmp ne ptr ${r}, null`);
+      B.condBr(present, lRead, lMiss);
+      B.startBlock(lRead);
+      B.condBr(this.isUndefined(B, r), lInherit, lMiss);
+      B.startBlock(lMiss);
       B.terminate(`ret ptr ${r}`);
+      B.startBlock(lInherit);
+      host.declare(`declare ptr @scr_dyn_computed_inherited_read(ptr, ptr, ptr)`);
+      const inherited = B.tmp();
+      B.line(`${inherited} = call ptr @scr_dyn_computed_inherited_read(ptr %d, ptr %k, ptr ${r})`);
+      B.terminate(`ret ptr ${inherited}`);
       B.startBlock(lNext);
     }
     // HANDLE: the tag's modeled properties through the installed ops.
@@ -7331,13 +7459,66 @@ export class LlDyn {
    * function becomes a closure. */
   private closureNameTable(): { symbol: string; count: number } | null {
     if (this.closureNames !== undefined) return this.closureNames;
-    const entries = this.host.closureNames?.() ?? [];
-    if (entries.length === 0) return (this.closureNames = null);
+    this.closureNames = this.entryLookupTable(
+      "sc_closure_names",
+      "sc_closure_name",
+      "closure-name",
+      "the JavaScript name of a closure's function",
+      (this.host.closureNames?.() ?? []).map((e) => ({
+        entry: e.entry,
+        value: this.host.cstr(e.name),
+      })),
+    );
+    return this.closureNames;
+  }
+
+  private closureSources: { symbol: string; count: number } | null | undefined;
+
+  /** The module's function-source lookup, `sc_closure_source(closure)`: the
+   * closure-name lookup over the source text Function.prototype.toString
+   * prints for the function (function-source-text.ts). The runtime asks for
+   * a boxed function's text through it (scr_dyn_fn_source_install), so a
+   * function whose closure the module boxes answers with its text however
+   * that closure was boxed. Defined on first use; null when no function
+   * keeps its text. */
+  fnSourceTable(): { symbol: string; count: number } | null {
+    if (this.closureSources !== undefined) return this.closureSources;
+    this.closureSources = this.entryLookupTable(
+      "sc_closure_sources",
+      "sc_closure_source",
+      "function-source",
+      "the source text a closure's function prints",
+      (this.host.closureSources?.() ?? []).map((e) => ({
+        entry: e.entry,
+        value: this.host.cstr(e.text),
+      })),
+    );
+    return this.closureSources;
+  }
+
+  /** Whether the module keeps any function's source text (fnSourceTable). */
+  fnSourceKept(): boolean {
+    return (this.host.closureSources?.() ?? []).length > 0;
+  }
+
+  /** A binary search of `{ ptr entry, ptr value }` rows for a closure's
+   * entry point (an adapter's root's, ScrClosure.identity), shared by the
+   * closure-name and function-source lookups. Entry addresses are link-time
+   * values, so the lookup's first call sorts the rows by address; every
+   * call then costs the same few compares, however many rows the module
+   * has. The rows are distinct functions, so no two keys are equal. Null
+   * with no rows. */
+  private entryLookupTable(
+    table: string,
+    symbol: string,
+    what: string,
+    description: string,
+    entries: readonly { entry: string; value: string }[],
+  ): { symbol: string; count: number } | null {
+    if (entries.length === 0) return null;
     const host = this.host;
     const S = host.sizeType;
-    const table = "sc_closure_names";
-    const sorted = "sc_closure_names_sorted";
-    const symbol = "sc_closure_name";
+    const sorted = `${table}_sorted`;
     const count = entries.length;
     const rows = `[${count} x { ptr, ptr }]`;
     // The table and its run-once guard are module state: per thread where
@@ -7346,11 +7527,11 @@ export class LlDyn {
     host.declare(`declare void @qsort(ptr, ${S}, ${S}, ptr)`);
     this.defs.push(
       `@${table} = internal ${storage}global ${rows} [${entries
-        .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${host.cstr(e.name)} }`)
+        .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${e.value} }`)
         .join(", ")}]`,
       `@${sorted} = internal ${storage}global i1 false`,
       ``,
-      `define internal i32 @${symbol}_order(ptr %a, ptr %b) ${FN_ATTRS} { ; orders two closure-name rows by entry address`,
+      `define internal i32 @${symbol}_order(ptr %a, ptr %b) ${FN_ATTRS} { ; orders two ${what} rows by entry address`,
       `entry:`,
       `  %x = load ptr, ptr %a`,
       `  %y = load ptr, ptr %b`,
@@ -7362,14 +7543,14 @@ export class LlDyn {
       `  ret i32 %order`,
       `}`,
       ``,
-      `define internal void @${table}_sort() cold noinline ${FN_ATTRS} { ; sorts the closure-name rows by entry address, once`,
+      `define internal void @${table}_sort() cold noinline ${FN_ATTRS} { ; sorts the ${what} rows by entry address, once`,
       `entry:`,
       `  call void @qsort(ptr @${table}, ${S} ${count}, ${S} ptrtoint (ptr getelementptr ({ ptr, ptr }, ptr null, i32 1) to ${S}), ptr @${symbol}_order)`,
       `  store i1 true, ptr @${sorted}`,
       `  ret void`,
       `}`,
       ``,
-      `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; the JavaScript name of a closure's function`,
+      `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; ${description}`,
       `entry:`,
       `  %idp = getelementptr inbounds %ScrClosure, ptr %v, i64 0, i32 6`,
       `  %id = load ptr, ptr %idp`,
@@ -7409,7 +7590,7 @@ export class LlDyn {
       `}`,
       ``,
     );
-    return (this.closureNames = { symbol, count });
+    return { symbol, count };
   }
 
   private readonly unnamedFuncBoxes = new Map<string, string>();

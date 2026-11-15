@@ -245,8 +245,8 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'measure' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // Nothing calls unused or described: their signatures and bodies report
   // as unreached. described's declared `this` is its receiver, so
@@ -254,9 +254,9 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
   expect(sites(coverage.unreached?.diagnostics ?? [])).toEqual([
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // The bodies' statements still count once each, as not static.
   const un = coverage.unreached?.stats;
@@ -697,7 +697,7 @@ test("--explain-dynamic lists the type failures localized failure would turn int
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
   // Locals, fields and parameters degrade (stages L1 and L2), and the
-  // 'any' field compiles; only the refused WeakRef field and its
+  // 'any' field compiles; only the refused BigInt64Array field and its
   // construction remain.
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
     ["field", "tools"],
@@ -852,6 +852,21 @@ test.each(["3062-runtime-optional-record-guards.ts", "3063-runtime-optional-clas
     }
   },
 );
+
+test("abstract methods without implementations below a receiver stay static", () => {
+  // A direct call with no concrete override below the receiver's static
+  // class lowers to Node's "<callee> is not a function" TypeError, and an
+  // untyped lookup selects the nearest implementation or reads undefined:
+  // neither defers (the class dynamic dispatch's per-class branches used to
+  // ask an abstract declaration for a method value).
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/abstract-methods-without-implementations.ts"),
+  );
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+});
 
 test("coverage preserves function-local class capture environments", () => {
   const { coverage } = analyze(join(repoRoot, "tests/corpus/local-class-unknown.ts"));

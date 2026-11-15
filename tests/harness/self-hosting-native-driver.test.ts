@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { WASI } from "node:wasi";
 import { expect, test } from "vitest";
@@ -25,6 +25,7 @@ import {
   runNativeBootstrapChecks,
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
+import { libnodePack } from "./libnode.js";
 import { checkBuildCacheContracts } from "./native-build-cache-contracts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
 import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
@@ -591,6 +592,184 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
         expect(failed.status).toBe(1);
         expect(failed.stderr.toString()).toContain("not assignable");
         expect(readFileSync(retained, "utf8")).toBe("existing output");
+
+        // Programs that need a Node island. The island steps of a build are
+        // one function both drivers call (executable/islands.ts), so this
+        // compiler builds them as the Node-hosted one does: each executable
+        // runs like the program under Node, and each one whose islands are
+        // npm packages also writes the LLVM and IR the Node-hosted compiler
+        // writes. A module of the program itself is the exception: the
+        // static effect gate that admits one to the probe parses with the
+        // TypeScript 5 JavaScript parser, which only the Node-hosted
+        // compiler has, so this one keeps such a load eager. The program is
+        // the same; the load runs when Node starts instead of at its import.
+        const pack = libnodePack();
+        if (pack === null) {
+          // No libnode pack on this machine (libnode.ts; CI requires one).
+          console.log("bootstrap: Node island programs skipped (SCRIPTC_LIBNODE names no pack)");
+        } else {
+          const flagged = join(directory, "island-flag");
+          mkdirSync(join(flagged, "node_modules/tiny"), { recursive: true });
+          writeFileSync(join(flagged, "package.json"), '{ "type": "module" }\n');
+          writeFileSync(
+            join(flagged, "main.ts"),
+            'import { greet } from "tiny";\nconsole.log(greet("island"));\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/package.json"),
+            '{ "name": "tiny", "version": "1.0.0", "main": "index.js", "types": "index.d.ts" }\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/index.js"),
+            '"use strict";\nexports.greet = (name) => "hello from " + name;\n',
+          );
+          writeFileSync(
+            join(flagged, "node_modules/tiny/index.d.ts"),
+            "export declare function greet(name: string): string;\n",
+          );
+          const islandPrograms: { program: string; extra: string[]; same: boolean }[] = [
+            // a package marked "node" in package.json
+            {
+              program: "tests/corpus/6870-node-island-server-fibers/main.ts",
+              extra: [],
+              same: true,
+            },
+            // a package whose lowering is refused
+            {
+              program: "tests/corpus/8810-node-island-sdk-request-values/main.ts",
+              extra: [],
+              same: true,
+            },
+            // a package the pre-scan finds outside the native subset
+            { program: "tests/corpus/6817-node-island-esm/main.ts", extra: [], same: true },
+            // a package that would compile only with runtime fences
+            { program: "tests/corpus/6819-node-island-fenced/main.ts", extra: [], same: true },
+            // a module of the program (sloppy-mode JavaScript): eager here
+            {
+              program: "tests/corpus/8424-sloppy-annexb-block-function-island/main.js",
+              extra: [],
+              same: false,
+            },
+            // an explicit load through @scriptc/node
+            {
+              program: "tests/corpus/6850-node-island-shared-singleton/main.mjs",
+              extra: [],
+              same: true,
+            },
+            // a packaged installed in the project, named on the command line
+            { program: join(flagged, "main.ts"), extra: ["--node-island=tiny"], same: true },
+          ];
+          // The deferral probe builds its host with a C compiler. PATH is
+          // empty here, so the build names it (and, on Linux, the linker
+          // clang delegates to), for both compilers alike.
+          let islandCompiler = absoluteCommand(process.env["CC"] ?? "clang");
+          if (process.platform === "linux") {
+            const linker = await exec(islandCompiler, ["--print-prog-name=ld"], options);
+            const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+            const wrapper = join(directory, "island-cc");
+            writeFileSync(
+              wrapper,
+              `#!/bin/sh\nexec ${quote(islandCompiler)} ${quote("--ld-path=" + absoluteCommand(linker.stdout.trim()))} "$@"\n`,
+            );
+            chmodSync(wrapper, 0o755);
+            islandCompiler = wrapper;
+          }
+          const islandEnv = { SCRIPTC_LIBNODE: pack, CC: islandCompiler };
+          // The Node-hosted compiler, from source, with the same environment
+          // the native one gets apart from PATH (it runs under Node).
+          const hosted = (args: string[]) =>
+            spawnSync(
+              process.execPath,
+              ["--import", "tsx", join(root, "packages/cli/src/main.ts"), ...args],
+              {
+                ...options,
+                env: {
+                  ...process.env,
+                  ...islandEnv,
+                  SCRIPTC_CACHE_DIR: join(directory, "island-hosted-cache"),
+                },
+              },
+            );
+          const native = (args: string[]) => {
+            // As invoke(): a sanitized compiler needs the larger stack.
+            const [file, argv] =
+              sanitize && process.platform !== "win32"
+                ? [
+                    "/bin/sh",
+                    ["-c", 'ulimit -s "$(ulimit -H -s)" && exec "$0" "$@"', probe, ...args],
+                  ]
+                : [probe, args];
+            return spawnSync(file, argv, {
+              ...nativeOptions,
+              env: { ...nativeOptions.env, ...islandEnv },
+            });
+          };
+          await bootstrapStep(
+            "Node island programs match Node and the Node-hosted compiler",
+            async () => {
+              for (const [index, { program, extra, same }] of islandPrograms.entries()) {
+                const source = resolve(root, program);
+                const stem = source.replace(/^.*[\\/]/, "").replace(/\.(ts|mjs|js)$/, "");
+                const flags = [
+                  "--optimization=dev",
+                  "--strip",
+                  "--keep-llvm",
+                  "--emit-ir",
+                  ...extra,
+                ];
+                const built = join(directory, "island-native", String(index));
+                const oracleBuilt = join(directory, "island-hosted", String(index));
+                for (const directoryOf of [built, oracleBuilt])
+                  mkdirSync(directoryOf, { recursive: true });
+                const output = join(built, "program");
+                const build = native(["build", source, "-o", output, ...flags]);
+                expect(build.status, `${program}\n${build.stderr.toString()}`).toBe(0);
+                // Without Node on PATH: the executable loads the recorded pack.
+                const oracle = spawnSync(process.execPath, [source], options);
+                const actual = spawnSync(output, [], nativeOptions);
+                for (const result of [oracle, actual]) {
+                  expect(result.error, program).toBeUndefined();
+                  expect(result.signal, program).toBeNull();
+                }
+                expect(actual.status, `${program}\n${actual.stderr.toString()}`).toBe(
+                  oracle.status,
+                );
+                expect(actual.stdout.toString(), program).toBe(oracle.stdout.toString());
+                expect(actual.stderr.toString(), program).toBe(oracle.stderr.toString());
+                if (!same) continue;
+                // The same build by the Node-hosted compiler writes the same
+                // LLVM, byte for byte, and the same IR: the libnode record, the
+                // deferral snapshots and the module tree's bytes included. The
+                // IR is compared as a value, as the compiler's own is below: the
+                // two compilers serialize a module's members in different orders.
+                const hostedBuild = hosted([
+                  "build",
+                  source,
+                  "-o",
+                  join(oracleBuilt, "program"),
+                  ...flags,
+                ]);
+                expect(hostedBuild.status, `${program}\n${hostedBuild.stderr.toString()}`).toBe(0);
+                const hostedLlvm = readFileSync(join(oracleBuilt, `${stem}.ll`));
+                const hostedIr = readFileSync(join(oracleBuilt, `${stem}.ir.json`), "utf8");
+                // The comparison is over a build that does call into Node.
+                expect(hostedLlvm.includes("@scr_node_island_"), program).toBe(true);
+                expect(hostedIr.includes('"nodeIsland.'), program).toBe(true);
+                expect(
+                  readFileSync(join(built, `${stem}.ll`)).equals(hostedLlvm),
+                  `${program}: the native and the Node-hosted compiler emit different LLVM`,
+                ).toBe(true);
+                expect(
+                  isDeepStrictEqual(
+                    JSON.parse(readFileSync(join(built, `${stem}.ir.json`), "utf8")),
+                    JSON.parse(hostedIr),
+                  ),
+                  `${program}: the native and the Node-hosted compiler lower to different IR`,
+                ).toBe(true);
+              }
+            },
+          );
+        }
 
         // Which options a command takes is read from the command table
         // (cli/usage.ts): the native CLI refuses the same ones with the same line.

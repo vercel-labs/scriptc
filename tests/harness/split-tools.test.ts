@@ -12,10 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import ts from "typescript5";
 import { afterEach, expect, test } from "vitest";
 
-// The repository root supplies typescript and oxfmt to the split tools.
+// The repository root supplies typescript5 and oxfmt to the split tools.
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const tool = (name: string): string => join(root, "scripts/split", name);
 const dirs: string[] = [];

@@ -172,6 +172,12 @@ export interface ScrDiagnostic {
    * diagnostic used. A cascade clears when every one of them would
    * degrade instead of failing. */
   cause?: readonly string[];
+  /** The spans a source shadow inserted into the lines of this diagnostic's
+   * code frame (frontend/js-void-initializers.ts), each as its offset in the
+   * text `loc` points into and its length. `loc` keeps its offsets; the
+   * renderer reports the column and shows the lines without the spans, as
+   * the file is written. */
+  inserted?: readonly (readonly [start: number, length: number])[];
 }
 
 /** Where a type failure sits (localized-failure design §3.6): a
@@ -577,6 +583,24 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** SC6004, second subject — a value typed by an interface that extends
+ * Error meets a slot typed by an Error class. Such a value is an error
+ * object or a plain object that has the members; the conversion to the
+ * class is checked at runtime and throws a TypeError for the plain object,
+ * while Node reads its members structurally. */
+export function errorInterfaceToClassDivergenceDiag(
+  source: string,
+  target: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6004",
+    message: `this '${source}' is converted to the class '${target}': natively the checked conversion throws a TypeError when the value is a plain object and not an error, while Node reads the members structurally`,
+    loc,
+    hint: `type the receiving slot as '${source}', or build the value with 'new Error(...)'`,
   };
 }
 

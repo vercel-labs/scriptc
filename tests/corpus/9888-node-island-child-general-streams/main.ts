@@ -40,11 +40,14 @@ async function main(): Promise<void> {
   input.write("one\n");
   console.log("close", await closed(echo), JSON.stringify(replies), JSON.stringify(stderrText));
 
-  // Async iteration over stdout.
+  // Async iteration over stdout. The iteration ends at the pipe's end, which
+  // races the child's exit (in Node too), so exitCode is read once the child
+  // has closed.
   const lines: ChildProcess = lib.start("echo a; sleep 0.05; echo b");
+  const linesClosed = closed(lines);
   let text = "";
   for await (const chunk of lines.stdout!) text += String(chunk);
-  console.log("iterated", JSON.stringify(text), "exitCode", lines.exitCode);
+  console.log("iterated", JSON.stringify(text), "close", await linesClosed, "exitCode", lines.exitCode);
 
 }
 main();

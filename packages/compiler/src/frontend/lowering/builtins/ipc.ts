@@ -12,8 +12,9 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../../../ir/ir.js";
-import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { resultIsDiscarded } from "../call-position.js";
+import { sideEffectFreeOptionValue } from "../surfaces.js";
 import { processHasIpc } from "./process.js";
 
 /** Method calls on ChildProcess receivers: `child.on("exit"|"error", cb)`
@@ -31,8 +32,16 @@ function ignoredListenerReturn(type: IrType): boolean {
   return type.kind === "void" || (type.kind === "promise" && type.inner.kind === "void");
 }
 
-export function ipcJsonMessage(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
-  const value = lowerer.lowerExpr(node);
+/** Node serializes the message inside send(), after every argument
+ * expression has been evaluated: an argument that mutates the message changes
+ * what is sent. `value` is the lowered message value, so a caller that must
+ * evaluate other slots first can materialize it and stringify it at the end. */
+function ipcJsonStringify(
+  lowerer: Lowerer,
+  value: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr {
   if (!lowerer.jsonStringifySafe(value.type) && value.type.kind !== "dyn") {
     lowerer.unsupported(
       "SC1090",
@@ -45,11 +54,11 @@ export function ipcJsonMessage(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
 
 export function ipcMessageListener(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const cb = lowerer.lowerExpr(node);
-  if (cb.type.kind !== "func" || cb.type.params.length > 1 || !ignoredListenerReturn(cb.type.ret)) {
+  if (cb.type.kind !== "func" || cb.type.params.length > 2 || !ignoredListenerReturn(cb.type.ret)) {
     lowerer.unsupported(
       "SC1090",
       node,
-      "message listeners take zero or one parameter and may return void or Promise<void>",
+      "message listeners take at most Node's two parameters, (message, sendHandle), and may return void or Promise<void>",
     );
   }
   const param = cb.type.params[0];
@@ -58,6 +67,17 @@ export function ipcMessageListener(lowerer: Lowerer, node: ts.Expression): IrExp
       "SC1090",
       node,
       `message listeners whose parameter is not JSON-shaped or unknown (got '${lowerer.fmt(param)}')`,
+    );
+  }
+  // Node's second parameter, the handle sent along with the message. Handle
+  // transfer has no lowering, so the listener is always handed undefined;
+  // the parameter must be able to hold it, which only an untyped one does.
+  const handle = cb.type.params[1];
+  if (handle !== undefined && handle.kind !== "dyn") {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `message listeners whose sendHandle parameter is not 'any' (got '${lowerer.fmt(handle)}'); handle transfer is not lowered, so Node hands the listener undefined`,
     );
   }
   return cb;
@@ -69,6 +89,181 @@ export function ipcDisconnectListener(lowerer: Lowerer, node: ts.Expression): Ir
     lowerer.unsupported("SC1090", node, "disconnect listeners take no parameters and return void");
   }
   return cb;
+}
+
+/** Node's send arguments: `send(message[, sendHandle[, options]][, callback])`.
+ * A function in the sendHandle or options slot IS the callback, as Node's
+ * own argument shuffling decides it. A sendHandle has no lowering (the
+ * child side would need the transferred socket), so only a nullish one is
+ * accepted; `options.keepOpen` is consulted only when a handle is sent, so
+ * a literal options record is accepted and has no effect without one.
+ *
+ * The accepted sendHandle and options values are still EXPRESSIONS Node
+ * evaluates — in argument order, before the callback — so a call or a
+ * `keepOpen` value with side effects keeps them. The message is evaluated
+ * first, then the dropped slots, and the callback last, as Node's own
+ * left-to-right argument evaluation does. */
+export function ipcSendArguments(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): { json: IrExpr; callback: IrExpr | null } {
+  const args = call.arguments.nodes;
+  if (args.length < 1 || args.length > 4 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `send with ${args.length} arguments`,
+      call,
+      "send(message[, sendHandle[, options]][, callback]) is supported; a sendHandle must be null or undefined, because handle transfer is not lowered",
+    );
+  }
+  const isCallback = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
+  let sendHandle: ts.Expression | undefined;
+  let options: ts.Expression | undefined;
+  let callbackNode: ts.Expression | undefined;
+  if (args[1] !== undefined) {
+    if (isCallback(args[1])) callbackNode = args[1];
+    else {
+      sendHandle = args[1];
+      if (args[2] !== undefined) {
+        if (isCallback(args[2])) callbackNode = args[2];
+        else options = args[2];
+      }
+      if (args[3] !== undefined) {
+        if (options === undefined) {
+          lowerer.noLowering(
+            "send with four arguments and no options record",
+            call,
+            "the third argument after the message is the options record, the fourth the callback",
+          );
+        }
+        callbackNode = args[3];
+      }
+    }
+  }
+  if (sendHandle !== undefined) {
+    const type = lowerer.mapTypeOf(lowerer.typeOf(sendHandle));
+    const nullish =
+      type?.kind === "nullT" ||
+      type?.kind === "undefinedT" ||
+      // `void e` answers undefined at run time.
+      type?.kind === "void" ||
+      (type?.kind === "union" &&
+        (lowerer.unions.get(type.unionId)?.arms ?? []).every(
+          (arm) => arm.kind === "nullT" || arm.kind === "undefinedT",
+        ));
+    if (!nullish) {
+      lowerer.noLowering(
+        "send with a sendHandle",
+        sendHandle,
+        "handle transfer (a net.Socket, net.Server or dgram.Socket sent over the channel) is not lowered; pass null or undefined",
+      );
+    }
+  }
+  // An explicit nullish options value is an absent one, as in Node. Its
+  // expression is still evaluated (see `drop` below).
+  const optionType = options === undefined ? undefined : lowerer.mapTypeOf(lowerer.typeOf(options));
+  const optionsNullish =
+    optionType?.kind === "nullT" ||
+    optionType?.kind === "undefinedT" ||
+    optionType?.kind === "void";
+  if (options !== undefined && !optionsNullish) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "send with a non-literal options value",
+        options,
+        "write { keepOpen: true } or { keepOpen: false } inline",
+      );
+    }
+    for (const property of options.properties.nodes) {
+      const keepOpen =
+        ts.isPropertyAssignment(property) &&
+        ((ts.isIdentifier(property.name) && property.name.text === "keepOpen") ||
+          (ts.isStringLiteral(property.name) && property.name.text === "keepOpen"));
+      if (!keepOpen) {
+        lowerer.noLowering(
+          "send with this options shape",
+          property,
+          "keepOpen is send's only option, and it only matters when a handle is sent",
+        );
+      }
+    }
+  }
+  // The slots Node evaluates but this lowering does not send: a nullish
+  // sendHandle and the `keepOpen` values of a literal options record. Their
+  // expressions run in argument order (after the message, before the
+  // callback), so their side effects are kept even though the values are
+  // discarded.
+  const dropped: ts.Expression[] = [];
+  const drop = (node: ts.Expression): void => {
+    let value = node;
+    while (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertion(value)
+    )
+      value = value.expression;
+    // `void e` is the nullish value undefined after evaluating `e`. Its
+    // operand is what runs, and in statement position it can be lowered as
+    // itself; the void wrapper only fences in value position.
+    if (ts.isVoidExpression(value)) {
+      if (!sideEffectFreeOptionValue(value.expression)) dropped.push(value.expression);
+      return;
+    }
+    if (!sideEffectFreeOptionValue(value)) dropped.push(node);
+  };
+  if (sendHandle !== undefined) drop(sendHandle);
+  if (options !== undefined && optionsNullish) drop(options);
+  if (options !== undefined && !optionsNullish && ts.isObjectLiteralExpression(options)) {
+    for (const property of options.properties.nodes) {
+      if (ts.isPropertyAssignment(property)) drop(property.initializer);
+    }
+  }
+  const messageValue = lowerer.lowerExpr(args[0]!);
+  const effects: IrStmt[] = dropped.map((node) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(node),
+    loc: locOf(node),
+  }));
+  const callbackValue = callbackNode === undefined ? null : ipcSendCallback(lowerer, callbackNode);
+  // Node evaluates every argument expression, then send() serializes the
+  // message. A dropped slot or a callback expression can mutate the message,
+  // so only the inline shape (no effect between the message and the call)
+  // serializes where the message is evaluated.
+  const callbackHasEffects = callbackNode !== undefined && !sideEffectFreeOptionValue(callbackNode);
+  if (effects.length === 0 && !callbackHasEffects) {
+    return {
+      json: ipcJsonStringify(lowerer, messageValue, args[0]!, loc),
+      callback: callbackValue,
+    };
+  }
+  // A unit-typed message has no standalone runtime value to hold in a local;
+  // store its dynamic value, which serializes the same way.
+  const stored =
+    messageValue.type.kind === "nullT" || messageValue.type.kind === "undefinedT"
+      ? lowerer.coerceToExpected(messageValue, DYN)
+      : messageValue;
+  const messageLocal = lowerer.declareHiddenLocal("%sendMessage", stored.type);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: messageLocal.id, init: stored, loc },
+    ...effects,
+  ];
+  let callback = callbackValue;
+  if (callbackValue !== null) {
+    const callbackLocal = lowerer.declareHiddenLocal("%sendCallback", callbackValue.type);
+    stmts.push({ kind: "varDecl", localId: callbackLocal.id, init: callbackValue, loc });
+    callback = varRef(callbackLocal.id, callbackValue.type, loc);
+  }
+  return {
+    json: {
+      kind: "seqExpr",
+      stmts,
+      result: ipcJsonStringify(lowerer, varRef(messageLocal.id, stored.type, loc), args[0]!, loc),
+      type: STRING,
+      loc,
+    },
+    callback,
+  };
 }
 
 export function ipcSendCallback(lowerer: Lowerer, node: ts.Expression): IrExpr {
@@ -201,21 +396,9 @@ export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpress
 export function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
   if (lowerer.forkTargets.length === 0) return lowerChannelLessSend(lowerer, call);
-  if (
-    call.arguments.nodes.length < 1 ||
-    call.arguments.nodes.length > 2 ||
-    call.arguments.nodes.some(ts.isSpreadElement)
-  ) {
-    lowerer.noLowering(
-      `process.send with ${call.arguments.nodes.length} arguments`,
-      call,
-      "send(message[, callback]) is supported; handle transfer and options are not",
-    );
-  }
-  const json = ipcJsonMessage(lowerer, call.arguments.nodes[0]!, loc);
-  if (call.arguments.nodes[1] === undefined) {
+  const { json, callback } = ipcSendArguments(lowerer, call, loc);
+  if (callback === null) {
     return { kind: "libCall", fn: "process.send", args: [json], type: BOOL, loc };
   }
-  const callback = ipcSendCallback(lowerer, call.arguments.nodes[1]);
   return { kind: "libCall", fn: "process.sendCb", args: [json, callback], type: BOOL, loc };
 }

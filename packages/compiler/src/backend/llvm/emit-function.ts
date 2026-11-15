@@ -1562,10 +1562,11 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
  * body always completes before the call returns, which is exactly the
  * behavior of a fiber that never suspends. Excluded conservatively:
  * wasm32 (its coroutine lowering owns async bodies), module-evaluation
- * bodies (their promise caches),
- * `dyn` results (resolution may adopt a thenable), and every program
- * that uses node:test subtests — `t.test()` runs a subtest inline and
- * awaits it on the CURRENT fiber even from synchronous code. Worker
+ * bodies (their promise caches), and every program that uses node:test
+ * subtests — `t.test()` runs a subtest inline and awaits it on the CURRENT
+ * fiber even from synchronous code. A `dyn` result qualifies: its
+ * resolution settles the promise or leaves it to a reaction on the promise
+ * the result holds, and parks nothing (scr_promise_resolve_dyn). Worker
  * programs keep fibers too: their fiber epilogue owns context
  * termination (a stopping worker rejects and observes the promise), which
  * the fiberless wrapper does not reproduce. A missed suspension still

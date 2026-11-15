@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 
 /** `// @tsc-jsx` in a directory program's main.ts head: Node cannot run
  * .tsx or .jsx modules, so the oracle runs TypeScript's own emit of the

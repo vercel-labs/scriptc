@@ -710,7 +710,11 @@ function declaresGlobal(sym: ts.Symbol): boolean {
   return declarations.length > 0 && declarations.every(inGlobalScope);
 }
 
-function inGlobalScope(decl: ts.Node): boolean {
+/** Whether `decl` declares its binding in the global scope: at the top of a
+ * SCRIPT source file (a `.d.ts` listed in the project's files, a plain
+ * script) or inside a `declare global` block. A module file's top-level
+ * declaration and an ambient module's are module-scoped. */
+export function inGlobalScope(decl: ts.Node): boolean {
   // The scope a binding declaration introduces its name in: a variable's is
   // three levels up (declaration list, statement), the others' one. A
   // property of a declared object type (`execArgv` in `declare var process:

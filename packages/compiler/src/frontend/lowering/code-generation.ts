@@ -24,7 +24,8 @@ import {
 import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { v8CalleeText } from "./expressions/narrowing.js";
-import { lowerSpreadArgsCall } from "./call-arguments.js";
+import { dynArgumentPack, lowerSpreadArgsCall } from "./call-arguments.js";
+import { checkedClassConstruction } from "./class-construction.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
@@ -148,10 +149,8 @@ export function lowerCodeGenerationCall(
   const receiverNode = functionConstructorReceiverOf(lowerer, expr.expression);
   if (receiverNode !== null) {
     const receiver = lowerer.lowerExpr(receiverNode);
-    if (ts.isCallExpression(expr)) {
-      const dispatched = lowerConstructorMemberCall(lowerer, expr, receiverNode, receiver);
-      if (dispatched !== null) return dispatched;
-    }
+    const dispatched = lowerConstructorMember(lowerer, expr, receiverNode, receiver);
+    if (dispatched !== null) return dispatched;
     stmts.push({ kind: "exprStmt", expr: receiver, loc: locOf(receiverNode) });
   }
   for (const operand of indirectEvalPrefix(expr.expression)) {
@@ -202,23 +201,24 @@ export function lowerCodeGenerationCall(
   return stmts.length === 0 ? refusal : { kind: "seqExpr", stmts, result: refusal, type, loc };
 }
 
-/** `<function>.constructor(...)` on a value that crosses into the
- * checked-dynamic tier: the property read decides at run time. The receiver
- * is evaluated once into a hidden slot, the read happens before the
- * arguments (so a nullish receiver throws Node's TypeError first), and the
- * call keeps the receiver as `this`, which a function's own `constructor`
- * receives in Node. Null for a receiver whose dynamic form the runtime does
- * not answer this way — a class object, a stdlib global, a type without a
- * dynamic form — which keeps the static refusal. */
-function lowerConstructorMemberCall(
+/** `<function>.constructor(...)` and `new <function>.constructor(...)` on a
+ * value that crosses into the checked-dynamic tier: the property read
+ * decides at run time. The receiver is evaluated once into a hidden slot,
+ * the read happens before the arguments (so a nullish receiver throws Node's
+ * TypeError first), and the value the read answers is called, or
+ * constructed, as JavaScript calls or constructs it — a function's own
+ * `constructor` property wins. Null for a receiver whose dynamic form the
+ * runtime does not answer this way — a class object, a stdlib global, a type
+ * without a dynamic form — which keeps the static refusal. */
+function lowerConstructorMember(
   lowerer: Lowerer,
-  call: ts.CallExpression,
+  expr: ts.CallExpression | ts.NewExpression,
   receiverNode: ts.Expression,
   receiver: IrExpr,
 ): IrExpr | null {
   if (stdlibGlobalNameOf(lowerer, receiverNode) !== null) return null;
   if (!dynamicFunctionValueType(lowerer, receiver.type)) return null;
-  const loc = locOf(call);
+  const loc = locOf(expr);
   const slot = lowerer.declareHiddenLocal("%constructorReceiver", DYN);
   const value: IrExpr = { kind: "varRef", localId: slot.id, type: DYN, loc };
   const member: IrExpr = {
@@ -228,19 +228,49 @@ function lowerConstructorMemberCall(
     type: DYN,
     loc,
   };
-  const calleeName = v8CalleeText(call.expression);
+  const calleeName = v8CalleeText(expr.expression);
+  const argNodes = expr.arguments?.nodes ?? [];
   let result: IrExpr;
-  if (call.arguments.nodes.some((arg) => ts.isSpreadElement(arg))) {
-    const spread = lowerSpreadArgsCall(lowerer, call, member, loc);
-    if (spread === null || spread.kind !== "dynCall") return null;
-    result = { ...spread, receiver: value, calleeName };
-  } else {
-    result = {
-      kind: "dynCall",
-      callee: member,
-      receiver: value,
+  if (ts.isCallExpression(expr)) {
+    if (argNodes.some((arg) => ts.isSpreadElement(arg))) {
+      const spread = lowerSpreadArgsCall(lowerer, expr, member, loc);
+      if (spread === null || spread.kind !== "dynCall") return null;
+      result = { ...spread, receiver: value, calleeName };
+    } else {
+      result = {
+        kind: "dynCall",
+        callee: member,
+        receiver: value,
+        calleeName,
+        args: argNodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+    }
+  } else if (!argNodes.some((arg) => ts.isSpreadElement(arg))) {
+    result = checkedClassConstruction(
+      lowerer,
+      member,
+      argNodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      loc,
       calleeName,
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    );
+  } else {
+    // A runtime-length spread determines the argument list before the
+    // construction check runs. The read still happens first, so a nullish
+    // receiver throws before any argument evaluates.
+    const memberSlot = lowerer.declareHiddenLocal("%constructorMember", DYN);
+    const { stmts, pack } = dynArgumentPack(lowerer, argNodes, loc, { blame: expr });
+    result = {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: memberSlot.id, init: member, loc }, ...stmts],
+      result: {
+        kind: "libCall",
+        fn: "dyn.construct",
+        args: [varRef(memberSlot.id, DYN, loc), pack(), strLit(calleeName, loc)],
+        type: DYN,
+        loc,
+      },
       type: DYN,
       loc,
     };

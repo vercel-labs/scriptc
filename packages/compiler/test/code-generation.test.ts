@@ -148,3 +148,93 @@ console.log(made.constructor());
   );
   expect(codeGenerationThrows(mod)).toEqual([]);
 });
+
+/** The construction a `new <function>.constructor(...)` site lowers to,
+ * found by the `%constructorReceiver` slot its receiver is evaluated into.
+ * The value the read answers is constructed through the checked-dynamic
+ * tier: a lifted `%class.construct:` helper for a fixed argument list, or
+ * `dyn.construct` over a packed one for a runtime-length spread. */
+function constructorConstruct(mod: IrModule): {
+  slot: string;
+  stmts: IrStmt[];
+  result: IrExpr;
+} | null {
+  for (const sequence of sequences(mod)) {
+    const decl = sequence.stmts[0];
+    if (decl?.kind !== "varDecl" || !decl.localId.startsWith("%constructorReceiver")) continue;
+    const result = sequence.result;
+    if (result.kind === "call" && result.callee.startsWith("%class.construct:"))
+      return { slot: decl.localId, stmts: sequence.stmts, result };
+    if (
+      result.kind === "seqExpr" &&
+      result.result.kind === "libCall" &&
+      result.result.fn === "dyn.construct"
+    )
+      return {
+        slot: decl.localId,
+        stmts: [...sequence.stmts, ...result.stmts],
+        result: result.result,
+      };
+  }
+  return null;
+}
+
+test("a construction through a function value's constructor reads the value", async () => {
+  const mod = await compileToIr(
+    `/**
+ * @returns {() => number}
+ */
+function pick() {
+  return () => 1;
+}
+function argument() {
+  return "return 1";
+}
+new (pick().constructor)(argument());
+`,
+    "js",
+  );
+  // A callable return type cannot prove the function carries no own
+  // `constructor` property, so the read decides and the value it answers is
+  // constructed — a nullish receiver throws before any argument runs.
+  expect(codeGenerationThrows(mod)).toEqual([]);
+  const dispatched = constructorConstruct(mod);
+  expect(dispatched).not.toBeNull();
+  const call = dispatched!.result as Extract<IrExpr, { kind: "call" }>;
+  expect(call.callee).toBe("%class.construct:1:pick(...).constructor");
+  // The member read (the helper's first argument) reads the receiver slot,
+  // so it evaluates before the construction's arguments, and the receiver
+  // was evaluated once before it.
+  expect(call.args[0]).toMatchObject({
+    kind: "libCall",
+    fn: "js.toDyn",
+    args: [{ kind: "call", args: [{ kind: "varRef", localId: dispatched!.slot }] }],
+  });
+  expect(call.args[1]).toMatchObject({ kind: "dynFrom" });
+  expect(dispatched!.stmts).toHaveLength(1);
+});
+
+test("a spread construction packs the arguments after the member read", async () => {
+  const mod = await compileToIr(
+    `/**
+ * @returns {() => number}
+ */
+function pick() {
+  return () => 1;
+}
+const values = ["return 1"];
+new (pick().constructor)(...values);
+`,
+    "js",
+  );
+  expect(codeGenerationThrows(mod)).toEqual([]);
+  const dispatched = constructorConstruct(mod);
+  expect(dispatched).not.toBeNull();
+  // The read is held in its own slot before the argument pack evaluates, so
+  // a nullish receiver throws before any argument runs.
+  expect(dispatched!.stmts.map((stmt) => stmt.kind)).toContain("varDecl");
+  expect(dispatched!.stmts[1]).toMatchObject({ kind: "varDecl" });
+  expect(dispatched!.stmts[1]!.kind === "varDecl" && dispatched!.stmts[1]!.localId).toMatch(
+    /^%constructorMember/,
+  );
+});

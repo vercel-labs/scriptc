@@ -23,7 +23,24 @@
  * has a lowering (throw sites stamp the errno name — "ENOENT" and
  * friends; reads answer `string | undefined`), errno/syscall/path
  * typecheck and fence per member. */
+/* A typed array or a DataView as a builtin's parameter: the three members
+ * every view has, so each of them, a Buffer and a value typed with the ES
+ * library's `ArrayBufferView` are arguments. The builtin declarations use
+ * this interface instead of the library's: that one is the type of a
+ * program's own values and maps to the checked-dynamic value wherever one
+ * flows, and a builtin's signature keeps its shape whatever a program's
+ * values are. It has no value representation of its own: a builtin lowers
+ * its view argument at the call. */
+interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
+  readonly buffer: TArrayBuffer;
+  readonly byteLength: number;
+  readonly byteOffset: number;
+}
 declare namespace NodeJS {
+  /* The type of process.stdout and process.stderr, under the name
+   * @types/node gives it. */
+  type TtyWriteStream = import("tty").WriteStream;
+  interface WriteStream extends TtyWriteStream {}
   interface ProcessVersions {
     readonly node: string;
     readonly openssl?: string;
@@ -49,12 +66,50 @@ declare namespace NodeJS {
     (): MemoryUsage;
     rss(): number;
   }
+  /* process.features: Node's flags, each with the value that holds for a
+   * compiled binary (no inspector, not a debug build, no libuv, TLS and
+   * IPv6 present, no run-time TypeScript loading). A name Node does not
+   * define reads undefined through the index signature. */
+  interface ProcessFeatures {
+    readonly inspector: boolean;
+    readonly debug: boolean;
+    readonly uv: boolean;
+    readonly ipv6: boolean;
+    readonly tls_alpn: boolean;
+    readonly tls_sni: boolean;
+    readonly tls_ocsp: boolean;
+    readonly tls: boolean;
+    readonly openssl_is_boringssl: boolean;
+    readonly cached_builtins: boolean;
+    readonly require_module: boolean;
+    readonly quic: boolean;
+    readonly typescript: "strip" | "transform" | false;
+    readonly [name: string]: boolean | "strip" | "transform" | undefined;
+  }
   interface ProcessRelease {
     name: string;
     sourceUrl?: string | undefined;
     headersUrl?: string | undefined;
     libUrl?: string | undefined;
     lts?: string | undefined;
+  }
+  /* process.report: the diagnostic report of this process. A build with a
+   * Node island answers it from the island — the same process, so the
+   * report's sharedObjects lists the binary's real libraries; a build
+   * without islands fences the member rather than fabricating a report.
+   * The report object itself is checked-dynamic. */
+  interface ProcessReport {
+    directory: string;
+    filename: string;
+    compact: boolean;
+    excludeNetwork: boolean;
+    signal: string;
+    reportOnFatalError: boolean;
+    reportOnSignal: boolean;
+    reportOnUncaughtException: boolean;
+    excludeEnv: boolean;
+    getReport(error?: Error): object;
+    writeReport(filename?: string, error?: Error): string;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -229,6 +284,22 @@ declare module "console" {
  * default, signal 0 as an existence probe, and Node's error shapes
  * (`kill ESRCH`/`kill EPERM` Errors, TypeErrors for unknown signals and
  * non-int32 pids). */
+/* The IPC channel of a forked child — an owned runtime handle, so a
+ * binding or parameter carrying one stays a checked-dynamic value and its
+ * ref()/unref() dispatch at run time (type-mapper's channel mapping). */
+interface ProcessChannel {
+  ref(): void;
+  unref(): void;
+}
+
+/* Node's permission model queries (--permission), which a compiled binary
+ * cannot enable: process.permission is undefined, the same as Node's
+ * without the flag. */
+interface ProcessPermission {
+  has(scope: string, reference?: string): boolean;
+  drop(scope: string, reference?: string): void;
+}
+
 declare var process: {
   getBuiltinModule(id: string): unknown;
   hrtime: {
@@ -257,10 +328,14 @@ declare var process: {
     readonly variables: { readonly [name: string]: string | number | boolean | undefined };
     readonly target_defaults?: { readonly default_configuration: string };
   };
-  /* Node's feature probes — a compiled binary has no inspector and is
-   * not a debug build; undeclared members read undefined through the
-   * index signature. */
-  readonly features: { readonly [name: string]: boolean | undefined };
+  /* Node's feature flags with the values that hold for a compiled binary
+   * (see NodeJS.ProcessFeatures). */
+  readonly features: NodeJS.ProcessFeatures;
+  /* The permission model's object. Node defines it only under
+   * --permission, a Node command-line mode a compiled binary cannot run
+   * with, so the member is undefined exactly as in Node without the flag;
+   * a member read on it throws Node's TypeError. */
+  readonly permission: ProcessPermission | undefined;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -270,6 +345,9 @@ declare var process: {
   /* The extra CLI arguments Node itself consumed (--expose-internals,
    * ...): a compiled binary consumed none, so this is always []. */
   readonly execArgv: string[];
+  /* The option names the compatibility target accepts in NODE_OPTIONS —
+   * one stable set, like Node's. */
+  readonly allowedNodeEnvironmentFlags: ReadonlySet<string>;
   /* Node's internal "exit sequence started" flag (real, undocumented
    * surface — the test harness reads it): true while 'exit' listeners
    * run, false otherwise. */
@@ -286,6 +364,35 @@ declare var process: {
   geteuid?(): number;
   getegid?(): number;
   getgroups?(): number[];
+  /* The POSIX credential setters: a numeric id (validated as Node's
+   * uint32) or a user/group NAME resolved through getpwnam(3)/getgrnam(3);
+   * an unknown id throws Node's ERR_UNKNOWN_CREDENTIAL, an unusable one is
+   * the getpwnam-side error. Like the getters they are optional members
+   * (absent on Windows), so POSIX programs probe before calling. */
+  setuid?(id: number | string): void;
+  seteuid?(id: number | string): void;
+  setgid?(id: number | string): void;
+  setegid?(id: number | string): void;
+  setgroups?(groups: ReadonlyArray<string | number>): void;
+  /* initgroups(3): the user's base groups plus the extra group.
+   * @types/node does not declare this member; the runtime implements it. */
+  initgroups?(user: number | string, extraGroup: number | string): void;
+  /* The capture-callback pair: a function receives every uncaught
+   * exception (the 'uncaughtException' event then does not fire), null
+   * unsets it, and a second function while one is set throws. */
+  hasUncaughtExceptionCaptureCallback(): boolean;
+  setUncaughtExceptionCaptureCallback(cb: ((err: Error) => void) | null): void;
+  /* The inspector port, 9229 until a write; a write keeps the previous
+   * value unless it is 0 or 1024..65535 (Node's ERR_OUT_OF_RANGE). */
+  debugPort: number;
+  /* Source-map support for stack traces: false until enabled. */
+  readonly sourceMapsEnabled: boolean;
+  setSourceMapsEnabled(value: boolean): void;
+  /* The "Refable protocol": call the value's Symbol.for("nodejs.ref") /
+   * Symbol.for("nodejs.unref") method (or its ref/unref member) with the
+   * value as the receiver; null and undefined are no-ops. */
+  ref(maybeRefable: any): void;
+  unref(maybeRefable: any): void;
   readonly ppid: number;
   /* libuv's process title: argv[0] until set; a write is truncated to
    * the original argument area on POSIX and sets the console title on
@@ -293,6 +400,19 @@ declare var process: {
   title: string;
   argv0: string;
   readonly release: NodeJS.ProcessRelease;
+  /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
+  readonly report: NodeJS.ProcessReport;
+  /* Exit and beforeExit callbacks for objects the program registers. The
+   * callback receives the object and the event name. */
+  readonly finalization: {
+    register(ref: object, callback: (ref: object, event: "exit") => void): void;
+    registerBeforeExit(ref: object, callback: (ref: object, event: "beforeExit") => void): void;
+    unregister(ref: object): void;
+  };
+  /* Terminate the process with SIGABRT after its output is flushed
+   * (Node's diagnostics dump names its own addresses and is not
+   * reproduced; the signal and the flush are). */
+  abort(): never;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -303,6 +423,11 @@ declare var process: {
    * process.emitWarning); undefined until assigned. */
   noDeprecation?: boolean;
   throwDeprecation?: boolean;
+  /* Show the stack trace of a warning in place of its one-line report
+   * (Node's --trace-deprecation and --trace-warnings): undefined until
+   * assigned, since no command-line flag reaches a compiled binary. */
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The
@@ -330,8 +455,8 @@ declare var process: {
    * preserved. The boolean is Node's backpressure signal — these synchronous
    * writes always return true. Static BufferEncoding arguments and the
    * completion callback overloads match Node's WritableStream surface. */
-  stdout: import("tty").WriteStream;
-  stderr: import("tty").WriteStream;
+  stdout: NodeJS.WriteStream;
+  stderr: NodeJS.WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
    * data/end/error/readable events and readline's 'keypress' (on and once
    * — a 'data' or 'readable' listener keeps the event loop alive until
@@ -398,19 +523,29 @@ declare var process: {
   /* Process events, the CLI slice: SIGINT/SIGTERM handlers (watching a
    * signal replaces its default disposition; removing the last listener
    * restores it; signal listeners never keep the loop alive — all Node's
-   * rules) and the 'exit' hook (runs synchronously at termination with
-   * the exit code; scheduling anything from it is too late, like Node).
-   * `once` auto-removes after the first delivery; `off` removes by
-   * listener identity — bind the listener to a const so registration and
-   * removal see the same value. */
+   * rules), the 'exit' hook (runs synchronously at termination with the
+   * exit code; scheduling anything from it is too late, like Node) and
+   * the 'beforeExit' hook (runs each time the loop runs out of ref'd work,
+   * with process.exitCode; work it schedules runs, and Node emits it again
+   * at the next exhaustion while listeners remain — scheduling only
+   * nextTicks or microtasks does not re-emit it). `once` auto-removes
+   * after the first delivery; `off` removes by listener identity — bind
+   * the listener to a const so registration and removal see the same
+   * value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  on(event: "beforeExit", listener: (code: number) => void): void;
   /* prependListener — the same registration at the FRONT of the event's
    * listener list (Node's EventEmitter order), for the registries that
    * own a prepend entry ('exit' and the signal family). prependOnceListener
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(event: "beforeExit", listener: (code: number) => void): void;
+  prependListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
@@ -422,34 +557,89 @@ declare var process: {
    * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  /* 'multipleResolves' — a resolution or rejection that reached a promise
+   * which already resolved: (type, promise, value), delivered on the tick
+   * queued at that settle, with Node's one-time DEP0160 warning. */
+  on(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
+  /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
+   * error channel: the monitor listener observes a thrown error before the
+   * default report, the handler listener replaces it, and origin names the
+   * channel that raised it. */
+  on(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
+  once(event: "beforeExit", listener: (code: number) => void): void;
   once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
+  once(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
+  off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
+  off(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
+  removeListener(event: "beforeExit", listener: (code: number) => void): void;
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
     listener: (reason: unknown, promise: unknown) => void,
   ): void;
   removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
+  removeListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
-  send?(message: object, callback?: (error: Error | null) => void): boolean;
+  /* The IPC channel of a forked child — Node's Control: `undefined` in a
+   * process that never had a channel, null once the channel is gone
+   * (local or remote disconnect), and otherwise the channel object.
+   * `ref()` keeps the channel's messages feeding the loop alive even
+   * without a listener, `unref()` lets the process exit with the channel
+   * open (an explicit call overrides the listener-driven ref state);
+   * both return undefined. */
+  channel?: ProcessChannel;
+  send?(
+    message: object,
+    sendHandleOrCallback?: null | ((error: Error | null) => void),
+    optionsOrCallback?: object | null | ((error: Error | null) => void),
+    callback?: (error: Error | null) => void,
+  ): boolean;
   disconnect(): void;
-  on(event: "message", listener: (message: any) => void): void;
+  on(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   on(event: "disconnect", listener: () => void): void;
-  once(event: "message", listener: (message: any) => void): void;
+  once(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   once(event: "disconnect", listener: () => void): void;
 };
 
@@ -709,6 +899,56 @@ interface RsaHashedImportParams extends Algorithm {
 interface RsaPssParams extends Algorithm {
   saltLength: number;
 }
+/* Node 24's modern algorithm parameter dictionaries. These are the
+ * documented type shapes: the algorithms that consume them (Argon2, cSHAKE,
+ * KMAC, ECDH, KangarooTwelve, RSA-OAEP and TurboSHAKE) are not implemented,
+ * so the dictionaries are declared for typed sources but not admitted by a
+ * SubtleCrypto method signature. */
+interface Argon2Params extends Algorithm {
+  nonce: BufferSource;
+  memory: number;
+  passes: number;
+  parallelism: number;
+  associatedData?: BufferSource;
+  secretValue?: BufferSource;
+  version?: number;
+}
+interface CShakeParams extends Algorithm {
+  outputLength: number;
+  functionName?: BufferSource;
+  customization?: BufferSource;
+}
+interface ContextParams extends Algorithm {
+  context?: BufferSource;
+}
+interface EcdhKeyDeriveParams extends Algorithm {
+  public: CryptoKey;
+}
+interface KangarooTwelveParams extends Algorithm {
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface KmacImportParams extends Algorithm {
+  length?: number;
+}
+interface KmacKeyAlgorithm extends KeyAlgorithm {
+  length: number;
+}
+interface KmacKeyGenParams extends Algorithm {
+  length?: number;
+}
+interface KmacParams extends Algorithm {
+  algorithm: string;
+  outputLength: number;
+  customization?: BufferSource;
+}
+interface RsaOaepParams extends Algorithm {
+  label?: BufferSource;
+}
+interface TurboShakeParams extends Algorithm {
+  outputLength: number;
+  domainSeparation?: number;
+}
 interface EcKeyAlgorithm extends KeyAlgorithm {
   namedCurve: string;
 }
@@ -890,6 +1130,8 @@ interface Buffer<
     encoding?: BufferEncoding,
   ): number;
   subarray(start?: number, end?: number): Buffer<TArrayBuffer>;
+  /* The JSON snapshot JSON.stringify calls. */
+  toJSON(): { type: "Buffer"; data: number[] };
   /* @types/node's spelling — the ArrayBuffer instantiation keeps the
    * override compatible with the lib's Uint8Array.slice. */
   slice(start?: number, end?: number): Buffer<ArrayBuffer>;
@@ -1133,10 +1375,52 @@ interface UnderlyingSource<T = unknown> {
   pull?(controller: ReadableStreamDefaultController<T>): unknown;
   cancel?(reason?: unknown): unknown;
 }
+/* A byte stream's source and its controller, request and reader
+ * (@types/node's stream/web shapes). */
+interface UnderlyingByteSource {
+  type: "bytes";
+  autoAllocateChunkSize?: number;
+  start?(controller: ReadableByteStreamController): unknown;
+  pull?(controller: ReadableByteStreamController): unknown;
+  cancel?(reason?: unknown): unknown;
+}
+interface ReadableStreamBYOBRequest {
+  readonly view: Uint8Array | null;
+  respond(bytesWritten: number): void;
+  respondWithNewView(view: Uint8Array): void;
+}
+interface ReadableByteStreamController {
+  readonly byobRequest: ReadableStreamBYOBRequest | null;
+  readonly desiredSize: number | null;
+  enqueue(chunk?: ArrayBufferView): void;
+  close(): void;
+  error(reason?: unknown): void;
+}
+interface ReadableStreamBYOBReadValueResult<T extends ArrayBufferView> {
+  done: false;
+  value: T;
+}
+interface ReadableStreamBYOBReadDoneResult<T extends ArrayBufferView> {
+  done: true;
+  value: T | undefined;
+}
+type ReadableStreamBYOBReadResult<T extends ArrayBufferView> =
+  | ReadableStreamBYOBReadValueResult<T>
+  | ReadableStreamBYOBReadDoneResult<T>;
+interface ReadableStreamBYOBReader {
+  readonly closed: Promise<void>;
+  read<T extends ArrayBufferView>(
+    view: T,
+    options?: { min?: number },
+  ): Promise<ReadableStreamBYOBReadResult<T>>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
 interface ReadableStream<T = unknown> {
   readonly locked: boolean;
   cancel(reason?: unknown): Promise<void>;
   getReader(): ReadableStreamDefaultReader<T>;
+  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
   tee(): [ReadableStream<T>, ReadableStream<T>];
   pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
   pipeThrough<O>(
@@ -1147,11 +1431,32 @@ interface ReadableStream<T = unknown> {
   values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
 }
 declare var ReadableStream: {
-  new <T = unknown>(source?: UnderlyingSource<T>): ReadableStream<T>;
+  /* Two constructor signatures, like @types/node's: a union of the two
+   * source shapes in one signature would drop the contextual type of a
+   * `pull(controller)` callback, since TypeScript gives no contextual
+   * signature for a property whose type differs across the union. */
+  new (
+    source: UnderlyingByteSource,
+    strategy?: QueuingStrategy<Uint8Array>,
+  ): ReadableStream<Uint8Array>;
+  new <T = unknown>(source?: UnderlyingSource<T>, strategy?: QueuingStrategy<T>): ReadableStream<T>;
   from<T>(iterable: readonly T[]): ReadableStream<T>;
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
+  from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
   readonly prototype: ReadableStream<unknown>;
+};
+declare var ReadableStreamBYOBReader: {
+  new (stream: ReadableStream<Uint8Array>): ReadableStreamBYOBReader;
+  readonly prototype: ReadableStreamBYOBReader;
+};
+declare var ReadableByteStreamController: {
+  new (): ReadableByteStreamController;
+  readonly prototype: ReadableByteStreamController;
+};
+declare var ReadableStreamBYOBRequest: {
+  new (): ReadableStreamBYOBRequest;
+  readonly prototype: ReadableStreamBYOBRequest;
 };
 /* The writable side of a TransformStream and its writer. A program that
  * constructs a WritableStream, or a TransformStream with a transformer,
@@ -1243,9 +1548,9 @@ declare var CountQueuingStrategy: {
   new (init: { highWaterMark: number }): CountQueuingStrategy;
   readonly prototype: CountQueuingStrategy;
 };
-interface ByteLengthQueuingStrategy extends QueuingStrategy<ArrayBufferView> {
+interface ByteLengthQueuingStrategy extends QueuingStrategy<ScriptcBufferView> {
   readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<ArrayBufferView>;
+  readonly size: QueuingStrategySize<ScriptcBufferView>;
 }
 declare var ByteLengthQueuingStrategy: {
   new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
@@ -1290,6 +1595,11 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  /* Live iterators over the sorted list: names in byte order with their
+   * combined values, every Set-Cookie value on its own. */
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {
@@ -1324,7 +1634,7 @@ interface ResponseInit {
 }
 declare var Response: {
   new (
-    body?: string | Uint8Array | ReadableStream<Uint8Array> | null,
+    body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null,
     init?: ResponseInit,
   ): Response;
   readonly prototype: Response;
@@ -1353,7 +1663,7 @@ interface Blob {
 }
 declare var Blob: {
   new (
-    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources?: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     options?: BlobPropertyBag,
   ): Blob;
   readonly prototype: Blob;
@@ -1364,7 +1674,7 @@ interface File extends Blob {
 }
 declare var File: {
   new (
-    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     fileName: string,
     options?: FilePropertyBag,
   ): File;
@@ -1376,11 +1686,11 @@ interface Request {
   readonly headers: Headers;
   readonly destination: string;
   readonly referrer: string;
-  readonly referrerPolicy: string;
-  readonly mode: string;
-  readonly credentials: string;
-  readonly cache: string;
-  readonly redirect: "follow" | "error" | "manual";
+  readonly referrerPolicy: ReferrerPolicy;
+  readonly mode: RequestMode;
+  readonly credentials: RequestCredentials;
+  readonly cache: RequestCache;
+  readonly redirect: RequestRedirect;
   readonly integrity: string;
   readonly keepalive: boolean;
   readonly isReloadNavigation: boolean;
@@ -1395,19 +1705,49 @@ interface Request {
   bytes(): Promise<Uint8Array>;
   clone(): Request;
 }
+type RequestCache =
+  | "default"
+  | "force-cache"
+  | "no-cache"
+  | "no-store"
+  | "only-if-cached"
+  | "reload";
+type RequestCredentials = "include" | "omit" | "same-origin";
+type RequestMode = "cors" | "navigate" | "no-cors" | "same-origin";
+type RequestPriority = "auto" | "high" | "low";
+type RequestRedirect = "error" | "follow" | "manual";
+type ReferrerPolicy =
+  | ""
+  | "no-referrer"
+  | "no-referrer-when-downgrade"
+  | "origin"
+  | "origin-when-cross-origin"
+  | "same-origin"
+  | "strict-origin"
+  | "strict-origin-when-cross-origin"
+  | "unsafe-url";
 interface RequestInit {
-  method?: string;
-  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
-  body?: string | Uint8Array | ReadableStream<Uint8Array> | null;
+  body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
+  cache?: RequestCache;
+  credentials?: RequestCredentials;
   duplex?: "half";
-  redirect?: "follow" | "error" | "manual";
-  signal?: AbortSignal;
+  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
+  integrity?: string;
+  keepalive?: boolean;
+  method?: string;
+  mode?: RequestMode;
+  priority?: RequestPriority;
+  redirect?: RequestRedirect;
+  referrer?: string;
+  referrerPolicy?: ReferrerPolicy;
+  signal?: AbortSignal | null;
+  window?: null;
 }
 declare var Request: {
   new (input: RequestInfo, init?: RequestInit): Request;
   readonly prototype: Request;
 };
-declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
  * shipped). The handle is the Timeout interface, like Node's — it maps to
@@ -1430,10 +1770,23 @@ declare function clearInterval(handle?: Timeout | number | null | undefined): vo
  * fractional milliseconds. The .bind(performance) spelling lowers to the
  * same clock as a plain () => number function value (the mockable-clock idiom's
  * getTimestamp). mark, measure, the getEntries family and the clears run
- * over the thread's performance timeline with Node's validation; everything
- * else fences per member. */
+ * over the thread's performance timeline with Node's validation; new
+ * PerformanceMark records a mark without adding it to the timeline, and
+ * PerformanceObserver delivers the entries a mark or measure produced.
+ * Everything else fences per member. */
 declare module "node:perf_hooks" {
-  export type EntryType = "mark" | "measure";
+  export type EntryType =
+    | "dns"
+    | "function"
+    | "gc"
+    | "http2"
+    | "http"
+    | "mark"
+    | "measure"
+    | "net"
+    | "node"
+    | "quic"
+    | "resource";
   export class PerformanceEntry {
     protected constructor();
     readonly duration: number;
@@ -1443,13 +1796,58 @@ declare module "node:perf_hooks" {
     toJSON(): any;
   }
   export class PerformanceMark extends PerformanceEntry {
+    constructor(name: string, options?: PerformanceMarkOptions);
     readonly detail: any;
     readonly duration: 0;
     readonly entryType: "mark";
   }
+  export interface PerformanceMarkOptions {
+    detail?: any;
+    startTime?: number;
+  }
   export class PerformanceMeasure extends PerformanceEntry {
     readonly detail: any;
     readonly entryType: "measure";
+  }
+  /* performance.nodeTiming: the process's timing milestones, in
+   * performance.now() milliseconds (a milestone that has not happened reads
+   * -1; the startup ones are 0), and libuv's metrics as of the read. */
+  export interface PerformanceNodeTiming extends PerformanceEntry {
+    readonly entryType: "node";
+    readonly bootstrapComplete: number;
+    readonly environment: number;
+    readonly idleTime: number;
+    readonly loopExit: number;
+    readonly loopStart: number;
+    readonly nodeStart: number;
+    readonly uvMetricsInfo: UVMetrics;
+    readonly v8Start: number;
+  }
+  export interface UVMetrics {
+    readonly loopCount: number;
+    readonly events: number;
+    readonly eventsWaiting: number;
+  }
+  export class PerformanceObserverEntryList {
+    getEntries(): PerformanceEntry[];
+    getEntriesByName(name: string, type?: EntryType): PerformanceEntry[];
+    getEntriesByType(type: EntryType): PerformanceEntry[];
+  }
+  export type PerformanceObserverCallback = (
+    list: PerformanceObserverEntryList,
+    observer: PerformanceObserver,
+  ) => void;
+  export class PerformanceObserver {
+    constructor(callback: PerformanceObserverCallback);
+    /* The entry types this process reports (Node's fixed list, frozen). */
+    static readonly supportedEntryTypes: readonly EntryType[];
+    disconnect(): void;
+    observe(
+      options:
+        | { entryTypes: readonly EntryType[]; buffered?: boolean | undefined }
+        | { type: EntryType; buffered?: boolean | undefined },
+    ): void;
+    takeRecords(): PerformanceEntry[];
   }
   export interface MarkOptions {
     detail?: unknown | undefined;
@@ -1462,6 +1860,8 @@ declare module "node:perf_hooks" {
     start?: number | string | undefined;
   }
   export interface Performance {
+    readonly timeOrigin: number;
+    readonly nodeTiming: PerformanceNodeTiming;
     now(): number;
     mark(name: string, options?: MarkOptions): PerformanceMark;
     measure(name: string, startMark?: string, endMark?: string): PerformanceMeasure;
@@ -1471,6 +1871,9 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
+     * utilization, in that key order. */
+    toJSON(): any;
     eventLoopUtilization(
       utilization1?: EventLoopUtilization,
       utilization2?: EventLoopUtilization,
@@ -1484,6 +1887,12 @@ declare module "node:perf_hooks" {
     active: number;
     utilization: number;
   }
+  /* The module's own eventLoopUtilization: the same function as
+   * performance.eventLoopUtilization. */
+  export function eventLoopUtilization(
+    utilization1?: EventLoopUtilization,
+    utilization2?: EventLoopUtilization,
+  ): EventLoopUtilization;
   export interface EventLoopMonitorOptions {
     resolution?: number | undefined;
   }
@@ -1513,6 +1922,17 @@ declare module "perf_hooks" {
  * stands down and its wider global serves; the lowered surface stays
  * performance.now() either way. */
 declare var performance: import("node:perf_hooks").Performance;
+/* Node 24 also defines the perf_hooks classes as globals (the module export
+ * and the global are the same class, as with performance itself): new
+ * PerformanceMark(name, options?), PerformanceObserver with observe,
+ * disconnect and takeRecords, and the three Node keeps unconstructible
+ * (PerformanceEntry, PerformanceMeasure and PerformanceObserverEntryList
+ * throw ERR_ILLEGAL_CONSTRUCTOR). */
+declare var PerformanceEntry: typeof import("node:perf_hooks").PerformanceEntry;
+declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
+declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
+declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
+declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and
@@ -1562,6 +1982,13 @@ declare var URL: {
   new (input: string | { toString: () => string }, base?: string | URL): URL;
   canParse(input: string | URL, base?: string | URL): boolean;
   parse(input: string | URL, base?: string | URL): URL | null;
+  /* Registers a Blob (or File) under a fresh "blob:nodedata:<uuid>" and
+   * answers that id; any other value throws ERR_INVALID_ARG_TYPE. fetch()
+   * of the id resolves the registered bytes. */
+  createObjectURL(blob: Blob): string;
+  /* The id is coerced to a string and looked up; ids that were never
+   * registered (or were revoked) miss. */
+  revokeObjectURL(url: string | URL): void;
 };
 
 /* URLSearchParams — the WHATWG application/x-www-form-urlencoded list.
@@ -1579,7 +2006,10 @@ interface URLSearchParams {
   set(name: string, value: string): void;
   sort(): void;
   toString(): string;
-  forEach(callback: (value: string, name: string, searchParams: URLSearchParams) => void): void;
+  forEach(
+    callback: (value: string, name: string, searchParams: URLSearchParams) => void,
+    thisArg?: unknown,
+  ): void;
   keys(): IterableIterator<string>;
   values(): IterableIterator<string>;
   entries(): IterableIterator<[string, string]>;
@@ -1653,6 +2083,66 @@ declare module "readline" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -1771,6 +2261,66 @@ declare module "readline/promises" {
     ): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     addListener(event: "history", listener: (history: string[]) => void): this;
+    /* prependListener and prependOnceListener register the listener at
+     * the FRONT of the event's list, so it runs before the ones already
+     * there ('once' entries still leave after their one call). */
+    prependListener(event: "line", listener: (input: string) => void): this;
+    prependListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependListener(event: "error", listener: (err: Error) => void): this;
+    prependListener(event: "history", listener: (history: string[]) => void): this;
+    prependOnceListener(event: "line", listener: (input: string) => void): this;
+    prependOnceListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    prependOnceListener(event: "error", listener: (err: Error) => void): this;
+    prependOnceListener(event: "history", listener: (history: string[]) => void): this;
+    /* removeListener/off remove the LAST registration of that same
+     * function (a once registration leaves as the listener itself); an
+     * event with nothing left drops out of eventNames(). */
+    removeListener(event: "line", listener: (input: string) => void): this;
+    removeListener(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "history", listener: (history: string[]) => void): this;
+    off(event: "line", listener: (input: string) => void): this;
+    off(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener: () => void,
+    ): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    off(event: "history", listener: (history: string[]) => void): this;
+    removeAllListeners(
+      event?:
+        | "line"
+        | "close"
+        | "pause"
+        | "resume"
+        | "error"
+        | "history"
+        | "SIGINT"
+        | "SIGTSTP"
+        | "SIGCONT",
+    ): this;
+    /* listenerCount counts the listeners of the event (the async
+     * iterator's own count too); with a function only that function's
+     * registrations. eventNames answers the events that have a listener,
+     * in first-registration order: every readline event name is a string,
+     * so the array is string[] rather than EventEmitter's
+     * (string | symbol)[]. */
+    listenerCount(event: "line", listener?: (input: string) => void): number;
+    listenerCount(
+      event: "close" | "pause" | "resume" | "SIGINT" | "SIGTSTP" | "SIGCONT",
+      listener?: () => void,
+    ): number;
+    listenerCount(event: "error", listener?: (err: Error) => void): number;
+    listenerCount(event: "history", listener?: (history: string[]) => void): number;
+    eventNames(): string[];
     [Symbol.asyncIterator](): AsyncIterableIterator<string>;
     [Symbol.dispose](): void;
   }
@@ -1789,7 +2339,7 @@ declare module "node:readline/promises" {
 /* node:tty — the fd probe (the same isatty(3) behind process.*.isTTY)
  * and the supported structural view of a process output stream. */
 declare module "tty" {
-  export interface WriteStream extends NodeJS.WritableStream {
+  export interface WriteStream extends NodeJS.WritableStream, __scriptcTerminalStream.Methods {
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,
@@ -1819,6 +2369,33 @@ declare module "tty" {
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;
+}
+
+/* The color methods process.stdout and process.stderr have only while the
+ * descriptor is a terminal: a piped or redirected stream is a socket or a
+ * file stream, which has neither, so `out.getColorDepth?.(env)` answers
+ * undefined there and a plain call throws. @types/node declares them as
+ * required, and so does `Declared`, which is what a program's own type check
+ * sees. The lowering program's overrides add `lowering` to `World`, and the
+ * stream then has `Present`: the same methods, optional, so the type of an
+ * optional call admits the undefined a pipe answers. */
+declare namespace __scriptcTerminalStream {
+  interface World {}
+  interface Declared {
+    /* The color depth Node derives from an environment object
+     * (process.env by default): 1, 4, 8 or 24 bits. */
+    getColorDepth(env?: object): number;
+    hasColors(count?: number): boolean;
+    hasColors(env?: object): boolean;
+    hasColors(count: number, env?: object): boolean;
+  }
+  interface Present {
+    getColorDepth?(env?: object): number;
+    hasColors?(count?: number): boolean;
+    hasColors?(env?: object): boolean;
+    hasColors?(count: number, env?: object): boolean;
+  }
+  type Methods = World extends { lowering: true } ? Present : Declared;
 }
 declare module "node:tty" {
   export * from "tty";

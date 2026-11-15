@@ -1,0 +1,1 @@
+{"name": "island-load-imports-process-names", "private": true, "type": "module", "scriptc": {"packages": {"first-kit": "node", "second-kit": "node", "third-kit": "node"}}}

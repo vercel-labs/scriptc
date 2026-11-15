@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-chdir-value-forms.cjs"
+ ],
+ "diags": []
+}

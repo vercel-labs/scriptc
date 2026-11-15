@@ -79,6 +79,12 @@ beforeAll(() => {
     // A union with an arm that maps to the checked dynamic, inside a record.
     export type Collapsing = { tag: string | {}; name: string };
     export type Tight = { tag: string; name: string };
+    // A tagged tree: each branch arm leads back to the tree three ways.
+    export interface Fork { kind: "fork"; left: Limb; right: Limb; rest: Limb[] }
+    export interface Join { kind: "join"; left: Limb; right: Limb; rest: Limb[] }
+    export interface Tip { kind: "tip"; size: number }
+    export type Limb = Fork | Join | Tip;
+    export interface Holder { limb: Limb; name: string }
     // The same instantiations, each refined by an object type.
     export type RefinedMaps =
       | (Map<string, number> & { tag: number })[]
@@ -360,6 +366,22 @@ describe("mapCanonical", () => {
       `Same ${typeKey(same!)}`,
       `Points ${typeKey(point)}`,
     ]);
+  });
+  test("a recursive tree is mapped once per node and depth, not once per path", () => {
+    // Six members lead back to the tree. Mapping it again along every path
+    // down to the depth cap is 6^24 mappings of the same three nodes; each
+    // node maps once per depth instead. The registry counts the records the
+    // walk interns and stops a walk that repeats itself.
+    const counted = ctx();
+    const intern = counted.shapes.intern.bind(counted.shapes);
+    let interned = 0;
+    counted.shapes.intern = (...args) => {
+      if (++interned > 10_000) throw new Error("the walk maps the same nodes again");
+      return intern(...args);
+    };
+    const holder = mapCanonical(new Normalizer(checker).canon(aliases.get("Holder")!), counted);
+    expect(holder?.kind).toBe("record");
+    expect(interned).toBeLessThan(1_000);
   });
   test("a generic alias maps under bindings, where mapType needs the instance table", () => {
     const { type, params } = asTypes.get("Catalog<G, P>")!;

@@ -15,6 +15,7 @@ import {
 import { locOf } from "../program.js";
 import { staticForkString } from "../fork-target.js";
 import { lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
 /** Both argument expressions run before the constructor converts input,
  * then base. Keep that ordering even when a conversion invokes user code. */
@@ -44,12 +45,19 @@ function lowerUrlOperation(
     if (!type) lowerer.noLowering("URL.parse result type", expr);
     return { kind: "dynCheck", value, type, loc };
   };
-  if (args.length === 0 && operation !== "new") {
-    return checkedResult(
-      nodeThrowExpr(1, "ERR_MISSING_ARGS", 'The "url" argument must be specified', resultType, loc),
+  // A call without the url argument reports Node's TypeError; `new URL()`
+  // is the same run-time error, not a construction from undefined.
+  if (args.length === 0) {
+    const missing = nodeThrowExpr(
+      1,
+      "ERR_MISSING_ARGS",
+      'The "url" argument must be specified',
+      resultType,
+      loc,
     );
+    return operation === "new" ? missing : checkedResult(missing);
   }
-  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`URL.${operation} with spread, missing, or extra arguments`, expr);
   }
   if (operation === "new" && args.length === 2 && ts.isNewExpression(expr)) {
@@ -61,7 +69,11 @@ function lowerUrlOperation(
   const values = args.map((node): IrExpr => {
     const absent = lowerStaticallyUndefinedArgument(lowerer, node);
     if (absent !== null) {
-      stmts.push({ kind: "exprStmt", expr: absent, loc: locOf(node) });
+      // The literal `undefined` itself is a bare unitLit, which has no
+      // statement form; only a value with effects (a `void f()`) is kept.
+      if (!isSafeToDiscard(absent)) {
+        stmts.push({ kind: "exprStmt", expr: absent, loc: locOf(node) });
+      }
       return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(node) };
     }
     const value = lowerer.lowerExpr(node);

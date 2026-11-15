@@ -27,11 +27,20 @@ import {
   analyzeClosedGroups,
   analyzeRegionGroups,
   source,
+  throws,
   type RegionGroups,
 } from "./region-groups.js";
 import { CYC_BUF, CYC_HDR, CYC_TYPE } from "./alloc.js";
+import { VirtualTargets } from "./reference-effects.js";
 import { ALLOCATIONS, children, forEachNode, isExpr, type Node } from "./region-ir.js";
-import { planRegionSites, reachableFrom, type RegionSites } from "./region-sites.js";
+import {
+  guardedFunctions,
+  holdValues,
+  opensArena,
+  planRegionSites,
+  reachableFrom,
+  type RegionSites,
+} from "./region-sites.js";
 
 /** The count an arena object starts with (scr_arena.h SCR_ARENA_RC). */
 export const ARENA_RC = 2 ** 29;
@@ -61,6 +70,10 @@ export interface ArenaEligibility {
   /** Whether values of `t` can be on a reference cycle (the collector
    * traces them). */
   traced(t: IrType): boolean;
+  /** Whether `def` is a proven tree class (backend/tree-classes.ts):
+   * headerless, uniquely owned and acyclic, so an arena may reclaim its
+   * nodes as a group (arenaTreeClasses). */
+  tree(def: IrClassDef): boolean;
 }
 
 /** Whether `mod` can construct a WeakMap or WeakSet, directly or through
@@ -131,17 +144,50 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
     ((node.kind === "recordLit" && node.type.kind === "record" && shapes.has(node.type.shapeId)) ||
       (node.kind === "new" && classes.has(node.className)) ||
       node.kind === "arrayLit");
-  const unsafe = cycleUnsafeFunctions(mod, groups.reachable, sites, takesArena, eligible.traced);
-  for (const r of [...groups.roots, ...groups.calls]) {
-    const runs = reachableFrom(mod, [r]);
-    if ([...runs].some((f) => unsafe.has(f)) || (r.kind === "new" && !takesArena(r))) {
-      groups.roots.delete(r);
-      groups.calls.delete(r);
-      groups.drops.delete(r);
+  // The same holds for a value on the heap that holds a reference into the
+  // group from outside it (RegionGroups.holders; holdValues sent it to the
+  // heap): a group keeps its arena only if no such value can be on a cycle.
+  // A holder that opens an arena of its own is judged as that group.
+  let allocators: Set<string> | null = null;
+  const fnNames = new Set(mod.functions.map((f) => f.name));
+  const heldInCycle = (r: Node): boolean => {
+    if (!opensArena(groups, r)) return false;
+    for (const h of groups.holders(r)) {
+      // Only a call that allocates can make a cycle: one that allocates
+      // nothing hands back what it was given, and a copy is a single object
+      // that the root's proof lets nothing else refer to.
+      if (h.kind !== "call" || !sites.heldCalls.has(h)) continue;
+      allocators ??= cycleCapableAllocators(mod, eligible.traced);
+      if (allocators.has(h.callee) || !fnNames.has(h.callee)) return true;
     }
-  }
+    return false;
+  };
+  const dropUnsafe = (): boolean => {
+    const unsafe = cycleUnsafeFunctions(mod, groups.reachable, sites, takesArena, eligible.traced);
+    let dropped = false;
+    for (const r of [...groups.roots, ...groups.calls]) {
+      const runs = reachableFrom(mod, [r]);
+      if (
+        [...runs].some((f) => unsafe.has(f)) ||
+        (r.kind === "new" && !takesArena(r)) ||
+        heldInCycle(r)
+      ) {
+        groups.roots.delete(r);
+        groups.calls.delete(r);
+        groups.drops.delete(r);
+        dropped = true;
+      }
+    }
+    return dropped;
+  };
+  // A root that lost its arena here may hold a reference into the group of
+  // one that keeps its own: it takes the heap from now on (holdValues),
+  // and a call that runs with the arena suspended can make a group unsafe.
+  for (let again = dropUnsafe(); again;) again = holdValues(mod, groups, sites) && dropUnsafe();
   if (groups.roots.size === 0 && groups.calls.size === 0) return null;
   groups.reachable = reachableFrom(mod, [...groups.roots, ...groups.calls]);
+  const treeClasses = arenaTreeClasses(mod, groups, sites, defs, eligible);
+  for (const name of treeClasses) classes.add(name);
   const arenaType = (t: IrType): boolean => {
     if (t.kind === "object") return classes.has(t.className);
     if (t.kind === "record") return shapes.has(t.shapeId);
@@ -153,9 +199,104 @@ export function planArenas(mod: IrModule, eligible: ArenaEligibility): ArenaPlan
     return t.kind === "array" && t.elem.kind !== "union" && arenaType(t.elem);
   };
   const keptSite = (e: Node): boolean => sites.arenaSites.has(e) || groups.roots.has(e);
-  for (const r of analyzeClosedGroups(mod, groups, arenaType, keptSite)) groups.closed.add(r);
-  const allClosed = [...groups.roots, ...groups.calls].every((r) => groups.closed.has(r));
+  const close = (): { closed: Set<Node>; allClosed: boolean } => {
+    const closed = analyzeClosedGroups(mod, groups, arenaType, keptSite);
+    return {
+      closed,
+      allClosed: [...groups.roots, ...groups.calls].every((r) => closed.has(r)),
+    };
+  };
+  let { closed, allClosed } = close();
+  // An open (not closed) root caps its arena at SCR_ARENA_CAP and sends the
+  // rest of its allocations to the heap. A tree node has no count, so one
+  // that fell back to the heap would have nothing to free it: adopt tree
+  // classes only when every group is closed and the arena takes every byte.
+  if (!allClosed && treeClasses.size > 0) {
+    for (const name of treeClasses) classes.delete(name);
+    ({ closed, allClosed } = close());
+  }
+  for (const r of closed) groups.closed.add(r);
   return { groups, sites, shapes, classes, allClosed };
+}
+
+/** Whether `node` allocates an object that can be on a reference cycle. */
+function allocatesCycleCapable(node: Node, traced: (t: IrType) => boolean): boolean {
+  return (
+    isExpr(node) &&
+    traced(node.type) &&
+    (node.kind === "closure"
+      ? node.captures.length > 0
+      : (ALLOCATIONS.has(node.kind) || source(node) || node.kind === "libCall") &&
+        node.kind !== "call" &&
+        node.kind !== "callValue" &&
+        node.kind !== "virtualCall")
+  );
+}
+
+const NO_CALLEES: readonly string[] = [];
+
+/** The functions `node` itself calls, constructs or makes a closure of;
+ * null when it calls a function the call graph cannot name (a function
+ * value, a dynamic call, a virtual call with no known target).
+ *
+ * A closure's allocations are found in the function that makes it, not in
+ * the one that calls it: `tie(xs, cb) { return cb(xs) }` allocates nothing
+ * a direct edge leads to, and still hands back the ring its callback tied
+ * around `xs`. So a call of an unnamed function counts as allocating a
+ * cycle-capable object wherever these edges are followed. */
+function calleesOf(vt: VirtualTargets, node: Node): readonly string[] | null {
+  switch (node.kind) {
+    case "call":
+      return [node.callee];
+    case "new":
+      return [`%${node.className}.constructor`];
+    case "closure":
+      return [node.fnName];
+    case "virtualCall": {
+      const targets = vt.targets(node.className, node.method);
+      return targets !== null && targets.length > 0 ? targets : null;
+    }
+    case "callValue":
+    case "newValue":
+    case "dynCall":
+    case "dynInvoke":
+      return null;
+    default:
+      return NO_CALLEES;
+  }
+}
+
+/** The functions of `mod` that can allocate a cycle-capable object, by
+ * themselves or through a function they call, construct or make a closure
+ * of, or through a function they call that the call graph cannot name
+ * (calleesOf). A throw has the type of the value it stands in for and
+ * makes none. */
+function cycleCapableAllocators(mod: IrModule, traced: (t: IrType) => boolean): Set<string> {
+  const out = new Set<string>();
+  const callers = new Map<string, string[]>();
+  const vt = new VirtualTargets(mod.classes ?? []);
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (isExpr(node) && !throws(node) && allocatesCycleCapable(node, traced)) out.add(fn.name);
+      const callees = calleesOf(vt, node);
+      if (callees === null) {
+        out.add(fn.name);
+        return;
+      }
+      for (const callee of callees) {
+        const list = callers.get(callee);
+        if (list === undefined) callers.set(callee, [fn.name]);
+        else list.push(fn.name);
+      }
+    });
+  const queue = [...out];
+  while (queue.length > 0)
+    for (const caller of callers.get(queue.pop()!) ?? [])
+      if (!out.has(caller)) {
+        out.add(caller);
+        queue.push(caller);
+      }
+  return out;
 }
 
 /** The functions in `reachable` that can allocate a cycle-capable object
@@ -170,15 +311,10 @@ function cycleUnsafeFunctions(
   traced: (t: IrType) => boolean,
 ): Set<string> {
   const fns = new Map(mod.functions.map((f) => [f.name, f]));
-  const allocatesTraced = (node: Node): boolean =>
-    isExpr(node) &&
-    traced(node.type) &&
-    (node.kind === "closure"
-      ? node.captures.length > 0
-      : (ALLOCATIONS.has(node.kind) || source(node) || node.kind === "libCall") &&
-        node.kind !== "call" &&
-        node.kind !== "callValue");
-  // Functions with a cycle-capable allocation, and what they call.
+  const vt = new VirtualTargets(mod.classes ?? []);
+  const allocatesTraced = (node: Node): boolean => allocatesCycleCapable(node, traced);
+  // Functions with a cycle-capable allocation (their own, or that of a
+  // function they call that the call graph cannot name), and what they call.
   const direct = new Set<string>();
   const calls = new Map<string, Set<string>>();
   const heap = new Set<string>();
@@ -192,9 +328,9 @@ function cycleUnsafeFunctions(
         direct.add(name);
         if (!takesArena(node)) heap.add(name);
       }
-      if (node.kind === "call") out.add(node.callee);
-      else if (node.kind === "new") out.add(`%${node.className}.constructor`);
-      else if (node.kind === "closure") out.add(node.fnName);
+      const callees = calleesOf(vt, node);
+      if (callees === null) direct.add(name);
+      else for (const callee of callees) out.add(callee);
     });
   }
   const tracedSomewhere = new Set(direct);
@@ -225,6 +361,72 @@ function cycleUnsafeFunctions(
   return heap;
 }
 
+/** The tree classes whose nodes a group arena may reclaim, with the proof
+ * that lets it happen: every node of an adopted tree is allocated in the
+ * arena of the tree's root, so the drop reclaims the whole subtree at the
+ * moment the tree dies and no node ever needs a free of its own.
+ *
+ * A tree node is uniquely owned, acyclic and headerless (backend/
+ * tree-classes.ts): nothing outside its owner can reach it, no counted path
+ * ever sees it, and its memory can be reclaimed wholesale like the rest of
+ * its group. Ownership does not change; only where the bytes come from.
+ * What the proof adds is that the node cannot outlive the arena's drop:
+ *
+ * - every `new C` in the module takes an arena, so no instance is one the
+ *   heap fallback allocated. A root opens an arena itself; every other site
+ *   must be a kept site in a function that always runs inside an open arena
+ *   (`guardedFunctions`), so the arena-aware constructor never misses.
+ * - the function holding a non-root site opens no arena of its own, so a
+ *   node lands in the arena of the root it belongs to, not in a nested one
+ *   that closes and drops earlier.
+ *
+ * `guardedFunctions` bounds calls the call graph cannot name by the
+ * module's own function values (every closure body), constructors and
+ * methods, so no statically defined function escapes the check.
+ *
+ * The region plan already proves the root's value dies no later than its
+ * arena's drop, and a tree's nodes are reachable only from that value, so
+ * the drop is the tree's teardown. */
+function arenaTreeClasses(
+  mod: IrModule,
+  groups: RegionGroups,
+  sites: RegionSites,
+  defs: ReadonlyMap<string, IrClassDef>,
+  eligible: ArenaEligibility,
+): Set<string> {
+  const out = new Set<string>();
+  const news = new Map<string, { node: Node; fn: string }[]>();
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (node.kind !== "new") return;
+      const list = news.get(node.className);
+      if (list === undefined) news.set(node.className, [{ node, fn: fn.name }]);
+      else list.push({ node, fn: fn.name });
+    });
+  if (news.size === 0) return out;
+  const unguarded = guardedFunctions(mod, groups, sites);
+  // The functions that open an arena of their own, by name.
+  const opens = new Set<string>();
+  for (const fn of mod.functions)
+    forEachNode(fn.body, (node) => {
+      if (groups.roots.has(node) || groups.calls.has(node)) opens.add(fn.name);
+    });
+  for (const [name, created] of news) {
+    const def = defs.get(name);
+    if (def === undefined || !eligible.tree(def)) continue;
+    const ok = created.every(
+      ({ node, fn }) =>
+        groups.roots.has(node) ||
+        (sites.arenaSites.has(node) &&
+          groups.reachable.has(fn) &&
+          !unguarded.has(fn) &&
+          !opens.has(fn)),
+    );
+    if (ok) out.add(name);
+  }
+  return out;
+}
+
 /** The arena-aware constructor of a record shape or class. */
 export function arenaNewSym(newSym: string): string {
   return `${newSym}.r`;
@@ -243,6 +445,8 @@ export function arenaAware(plan: ArenaPlan | null, fn: IrFunction | undefined): 
 /** What arenaNewLines needs from its host (a subset of ShapeHost). */
 export interface ArenaHost {
   declare(decl: string): void;
+  /** A constant string's LLVM operand. */
+  cstr(text: string): string;
   threadLocalAlloc?: boolean;
   inlineAlloc?: boolean;
   /** The target C ABI's `size_t`: also the pointer width. */
@@ -272,9 +476,12 @@ export function arenaCurrentAddress(host: ArenaHost, dest: string): string[] | n
  * does (with the count ARENA_RC). When `dispose` names a function and the
  * arena is not closed, the object goes on the arena's dispose list, which
  * the drop runs. The heap constructor's object when no arena is open or
- * the arena is full. The bump, the clear, the header and the dispose entry
- * are inline (scr_arena.c's ScrArena ABI); scr_arena_obj takes a new chunk
- * and scr_arena_disposal grows the list.
+ * the arena is full, unless `miss` is `trap`: an adopted tree node has no
+ * count word, so a heap copy of it could never be freed, and the plan
+ * proves the heap path unreachable (arenas.ts, arenaTreeClasses). The bump,
+ * the clear, the header and the dispose entry are inline (scr_arena.c's
+ * ScrArena ABI); scr_arena_obj takes a new chunk and scr_arena_disposal
+ * grows the list.
  *
  * `clear` is what the bump path zeroes: the whole object, or only the
  * collector header, for callers that store every word of the object before
@@ -291,8 +498,13 @@ export function arenaNewLines(
   init: string[],
   result: string,
   clear: "object" | "header" = "object",
+  /** What to do when no arena is open (or the arena cannot take the
+   * object): allocate on the heap, or, for a tree node that has no count
+   * word and so could never be freed there, stop. */
+  miss: "heap" | "trap" = "heap",
 ): string[] {
   const S = host.sizeType;
+  const fail = miss === "trap" ? "miss" : "heap";
   // ScrArena's fields and dispose entries are pointer-sized (scr_arena.c).
   const word = S === "i32" ? 4 : 8;
   host.declare(`declare ptr @scr_arena_obj(ptr, ${S}, ptr)`);
@@ -307,7 +519,7 @@ export function arenaNewLines(
     `entry:`,
     ...current,
     `  %on = icmp ne ptr %a, null`,
-    `  br i1 %on, label %arena, label %heap`,
+    `  br i1 %on, label %arena, label %${fail}`,
     `arena:`,
   ];
   // A traced type's first object registers its descriptor on the slow path.
@@ -355,7 +567,7 @@ export function arenaNewLines(
     `slow:`,
     `  %os = call ptr @scr_arena_obj(ptr %a, ${S} ${size}, ptr ${cyc ?? "null"})`,
     `  %got = icmp ne ptr %os, null`,
-    `  br i1 %got, label %init, label %heap`,
+    `  br i1 %got, label %init, label %${fail}`,
     `init:`,
     `  %o = phi ptr [ %of, %carve ], [ %os, %slow ]`,
     ...init,
@@ -387,14 +599,25 @@ export function arenaNewLines(
       `done:`,
     );
   }
-  lines.push(
-    `  ret ptr ${result}`,
-    `heap:`,
-    `  %h = call ptr @${newSym}()`,
-    `  ret ptr %h`,
-    `}`,
-    ``,
-  );
+  if (miss === "trap") {
+    host.declare(`declare void @scr_trap(ptr)`);
+    lines.push(
+      `  ret ptr ${result}`,
+      `miss:`,
+      `  call void @scr_trap(ptr ${host.cstr("scriptc: internal error: a tree node was allocated outside its arena\n")})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+  } else
+    lines.push(
+      `  ret ptr ${result}`,
+      `heap:`,
+      `  %h = call ptr @${newSym}()`,
+      `  ret ptr %h`,
+      `}`,
+      ``,
+    );
   return lines;
 }
 

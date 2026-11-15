@@ -1,0 +1,27 @@
+conditional-spread-two-arms.ts:10:24 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})`, `...(c ? record : {})` and one `...(c ? { a } : { b })` after properties without effects (spell other shapes as optional fields) are not supported yet
+
+   9 | function effectBefore(flag: boolean) {
+  10 |   return { id: next(), ...(flag ? { a: 1 } : { b: "2" }) };
+     |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | }
+
+conditional-spread-two-arms.ts:15:12 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})`, `...(c ? record : {})` and one `...(c ? { a } : { b })` after properties without effects (spell other shapes as optional fields) are not supported yet
+
+  14 | function product(flag: boolean, other: boolean) {
+  15 |   return { ...(flag ? { a: 1 } : { b: "2" }), ...(other ? { x: 1 } : { y: "2" }) };
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | }
+
+conditional-spread-two-arms.ts:20:19 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})`, `...(c ? record : {})` and one `...(c ? { a } : { b })` after properties without effects (spell other shapes as optional fields) are not supported yet
+
+  19 | function nested(flag: boolean, other: boolean) {
+  20 |   return { id: 1, ...(flag ? { a: 1 } : other ? { b: "2" } : { c: true }) };
+     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | }
+
+conditional-spread-two-arms.ts:25:22 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})`, `...(c ? record : {})` and one `...(c ? { a } : { b })` after properties without effects (spell other shapes as optional fields) are not supported yet
+
+  24 | function runtimeKey(flag: boolean, key: string) {
+  25 |   return { [key]: 1, ...(flag ? { a: 1 } : { b: "2" }) };
+     |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  26 | }

@@ -35,7 +35,11 @@ import { emitUnionWiden } from "./expr-records.js";
 import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
 import { jsImmediates } from "./jsval.js";
 import { jsIcLiteralKey } from "../../ir/js-ic.js";
-import { ARRAY_PROTOTYPE_MEMBER_NAMES, DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
+import {
+  ARRAY_PROTOTYPE_MEMBER_NAMES,
+  DYN_BUFFER_METHODS,
+  isProtoKeyLiteral,
+} from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -264,16 +268,20 @@ export function emitDynamicExpr(
       // BORROWED by scr_dyn_invoke; the result is owned and may ride a
       // pending exception.
       const recv = emitBorrowedInput(host, e.recv);
-      host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
+      // A call named isPrototypeOf reads the inherited Object.prototype
+      // method when the receiver's chain does not define it.
+      const prepare =
+        e.method === "isPrototypeOf"
+          ? "scr_dyn_prepare_method_inherited"
+          : "scr_dyn_prepare_method";
+      host.declare(`declare ptr @${prepare}(ptr, ptr)`);
       let prepared: string;
       if (jsIcMethods(host)) {
         // Dynamic-tier code reads the method through the site's cache.
         prepared = emitJsIcMethod(host, e, recv.name);
       } else {
         prepared = B.tmp();
-        B.line(
-          `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
-        );
+        B.line(`${prepared} = call ptr @${prepare}(ptr ${recv.name}, ptr ${host.cstr(e.method)})`);
       }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
@@ -389,8 +397,37 @@ export function emitDynamicExpr(
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        // A literal member is a property definition, not an assignment:
+        // `{ ["__proto__"]: v }` creates an own data property instead of
+        // running Object.prototype's prototype setter (scr_json.c). The
+        // object model build answers that, and this spelling selects it
+        // (runtime-features.ts).
+        if (isProtoKeyLiteral(f.key)) {
+          host.declare(`declare void @scr_dyn_key_define(ptr, ptr, ptr)`);
+          B.line(`call void @scr_dyn_key_define(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`);
+          host.emitPendingCheck();
+          continue;
+        }
         if (cached && jsIcLiteralKey(f.key) !== null) {
           emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
+        if (f.key.kind !== "strLit" && host.jsObjectModel) {
+          // A key computed at run time can name `__proto__` too, and the
+          // member is a property definition: the object model build defines
+          // the own property (coercing the key first for a dynamic one)
+          // instead of replacing the literal's [[Prototype]] (scr_json.c).
+          // The compile-time spellings are the strLit keys above.
+          if (f.key.type.kind === "dyn") {
+            host.declare(`declare void @scr_dyn_key_define_computed(ptr, ptr, ptr)`);
+            B.line(
+              `call void @scr_dyn_key_define_computed(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
+            );
+          } else {
+            host.declare(`declare void @scr_dyn_key_define(ptr, ptr, ptr)`);
+            B.line(`call void @scr_dyn_key_define(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`);
+          }
+          host.emitPendingCheck();
           continue;
         }
         B.line(
@@ -942,6 +979,27 @@ export function emitDynamicExpr(
         } else if (e.test === "object") {
           // `typeof v === "object"`: objects, arrays, bytes, native
           // handles, promises, null, and native reference capsules.
+          // The kind alone answers for every value but a capsule, a handle
+          // and a proxy: objects, arrays, bytes, promises and null are
+          // objects and never callable, and every other kind is neither.
+          // Only those three ask the runtime (a capsule can hold a function,
+          // a handle can be an island function, a proxy answers for its
+          // target).
+          const plain = oneOf([
+            DYN_KIND.OBJ,
+            DYN_KIND.ARR,
+            DYN_KIND.BYTES,
+            DYN_KIND.PROMISE,
+            DYN_KIND.NULL,
+          ]);
+          const asks = oneOf([DYN_KIND.TYPED_REF, DYN_KIND.HANDLE, DYN_KIND.PROXY]);
+          const answer = B.slot();
+          B.entryAllocas.push(`${answer} = alloca i1`);
+          B.line(`store i1 ${plain}, ptr ${answer}`);
+          const ask = B.newLabel("dto.ask");
+          const done = B.newLabel("dto.j");
+          B.condBr(asks, ask, done);
+          B.startBlock(ask);
           const object = orNativeRef(
             oneOf([
               DYN_KIND.OBJ,
@@ -958,10 +1016,15 @@ export function emitDynamicExpr(
           host.declare("declare zeroext i1 @scr_dyn_is_callable(ptr)");
           const callable = B.tmp();
           const nonCallable = B.tmp();
-          test = B.tmp();
+          const asked = B.tmp();
           B.line(`${callable} = call zeroext i1 @scr_dyn_is_callable(ptr ${d.name})`);
           B.line(`${nonCallable} = xor i1 ${callable}, true`);
-          B.line(`${test} = and i1 ${object}, ${nonCallable}`);
+          B.line(`${asked} = and i1 ${object}, ${nonCallable}`);
+          B.line(`store i1 ${asked}, ptr ${answer}`);
+          B.br(done);
+          B.startBlock(done);
+          test = B.tmp();
+          B.line(`${test} = load i1, ptr ${answer}`);
         } else if (e.test === "array") {
           // Array.isArray accepts native arrays and typed array capsules.
           test = orNativeRef(oneOf([DYN_KIND.ARR]), "scr_dyn_ref_is_array");
@@ -1131,12 +1194,17 @@ export function emitDynamicExpr(
           }
           default: {
             // Ref arms: pointer identity, exactly JS object equality.
-            // Function arms compare identity roots (adapters included).
+            // Function arms compare identity roots (adapters included),
+            // and promise arms the identity a promise shares with every
+            // conversion of it, as `===` of two promises does.
             const a = host.unionPeek(l.name, def.id);
             const b = host.unionPeek(r.name, def.id);
             const t = B.tmp();
             if (arm.kind === "func") B.line(`${t} = ${closureIdentityEqual(host, a, b)}`);
-            else B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
+            else if (arm.kind === "promise") {
+              host.declare(`declare zeroext i1 @scr_promise_identity_equal(ptr, ptr)`);
+              B.line(`${t} = call zeroext i1 @scr_promise_identity_equal(ptr ${a}, ptr ${b})`);
+            } else B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
           }
@@ -1475,6 +1543,7 @@ export const INHERITED_OBJECT_MEMBERS: ReadonlySet<string> = new Set([
   "toString",
   "hasOwnProperty",
   "propertyIsEnumerable",
+  "isPrototypeOf",
 ]);
 
 /** EventEmitter methods that register their second argument as a listener. */

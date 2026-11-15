@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -17,6 +18,7 @@ import {
 import { transformStmtList } from "../../ir/traverse.js";
 import { genResultRecord } from "../type-mapper.js";
 import type { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, FixpointWorklist } from "./fixpoint-worklist.js";
 import type { Lowerer, UntypedLoopSite } from "./lowerer.js";
 
 type GeneratorType = Extract<IrType, { kind: "generator" }>;
@@ -53,6 +55,8 @@ export class GeneratorDynamicDispatch {
   private readonly properties = new Map<string, { fn: IrFunction; types: Set<string> }>();
   /** Whether %main registers the next/return getters with the runtime. */
   private membersRegistered = false;
+  /** The bodies still to rewrite; see FixpointWorklist. */
+  private worklist: FixpointWorklist | null = null;
 
   /** The getter for a generator capsule's `method` (next, return, throw or
    * an iterator helper): a checked function over the capsule's type keys
@@ -131,13 +135,25 @@ export class GeneratorDynamicDispatch {
       if (found.runtimeSteps) runtimeSteps = true;
       if (found.generatorSteps) rewrite.add(fn);
     }
+    const worklist = (this.worklist ??= new FixpointWorklist(sites));
     let changed = false;
+    // A helper-method read cannot rewrite until a generator exists, so its
+    // body records that table and is rewritten when one first does.
+    const depValue = (tag: string): string => {
+      if (tag !== "generators")
+        throw new InternalCompilerError(`unknown generator rewrite dependency ${tag}`);
+      return this.generators.size > 0 ? "1" : "0";
+    };
     for (const fn of functions) {
       // The generator helper's fallback may itself dispatch native classes.
       // Its class helper must retain the runtime fallback, not route back
       // to the generator helper and form an indirect recursion cycle.
       if (this.generated.has(fn) || classHelpers.has(fn) || !rewrite.has(fn)) continue;
-      fn.body = transformStmtList(fn.body, {
+      const settled = !worklist.needsRewrite(fn, depValue);
+      if (settled && !checkIncremental) continue;
+      let touched = false;
+      let deferred = false;
+      const body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
           // A helper method read reaches the runtime's helpers through the
@@ -151,6 +167,7 @@ export class GeneratorDynamicDispatch {
             const method = expr.key.value;
             if (!this.properties.has(method)) changed = true;
             const getter = this.ensureProperty(lowerer, method, expr);
+            touched = true;
             return {
               kind: "call",
               callee: getter.name,
@@ -159,6 +176,12 @@ export class GeneratorDynamicDispatch {
               loc: expr.loc,
             };
           }
+          if (
+            expr.kind === "dynKeyGet" &&
+            expr.key.kind === "strLit" &&
+            HELPER_METHODS.has(expr.key.value)
+          )
+            deferred = true;
           if (expr.kind !== "dynInvoke" || !GENERATOR_STEP_METHODS.has(expr.method)) return expr;
           const key = JSON.stringify([expr.method, expr.args.length, expr.calleeName]);
           let dispatch = this.dispatches.get(key);
@@ -199,6 +222,7 @@ export class GeneratorDynamicDispatch {
             lowerer.shareHelper(helper);
             changed = true;
           }
+          touched = true;
           return {
             kind: "call",
             callee: dispatch.fn.name,
@@ -208,6 +232,17 @@ export class GeneratorDynamicDispatch {
           };
         },
       });
+      if (settled) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(
+            `the settled generator rewrite of ${fn.name} changed its body`,
+          );
+        continue;
+      }
+      if (touched) fn.body = body;
+      if (deferred) worklist.record(fn, new Map([["generators", depValue("generators")]]));
+      else worklist.record(fn);
     }
     // Iterator helpers called on untyped values may reach a compiled
     // generator's capsule; the runtime drives it through these getters,
@@ -459,7 +494,8 @@ export class GeneratorDynamicDispatch {
         byValue.set(site.value, site);
       }
       if (byKind.size === 0) continue;
-      fn.body = transformStmtList(fn.body, {
+      let touched = false;
+      const body = transformStmtList(fn.body, {
         expr: (expr) => expr,
         stmt: (stmt) => {
           if (stmt.kind !== "varDecl" || stmt.init === null) return stmt;
@@ -469,6 +505,7 @@ export class GeneratorDynamicDispatch {
             const init = this.loopKind(opened, types, stmt.loc);
             if (this.loopKindCount(stmt.init) === types.length) return stmt;
             changed = true;
+            touched = true;
             return { ...stmt, init };
           }
           const site = byValue.get(stmt.localId);
@@ -508,9 +545,11 @@ export class GeneratorDynamicDispatch {
             };
           }
           changed = true;
+          touched = true;
           return { ...stmt, init };
         },
       });
+      if (touched) fn.body = body;
     }
     return changed;
   }

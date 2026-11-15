@@ -50,6 +50,7 @@ class Workspace {
       outDir: join(this.dir, "out"),
       outPath,
       outputKind: "ir",
+      ...(this.define ? { define: this.define } : {}),
     });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
@@ -59,13 +60,25 @@ class Workspace {
   /** The units with a record in the last build, recorded or applied. */
   units: string[] = [];
 
+  /** The `--define` values of every build, when the program has them. */
+  define: Record<string, string> | undefined;
+
   /** Builds with reuse, checks the IR against a build without it, and
    * returns the units whose stored records applied. A build in verify mode
    * follows and must give the same IR. */
   async build(): Promise<string[]> {
+    const { reused, plain, applied } = await this.both();
+    expect(reused).toBe(plain);
+    return applied;
+  }
+
+  /** Builds with reuse and without it: the IR of each, and the units whose
+   * stored records applied. A build in verify mode follows and must give
+   * the IR of the build with reuse. */
+  async both(): Promise<{ reused: string; plain: string; applied: string[] }> {
     const label = `build-${this.builds++}`;
     const reused = await this.lower(label, true);
-    expect(reused).toBe(await this.lower(`${label}-plain`, false));
+    const plain = await this.lower(`${label}-plain`, false);
     const applied: string[] = [];
     this.units = [];
     for (const line of (await readFile(join(this.dir, label, "records.jsonl"), "utf8"))
@@ -79,7 +92,7 @@ class Workspace {
     }
     this.units.sort();
     expect(await this.lower(`${label}-verify`, true, true)).toBe(reused);
-    return applied.sort();
+    return { reused, plain, applied: applied.sort() };
   }
 
   dispose(): Promise<void> {
@@ -412,6 +425,57 @@ test("an import of an anonymous default export lowers again when its signature c
     const applied = await workspace.build();
     expect(has(applied, "grown")).toBe(false);
     expect(has(applied, "next")).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a stored unit holds no condition --define decided, so a computed write added elsewhere finds it right", async () => {
+  // `mode` spells DEV and nothing of the environment, so its stored record
+  // applies after `setup` gains a write through a computed name. A build
+  // that reuses units therefore leaves the condition to the run: the record
+  // holds both branches, where a build without reuse keeps only the one the
+  // define selects until the program has such a write.
+  const workspace = await Workspace.create({
+    "flags.ts": 'export const DEV = process.env.NODE_ENV !== "production";\n',
+    "check.ts": [
+      'import { DEV } from "./flags.js";',
+      "export function mode(): string {",
+      "  if (DEV) {",
+      '    return "development branch";',
+      "  }",
+      '  return "production branch";',
+      "}",
+      "",
+    ].join("\n"),
+    "setup.ts": [
+      "export function setup(name: string): void {",
+      "  console.log(name);",
+      "}",
+      "",
+    ].join("\n"),
+    "main.ts": [
+      'import { mode } from "./check.js";',
+      'import { setup } from "./setup.js";',
+      'setup(["NODE", "ENV"].join("_"));',
+      "console.log(mode());",
+      "",
+    ].join("\n"),
+  });
+  workspace.define = { "process.env.NODE_ENV": "production" };
+  const development = '"development branch"';
+  try {
+    await workspace.both();
+    const before = await workspace.both();
+    expect(has(before.applied, "mode")).toBe(true);
+    expect(before.reused).toContain(development);
+    expect(before.plain).not.toContain(development);
+    await workspace.edit("setup.ts", "console.log(name);", 'process.env[name] = "development";');
+    // build() holds the IR with reuse to the IR without it, which now
+    // evaluates the condition too.
+    const applied = await workspace.build();
+    expect(has(applied, "mode")).toBe(true);
+    expect(has(applied, "setup")).toBe(false);
   } finally {
     await workspace.dispose();
   }

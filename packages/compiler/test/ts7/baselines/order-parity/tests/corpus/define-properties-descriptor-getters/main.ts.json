@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-properties-descriptor-getters/error-order.ts",
+  "<repo>/tests/corpus/define-properties-descriptor-getters/descriptor-getter-fields.ts",
+  "<repo>/tests/corpus/define-properties-descriptor-getters/main.ts"
+ ],
+ "diags": []
+}

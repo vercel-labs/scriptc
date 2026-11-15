@@ -469,7 +469,11 @@ function registryInitializer(
       return true;
     const symbol = lowerer.resolveValueSymbol(callee);
     const declaration = symbol && symbol.valueDeclaration;
-    if (!symbol || !declaration || !bindingNeverReassigned(lowerer, symbol, declaration))
+    if (
+      !symbol ||
+      !declaration ||
+      !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration)
+    )
       return false;
     if (ts.isFunctionDeclaration(declaration)) return true;
     if (ts.isClassDeclaration(declaration)) return initialized(declaration);
@@ -636,7 +640,7 @@ function registryOwnerIsData(
     !declaration ||
     !ts.isVariableDeclaration(declaration) ||
     !declaration.initializer ||
-    !bindingNeverReassigned(lowerer, symbol, declaration)
+    !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration)
   )
     return false;
   let initializer = declaration.initializer;

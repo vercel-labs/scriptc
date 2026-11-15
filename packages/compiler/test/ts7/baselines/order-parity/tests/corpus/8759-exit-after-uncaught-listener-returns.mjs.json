@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8759-exit-after-uncaught-listener-returns.mjs"
+ ],
+ "diags": []
+}

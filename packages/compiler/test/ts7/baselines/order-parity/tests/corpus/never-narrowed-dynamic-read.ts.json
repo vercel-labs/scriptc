@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/never-narrowed-dynamic-read.ts"
+ ],
+ "diags": []
+}

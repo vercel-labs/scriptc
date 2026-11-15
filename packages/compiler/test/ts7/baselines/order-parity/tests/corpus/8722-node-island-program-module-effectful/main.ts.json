@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8722-node-island-program-module-effectful/patch.ts",
+  "<repo>/tests/corpus/8722-node-island-program-module-effectful/read.ts",
+  "<repo>/tests/corpus/8722-node-island-program-module-effectful/main.ts"
+ ],
+ "diags": []
+}

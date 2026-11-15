@@ -35,7 +35,7 @@
  *   R <oid>                            the module's value
  *   E <len>:<key> <0|1> <len>:<value>  an env key the load read (absent: 0)
  *   T <fd> <0|1>                       the isTTY state the load read
- *   M <component>                      per-module mode (NI-7b): see below
+ *   P <count> <hash>                   the loads registered before it
  * where <value> is o<oid>, u, l, t, f, n<number> or s<len>:<bytes>. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
@@ -88,7 +88,6 @@ typedef struct {
 
 typedef struct NbModule {
   char *path;
-  uint32_t component; /* per-module mode: modules evaluated together */
   bool done;
   NbEnv *env;
   size_t nenv;
@@ -104,12 +103,29 @@ static size_t nb_stubs_cap = 0;
 static NbModule **nb_modules = NULL;
 static size_t nb_nmodules = 0, nb_modules_cap = 0;
 static bool nb_installed = false;
-/* Per-module mode (NI-7b, `M` records): Node starting does not evaluate
- * every deferred module; each component evaluates on the first use of one
- * of its stubs. The build chooses it only when every static island import
- * is deferred, none mutates builtin state and no island module loads at a
- * call site, so nothing but these stubs can reach the modules' objects. */
-static bool nb_lazy = false;
+/* The deferred loads registered so far, as the build's probe lists them:
+ * the distinct paths in registration order, as a count and an FNV-1a hash
+ * of the paths, each followed by a line feed. A module the build wrote for
+ * the program's island-closed constants computes from what earlier island
+ * code left behind, so its snapshot is true only of a run that registered,
+ * before it, exactly the loads the probe evaluated before it (`P`). */
+static uint32_t nb_loads_count = 0;
+static uint32_t nb_loads_hash = 2166136261u;
+
+static void nb_loads_add(const char *path) {
+  uint32_t h = nb_loads_hash;
+  for (const char *p = path; *p != '\0'; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+  nb_loads_hash = (h ^ (uint8_t)'\n') * 16777619u;
+  nb_loads_count++;
+}
+
+/* Whether a deferred load of this path is registered. */
+static bool nb_registered(const char *path, size_t len) {
+  for (size_t i = 0; i < nb_nmodules; i++)
+    if (strlen(nb_modules[i]->path) == len && memcmp(nb_modules[i]->path, path, len) == 0)
+      return true;
+  return false;
+}
 static int nb_trace = -1;
 
 static bool nb_tracing(void) {
@@ -232,29 +248,41 @@ static bool nb_env_matches(const NbEnv *e) {
   return now != NULL && strlen(now) == e->value_len && memcmp(now, e->value, e->value_len) == 0;
 }
 
+typedef struct {
+  char *value; /* the program's value; NULL: unset */
+  bool swapped;
+} NbSavedEnv;
+
 /* The module evaluates against the environment it saw at its import
- * position (the boot guard checked those values then): keys the program
- * changed since are set back for the evaluation and restored after it. */
-static void nb_env_swap(NbModule *m, char **saved, bool restore) {
+ * position (the boot guard checked those values then, a key recorded as
+ * absent included): a key the program changed since is set back for the
+ * evaluation, and the program's value restored after it, as the program's
+ * write came after the import. A key the program left alone is left to
+ * the module: what its evaluation writes there stays. */
+static void nb_env_swap(NbModule *m, NbSavedEnv *saved, bool restore) {
   for (size_t i = 0; i < m->nenv; i++) {
     NbEnv *e = &m->env[i];
+    if (restore && !saved[i].swapped) continue;
+    if (!restore && nb_env_matches(e)) continue;
     char *key = nb_cstr(e->key, e->key_len);
     if (!restore) {
       const char *now = getenv(key);
-      saved[i] = now != NULL ? strdup(now) : NULL;
-      if (!nb_env_matches(e)) {
-        if (e->present) {
-          char *v = nb_cstr(e->value, e->value_len);
-          setenv(key, v, 1);
-          free(v);
-        } else {
-          unsetenv(key);
-        }
+      if (now != NULL) {
+        saved[i].value = strdup(now);
+        if (saved[i].value == NULL) nb_oom();
+      }
+      saved[i].swapped = true;
+      if (e->present) {
+        char *v = nb_cstr(e->value, e->value_len);
+        setenv(key, v, 1);
+        free(v);
+      } else {
+        unsetenv(key);
       }
     } else {
-      if (saved[i] != NULL) setenv(key, saved[i], 1);
+      if (saved[i].value != NULL) setenv(key, saved[i].value, 1);
       else unsetenv(key);
-      free(saved[i]);
+      free(saved[i].value);
     }
     free(key);
   }
@@ -264,7 +292,7 @@ static void nb_materialize(NbModule *m) {
   if (m->done) return;
   m->done = true;
   if (nb_tracing()) fprintf(stderr, "[node-islands] evaluating deferred %s\n", m->path);
-  char **saved = m->nenv > 0 ? calloc(m->nenv, sizeof *saved) : NULL;
+  NbSavedEnv *saved = m->nenv > 0 ? calloc(m->nenv, sizeof *saved) : NULL;
   if (m->nenv > 0 && saved == NULL) nb_oom();
   nb_env_swap(m, saved, false);
   ScrStr *path = scr_str_new(m->path, strlen(m->path));
@@ -316,20 +344,14 @@ static void nb_materialize(NbModule *m) {
   free(needed);
 }
 
+/* Node started: every deferred module evaluates now, in import order,
+ * before the operation that needed Node. A module never waits for its own
+ * first use: island code the program calls can write state a later load
+ * reads, and Node ran every one of these loads before any call. */
 static void nb_started(void) {
-  if (nb_lazy) return; /* each component evaluates on first use */
   if (nb_tracing() && nb_nmodules > 0)
     fprintf(stderr, "[node-islands] Node started: evaluating %zu deferred module(s)\n", nb_nmodules);
   for (size_t i = 0; i < nb_nmodules; i++) nb_materialize(nb_modules[i]);
-}
-
-void scr_ni_boot_materialize(void *stub) {
-  NbModule *owner = ((NbStub *)stub)->module;
-  for (size_t i = 0; i < nb_nmodules; i++) {
-    NbModule *m = nb_modules[i];
-    if (m == owner || (owner->component != 0 && m->component == owner->component))
-      nb_materialize(m);
-  }
 }
 
 void scr_ni_boot_stub_failed(void *stub) {
@@ -376,11 +398,10 @@ ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len) {
 bool scr_ni_boot_plain_class(void *stub) { return ((NbStub *)stub)->plain; }
 
 /* Whether the snapshot still describes the stub's value: its module has
- * not evaluated. Before Node starts nothing has; in per-module mode, a
- * component's objects are unreachable to any code until it evaluates. */
+ * not evaluated, which holds exactly until Node starts. */
 bool scr_ni_boot_snapshot_valid(void *stub) {
   NbStub *s = stub;
-  return !s->module->done && (nb_lazy || scr_ni_bridge_loaded() == NULL);
+  return !s->module->done && scr_ni_bridge_loaded() == NULL;
 }
 
 /* ── nodeIsland.defer ─────────────────────────────────────────────────── */
@@ -409,6 +430,8 @@ static void nb_cleanup(void) {
   free(nb_modules);
   nb_modules = NULL;
   nb_nmodules = 0;
+  nb_loads_count = 0;
+  nb_loads_hash = 2166136261u;
 }
 
 static void nb_install(void) {
@@ -447,18 +470,21 @@ static NbStub *nb_new_stub(uint32_t oid, uint32_t flags, bool plain, NbModule *m
 }
 
 ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
-  /* Pass 1: the guards, and the mode. */
-  NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
-  bool lazy = false;
-  while (c.p < c.end && !c.bad) {
-    char tag = *c.p++;
-    if (tag == 'M') lazy = true;
-    nb_line_end(&c);
-  }
-  /* In per-module mode a module can stay deferred while Node runs. */
-  if (!lazy && scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
+  /* The stubs, the modules and their reconciliation are the island
+   * thread's: its %init made the stub boxes (one per probed object, whoever
+   * imports it), and they become real on that thread when Node starts. A
+   * worker thread runs the same %init for its own instance of the importing
+   * module; it takes the module's real value, through the route like every
+   * load, which starts Node first when it has not started. A second set of
+   * stubs for the same objects would not reconcile ("no longer matches its
+   * build-time interface snapshot"), and the first set's boxes belong to
+   * another thread's heap. */
+  if (!scr_ni_main_thread()) return nb_eager(path, "a worker thread imports it");
+  /* Island code has run: the module loads at its position, as in Node. */
+  if (scr_ni_bridge_loaded() != NULL) return nb_eager(path, "Node is already running");
   nb_install();
-  c = (NbCursor){snapshot->data, snapshot->data + snapshot->len, false};
+  /* Pass 1: the guards. */
+  NbCursor c = {snapshot->data, snapshot->data + snapshot->len, false};
   while (c.p < c.end && !c.bad) {
     char tag = *c.p++;
     if (tag == 'E') {
@@ -487,6 +513,22 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       uint64_t mtime = nb_uint(&c);
       if (c.bad) break;
       if (!nb_guard(file, len, size, mtime)) return nb_eager(path, "a boot guard failed");
+    } else if (tag == 'P') {
+      uint32_t count = (uint32_t)nb_uint(&c);
+      uint32_t hash = (uint32_t)nb_uint(&c);
+      if (c.bad) break;
+      /* A module of the program is imported wherever it is used. Its first
+       * import passed this guard and registered the load, and that is where
+       * the module evaluates when Node starts; a later import of it adds
+       * nothing to the loads, and the count has moved on by then (by this
+       * very load at least). */
+      if (!nb_registered(path->data, path->len) &&
+          (count != nb_loads_count || hash != nb_loads_hash)) {
+        if (nb_tracing())
+          fprintf(stderr, "[node-islands] boot guard failed: the loads before %.*s\n",
+                  (int)path->len, path->data);
+        return nb_eager(path, "a boot guard failed");
+      }
     }
     nb_line_end(&c);
   }
@@ -543,9 +585,6 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       }
     } else if (tag == 'R') {
       m->root = (uint32_t)nb_uint(&c);
-    } else if (tag == 'M') {
-      m->component = (uint32_t)nb_uint(&c);
-      nb_lazy = true;
     } else if (tag == 'E') {
       NbEnv e = {0};
       e.key = nb_str(&c, &e.key_len);
@@ -602,6 +641,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
     nb_modules = grown;
     nb_modules_cap = mcap;
   }
+  if (!nb_registered(m->path, strlen(m->path))) nb_loads_add(m->path);
   nb_modules[nb_nmodules++] = m;
   if (nb_tracing()) fprintf(stderr, "[node-islands] deferred %s\n", m->path);
   return scr_dyn_retain(root->box);

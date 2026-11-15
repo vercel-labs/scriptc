@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/type-only-import-value-use-beside-elision/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "'Box' cannot be used as a value because it was imported using 'import type'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/type-only-import-value-use-beside-elision/main.ts",
+    "start": 341,
+    "end": 344
+   }
+  }
+ ]
+}

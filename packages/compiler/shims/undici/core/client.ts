@@ -612,7 +612,13 @@ export class Client extends DispatcherBase {
   __write(request: Request, socket: Socket): boolean {
     const method = request.method;
     const body = request.body;
-    const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
+    // undici's list (client.js): 7.x counts three more methods than 5.x.
+    const expectsPayload =
+      method === "PUT" ||
+      method === "POST" ||
+      method === "PATCH" ||
+      ((this.__profile.major >= 7 || request.framedAsNode) &&
+        (method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH"));
     // util.bodyLength: a missing body has length 0.
     let contentLength: number | null = body !== null ? body.length : 0;
     if (contentLength === 0 && !expectsPayload) contentLength = null;

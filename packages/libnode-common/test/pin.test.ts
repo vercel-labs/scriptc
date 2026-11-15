@@ -3,12 +3,17 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   LIBNODE_PLATFORMS,
+  LIBNODE_PACK_SCHEMA,
   bridgeAbi,
   bridgeHash,
+  configureFlagsFor,
+  isReleasePackManifest,
   libnodeCacheKey,
   packFileNames,
   readPin,
   repoRoot,
+  withReleasePackIdentity,
+  withoutReleasePrepack,
 } from "../scripts/pin.mjs";
 import { expectedTranscript } from "../scripts/smoke.mjs";
 
@@ -27,6 +32,24 @@ describe("the libnode pin", () => {
     expect(pin.configureFlags).toContain("--shared");
     expect(pin.configureFlags.some((flag: string) => flag.startsWith("--with-intl"))).toBe(false);
     expect(pin.icu).toBe("full");
+  });
+
+  test("links the C++ runtime into Linux packs", () => {
+    const pin = readPin();
+    // --partly-static adds -static-libstdc++ and -static-libgcc to every
+    // link in the tree, so libnode.so carries its own C++ runtime instead
+    // of needing a libstdc++ newer than a supported host's.
+    expect(pin.linuxConfigureFlags).toContain("--partly-static");
+    expect(configureFlagsFor("linux-x64-gnu", pin)).toEqual([
+      ...pin.configureFlags,
+      "--partly-static",
+    ]);
+    expect(configureFlagsFor("linux-arm64-gnu", pin)).toEqual([
+      ...pin.configureFlags,
+      "--partly-static",
+    ]);
+    // macOS has no libstdc++ to carry.
+    expect(configureFlagsFor("darwin-arm64", pin)).toEqual(pin.configureFlags);
   });
 });
 
@@ -59,6 +82,102 @@ describe("the platform packages", () => {
     // Never built by `pnpm -r build`.
     expect(manifest.scripts.build).toBe("true");
     expect(manifest.scripts["build:native"]).toBe("node scripts/build.mjs");
+  });
+});
+
+describe("pack identity", () => {
+  test("a release pack records its package, version and target", () => {
+    expect(
+      isReleasePackManifest({
+        schema: LIBNODE_PACK_SCHEMA,
+        package: "@scriptc/libnode-darwin-arm64",
+        version: "0.1.0",
+        target: "darwin-arm64",
+      }),
+    ).toBe(true);
+  });
+
+  test("the development fallback records no release identity", () => {
+    // CI assembles this pack from dev-pack.json when the libnode build cache
+    // is unavailable; it is never published, so the release-only prepack
+    // verification (verify.mjs) must not run against it.
+    expect(
+      isReleasePackManifest({
+        schema: LIBNODE_PACK_SCHEMA,
+        nodeVersion: "24.22.0",
+        moduleVersion: 137,
+        bridgeAbi: bridgeAbi(),
+        platform: "darwin",
+        arch: "arm64",
+        libnode: "libnode.137.dylib",
+        bridge: "libscr_node_bridge.dylib",
+        files: {},
+      }),
+    ).toBe(false);
+  });
+
+  test("packing the fallback drops only the release-only prepack", () => {
+    const packageJson = {
+      name: "@scriptc/libnode-darwin-arm64",
+      version: "0.1.0",
+      files: ["libnode.137.dylib", "manifest.json"],
+      os: ["darwin"],
+      cpu: ["arm64"],
+      scripts: { prepack: "node ../libnode-common/scripts/verify.mjs ." },
+    };
+    const stripped = withoutReleasePrepack(packageJson);
+    expect(stripped).toEqual({
+      name: "@scriptc/libnode-darwin-arm64",
+      version: "0.1.0",
+      files: ["libnode.137.dylib", "manifest.json"],
+      os: ["darwin"],
+      cpu: ["arm64"],
+      scripts: {},
+    });
+    // The directory being packed is a copy, but the original must not change.
+    expect(packageJson.scripts.prepack).toBe("node ../libnode-common/scripts/verify.mjs .");
+  });
+
+  test("packing a package with no scripts works", () => {
+    expect(withoutReleasePrepack({ name: "x" })).toEqual({ name: "x", scripts: {} });
+  });
+
+  test("packing the fallback completes the identity an installed pack is checked for", () => {
+    // The build checks an installed pack's package and version
+    // (packages/compiler/src/node-islands/libnode.ts). The fallback records
+    // neither, so its packing copy takes the package's name and version and
+    // the platform its name ends in.
+    const packageJson = { name: "@scriptc/libnode-darwin-arm64", version: "0.1.0" };
+    const completed = withReleasePackIdentity(
+      {
+        schema: LIBNODE_PACK_SCHEMA,
+        nodeVersion: "24.22.0",
+        moduleVersion: 137,
+        bridgeAbi: bridgeAbi(),
+        platform: "darwin",
+        arch: "arm64",
+        libnode: "libnode.137.dylib",
+        bridge: "libscr_node_bridge.dylib",
+        files: {},
+      },
+      packageJson,
+    );
+    expect(completed.package).toBe("@scriptc/libnode-darwin-arm64");
+    expect(completed.version).toBe("0.1.0");
+    expect(completed.target).toBe("darwin-arm64");
+    expect(isReleasePackManifest(completed)).toBe(true);
+  });
+
+  test("a release manifest keeps the identity it records", () => {
+    const manifest = {
+      schema: LIBNODE_PACK_SCHEMA,
+      platform: "darwin",
+      arch: "arm64",
+      package: "@scriptc/libnode-darwin-arm64",
+      version: "0.2.0",
+      target: "darwin-arm64",
+    };
+    expect(withReleasePackIdentity(manifest, { name: "x", version: "9.9.9" })).toEqual(manifest);
   });
 });
 

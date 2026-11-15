@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8738-replaced-method-other-modules/patch.ts",
+  "<repo>/tests/corpus/8738-replaced-method-other-modules/plain.js",
+  "<repo>/tests/corpus/8738-replaced-method-other-modules/main.ts"
+ ],
+ "diags": []
+}

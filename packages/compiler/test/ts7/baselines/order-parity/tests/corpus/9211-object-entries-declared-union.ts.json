@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9211-object-entries-declared-union.ts"
+ ],
+ "diags": []
+}

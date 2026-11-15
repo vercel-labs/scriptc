@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readline-history-live.cjs"
+ ],
+ "diags": []
+}

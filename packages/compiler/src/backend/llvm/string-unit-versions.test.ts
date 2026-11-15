@@ -64,11 +64,47 @@ function concatenates(s: string): string {
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 32) out += "-";
   return out;
 }
+function mark(c: number): number {
+  let n = 0;
+  switch (c) {
+    case 38:
+      n = 2;
+      break;
+    case 60:
+      n = 4;
+      break;
+  }
+  return n;
+}
+function viaMark(c: number): number {
+  return mark(c) + 1;
+}
+function marks(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n += viaMark(s.charCodeAt(i));
+  return n;
+}
+function switches(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    switch (s.charCodeAt(i)) {
+      case 38:
+        n += 2;
+        break;
+    }
+  }
+  return n;
+}
 console.log(words("ab c"), pairs("ab", "cd"), both("ab", "cd"), concatenates("a b"), viaCodeOf("x"));
+console.log(marks("a<b"), switches("a&b"));
 `);
   const safe = unitSafeFunctions(mod);
-  expect(safe.has("lower")).toBe(true);
-  expect(safe.has("word")).toBe(true);
+  // A safe function, and whether it reaches a `switch`: in its own body or
+  // through a function it calls.
+  expect(safe.get("lower")).toBe(false);
+  expect(safe.get("word")).toBe(false);
+  expect(safe.get("mark")).toBe(true);
+  expect(safe.get("viaMark")).toBe(true);
   // A string read, directly or through a call, makes a function unsafe.
   expect(safe.has("codeOf")).toBe(false);
   expect(safe.has("viaCodeOf")).toBe(false);
@@ -77,9 +113,16 @@ console.log(words("ab c"), pairs("ab", "cd"), both("ab", "cd"), concatenates("a 
     mod.functions.find((f) => f.name === fn)!.params[index]!.localId;
   // A unit-safe loop answers its receiver's length reads: here the
   // condition's `s.length`.
-  const lengths = unitSafeLoop(loopOf(mod, "words"), param("words"), safe);
-  expect(lengths?.size).toBe(1);
-  expect([...lengths!].every((e) => e.kind === "strIntrinsic" && e.method === "length")).toBe(true);
+  const words = unitSafeLoop(loopOf(mod, "words"), param("words"), safe)!;
+  expect(words.lengths.size).toBe(1);
+  expect([...words.lengths].every((e) => e.kind === "strIntrinsic" && e.method === "length")).toBe(
+    true,
+  );
+  // It also answers whether the loop reaches a `switch`, which decides the
+  // form of its guard.
+  expect(words.switches).toBe(false);
+  expect(unitSafeLoop(loopOf(mod, "marks"), param("marks"), safe)?.switches).toBe(true);
+  expect(unitSafeLoop(loopOf(mod, "switches"), param("switches"), safe)?.switches).toBe(true);
   expect(unitSafeLoop(loopOf(mod, "pairs"), param("pairs"), safe)).toBeNull();
   expect(unitSafeLoop(loopOf(mod, "both"), param("both"), safe)).toBeNull();
   expect(unitSafeLoop(loopOf(mod, "concatenates"), param("concatenates"), safe)).toBeNull();

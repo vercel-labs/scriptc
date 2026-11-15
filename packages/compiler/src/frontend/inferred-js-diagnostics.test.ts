@@ -58,6 +58,20 @@ test("a missing required parameter is not a variadic inference mismatch", () => 
   ).toBe(true);
 });
 
+test.for([
+  "class ComputedMethod { [new.target]() { return 1; } }",
+  "class ComputedGetter { get [new.target]() { return 1; } }",
+  "class ComputedSetter { set [new.target](next) { console.log(next); } }",
+  "class ComputedArrow { [(() => new.target)()]() { return 1; } }",
+  "class ComputedField { static [new.target] = 1; }",
+])("a computed class member name keeps the early 'new.target' SyntaxError: %s", (source) => {
+  expect(
+    diagnostics(source, 'import "./library.js";').some((diagnostic) =>
+      diagnostic.message.includes("new.target"),
+    ),
+  ).toBe(true);
+});
+
 test("bare JavaScript fields may read their initial undefined value", () => {
   expect(
     diagnostics(
@@ -188,4 +202,298 @@ test.for([
   expect(
     diagnostics(library, 'import * as library from "./library.js"; console.log(library);').length,
   ).toBeGreaterThan(0);
+});
+
+test("a checked JavaScript file keeps a typed slot its JSDoc declared", () => {
+  // TS2322 is one of the opinion table's `checkedJs: "enforce"` rows: a
+  // project that asked tsc to check its JavaScript keeps the error, while
+  // the same file unchecked takes the opinion (nothing at runtime checks the
+  // annotation Node never reads).
+  const main = 'import * as library from "./library.js"; console.log(library);';
+  const library = "/** @type {string} */\nexport let box = 1;\n";
+  expect(diagnostics(`// @ts-check\n${library}`, main).map((d) => d.message)).toContain(
+    "Type 'number' is not assignable to type 'string'.",
+  );
+  expect(diagnostics(library, main)).toEqual([]);
+});
+
+test("a checked JavaScript file still takes the opinions its JSDoc never asked for", () => {
+  // TS7006 has no `checkedJs: "enforce"`: checkJs asks tsc to check the
+  // JSDoc a file carries, not to invent parameter annotations it does not.
+  expect(
+    diagnostics(
+      "// @ts-check\nexport function add(a, b) { return a + b; }\n",
+      'import { add } from "./library.js"; console.log(add(1, 2));',
+    ),
+  ).toEqual([]);
+});
+
+/* The S3/S4 checker-opinion rows (tsc-codes.ts, JS_OPINIONS). Every construct
+ * below is legal JavaScript with a defined runtime meaning, so the unchecked
+ * JavaScript twin compiles; a checked project keeps tsc's opinion of the same
+ * source (D3), and the TypeScript twin keeps it too. A `null` expectation says
+ * tsc itself raises nothing for that source in that mode, which is the honest
+ * record of where the opinion is JavaScript-only. The differential twin lives
+ * in tests/corpus. */
+interface CheckerOpinionTwin {
+  readonly name: string;
+  readonly source: string;
+  /** The diagnostic tsc keeps for a `// @ts-check` JavaScript file, or null. */
+  readonly checkJs: string | null;
+  /** The diagnostic tsc keeps for the same source in a `.ts` file, or null. */
+  readonly ts: string | null;
+}
+
+const CHECKER_OPINION_TWINS: readonly CheckerOpinionTwin[] = [
+  {
+    name: "TS2408",
+    source: `class Box {
+  constructor() { this.v = 0; }
+  set value(x) { this.v = x; return x * 2; }
+}
+console.log((new Box().value = 21));`,
+    checkJs: "Setters cannot return a value",
+    ts: "Setters cannot return a value",
+  },
+  {
+    name: "TS17013",
+    source: `const widget = { read() { return new.target; } };
+console.log(widget.read());`,
+    checkJs: "new.target",
+    ts: "new.target",
+  },
+  {
+    name: "TS2839",
+    source: `console.log({} === {});`,
+    checkJs: "compares objects by reference",
+    ts: "compares objects by reference",
+  },
+  {
+    name: "TS2810",
+    source: `new Promise((resolve) => resolve()).then((value) => console.log(value));`,
+    checkJs: "Expected 1 argument, but got 0",
+    ts: "Expected 1 arguments, but got 0",
+  },
+  {
+    name: "TS2845",
+    source: `console.log(0n === Infinity);`,
+    // tsc's checkJs does not compare a bigint with a number in JavaScript; the
+    // .ts twin keeps the overlap error, which the row admits only in JS.
+    checkJs: null,
+    ts: "have no overlap",
+  },
+  {
+    name: "TS4104",
+    source: `/** @type {readonly number[]} */
+const source = [1, 2, 3];
+let target = [0];
+target = source;
+console.log(target.length);`,
+    checkJs: "readonly",
+    // The annotation is a comment in TypeScript, so the .ts twin is clean.
+    ts: null,
+  },
+];
+
+for (const { name, source, checkJs, ts } of CHECKER_OPINION_TWINS) {
+  const library = 'import * as library from "./library.js"; console.log(library);';
+
+  test(`${name}: the unchecked JavaScript twin compiles`, () => {
+    expect(diagnostics(source, library)).toEqual([]);
+  });
+
+  test(`${name}: the TypeScript twin keeps tsc's opinion`, () => {
+    const kept = diagnostics(source, library, "ts").map((diagnostic) => diagnostic.message);
+    if (ts === null) expect(kept).toEqual([]);
+    else expect(kept.some((message) => message.includes(ts))).toBe(true);
+  });
+
+  test(`${name}: a checked JavaScript twin keeps tsc's opinion`, () => {
+    const kept = diagnostics(`// @ts-check\n${source}`, library).map(
+      (diagnostic) => diagnostic.message,
+    );
+    if (checkJs === null) expect(kept).toEqual([]);
+    else expect(kept.some((message) => message.includes(checkJs))).toBe(true);
+  });
+}
+
+const DISCARDED_VOID_NEGATION = `function register() {
+  console.log("registered");
+}
+!register();`;
+
+test("JavaScript drops the diagnostic of a discarded negation of a void call", () => {
+  expect(
+    diagnostics(
+      DISCARDED_VOID_NEGATION,
+      'import * as library from "./library.js"; console.log(library);',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript file keeps the void-negation diagnostic", () => {
+  // TS1345 is a `checkedJs: "enforce"` row: a project that asked tsc to check
+  // its JavaScript keeps the refusal (named here by the code's triage row).
+  const kept = diagnostics(
+    `// @ts-check\n${DISCARDED_VOID_NEGATION}`,
+    'import * as library from "./library.js"; console.log(library);',
+  );
+  expect(kept.some((d) => d.message.includes("truthiness"))).toBe(true);
+});
+
+test("TypeScript keeps the diagnostic of a discarded negation of a void call", () => {
+  const kept = diagnostics(
+    DISCARDED_VOID_NEGATION,
+    'import * as library from "./library.js"; console.log(library);',
+    "ts",
+  ).map((d) => d.message);
+  expect(kept.some((message) => message.includes("cannot be tested for truthiness"))).toBe(true);
+});
+
+test("JavaScript drops the diagnostic of a consumed negation of a void call", () => {
+  // The operand evaluates once for its effects and Node's ToBoolean of the
+  // value it yields is false, which the ordinary lowering answers.
+  expect(
+    diagnostics(
+      'function register() { console.log("registered"); }\nexport const ok = !register();',
+      'import { ok } from "./library.js"; console.log(ok);',
+    ),
+  ).toEqual([]);
+});
+
+test.for([
+  // An annotation types the callback `void`, and its body answers 1.
+  "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = cb() ? 'truthy' : 'falsy';",
+  "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = !cb();",
+  // A parameter typed `() => void` receives whatever function the caller passes.
+  "/** @param {() => void} f */\nfunction run(f) { return f() ? 'yes' : 'no'; }\nexport const ok = run(() => 'x');",
+  // A binding or property a write can replace holds the replacement.
+  "let g = function () {};\ng = () => 's';\nexport const ok = g() ? 'yes' : 'no';",
+  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
+  // A reassignable alias or a property holds whatever was stored last, even
+  // when it first held a function that answers undefined.
+  "function noop() {}\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
+  "const noop = () => {};\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
+  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
+  "class A { m() {} }\nlet f = new A().m;\nf = () => 1;\nexport const ok = f() ? 'yes' : 'no';",
+  // A write, by name, by string key or by reflection, can replace a class
+  // method on an instance or on the prototype.
+  "class A { m() {} }\nconst a = new A();\na.m = () => 1;\nexport const ok = a.m() ? 'yes' : 'no';",
+  "class A { m() {} }\nA.prototype.m = () => 1;\nexport const ok = new A().m() ? 'yes' : 'no';",
+  "class A { m() {} }\nconst a = new A();\na['m'] = () => 1;\nexport const ok = !a.m();",
+  "class A { m() {} }\nconst a = new A();\nObject.defineProperty(a, 'm', { value: () => 1 });\nexport const ok = a.m() ? 'yes' : 'no';",
+  "class A { m() {} }\nObject.assign(A.prototype, { m() { return 1; } });\nexport const ok = new A().m() ? 'yes' : 'no';",
+  // A body that returns a value: the checker's `void` comes from the
+  // documented result, not from the body.
+  "/** @returns {void} */\nfunction lie() { return 5; }\nexport const ok = lie() ? 'yes' : 'no';",
+])("a void-typed operand that can hold a value keeps the truthiness refusal: %s", (library) => {
+  const result = diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);');
+  expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+test("JavaScript drops the diagnostic where the void-typed operand is undefined", () => {
+  // Each operand is a call of a function whose body returns no value, or a
+  // const holding one: Node's ToBoolean of it is false.
+  expect(
+    diagnostics(
+      [
+        "function plain() {}",
+        "const arrow = () => { plain(); };",
+        "class Router { find() {} route(e) { const r = this.find(e); return r ? r : null; } }",
+        "const held = plain();",
+        "export const ok = [plain() ? 1 : 2, !arrow(), new Router().route({}), held ? 3 : 4];",
+      ].join("\n"),
+      'import { ok } from "./library.js"; console.log(ok);',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript file keeps the consumed void-negation diagnostic", () => {
+  // Named here by the code's triage row, as for the discarded negation.
+  const kept = diagnostics(
+    '// @ts-check\nfunction register() { console.log("registered"); }\nexport const ok = !register();',
+    'import { ok } from "./library.js"; console.log(ok);',
+  );
+  expect(kept.some((d) => d.message.includes("truthiness"))).toBe(true);
+});
+
+/* The triage rows' descriptions (tsc-codes.ts, TRIAGE_ROWS) must state what
+ * Node does with the construct being refused, so the user can tell an invalid
+ * dependency from a missing lowering. These tests read the diagnostics a real
+ * preflight produces, not the table's source text. */
+function refusal(source: string, extension = "js") {
+  const kept = diagnostics(
+    source,
+    'import * as library from "./library.js"; console.log(library);',
+    extension,
+  );
+  expect(kept).toHaveLength(1);
+  const [diagnostic] = kept;
+  expect(diagnostic!.code).toBe("SC1090");
+  return diagnostic!;
+}
+
+test("a class declaration assignment names the mutable outer binding", () => {
+  const kept = refusal("class Value {}\nValue = class Replacement {};\nexport { Value };");
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("outer binding is mutable");
+  expect(kept.hint).toContain("named class expression's inner binding");
+  expect(kept.hint).not.toContain("read-only");
+});
+
+test("a named class expression's inner binding names the immutable inner binding", () => {
+  const kept = refusal(
+    "const Outer = class Inner { static reset() { Inner = null; } };\nexport { Outer };",
+  );
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("named class expression's inner binding");
+});
+
+test("a function declaration assignment names the mutable binding", () => {
+  const kept = refusal("function value() { return 1; }\nvalue = () => 2;\nexport { value };");
+  expect(kept.message).toContain("assigning to a function binding");
+  expect(kept.hint).toContain("binding is mutable");
+  expect(kept.hint).not.toContain("in strict mode and modules");
+});
+
+test("a named function expression's inner binding names the immutable binding", () => {
+  const kept = refusal(
+    "const outer = function inner() { inner = () => 1; return inner(); };\nexport { outer };",
+  );
+  expect(kept.message).toContain("assigning to a function binding");
+  expect(kept.hint).toContain("named function expression's inner binding");
+});
+
+test("a value missing declared properties is not described as a Set argument", () => {
+  // TS2739 is an ordinary structural error: the annotation requires three
+  // properties and the value supplies one. Nothing here is set-like.
+  const kept = refusal(
+    '// @ts-check\n/** @type {{ first: string, second: string, third: string }} */\nexport const value = { first: "one" };',
+  );
+  expect(kept.message).toContain("a value lacking a required property of its declared type");
+  expect(kept.hint).toContain("Node checks no declared type");
+  expect(`${kept.message} ${kept.hint}`).not.toContain("set-like");
+  expect(`${kept.message} ${kept.hint}`).not.toContain("'has'");
+});
+
+test.for(["/\\1/", "/(a)\\2/", "/\\8/", "/(a)\\12/", "/[\\1]/"])(
+  "JavaScript admits a regex decimal escape without its group outside Unicode mode: %s",
+  (literal) => {
+    expect(diagnostics(`export const pattern = ${literal};`, 'import "./library.js";')).toEqual([]);
+  },
+);
+
+test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
+  "a Unicode-mode regex keeps the missing-group error: %s",
+  (literal) => {
+    const result = diagnostics(`export const pattern = ${literal};`, 'import "./library.js";');
+    expect(result.some((d) => d.code === "SC0001" && d.message.includes("backreference"))).toBe(
+      true,
+    );
+  },
+);
+
+test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
+  const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
+  expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
 });

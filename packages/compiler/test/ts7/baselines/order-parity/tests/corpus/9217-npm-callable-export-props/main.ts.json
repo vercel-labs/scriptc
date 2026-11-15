@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9217-npm-callable-export-props/main.ts"
+ ],
+ "diags": []
+}

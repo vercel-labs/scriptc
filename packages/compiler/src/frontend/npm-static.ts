@@ -24,6 +24,8 @@ import {
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
 import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
+import type { Defines } from "./defines.js";
+import { isFrontendIsland } from "../node-islands/boundary.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -45,6 +47,16 @@ const liveExportFiles = new Set<string>();
 
 export function npmStaticLiveExportTable(path: string): boolean {
   return liveExportFiles.has(path.split("\\").join("/"));
+}
+
+/** Rewritten files whose whole export stands for an accessor installed as
+ * `module.exports` (npm-static-cjs-exports-accessor.ts): Node runs the
+ * getter for every `require()` of the module, so the rewrite is exact only
+ * for a module whose export the program evaluates once. */
+const accessorExportFiles = new Set<string>();
+
+export function npmStaticAccessorExport(path: string): boolean {
+  return accessorExportFiles.has(path.split("\\").join("/"));
 }
 
 /** Names Node's lexer detects in a rewritten file's original text that
@@ -98,9 +110,11 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   fileDegrades.clear();
   rewriteCache.clear();
   liveExportFiles.clear();
+  accessorExportFiles.clear();
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
+  esmPkgCache.clear();
   transformedPkgTexts.clear();
   realpathProbed.clear();
   aliasNames.clear();
@@ -268,7 +282,21 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
       seen.add(key);
       entries.push([key, value]);
     };
-    // 0. The "node" condition HOISTS: Node's runtime resolution matches it
+    // 0. scriptc's own condition leads AND supplies the runtime branches:
+    //    the program compiles the branch a package publishes for scriptc,
+    //    and resolveExports selects that branch before node, import,
+    //    require and default whatever order the map lists. The tsgo host
+    //    matches only {types, import, default}, so its own answer for
+    //    import/node/default would name a file the lowering never compiles
+    //    (the edge then reaches a module with no symbol, and its binding
+    //    lowers to nothing). Publishing the scriptc target under those keys
+    //    makes both resolution worlds answer one file.
+    const scriptc = (v as Record<string, unknown>)["scriptc"];
+    if (scriptc !== undefined) {
+      add("scriptc", scriptc);
+      for (const key of ["import", "require", "default"]) add(key, scriptc);
+    }
+    // 0b. The "node" condition HOISTS: Node's runtime resolution matches it
     //    (yaml's `{ types, node: "./dist/index.js", default: "./browser/
     //    index.js" }` runs the node dist; the browser dist is a DIFFERENT
     //    artifact), while the bundler condition set both resolution worlds
@@ -279,7 +307,7 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
     //    Node's first-match-in-key-order rule.
     for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
       if (key !== "node") {
-        add(key, value);
+        if (key !== "scriptc") add(key, value);
         continue;
       }
       const inner: Record<string, unknown> =
@@ -411,6 +439,55 @@ function packageIsUntyped(path: string): boolean {
   return untyped;
 }
 
+/** The installed package directory a node_modules path belongs to, or null
+ * outside node_modules. */
+function nodeModulesPackageDir(path: string): string | null {
+  const norm = path.split("\\").join("/");
+  const idx = norm.lastIndexOf("/node_modules/");
+  if (idx === -1) return null;
+  const parts = norm.slice(idx + "/node_modules/".length).split("/");
+  const first = parts[0] ?? "";
+  const dirName = first.startsWith("@") ? `${first}/${parts[1] ?? ""}` : first;
+  return `${norm.slice(0, idx)}/node_modules/${dirName}`;
+}
+
+/** Whether the package installs its `.js` files as ES modules (`"type":
+ * "module"`): the any-surface stub is CommonJS-shaped, so an ESM package's
+ * file keeps its own text. Cached per package directory. */
+const esmPkgCache = new Map<string, boolean>();
+
+function packageShipsEsmJs(pkgDir: string): boolean {
+  const hit = esmPkgCache.get(pkgDir);
+  if (hit !== undefined) return hit;
+  let esm = false;
+  try {
+    const text = trackedReadFile(`${pkgDir}/package.json`);
+    if (text !== null) {
+      const doc = JSON.parse(text) as Record<string, unknown>;
+      esm = doc["type"] === "module";
+    }
+  } catch {
+    /* a broken package.json keeps the CommonJS shape */
+  }
+  esmPkgCache.set(pkgDir, esm);
+  return esm;
+}
+
+/** Whether a JavaScript file of an opted-in package that runs in a Node
+ * island keeps the implicit-any import surface instead of being inferred
+ * from its source (see the island rule in the fs shadow): an untyped
+ * package, or a CommonJS file no declaration covers. Where the package
+ * declares the subpath from its own declarations (an ambient `declare
+ * module 'pkg/lib/languages/*'` block, which the checker never consults
+ * once the specifier resolves to the JavaScript file), inferring the file
+ * would replace a DECLARED surface with an inferred one. CommonJS only: the
+ * stub is CommonJS-shaped. */
+function servesImplicitAnySurface(path: string): boolean {
+  if (packageIsUntyped(path)) return true;
+  const pkgDir = nodeModulesPackageDir(path);
+  return pkgDir !== null && !packageShipsEsmJs(pkgDir);
+}
+
 /** An installed TypeScript source with no runtime JavaScript at its stem
  * (tldts ships `index.ts` beside `main: "dist/cjs/index.js"`). Node never
  * executes TypeScript under node_modules and resolve.ts answers only
@@ -440,29 +517,27 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
   if (!npmStaticActive()) return null;
   return {
     readFile: (path) => {
+      // A package that is not opted in is read as it is: its JavaScript never
+      // joins the program (tsgo loads node_modules JavaScript only as a
+      // root, and only opted-in packages' files are rooted), so its imports
+      // type exactly as they do without any opted-in package.
       const target = shadowTargetOf(path);
-      /* NON-OPTED node_modules JS: maxNodeModuleJsDepth (set only on
-       * --npm-static loads) admits third-party JS the flagless build never
-       * types, and an UNTYPED package's inferred surface would then
-       * replace the `any` its imports contribute flagless — changing the
-       * PROGRAM's own types under a flag that promised to touch only the
-       * opted-in packages (the jaro-winkler shape: an @ts-ignore'd import
-       * whose result feeds program arithmetic). Serve those files as the
-       * any-surface stub instead: the import types exactly what the
-       * flagless build typed. Typed packages (own .d.ts or an installed
-       * @types twin) resolve types-first and never reach here. */
-      if (!target) {
-        if (
-          (path.endsWith(".js") || path.endsWith(".cjs")) &&
-          isNodeModulesPathNorm(path) &&
-          !trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts")) && // a sibling .d.ts types this very file
-          packageIsUntyped(path)
-        ) {
-          return "module.exports = (() => { let u; return u; })();\n";
-        }
-        return undefined;
-      }
+      if (!target) return undefined;
       if (target.viaTypes) return undefined;
+      /* An OPTED-IN package that runs in a Node ISLAND is typed by its
+       * declarations: its bodies are never lowered, so its JavaScript adds
+       * only the declared/inferred mix (highlight.js: the ambient block
+       * types `lib/languages/*` through the island's declaration entry, while
+       * inferring `php.js` makes one language function's `hljs` required
+       * against the declared `LanguageFn`). A subpath no declaration file
+       * covers keeps the implicit-any surface it has without the flag. */
+      if (
+        isFrontendIsland(target.pkg) &&
+        (path.endsWith(".js") || path.endsWith(".cjs")) &&
+        !trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts")) &&
+        servesImplicitAnySurface(path)
+      )
+        return "module.exports = (() => { let u; return u; })();\n";
       if (path.endsWith("/package.json") || path.endsWith("\\package.json")) {
         try {
           const source = trackedReadFile(path);
@@ -490,6 +565,8 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // (unrewritten files fall through to the host, which serves the
           // patched text too).
           let original = packageSourceText(path);
+          const defined = original === null ? null : withDefinedBranches(services, path, original);
+          if (defined !== null) original = defined;
           // A bundle's CommonJS chunks move to their own modules first, so
           // every later pass (and this shadow, for each chunk) sees plain
           // CommonJS module text.
@@ -523,6 +600,13 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           // through that function.
           const fnExports = original === null ? null : services.cjsFunctionExports(original, path);
           if (fnExports !== null) original = fnExports;
+          // A module that installs an accessor as its export object exports
+          // the getter's value.
+          const accessor = original === null ? null : services.cjsExportsAccessor(original, path);
+          if (accessor !== null) {
+            original = accessor;
+            accessorExportFiles.add(path.split("\\").join("/"));
+          }
           // TypeScript's enum IIFEs with literal members become the object
           // literals they build.
           const enums = original === null ? null : services.enumIifes(original, path);
@@ -536,12 +620,14 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
           const exportsVar = original === null ? null : services.cjsExportsVar(original, path);
           if (exportsVar !== null) original = exportsVar;
           const respelled =
+            defined !== null ||
             split !== null ||
             umd !== null ||
             tscHelpers !== null ||
             esm !== null ||
             aliased !== null ||
             fnExports !== null ||
+            accessor !== null ||
             enums !== null ||
             namespaces !== null ||
             exportsVar !== null;
@@ -592,7 +678,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       }
       // Other runtime entries (`.mjs`) keep their text and gain only the
       // typedefs.
-      return withTypeExportTypedefs(path, null) ?? undefined;
+      return withTypeExportTypedefs(path, definedSource(services, path)) ?? undefined;
     },
     hideFile: (path) => {
       // The copies of the package's declaration files the typedefs name.
@@ -623,7 +709,10 @@ export function programBuiltinAliasSource(
   let rewritten: string | null = null;
   try {
     const source = trackedReadFile(path);
-    if (source !== null) rewritten = services.builtinAliasRequires(source, path);
+    if (source !== null) {
+      const defined = withDefinedBranches(services, path, source);
+      rewritten = services.builtinAliasRequires(defined ?? source, path) ?? defined;
+    }
   } catch {
     rewritten = null;
   }
@@ -634,6 +723,40 @@ export function programBuiltinAliasSource(
 /** Resets the program-file alias cache (once per program load). */
 export function clearProgramBuiltinAliasCache(): void {
   programAliasCache.clear();
+}
+
+let activeDefines: Defines | undefined;
+const definedSourceCache = new Map<string, string | null>();
+
+/** The load's `--define` values (once per program load). */
+export function setProgramDefines(defines: Defines | undefined): void {
+  activeDefines = defines;
+  definedSourceCache.clear();
+}
+
+/** A JavaScript file's `source` with the `if` statements `--define` decides
+ * resolved (define-branches.ts), the text every other rewrite of the file
+ * starts from. Null when it has none. The answer is cached for
+ * definedSource, so the file is read and resolved once per load. */
+function withDefinedBranches(
+  services: FrontendServices,
+  path: string,
+  source: string,
+): string | null {
+  if (activeDefines === undefined) return null;
+  const resolved = services.definedBranches(source, path, activeDefines);
+  definedSourceCache.set(path, resolved);
+  return resolved;
+}
+
+/** withDefinedBranches over the JavaScript file at `path`, for the files no
+ * other rewrite serves. */
+export function definedSource(services: FrontendServices, path: string): string | null {
+  if (activeDefines === undefined || !/\.[cm]?jsx?$/.test(path)) return null;
+  const hit = definedSourceCache.get(path);
+  if (hit !== undefined) return hit;
+  const source = packageSourceText(path);
+  return source === null ? null : withDefinedBranches(services, path, source);
 }
 
 /* Only a bundler RUNTIME disqualifies now: webpack's module registry has

@@ -1,0 +1,8 @@
+union-arm-copy-observed.ts:16:28 - error SC2003: union conversion has no layout mapping that keeps the object: the arm '{ place: string; shelf: number | undefined }' enters the destination as '{ place: string; scanned: boolean | undefined; shelf: number | undefined }', which has another layout, so the conversion would build a new object where Node keeps one, and the program writes field 'scanned' of a '{ place: string; scanned: boolean | undefined; shelf: number | undefined }' (union-arm-copy-observed.ts:17), and such a write would reach only one of the two objects
+
+  15 |   if (!("place" in item)) return "crate";
+  16 |   const tracked: Tracked = item;
+     |                            ^~~~
+  17 |   tracked.scanned = true;
+
+  hint: declare the value with the destination's arm type ('{ place: string; scanned: boolean | undefined; shelf: number | undefined }') where it is made so that both names are one object, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too

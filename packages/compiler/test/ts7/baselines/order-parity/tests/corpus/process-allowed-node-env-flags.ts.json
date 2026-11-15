@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-allowed-node-env-flags.ts"
+ ],
+ "diags": []
+}

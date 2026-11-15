@@ -1,0 +1,17 @@
+contract-immutable-element-reads.ts:18:22 - error SC7005: a value that may be Immutable escapes to dynamic (any or unknown) code, where writes are not checked: 't.rows[0]'
+
+  17 | const plain: unknown = t.nums[0];
+  18 | const row: unknown = t.rows[0];
+     |                      ^~~~~~~~~
+  19 | const nested: unknown = t.grid[0];
+
+  hint: keep Immutable values in typed code, or copy the value before handing it out
+
+contract-immutable-element-reads.ts:19:25 - error SC7005: a value that may be Immutable escapes to dynamic (any or unknown) code, where writes are not checked: 't.grid[0]'
+
+  18 | const row: unknown = t.rows[0];
+  19 | const nested: unknown = t.grid[0];
+     |                         ^~~~~~~~~
+  20 | console.log(plain, row, nested);
+
+  hint: keep Immutable values in typed code, or copy the value before handing it out

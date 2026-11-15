@@ -62,10 +62,16 @@ declare module "node:test" {
     todo(message?: string): void;
     diagnostic(message: string): void;
     plan(count: number): void;
+    runOnly(shouldRunOnlyTests: boolean): void;
+    waitFor<T>(condition: () => T, options?: TestContextWaitForOptions): Promise<Awaited<T>>;
     after(fn: HookFn): void;
     before(fn: HookFn): void;
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
+  }
+  interface TestContextWaitForOptions {
+    interval?: number | undefined;
+    timeout?: number | undefined;
   }
   interface AssertSnapshotOptions {
     readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
@@ -225,6 +231,7 @@ declare module "node:test" {
     TestContext,
     SuiteContext,
     TestOptions,
+    TestContextWaitForOptions,
     Mock,
     MockFunctionContext,
     MockFunctionCall,

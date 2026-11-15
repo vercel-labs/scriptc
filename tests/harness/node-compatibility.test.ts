@@ -9,7 +9,8 @@ const snapshot = JSON.parse(
   rows: Array<{
     chapter: string;
     apiSymbol: string;
-    static?: { evidence?: string };
+    label?: string;
+    static?: { evidence?: string; status?: string; tests?: string[] };
   }>;
 };
 
@@ -32,5 +33,24 @@ describe("Node compatibility generator", () => {
     expect(
       promiseRows.some((row) => row.static?.evidence?.includes("node-builtin.fs.promises")),
     ).toBe(true);
+  });
+
+  test("island-served rows name their differential island evidence", () => {
+    const islandRows = snapshot.rows.filter((row) => row.static?.status === "island-served");
+
+    expect(islandRows.length).toBeGreaterThan(0);
+    for (const row of islandRows) {
+      expect(row.static?.tests?.length ?? 0).toBeGreaterThan(0);
+      expect(row.static?.evidence).toMatch(/^compiler-(?:feature|dedicated):/);
+    }
+    // process.report is answered by the Node island; the native build keeps
+    // the refusal, so it is never a native support claim.
+    const reportRows = islandRows.filter(
+      (row) => row.chapter === "process" && row.label === "report",
+    );
+    expect(reportRows).toHaveLength(1);
+    expect(reportRows[0]?.static?.tests).toContain(
+      "tests/corpus/8830-process-report-island/main.ts",
+    );
   });
 });

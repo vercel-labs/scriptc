@@ -5,16 +5,21 @@
  * and binary size, and optionally per-function cachegrind instruction counts.
  * Both checkouts compile the same program files (from --programs, default the
  * baseline), so program paths embedded in artifacts match; checkout paths and
- * timestamps do not reach the artifacts. Builds bypass the native cache.
+ * timestamps do not reach the artifacts. Builds bypass the native cache. A
+ * program whose source the change itself rewrites (or adds, or deletes) is
+ * built from the candidate checkout's copy with both compilers instead: when
+ * the baseline compiler cannot build the new source, or the program is gone,
+ * the row is listed as "changed-by-pr" or "removed-by-pr" and does not fail
+ * the gate. Any other build error still does.
  *
  * The good-code set: the runtime benchmark workloads (and benchmarks/builds
  * applications), the self-hosted compiler (IR and LLVM), and the TypeScript
  * corpus programs. A program whose sources match --allow (the change's
- * pattern signature) may differ. A program whose IR and LLVM are identical
- * and whose executable differs only through changed runtime objects is
- * "runtime-only", and a difference the baseline reproduces against itself is
- * "nondeterministic": both pass with a note unless --strict. Any other
- * difference fails the gate. */
+ * pattern signature) or that --allow-programs lists by id may differ. A
+ * program whose IR and LLVM are identical and whose executable differs only
+ * through changed runtime objects is "runtime-only", and a difference the
+ * baseline reproduces against itself is "nondeterministic": both pass with a
+ * note unless --strict. Any other difference fails the gate. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -34,6 +39,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { readWorkloads } from "../benchmarks/runtime/workloads.mjs";
 import {
+  allowProgramsLines,
+  allowProgramsSummary,
   artifactHash,
   cachedComparison,
   cachegrindCounts,
@@ -44,22 +51,43 @@ import {
   confinedToRuntime,
   DYNAMIC_WORKLOADS,
   definedFunctionNames,
-  dynamicTierSymbols,
+  elfPrivateConstants,
   linkedRuntimeFiles,
   objectFunctionHashes,
   median,
-  icuSymbols,
-  nodeIslandSymbols,
   nmOutput,
+  pairPrograms,
+  parseAllowPrograms,
   parseNm,
+  changedProgram,
+  programChange,
   programInputsHash,
   programLines,
   programVerdict,
   recordedBaseline,
   runtimePackDiff,
+  symbolCheck,
   timingGroups,
   timingVerdict,
 } from "./zero-cost-compare.mjs";
+import {
+  budgetVerdict,
+  dynamicClassesEnv,
+  dynamicClassReport,
+  HEAP_PROBE_FLAGS,
+  heapLimitMb,
+  judgesSelfCompile,
+  llvmFacts,
+  outputGrowthAllowance,
+  outputGrowthVerdict,
+  programInputs,
+  readBudget,
+  SELF_ENTRY,
+  selfCompileTrace,
+  sourceBytes,
+  sourceCostAllowance,
+  sourceCostVerdict,
+} from "./self-compile-budget.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const { values } = parseArgs({
@@ -73,6 +101,8 @@ const { values } = parseArgs({
     shard: { type: "string" },
     only: { type: "string" },
     allow: { type: "string" },
+    "allow-programs": { type: "string" },
+    list: { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "timing-runs": { type: "string" },
     "self-timing-runs": { type: "string", default: "0" },
@@ -92,7 +122,8 @@ if (values.help || values.baseline === undefined) {
   console.log(`Usage: node scripts/zero-cost-gate.mjs --baseline=<checkout> [--candidate=<checkout>]
        [--programs=baseline|candidate|<dir>] [--set=bench,self,corpus] [--quick]
        [--corpus=ts|all] [--shard=i/n] [--only=<regex>] [--allow=<regex>]
-       [--strict] [--timing-runs=N] [--self-timing-runs=N]
+       [--allow-programs=<file>] [--list] [--strict] [--timing-runs=N]
+       [--self-timing-runs=N]
        [--fixture-timing-runs=N] [--max-time-growth=2] [--max-size-growth=0]
        [--cachegrind] [--jobs=N] [--json=<file>] [--keep]
        [--baseline-cache=<file>] [--record-baseline-cache=<file>]
@@ -112,6 +143,24 @@ into one verdict. --only filters program ids.
 
 --allow=<regex> is the change's pattern signature: programs whose source
 files match it may differ (reported as "allowed").
+--allow-programs=<file> names the programs that may differ by id instead:
+one id per line as the gate prints it (corpus/..., bench/..., self/cli,
+fixture/...); blank lines and lines that start with # are skipped. A listed
+program is allowed as if --allow matched it, and both options may be given.
+An id that names no program of the good-code set (of any --set and --corpus,
+before --only and --shard) is an error, so a stale list fails instead of
+passing. The summary counts the listed programs that differ and names the
+ones that are identical, which the list need not name.
+--list prints the ids of the programs the run would compare, one per line,
+and exits without building; with --allow-programs it checks the list first.
+
+A corpus or benchmark program the change itself rewrites or deletes is built
+from the candidate checkout's copy by both compilers, so a PR that replaces a
+program is not judged against the baseline's old copy. A program the baseline
+compiler cannot build, or one that only the baseline has, is reported as
+"changed-by-pr" or "removed-by-pr" and does not fail the gate; so is a program
+only the candidate adds, when the baseline compiler cannot build it. Other
+build errors still fail.
 
 Other differences are classified:
   runtime-only      IR and LLVM identical; the executable differs only
@@ -140,10 +189,24 @@ A pass whose cost follows the module's node count rather than the program's
 own work shows up there at a size the bench and corpus programs never reach.
 --max-size-growth bounds executable growth (percent) of allowed programs.
 
+The self-compile budget: the compared builds compile the baseline's compiler
+source, so they cannot see what a change's own source costs. The candidate's
+source built with the candidate is judged against the candidate's
+scripts/self-compile-budget.json: the whole-program lowering passes it takes
+(exact), the heap it holds at the end of a pass per source byte and the share
+of the heap limit that fills, and its compile time against the same
+compiler's build of the baseline's source in this run, beyond the growth of
+the source. A change that means to move one of them edits the budget file
+and states the reason there (scripts/self-compile-budget.mjs describes each
+entry).
+
 Dynamic-tier symbols (two-tier invariant I3): no executable may gain
 symbols under DYNAMIC_TIER_PREFIXES (scripts/zero-cost-compare.mjs) unless
-it matches --allow, and fully typed bench workloads (all but
+it is allowed, and fully typed bench workloads (all but
 DYNAMIC_WORKLOADS in scripts/zero-cost-compare.mjs) may define none.
+Likewise no executable may gain Node island symbols or symbols of the ICU
+archive unless it is allowed; a program that links them on both sides
+gained nothing.
 
 --cachegrind (Linux, valgrind on PATH) runs differing executables under
 cachegrind (bench workloads with their arguments, corpus programs without)
@@ -162,7 +225,8 @@ inputs changed since the record. The record applies only to the
 baseline revision and toolchain it was made with; otherwise it is ignored.
 The self program always builds both sides, since its builds are timed.
 
-Exit status: 0 when the gate passes, 1 when it fails.`);
+Exit status: 0 when the gate passes, 1 when it fails, 2 when the arguments
+are wrong, which includes an --allow-programs id that names no program.`);
   process.exit(values.help ? 0 : 2);
 }
 
@@ -189,6 +253,10 @@ assert.ok(Number.isInteger(jobs) && jobs >= 1, "--jobs must be >= 1");
 assert.ok(["ts", "all"].includes(values.corpus), "--corpus must be ts or all");
 const only = values.only ? new RegExp(values.only) : null;
 const allow = values.allow ? new RegExp(values.allow, "m") : null;
+const allowPrograms =
+  values["allow-programs"] === undefined
+    ? null
+    : parseAllowPrograms(readFileSync(values["allow-programs"], "utf8"));
 if (values.cachegrind)
   assert.equal(
     spawnSync("valgrind", ["--version"]).status,
@@ -206,86 +274,97 @@ const work = mkdtempSync("/tmp/scriptc-zero-cost-");
  * the gate times its comparison build plus --fixture-timing-runs more pairs. */
 const FIXTURE_PROGRAMS = ["llvm-emitter", "llvm-layouts"];
 
-/** Every file a program reads: the entry and its relative imports. */
-function programInputs(entry) {
-  const files = new Set();
-  const pending = [entry];
-  while (pending.length > 0) {
-    const file = pending.pop();
-    if (files.has(file)) continue;
-    files.add(file);
-    const text = readFileSync(file, "utf8");
-    for (const match of text.matchAll(
-      /(?:from|import|require)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
-    )) {
-      const base = resolve(dirname(file), match[1]);
-      const stem = base.replace(/\.(m|c)?js$/, "");
-      const found = [
-        base,
-        `${stem}.ts`,
-        `${stem}.mts`,
-        `${stem}.cts`,
-        `${base}.ts`,
-        join(base, "index.ts"),
-      ].find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
-      if (found !== undefined) pending.push(found);
-    }
+/** Whether a bench workload is a program with Node islands. */
+const islandWorkload = (w) => (w?.requires ?? []).includes("libnode");
+
+/** Every program of the good-code set of the checkout `root`: all three
+ * sets, and every corpus entry whatever its language. `--set`, `--corpus`,
+ * `--only` and `--shard` select from it (`selectedPrograms`);
+ * --allow-programs may name any of it. A --programs directory need only hold
+ * the sets the run selects (`selected`); the other compared checkout
+ * contributes what it has. */
+function programSet(root, selected = true) {
+  const programs = [];
+  const suite = join(root, "benchmarks/runtime");
+  const seen = new Set();
+  for (const w of (selected && sets.has("bench")) || existsSync(suite)
+    ? readWorkloads(suite)
+    : []) {
+    const entry = join(suite, w.entry);
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    programs.push({ id: `bench/${w.name}`, set: "bench", entry, kind: "exe", workload: w });
   }
-  return [...files];
+  programs.push({
+    id: "self/cli",
+    set: "self",
+    entry: join(root, SELF_ENTRY),
+    kind: "source",
+  });
+  // The self-hosting emitter fixtures lower the whole emitter over the
+  // compiler's complete IR surface. They are the timed programs that show a
+  // pass whose cost follows the module's size (the fs Buffer brand scan of
+  // #2636 spent most of a compile in one walk and left the IR unchanged).
+  for (const name of FIXTURE_PROGRAMS)
+    programs.push({
+      id: `fixture/${name}`,
+      set: "self",
+      entry: join(root, "tests/fixtures/self-hosting", `${name}.ts`),
+      kind: "fixture",
+    });
+  const corpus = join(root, "tests/corpus");
+  // A directory's entry is its main.ts, or without one its first JavaScript
+  // main; --corpus=ts keeps the TypeScript entries.
+  const exts = ["ts", "js", "mjs", "cjs"];
+  const listed = (selected && sets.has("corpus")) || existsSync(corpus);
+  for (const name of listed ? readdirSync(corpus).sort() : []) {
+    const path = join(corpus, name);
+    let entry = null;
+    if (statSync(path).isDirectory())
+      entry = exts.map((ext) => join(path, `main.${ext}`)).find((p) => existsSync(p)) ?? null;
+    else if (exts.some((ext) => name.endsWith(`.${ext}`))) entry = path;
+    if (entry !== null)
+      programs.push({ id: `corpus/${relative(corpus, entry)}`, set: "corpus", entry, kind: "exe" });
+  }
+  return programs;
 }
 
+/** The whole good-code set. A program the other compared checkout alone has
+ * is added, so a change that adds a corpus program compares it too, and an
+ * --allow-programs list may name it. Each program carries what either
+ * compared checkout holds under its id (`sides`), which changeOf reads. */
 function goodCodeSet() {
-  const programs = [];
-  if (sets.has("bench")) {
-    const suite = join(programsRoot, "benchmarks/runtime");
-    const seen = new Set();
-    for (const w of readWorkloads(suite)) {
-      const entry = join(suite, w.entry);
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      programs.push({ id: `bench/${w.name}`, entry, kind: "exe", workload: w });
-    }
-  }
-  if (sets.has("self")) {
-    programs.push({
-      id: "self/cli",
-      entry: join(programsRoot, "packages/compiler/src/native/cli.ts"),
-      kind: "source",
-    });
-    // The self-hosting emitter fixtures lower the whole emitter over the
-    // compiler's complete IR surface. They are the timed programs that show a
-    // pass whose cost follows the module's size (the fs Buffer brand scan of
-    // #2636 spent most of a compile in one walk and left the IR unchanged).
-    for (const name of FIXTURE_PROGRAMS)
-      programs.push({
-        id: `fixture/${name}`,
-        entry: join(programsRoot, "tests/fixtures/self-hosting", `${name}.ts`),
-        kind: "fixture",
-      });
-  }
-  if (sets.has("corpus")) {
-    const corpus = join(programsRoot, "tests/corpus");
-    const exts = values.corpus === "all" ? ["ts", "js", "mjs", "cjs"] : ["ts"];
-    const entries = [];
-    for (const name of readdirSync(corpus).sort()) {
-      const path = join(corpus, name);
-      if (statSync(path).isDirectory()) {
-        const main = exts.map((ext) => join(path, `main.${ext}`)).find((p) => existsSync(p));
-        if (main !== undefined) entries.push(main);
-      } else if (exts.some((ext) => name.endsWith(`.${ext}`))) entries.push(path);
-    }
-    for (const entry of entries) {
-      const head = readFileSync(entry, "utf8").split("\n", 2);
-      const speed = head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line));
-      programs.push({
-        id: `corpus/${relative(corpus, entry)}`,
-        entry,
-        kind: "exe",
-        optimization: speed ? "speed" : "release",
-      });
-    }
-  }
-  const selected = programs.filter((p) => only === null || only.test(p.id));
+  const own = programSet(programsRoot);
+  if (counterpartRoot === null) return own;
+  return pairPrograms(own, programSet(counterpartRoot, false)).map(({ own, counterpart }) => ({
+    ...(own ?? counterpart),
+    sides:
+      programsRoot === trees.baseline
+        ? { baseline: own, candidate: counterpart }
+        : { baseline: counterpart, candidate: own },
+  }));
+}
+
+/** The optimization level a program's source names: a corpus entry's head
+ * may ask for speed; every other program builds at release. */
+function optimizationOf(program) {
+  if (program.set !== "corpus") return program.optimization;
+  const head = readFileSync(program.entry, "utf8").split("\n", 2);
+  const speed = head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line));
+  return speed ? "speed" : "release";
+}
+
+/** The programs this run compares. A workload with Node islands builds only
+ * where a libnode pack is (benchmarks/runtime/README.md, "requires"); without
+ * one it is left out on both sides, as the island programs of the corpus
+ * are. */
+function selectedPrograms(all) {
+  const selected = all
+    .filter((p) => sets.has(p.set))
+    .filter((p) => !islandWorkload(p.workload) || Boolean(process.env.SCRIPTC_LIBNODE))
+    .filter((p) => p.set !== "corpus" || values.corpus === "all" || p.entry.endsWith(".ts"))
+    .filter((p) => only === null || only.test(p.id));
+  for (const program of selected) program.optimization = optimizationOf(program);
   if (!values.shard) return selected;
   const [index, count] = values.shard.split("/").map(Number);
   assert.ok(
@@ -328,11 +407,26 @@ function buildEnv() {
   return env;
 }
 
-function compile(tree, args) {
+/** Every build runs with the heap limit of the gate's own checkout (the self-compile budget's).
+ * `trace` adds what the budget reads: the phase timing lines, the heap at each pass's end, and
+ * the report on the classes the built checkout's budget keeps out of the dynamic tier. */
+const heapLimit = heapLimitMb(readBudget(repoRoot));
+function compile(tree, args, trace = false) {
   return exec(
     process.execPath,
-    ["--max-old-space-size=8192", join(tree, "packages/cli/dist/bootstrap.js"), "build", ...args],
-    { cwd: programsRoot, env: buildEnv() },
+    [
+      `--max-old-space-size=${heapLimit}`,
+      ...(trace ? HEAP_PROBE_FLAGS : []),
+      join(tree, "packages/cli/dist/bootstrap.js"),
+      "build",
+      ...args,
+    ],
+    {
+      cwd: programsRoot,
+      env: trace
+        ? { ...buildEnv(), SCRIPTC_TIMING: "1", ...dynamicClassesEnv(readBudget(tree)) }
+        : buildEnv(),
+    },
   );
 }
 
@@ -341,7 +435,7 @@ function compile(tree, args) {
  * compiler and the self-hosting fixtures emit LLVM only: each of their
  * frontend runs takes minutes, and their LLVM names the first differing
  * function as well as their IR would. */
-async function buildProgram(program, label, tree = trees[label]) {
+async function buildProgram(program, label, tree = trees[label], trace = false) {
   const dir = join(work, label, program.id.replace(/[^\w.-]+/g, "_"));
   mkdirSync(dir, { recursive: true });
   const failure = (result) => ({
@@ -353,9 +447,20 @@ async function buildProgram(program, label, tree = trees[label]) {
   });
   if (program.kind === "source" || program.kind === "fixture") {
     const llvm = join(dir, "program.ll");
-    const result = await compile(tree, [program.entry, "--emit=llvm", "-o", llvm]);
+    const result = await compile(tree, [program.entry, "--emit=llvm", "-o", llvm], trace);
     if (result.status !== 0) return failure(result);
-    return { ok: true, dir, llvm, ms: result.ms };
+    return {
+      ok: true,
+      dir,
+      llvm,
+      ms: result.ms,
+      ...(trace
+        ? {
+            trace: selfCompileTrace(result.stderr),
+            dynamicClasses: dynamicClassReport(result.stderr),
+          }
+        : {}),
+    };
   }
   const exe = join(dir, "program");
   const result = await compile(tree, [
@@ -390,34 +495,26 @@ function nm(binary) {
 /** Names of the functions an executable defines. */
 const definedFunctions = (binary) => definedFunctionNames(nm(binary));
 
-/** The I3 symbol check. Every executable may not gain dynamic-tier symbols
- * over the baseline (unless the program matches --allow); a fully typed
- * bench workload may contain none at all. */
+/** The symbol check (two-tier invariant I3, the Node island runtime and the
+ * ICU archive). No executable may gain dynamic-tier, Node island or ICU
+ * symbols over the baseline (unless the program is allowed); a fully typed
+ * bench workload may contain no dynamic-tier symbol at all. The island
+ * workloads are the programs that call into Node.js, so the Node island rule
+ * does not apply to them. An identical executable gained nothing, so only a
+ * typed one is read. */
 function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
   if (!baseline.exe || !artifacts.exe) return null;
-  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id);
+  const island = islandWorkload(program.workload);
+  const typed = program.id.startsWith("bench/") && !DYNAMIC_WORKLOADS.has(program.id) && !island;
   if (artifacts.exe.identical && !typed) return null;
-  const after = dynamicTierSymbols(definedFunctions(candidate.exe));
-  const before = artifacts.exe.identical
-    ? after
-    : dynamicTierSymbols(definedFunctions(baseline.exe));
-  const added = after.filter((name) => !before.includes(name));
-  const failures = [];
-  // No good-code program calls into Node.js, so none may link its runtime.
-  const nodeIsland = nodeIslandSymbols(definedFunctions(candidate.exe));
-  if (nodeIsland.length > 0 && !allowed)
-    failures.push(`links Node island symbols: ${nodeIsland.slice(0, 5).join(", ")}`);
-  // Intl over ICU is linked only into programs whose IR lowers to it. A
-  // program that legitimately calls it names the pattern in --allow.
-  const icu = icuSymbols(definedFunctions(candidate.exe));
-  if (icu.length > 0 && !allowed) failures.push(`links ICU symbols: ${icu.slice(0, 5).join(", ")}`);
-  if (typed && after.length > 0)
-    failures.push(
-      `fully typed program links dynamic-tier symbols: ${after.slice(0, 5).join(", ")}`,
-    );
-  if (added.length > 0 && !allowed)
-    failures.push(`gained dynamic-tier symbols: ${added.slice(0, 5).join(", ")}`);
-  return { typed, count: after.length, added, failures };
+  const after = definedFunctions(candidate.exe);
+  return symbolCheck({
+    typed,
+    allowed,
+    island,
+    baseline: artifacts.exe.identical ? after : definedFunctions(baseline.exe),
+    candidate: after,
+  });
 }
 
 function compareBuilds(baseline, candidate) {
@@ -505,9 +602,10 @@ function llvmObjdump() {
  * null when no object or archive does: the changed pack files, whether the
  * LLVM helper is the same, the symbols the changed objects define (on either
  * side), and the functions whose code changed in the changed release and
- * speed objects. Bitcode, which packs built before 0.4.7 also list, is not
- * a change: it records the checkout's source path, so it differs between
- * any two checkouts. */
+ * speed objects (their instructions, the symbols those name, or the private
+ * constants they read). Bitcode, which packs built before 0.4.7 also list,
+ * is not a change: it records the checkout's source path, so it differs
+ * between any two checkouts. */
 function runtimeChanges() {
   const pack = (root) =>
     readdirSync(join(root, "packages"))
@@ -566,7 +664,7 @@ function runtimeChanges() {
         encoding: "utf8",
         maxBuffer: 1 << 30,
       });
-      return objectFunctionHashes(out.stdout ?? "");
+      return objectFunctionHashes(out.stdout ?? "", elfPrivateConstants(readFileSync(file)));
     };
     const delta = changedFunctions(text(trees.baseline), text(trees.candidate));
     for (const kind of ["changed", "added", "removed"])
@@ -681,8 +779,88 @@ if (recordPath === undefined && values["baseline-cache"] !== undefined) {
     );
 }
 
-const programs = goodCodeSet().filter((p) => recordPath === undefined || p.kind === "exe");
+/* ── programs the change rewrites or deletes ───────────────────────────── */
+
+/** The checkout whose copy of a program the change rewrites, or null when
+ * --programs is not one of the compared checkouts. A baseline record is made
+ * from one checkout's own programs, so it takes no part. */
+const counterpartRoot =
+  recordPath !== undefined
+    ? null
+    : programsRoot === trees.baseline
+      ? trees.candidate
+      : programsRoot === trees.candidate
+        ? trees.baseline
+        : null;
+
+/** The files the checkout `root`'s `program` reads, keyed by their path
+ * relative to `root` and hashed, or null when the checkout has no such
+ * program or its entry is absent. */
+function sourceSet(root, program) {
+  if (program === null || !existsSync(program.entry)) return null;
+  const files = new Map();
+  for (const file of programInputs(program.entry))
+    files.set(relative(root, file), createHash("sha1").update(readFileSync(file)).digest("hex"));
+  return { entry: relative(root, program.entry), files };
+}
+
+/** What the change does to a program, from what each checkout holds under
+ * its id (programChange). Only executable programs take part: the self
+ * program and the emitter fixtures ARE the baseline compiler's own source,
+ * which every compiler change edits by design. */
+function changeOf({ baseline, candidate }) {
+  return programChange(sourceSet(trees.baseline, baseline), sourceSet(trees.candidate, candidate));
+}
+
+/** Write `text` to `stream` and exit with `status` once it is written. A pipe
+ * can take a write asynchronously, and `process.exit` drops what is still
+ * queued, so a driver that captures the output would read part of it. The
+ * promise never settles: awaiting it holds the script here until the exit. */
+const writeAndExit = (stream, text, status) =>
+  new Promise(() => stream.write(text, () => process.exit(status)));
+
+const goodCode = goodCodeSet();
+if (allowPrograms !== null) {
+  // A list that names a program the good-code set does not have is stale:
+  // the program was renamed or removed, or the id is misspelled.
+  const known = new Set(goodCode.map((p) => p.id));
+  const unknown = allowPrograms.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    rmSync(work, { recursive: true, force: true });
+    await writeAndExit(
+      process.stderr,
+      `--allow-programs ${values["allow-programs"]}: ${unknown.length} of ${allowPrograms.length} ` +
+        `listed ids name no program of the good-code set in ${programsRoot}:\n` +
+        unknown.map((id) => `  ${id}\n`).join(""),
+      2,
+    );
+  }
+}
+const listedPrograms = new Set(allowPrograms ?? []);
+const programs = selectedPrograms(goodCode).filter(
+  (p) => recordPath === undefined || p.kind === "exe",
+);
 assert.ok(programs.length > 0, "the selected good-code set is empty");
+if (values.list) {
+  rmSync(work, { recursive: true, force: true });
+  await writeAndExit(process.stdout, programs.map((program) => `${program.id}\n`).join(""), 0);
+}
+if (recordPath === undefined)
+  for (const program of programs) {
+    if (program.kind !== "exe" || program.sides === undefined) continue;
+    const change = changeOf(program.sides);
+    if (change === undefined) continue;
+    program.pr = change;
+    // Both compilers build the program the change provides: its source, at
+    // the optimization level that source names, run with its arguments.
+    if (change !== "removed") {
+      const candidate = program.sides.candidate;
+      Object.assign(
+        program,
+        changedProgram({ ...candidate, optimization: optimizationOf(candidate) }),
+      );
+    }
+  }
 const runtime = recordPath === undefined ? runtimeChanges() : null;
 const report = {
   schema: 1,
@@ -693,6 +871,8 @@ const report = {
   ),
   programsRoot,
   allow: values.allow ?? null,
+  allowPrograms:
+    allowPrograms === null ? null : { file: values["allow-programs"], ids: allowPrograms },
   strict: values.strict,
   runtime:
     runtime === null
@@ -780,17 +960,16 @@ if (recordPath !== undefined) {
 /** The candidate's own compiler source must still build with the candidate
  * (see below). On a host with room for a third self-hosted build it runs
  * alongside the comparison builds instead of after them. */
-const checkCandidateSelf =
-  sets.has("self") && programsRoot !== trees.candidate && programs.some((p) => p.kind === "source");
+const checkCandidateSelf = judgesSelfCompile(sets, programs);
+/** llvmFacts of the baseline's compiler source built by the candidate, once that build is in. */
+let pairedSelfLlvm = null;
+const candidateSelfProgram = {
+  id: "self/candidate-source",
+  entry: join(trees.candidate, SELF_ENTRY),
+  kind: "source",
+};
 const buildCandidateSelf = () =>
-  buildProgram(
-    {
-      id: "self/candidate-source",
-      entry: join(trees.candidate, "packages/compiler/src/native/cli.ts"),
-      kind: "source",
-    },
-    "candidate",
-  );
+  buildProgram(candidateSelfProgram, "candidate", trees.candidate, true);
 const earlyCandidateSelf =
   checkCandidateSelf && totalmem() >= 40 * 1024 ** 3 ? buildCandidateSelf() : null;
 
@@ -798,8 +977,16 @@ await pool(
   programs.map((program) => ({
     heavy: program.kind !== "exe",
     run: async () => {
+      if (program.pr === "removed") {
+        const entry = { id: program.id, verdict: "removed-by-pr", allowed: false, artifacts: {} };
+        printProgram(entry);
+        report.programs.push(entry);
+        return;
+      }
       const recorded =
-        program.kind !== "exe" || baselineCache === null
+        // A program the change rewrites has no recorded baseline: the record
+        // holds the old source's artifacts.
+        program.pr !== undefined || program.kind !== "exe" || baselineCache === null
           ? undefined
           : recordedBaseline(baselineCache, program.id, inputsHash(program));
       let baseline;
@@ -823,8 +1010,9 @@ await pool(
         if (settled !== null) report.baselineCache.used++;
       }
       const allowed =
-        allow !== null &&
-        programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8")));
+        listedPrograms.has(program.id) ||
+        (allow !== null &&
+          programInputs(program.entry).some((f) => allow.test(readFileSync(f, "utf8"))));
       const artifacts =
         settled?.artifacts ??
         (baseline.ok && candidate.ok ? compareBuilds(baseline, candidate) : {});
@@ -846,6 +1034,8 @@ await pool(
           runtimeOnly,
           nondeterministic,
           strict: values.strict,
+          // Both compilers built the change's own source.
+          changedSource: program.pr !== undefined,
         });
       let { verdict, fails } = judge([]);
       // Build a difference the change cannot explain once more with the
@@ -870,6 +1060,7 @@ await pool(
         buildMs: { baseline: baseline.ms ?? null, candidate: candidate.ms ?? null },
         artifacts,
       };
+      if (program.pr !== undefined) entry.pr = program.pr;
       if (verdict === "runtime-only") entry.runtime = linkedRuntimeChanges(runtime, candidate.exe);
       if (verdict === "nondeterministic") entry.nondeterministic = recheck;
       if (settled !== null) entry.cachedBaseline = true;
@@ -913,6 +1104,10 @@ await pool(
       report.programs.push(entry);
       nmCache.delete(baseline.exe);
       nmCache.delete(candidate.exe);
+      // The candidate's build of the baseline's compiler source is what the self-compile
+      // budget compares the candidate's own source with; its LLVM is deleted just below.
+      if (program.id === "self/cli" && checkCandidateSelf && candidate.llvm)
+        pairedSelfLlvm = llvmFacts(candidate.llvm);
       if (!values.keep) {
         if (baseline.dir && !baseline.cached)
           rmSync(baseline.dir, { recursive: true, force: true });
@@ -947,7 +1142,7 @@ if (timingRuns > 0) {
     return baseline.status === 0 && candidate.status === 0 ? [baseline.ms, candidate.ms] : null;
   };
   for (const program of programs) {
-    if (program.id.startsWith("corpus/")) continue;
+    if (program.id.startsWith("corpus/") || program.pr === "removed") continue;
     const row = { id: program.id, baselineMs: [], candidateMs: [], ratios: [] };
     const add = (sample) => {
       if (sample === null) return;
@@ -990,7 +1185,11 @@ if (timingRuns > 0) {
 // The self program is the baseline's compiler source (the programs come
 // from one checkout), so a change that adds compiler code the self-hosted
 // frontend cannot lower would pass unnoticed. The candidate's own compiler
-// source must still build with the candidate (LLVM only, not compared).
+// source must still build with the candidate (LLVM only; its artifacts are
+// not compared, its cost is: the self-compile budget below). With
+// --programs=candidate the compared builds compile that source already;
+// this build is still made, because it is the one that is traced and held
+// to the budget.
 if (checkCandidateSelf) {
   const result = await (earlyCandidateSelf ?? buildCandidateSelf());
   report.candidateSelf = result.ok
@@ -1004,7 +1203,105 @@ if (checkCandidateSelf) {
   if (!result.ok) {
     failed = true;
     report.failures.push(`self/candidate-source: ${result.error.split("\n")[0]}`);
+  } else {
+    const budget = await selfCompileBudget(result);
+    report.candidateSelf.budget = budget;
+    for (const line of budget.lines) console.log(`self       ${line}`);
+    if (budget.failures.length > 0) {
+      failed = true;
+      report.failures.push(...budget.failures);
+    }
   }
+}
+
+/* The self-compile budget (scripts/self-compile-budget.mjs). The compared
+ * builds above compile the baseline's compiler source with both compilers,
+ * so they show what a change does to the compiler and are blind to what its
+ * own source costs to compile. This judges the third build, the candidate's
+ * source with the candidate:
+ *   - the whole-program lowering passes it took and its live heap, against
+ *     the candidate's scripts/self-compile-budget.json;
+ *   - its compile time against the same compiler's build of the baseline's
+ *     source in this run, beyond the growth of the source itself. Both ran
+ *     on this host, so the host's speed cancels. When the first pair is over
+ *     the tolerance the two sources build once more, side by side with
+ *     nothing else running, and the smaller ratio is judged. */
+async function selfCompileBudget(build) {
+  const budget = readBudget(trees.candidate);
+  const previous = readBudget(trees.baseline);
+  // A candidate without a budget file has nothing judged, so its source is
+  // not measured either: the gate also runs over checkouts that hold a
+  // compiler and no source (tests/harness/zero-cost-gate.test.ts).
+  const bytes = budget === null ? null : sourceBytes(candidateSelfProgram.entry);
+  const verdict = budgetVerdict({
+    budget,
+    previous,
+    trace: build.trace,
+    bytes,
+    dynamicClasses: build.dynamicClasses,
+    root: trees.candidate,
+  });
+  const result = {
+    passes: build.trace.passes,
+    liveHeapMb: build.trace.liveHeapMb,
+    sourceBytes: bytes,
+    lines: verdict.lines,
+    failures: verdict.failures,
+  };
+  // The compile-time comparison pairs this build with the same compiler's
+  // build of the baseline's source. A run whose programs come from the
+  // candidate checkout never builds that source: it judges the passes and
+  // the heap, and says that the time was not compared.
+  if (programsRoot === trees.candidate) {
+    result.lines.push(
+      "compile time against the baseline's source: not compared (--programs=candidate builds only the candidate's source)",
+    );
+    return result;
+  }
+  const baselineSource = programs.find((p) => p.id === "self/cli");
+  const paired = report.programs.find((p) => p.id === "self/cli")?.buildMs.candidate;
+  if (budget === null || baselineSource === undefined || !paired) return result;
+  const sourceRatio = bytes / sourceBytes(baselineSource.entry);
+  // What the two sources compile to, with the candidate compiler: the LLVM of this build and
+  // of the compared build of the baseline's source. Exact numbers, so one pair decides.
+  if (pairedSelfLlvm !== null) {
+    const growth = outputGrowthVerdict({
+      candidate: llvmFacts(build.llvm),
+      baseline: pairedSelfLlvm,
+      sourceRatio,
+      allowance: outputGrowthAllowance(budget, previous),
+    });
+    result.outputGrowth = { worst: growth.worst };
+    result.lines.push(...growth.lines);
+    result.failures.push(...growth.failures);
+  }
+  const allowance = sourceCostAllowance(budget, previous);
+  const ratios = [build.ms / paired];
+  let cost = sourceCostVerdict({ ratios, sourceRatio, allowance });
+  if (cost.fails) {
+    const again = await Promise.all([
+      compile(trees.candidate, [
+        baselineSource.entry,
+        "--emit=llvm",
+        "-o",
+        join(work, "source-cost-baseline.ll"),
+      ]),
+      compile(trees.candidate, [
+        candidateSelfProgram.entry,
+        "--emit=llvm",
+        "-o",
+        join(work, "source-cost-candidate.ll"),
+      ]),
+    ]);
+    if (again.every((run) => run.status === 0)) {
+      ratios.push(again[1].ms / again[0].ms);
+      cost = sourceCostVerdict({ ratios, sourceRatio, allowance });
+    }
+  }
+  result.sourceCost = { ratios, sourceRatio, allowance, ratio: cost.ratio };
+  result.lines.push(cost.line);
+  if (cost.failure !== null) result.failures.push(cost.failure);
+  return result;
 }
 
 const counts = {};
@@ -1026,8 +1323,11 @@ if (values.json) {
 if (!values.keep) rmSync(work, { recursive: true, force: true });
 else console.log(`artifacts kept in ${work}`);
 const noted = report.programs.filter((p) =>
-  ["runtime-only", "nondeterministic"].includes(p.verdict),
+  ["runtime-only", "nondeterministic", "changed-by-pr", "removed-by-pr"].includes(p.verdict),
 );
+if (allowPrograms !== null)
+  for (const line of allowProgramsLines(allowProgramsSummary(allowPrograms, report.programs)))
+    console.log(line);
 console.log(
   `zero-cost gate: ${failed ? "FAIL" : noted.length ? "PASS with notes" : "PASS"} — ${Object.entries(
     counts,
@@ -1058,5 +1358,19 @@ if (nondeterministicPrograms.length > 0)
     `  note: ${nondeterministicPrograms.length} nondeterministic programs, whose baseline rebuild differs too: ` +
       nondeterministicPrograms.map((p) => p.id).join(", "),
   );
-for (const failure of report.failures) console.log(`  ${failure}`);
-process.exit(failed ? 1 : 0);
+const prPrograms = report.programs.filter((p) =>
+  ["changed-by-pr", "removed-by-pr"].includes(p.verdict),
+);
+if (prPrograms.length > 0)
+  console.log(
+    `  note: ${prPrograms.length} program${prPrograms.length === 1 ? "" : "s"} changed or removed by the PR, ` +
+      `judged from the candidate checkout's copy: ` +
+      prPrograms
+        .map((p) => `${p.id} (${p.verdict === "removed-by-pr" ? "removed" : "changed"})`)
+        .join(", "),
+  );
+await writeAndExit(
+  process.stdout,
+  report.failures.map((failure) => `  ${failure}\n`).join(""),
+  failed ? 1 : 0,
+);

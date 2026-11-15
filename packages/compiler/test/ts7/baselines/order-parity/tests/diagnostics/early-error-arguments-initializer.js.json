@@ -1,0 +1,43 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-arguments-initializer.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'arguments'. Did you mean the static member 'Box.arguments'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-arguments-initializer.js",
+    "start": 427,
+    "end": 436
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'arguments'. Did you mean the static member 'Box.arguments'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-arguments-initializer.js",
+    "start": 459,
+    "end": 468
+   }
+  },
+  {
+   "code": "SC0012",
+   "message": "'arguments' is not allowed in a class field initializer or a class static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-arguments-initializer.js",
+    "start": 459,
+    "end": 468
+   }
+  },
+  {
+   "code": "SC0012",
+   "message": "'arguments' is not allowed in a class field initializer or a class static block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-arguments-initializer.js",
+    "start": 427,
+    "end": 436
+   }
+  }
+ ]
+}

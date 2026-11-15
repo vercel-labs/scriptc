@@ -1,5 +1,5 @@
 import { resolveBuildCacheRoot } from "./cache-root.js";
-export { resolveBuildCacheRoot } from "./cache-root.js";
+export { resolveBuildCacheRoot, resolveCompilerStateRoot } from "./cache-root.js";
 import { createHash } from "node:crypto";
 import {
   chmod,

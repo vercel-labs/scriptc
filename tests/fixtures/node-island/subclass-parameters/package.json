@@ -1,0 +1,1 @@
+{ "name": "island-subclass-parameters", "private": true, "type": "module", "scriptc": { "packages": { "seed-kit": "node" } } }

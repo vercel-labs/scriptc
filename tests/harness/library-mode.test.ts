@@ -361,6 +361,23 @@ version: sdk-1.0
     );
   });
 
+  /* ── a deferred JavaScript refusal: the plain throw, no reporter ─────── */
+
+  test("a deferred refusal in a library throws without the stderr reporter", async () => {
+    const { archive, outDir } = await buildLibrary("deferred-fence", emission);
+    // An executable throws such a refusal through scr_deferred_fence.c,
+    // which a library archive does not carry: the archive must not name it.
+    const { defined, undef } = nmSymbols(archive);
+    expect(undef.has("scr_deferred_fence")).toBe(false);
+    expect(defined.has("scr_deferred_fence")).toBe(false);
+    const probe = buildProbe("deferred-fence", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("run: 5\nrun: 6\n");
+    expect(run.stderr).toBe("");
+  });
+
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 
   test("cstring parameters, results, and callback arguments", async () => {
@@ -856,6 +873,18 @@ describe("K9: library-mode refusals", () => {
     );
   });
 
+  test("SC4005: process.features as a value", async () => {
+    // The flags object is a gated runtime unit no library archive carries,
+    // so the value form is refused by name instead of leaving the archive
+    // with an undefined symbol.
+    const diags = await refusal(
+      `export function f(): number { return "tls" in process.features ? 1 : 0; }\n`,
+      { exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }] },
+    );
+    expect(diags[0]!.code).toBe("SC4005");
+    expect(diags[0]!.message).toContain("process.features as a value");
+  });
+
   test("SC4007: a generic export", async () => {
     const diags = await refusal(
       `export function id<T>(x: T): T { return x; }\nconsole.log(id(1));\n`,
@@ -1044,6 +1073,30 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
     expect(diags[0]!.message).toContain("Date.now");
     expect(diags[0]!.note).toContain("time is an effect");
     expect(diags[0]!.file.endsWith("lib.ts")).toBe(true);
+  });
+
+  test("os.userInfo refuses in its text, Buffer and named-encoding forms", async () => {
+    // The record is assembled from one snapshot libCall and one scalar
+    // libCall per passwd field, and the Buffer and named-encoding forms read
+    // those fields as bytes. Every form reaches the same manifest member, so
+    // every form answers the same refusal.
+    for (const expr of [
+      "String(os.userInfo().username).length",
+      'os.userInfo({ encoding: "buffer" }).username.length',
+      'String(os.userInfo({ encoding: "hex" }).username).length',
+    ]) {
+      const diags = await refusal(
+        `import * as os from "node:os";\nexport function whoami(): number { return ${expr}; }\n`,
+        {
+          exports: [{ export: "whoami", symbol: "kx_whoami", params: [], returns: "f64" }],
+          determinism: { fences: WORKED_FENCES },
+        },
+        emission,
+      );
+      expect(diags.map((d) => d.code)).toEqual(["SC4008"]);
+      expect(diags[0]!.message).toContain("'node-builtin.os.userInfo'");
+      expect(diags[0]!.note).toContain("machine identity is an effect");
+    }
   });
 
   test("Date.parse fence denies the call but permits date construction and getTime", async () => {

@@ -1,0 +1,53 @@
+async-return-payload-arm-unconvertible.ts:16:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ index: Map<string, { a: number }>; text: string }', got '{ index: Map<string, { a: number; b: number }>; text: string }' — field 'index': 'Map<string, { a: number; b: number }>' does not lift into 'Map<string, { a: number }>'
+
+  15 | async function fromThen(text: string): Promise<Listing> {
+  16 |   return Promise.resolve(text).then((t) => ({ text: t, index: new Map([[t, { a: 1, b: 2 }]]) }));
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+async-return-payload-arm-unconvertible.ts:20:3 - error SC2002: record shapes must match exactly or width-coerce: expected '{ index: Map<string, { a: number }>; text: string }', got '{ index: Map<string, { a: number; b: number }>; text: string }' — field 'index': 'Map<string, { a: number; b: number }>' does not lift into 'Map<string, { a: number }>'
+
+  19 | const viaArrow = async (text: string): Promise<Listing> =>
+  20 |   Promise.resolve(text).then((t) => ({ text: t, index: new Map([[t, { a: 1, b: 2 }]]) }));
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | 
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+async-return-payload-arm-unconvertible.ts:23:28 - error SC2002: record shapes must match exactly or width-coerce: expected '{ index: Map<string, { a: number }>; text: string }', got '{ index: Map<string, { a: number; b: number }>; text: string }' — field 'index': 'Map<string, { a: number; b: number }>' does not lift into 'Map<string, { a: number }>'
+
+  22 | async function fromAwait(text: string): Promise<Listing> {
+  23 |   const listing: Listing = await Promise.resolve(text).then((t) => ({
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 |     text: t,
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+async-return-payload-arm-unconvertible.ts:27:10 - error SC2004: uses of 'listing' inherit the blocker on its declaration
+
+  26 |   }));
+  27 |   return listing;
+     |          ^~~~~~~
+  28 | }
+
+  hint: the declaration of 'listing' did not compile — fix the diagnostic reported there and these sites clear with it
+
+async-return-payload-arm-unconvertible.ts:31:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ index: Map<string, { a: number }>; text: string }', got '{ index: Map<string, { a: number; b: number }>; text: string }' — field 'index': 'Map<string, { a: number; b: number }>' does not lift into 'Map<string, { a: number }>'
+
+  30 | function plain(value: Exact | Listing): Listing {
+  31 |   return value;
+     |          ^~~~~
+  32 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
+
+async-return-payload-arm-unconvertible.ts:36:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ index: Map<string, { a: number }>; text: string }', got '{ index: Map<string, { a: number; b: number }>; text: string }' — field 'index': 'Map<string, { a: number; b: number }>' does not lift into 'Map<string, { a: number }>'
+
+  35 |   if (value === undefined) throw new Error("nothing");
+  36 |   return value;
+     |          ^~~~~
+  37 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

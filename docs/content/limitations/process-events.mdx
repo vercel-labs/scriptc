@@ -7,3 +7,7 @@ Literal `uncaughtException` and `uncaughtExceptionMonitor` registrations compile
 Handled exceptions resume queued native work; monitors alone do not suppress failure.
 Error objects and primitive exceptions can reach listeners, while arbitrary native objects remain subject to exception-value restrictions.
 Exception capture callbacks are unsupported.
+
+`NODE_NO_WARNINGS=1` leaves out the default report of a process warning on stderr once the program has called `process.emitWarning` or registered a `'warning'` listener; listeners still run.
+Before that, and in a program that does neither, the runtime's own warnings (the listener-leak warning of `EventEmitter` and `EventTarget`, the timer duration warnings, the `dgram` deprecation) are still printed.
+The variable is read when a warning is reported, so an assignment to `process.env.NODE_NO_WARNINGS` changes later reports, where Node reads it once at startup.

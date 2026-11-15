@@ -26,6 +26,7 @@
 #define _DEFAULT_SOURCE 1
 #endif
 #include "scr_runtime.h"
+#include "scr_dir_private.h"
 #ifdef SCR_NODE_ISLANDS
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
@@ -182,12 +183,15 @@ enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 typedef struct ScrFiber ScrFiber;
 
-typedef struct { size_t rc; } ScrPromiseIdentity;
+#ifdef SCR_NODE_ISLANDS
+enum { SCR_LAZY_MIRROR = 1, SCR_LAZY_VIEW = 2 };
+#endif
 
 struct ScrPromise {
   size_t rc; /* The cycle collector reads the reference count at offset zero. */
   /* Shared identity cell for promises adopted across inner types (NULL
-   * until scr_promise_share_identity first links this promise). */
+   * until scr_promise_share_identity first links this promise or a Set or
+   * Map keys it, scr_promise_map_identity). */
   ScrPromiseIdentity *identity;
   int state;
   bool top_level_handled; /* uncaughtException handled entry evaluation */
@@ -198,14 +202,38 @@ struct ScrPromise {
    * Node's 'rejectionHandled' moment (scr_prom_observe below). */
   bool reported_unhandled;
   bool b; /* the boolean payload */
+#ifdef SCR_NODE_ISLANDS
+  /* Node islands: SCR_LAZY_MIRROR for the mirror of an island promise that
+   * native code has not reacted to yet, SCR_LAZY_VIEW for a conversion of
+   * such a promise at another inner type; 0 otherwise (scr_promise_reacted
+   * below). The flag takes padding: the size is the same in every build. */
+  uint8_t island_lazy;
+  /* An executor resolved this promise with an island thenable, which has
+   * not settled it yet: the promise is resolved, so the executor's own
+   * resolve, reject and throw no longer change it (SCR_PROMISE_RESOLVED). */
+  bool island_resolved;
+#endif
   /* Payload (fulfillment value or rejection reason), ScrExcCell-style.
    * trace_fn is non-NULL iff the REF payload type carries a cycle header
    * (a promise settled with a cycle-capable value can be a cycle member —
    * e.g. a closure that captures a box holding this very promise). */
   ScrExcKind payload_kind; /* NONE = void fulfillment */
   double f64;
+#ifdef SCR_NODE_ISLANDS
+  /* A pending SCR_LAZY_VIEW has no payload yet: the two words hold the
+   * promise it converts (+1) and its adapter until the first reaction. */
+  union {
+    void *payload;
+    ScrPromise *lazy_src;
+  };
+  union {
+    void *(*retain_fn)(void *);
+    void (*lazy_adapt)(ScrPromise *dst, ScrPromise *src);
+  };
+#else
   void *payload;
   void *(*retain_fn)(void *);
+#endif
   void (*release_fn)(void *);
   ScrTraceFn trace_fn;
   /* Fibers parked on this promise. */
@@ -245,6 +273,25 @@ struct ScrPromise {
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(ScrPromise) == 128, "ScrPromise packs its flags after state");
 #endif
+_Static_assert(offsetof(ScrPromise, rc) == offsetof(ScrPromiseHead, rc) &&
+                   offsetof(ScrPromise, identity) == offsetof(ScrPromiseHead, identity),
+               "weak collections read a promise's identity cell through ScrPromiseHead");
+
+/* Whether a reaction handled the rejection of `p`: one attached to `p`, or
+ * to another promise of its identity cell (a view of it, or the promise it
+ * is a view of). */
+static inline bool scr_prom_observed(const ScrPromise *p) {
+  return p->rejection_observed || (p->identity != NULL && p->identity->observed);
+}
+
+/* After `p` was delivered as an unhandled rejection: it is not reported
+ * again, and neither is another promise of its identity cell (a second view
+ * of the same promise). */
+static inline void scr_prom_reported(ScrPromise *p) {
+  p->rejection_observed = true;
+  p->reported_unhandled = true;
+  if (p->identity != NULL) p->identity->observed = true;
+}
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_live_promises = 0;
@@ -281,11 +328,64 @@ static void scr_oom(void) {
   abort();
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A lazy promise that is freed or settled without a first reaction: a view
+ * drops the promise it converts (its two words are the payload's from here
+ * on). Every free and every settlement runs this before it touches the
+ * payload. */
+static void scr_promise_lazy_drop(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy != SCR_LAZY_VIEW) return;
+  ScrPromise *src = p->lazy_src;
+  p->lazy_src = NULL;
+  p->lazy_adapt = NULL;
+  scr_promise_release(src);
+}
+#define SCR_PROMISE_LAZY_DROP(p)                                           \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_lazy_drop(p); \
+  } while (0)
+#else
+#define SCR_PROMISE_LAZY_DROP(p) ((void)0)
+#endif
+
+/* Whether an executor's resolving functions and its throw still settle `p`:
+ * it is pending and no resolution of it is under way. */
+#ifdef SCR_NODE_ISLANDS
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING && !(p)->island_resolved)
+#else
+#define SCR_PROMISE_UNRESOLVED(p) ((p)->state == SCR_PROM_PENDING)
+#endif
+
 static void scr_promise_free_side(ScrPromise *p) {
+  SCR_PROMISE_LAZY_DROP(p);
   if (p->identity && --p->identity->rc == 0) free(p->identity);
   /* Most promises never park a fiber or a second waiter: skip the calls. */
   if (p->waiters && p->waiters != &p->waiter_inline) free(p->waiters);
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A promise that stands for an island promise (its mirror, below) subscribes
+ * to it when native code first reacts to it, not when it crosses, so a
+ * promise that only passes through native code (the promise argument of an
+ * unhandledRejection listener) does not become handled by passing.
+ *
+ * The other direction: a runtime promise whose V8 promise exists
+ * (scr_node_island_export.c). V8 tracks its unhandled rejection from here
+ * on, so the two must agree on whether it is handled. true: native code
+ * already observed it, and the caller marks the V8 promise handled; else
+ * the first native observation does (scr_rjh_notify_fn, through
+ * scr_prom_observe). A parked fiber or a conversion to another inner type
+ * is not an observation: the fiber observes when it resumes, in the
+ * checkpoint the rejection belongs to, and a conversion handles nothing. */
+bool scr_promise_tracked_by_node(ScrPromise *p) {
+  bool handled = scr_prom_observed(p);
+  p->rejection_observed = true;
+  p->reported_unhandled = !handled;
+  return handled;
+}
+#endif
 
 static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   if (p->nwaiters == p->waiters_cap) {
@@ -306,9 +406,8 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
-#ifdef SCR_NATIVE_REACTIONS
-/* A native reaction's steps (scr_promise_react). Only the build for
- * programs with web streams has them (runtime-pack-matrix.mjs). */
+/* A native reaction's steps (scr_promise_react): the callback waiter
+ * without a destination. */
 static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
   if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
 }
@@ -318,11 +417,6 @@ static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *
   scr_promise_reaction_drop(cb);
 }
 #define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
-#else
-#define SCR_PROMISE_IS_REACTION(cb) false
-#define scr_promise_reaction_drop(cb) ((void)0)
-#define scr_promise_reaction_run(cb, src) ((void)0)
-#endif
 
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
@@ -381,30 +475,52 @@ ScrPromise *scr_promise_new(void) {
   return p;
 }
 
+/* Makes `dst` a view of `src`: the same promise to the program, at another
+ * inner type. The view copies the source's settlement and, for a rejection,
+ * becomes the promise that is tracked as unhandled (scr_promise_settle_from).
+ * A reaction on either one handles the promise for both: the cell they share
+ * carries the answer (ScrPromiseIdentity.observed), and a reaction the
+ * source already had when its first view is made counts too. So a rejection
+ * the program handled on the promise is not reported because the promise was
+ * also passed through an untyped position, and one nobody handled is
+ * reported once. */
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   if (dst == src) return;
   if (!src->identity) {
     src->identity = malloc(sizeof *src->identity);
     if (!src->identity) scr_oom();
     src->identity->rc = 1;
+    src->identity->observed = false;
+    src->identity->transferred = false;
   }
+  /* Until a view has taken the tracking over, the source's own mark is a
+   * reaction's (or says that it was reported, or that Node tracks it). */
+  if (!src->identity->transferred && src->rejection_observed) src->identity->observed = true;
   if (dst->identity == src->identity) return;
   if (dst->identity && --dst->identity->rc == 0) free(dst->identity);
   dst->identity = src->identity;
   dst->identity->rc++;
 }
 
-#ifdef SCR_NODE_ISLANDS
-/* Node islands (NI-5) key their export table by a promise's identity
- * (scr_node_island_export.c); other programs link none of this. */
-const void *scr_promise_identity_key(ScrPromise *p) {
+/* A Set's or Map's key identity of a promise (ScrMapIdentityOps): the
+ * identity cell its adapter boxes share, created on the first call so a
+ * stored key's hash does not change when a box of it appears later. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromise *p = promise;
   if (!p->identity) {
     p->identity = malloc(sizeof *p->identity);
     if (!p->identity) scr_oom();
     p->identity->rc = 1;
+    p->identity->observed = false;
+    p->identity->transferred = false;
   }
   return p->identity;
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
+const void *scr_promise_identity_key(ScrPromise *p) { return scr_promise_map_identity(p); }
 
 void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
 
@@ -423,6 +539,22 @@ bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
  * binaries keep their size class): called when a promise the checkpoint
  * report already delivered as unhandled gains a handler. */
 SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
+#ifdef SCR_NODE_ISLANDS
+SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
+#endif
+
+/* The 'beforeExit' hook (scr_events.c sets it in scr_events_install — the
+ * loop-hook pattern, so listener-free binaries keep their size class):
+ * called with process.exitCode when the loop runs out of ref'd work;
+ * false = no listener is registered. */
+SCR_TL bool (*scr_process_before_exit_hook)(double code) = NULL;
+
+/* The 'multipleResolves' hook (scr_async_dyn.c installs it while a listener
+ * is registered — the same listener-free-binaries pattern): called by the
+ * settle paths when a resolution or rejection arrives at a promise that
+ * already resolved. `type` is 0 (resolve) or 1 (reject) for the settle that
+ * lost, and `value` is the value it passed, +1 (the hook owns it). */
+SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value) = NULL;
 
 /* Every handler attach funnels here: mark the rejection observed, and
  * fire Node's 'rejectionHandled' when the attach arrived AFTER the
@@ -432,6 +564,7 @@ SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
  * one report fires at most one 'rejectionHandled' — Node's pairing. */
 static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
+  if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
     if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
@@ -449,6 +582,56 @@ static void scr_prom_observe(ScrPromise *p) {
 void scr_promise_mark_handled(ScrPromise *p) {
   scr_prom_observe(p);
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* ── mirrors of island promises (scr_node_island_handle.c) ────────────────
+ * An island promise the program holds is a native promise, its mirror. The
+ * mirror reacts to the V8 promise only once native code reacts to the
+ * mirror: until then the island promise has exactly the reactions island
+ * code gave it, so V8 decides whether its rejection is unhandled (a promise
+ * island code handles is not reported by the runtime, and one nobody
+ * handles is reported by Node), and no reaction of the runtime's stands
+ * between the promise and its island reactions. Every attach of a fiber or
+ * a callback ends in scr_promise_reacted, which fires once: a mirror
+ * subscribes to its V8 promise (scr_promise_subscribe_fn, the handle
+ * unit's), and a view (a conversion of a lazy promise at another inner
+ * type, which typed code makes when it reads an island promise) attaches to
+ * the promise it converts, so a chain of conversions waits as one. Neither
+ * is ever reported as unhandled by the runtime: a reaction observes it, and
+ * without one V8 reports the island promise. */
+void (*scr_promise_subscribe_fn)(ScrPromise *mirror) = NULL;
+
+void scr_promise_mark_island_mirror(ScrPromise *p) {
+  p->island_lazy = SCR_LAZY_MIRROR;
+  p->rejection_observed = true;
+}
+
+static void scr_promise_view_attach(ScrPromise *view, ScrPromise *in,
+                                    void (*adapt)(ScrPromise *dst, ScrPromise *src));
+
+static void scr_promise_first_reaction(ScrPromise *p) {
+  uint8_t lazy = p->island_lazy;
+  p->island_lazy = 0;
+  if (lazy == SCR_LAZY_VIEW) {
+    ScrPromise *src = p->lazy_src;
+    void (*adapt)(ScrPromise *dst, ScrPromise *src) = p->lazy_adapt;
+    p->lazy_src = NULL;
+    p->lazy_adapt = NULL;
+    scr_promise_view_attach(p, src, adapt);
+    scr_promise_release(src);
+  } else if (scr_promise_subscribe_fn != NULL) {
+    scr_promise_subscribe_fn(p);
+  }
+}
+
+/* After a fiber or a callback attached to `p`. */
+#define scr_promise_reacted(p)                                             \
+  do {                                                                     \
+    if (__builtin_expect((p)->island_lazy != 0, 0)) scr_promise_first_reaction(p); \
+  } while (0)
+#else
+#define scr_promise_reacted(p) ((void)0)
+#endif
 
 ScrPromise *scr_promise_retain(ScrPromise *p) {
   if (p && p->rc != SIZE_MAX) {
@@ -470,6 +653,7 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
@@ -915,6 +1099,14 @@ static void scr_fiber_track(ScrFiber *fiber) { (void)fiber; }
 
 long scr_abandoned_fiber_count(void) { return scr_fibers_abandoned; }
 
+#ifdef SCR_RC_AUDIT
+/* Reactions of the dynamic promise unit that are subscribed and have not
+ * run (scr_async_dyn.c). Each stands where a parked fiber stood: one left
+ * at loop exhaustion counts as a fiber never resumed, so the count audit
+ * is skipped for it as it was for that fiber. */
+SCR_TL long scr_dyn_reactions_pending = 0;
+#endif
+
 #ifdef SCR_ASAN_FIBERS
 /* Deliberately abandoned fibers stay referenced for the process lifetime,
  * as their stacks do: the sanitizer lane's leak check then reports only
@@ -979,6 +1171,9 @@ static SCR_TL const ScrNodeBridge *scr_loop_hosted = NULL;
 /* Runtime ticks and microtasks queued on Node and not yet run: the
  * dispatch stations' yield signal (scr_loop_has_ready). */
 static SCR_TL size_t scr_hosted_queued = 0;
+/* The main module's evaluation promise while scr_loop_run runs (NULL: the
+ * program has none). */
+static SCR_TL ScrPromise *scr_loop_root = NULL;
 /* The end of the check phase the loop pass is running (0: none). */
 static SCR_TL size_t scr_check_end = 0;
 /* Where the loop pass is, for a switch in the middle of it: the turn
@@ -992,11 +1187,26 @@ static SCR_TL bool scr_hosted_microtasks_first = false;
 #define SCR_PASS_PHASE(phase) (scr_pass_phase = (phase))
 #define SCR_RESUME_JOB(f) (scr_in_microtask = true, scr_resume_fiber(f), scr_in_microtask = false)
 static void scr_hosted_microtask(ScrFiber *f);
+/* The jobs a settlement inside one of V8's reaction jobs queued: they run
+ * in that job (scr_loop_hosted_settle_begin/_run), not as microtasks of
+ * their own. */
+static SCR_TL ScrFiber **scr_settle_jobs = NULL;
+static SCR_TL size_t scr_settle_jobs_len = 0, scr_settle_jobs_cap = 0;
+static SCR_TL bool scr_settle_collect = false;
 /* A microtask turn may continue in place only while the runtime's own
  * queue is the whole queue: hosted, V8's queue may hold Node's jobs. */
 #define SCR_READY_IDLE() (scr_ready_len == 0 && scr_loop_hosted == NULL)
+/* Node loaded inside the callback that just returned (scr_loop_host): the
+ * loop pass ends there. The jobs that callback queued, and the ones the
+ * switch moved, are on Node's queues, so the runtime's own queues look
+ * drained although the checkpoint is not over. The pass therefore decides
+ * no rejection and runs no further callback: scr_loop_run gives the rest
+ * of the checkpoint to Node (scr_loop_run_hosted), which decides the
+ * rejections when its queues are drained. */
+#define SCR_PASS_HANDED_OVER() (scr_loop_hosted != NULL)
 #else
 #define SCR_READY_IDLE() (scr_ready_len == 0)
+#define SCR_PASS_HANDED_OVER() false
 #define SCR_PASS_PHASE(phase) ((void)0)
 #define SCR_RESUME_JOB(f) scr_resume_fiber(f)
 #endif
@@ -1004,6 +1214,15 @@ static void scr_hosted_microtask(ScrFiber *f);
 static void scr_ready_push(ScrFiber *f) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) {
+    if (scr_settle_collect) {
+      if (scr_settle_jobs_len == scr_settle_jobs_cap) {
+        scr_settle_jobs_cap = scr_settle_jobs_cap ? scr_settle_jobs_cap * 2 : 8;
+        scr_settle_jobs = realloc(scr_settle_jobs, scr_settle_jobs_cap * sizeof *scr_settle_jobs);
+        if (!scr_settle_jobs) scr_oom();
+      }
+      scr_settle_jobs[scr_settle_jobs_len++] = f;
+      return;
+    }
     scr_hosted_microtask(f);
     return;
   }
@@ -1183,6 +1402,11 @@ static void scr_hosted_timer_push(ScrTimer t);
 /* The hosted timer, immediate and tick operations (defined with the
  * hosted loop below). Each answers false when the handle names nothing. */
 enum { SCR_HOSTED_CLEAR, SCR_HOSTED_REF, SCR_HOSTED_UNREF, SCR_HOSTED_REFRESH, SCR_HOSTED_HAS_REF };
+/* A scr_loop_hosted_run kind beyond the SCR_NODE_JOB_* jobs: island code
+ * cleared one of the program's timers, or immediates, by its number. Bits 8
+ * and up hold the bits of the id's offset above the token's 32. */
+#define SCR_HOSTED_ISLAND_CLEAR 16u
+#define SCR_HOSTED_ISLAND_IMMEDIATE 8u
 static bool scr_hosted_timer_op(unsigned long id, int op);
 static double scr_hosted_set_immediate(ScrClosure *cb);
 static bool scr_hosted_immediate_op(unsigned long id, int op);
@@ -1260,6 +1484,7 @@ static void scr_timer_warn_tick(ScrClosure *self) {
     snprintf(type, sizeof type, "%.*s", (int)name->len, name->data);
     scr_warning_emit_hook(type, NULL, message);
   } else {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)name->len, name->data,
             (int)message->len, message->data);
@@ -1328,7 +1553,20 @@ void scr_set_timeout(ScrClosure *cb, double ms) {
  * its callback runs, so the run loop re-pushes it only if the callback
  * did not clear it. */
 
-static SCR_TL unsigned long scr_interval_next_id = 1;
+/* The first timer and immediate id is 1 above this base, and both kinds
+ * take their ids from that one sequence: a number names at most one handle,
+ * whichever side created it. A program with Node islands starts the
+ * sequence at 2^52, a range Node's own timer ids (async ids, counted from
+ * 1) do not reach, so island code that clears a number clears the program's
+ * handle or one of its own, never the other side's, and clearTimeout of an
+ * Immediate (or clearImmediate of a Timeout) finds nothing to clear, as in
+ * Node. */
+#if defined(SCR_NODE_ISLANDS) && __SIZEOF_LONG__ >= 8
+#define SCR_TIMER_ID_BASE (1UL << 52)
+#else
+#define SCR_TIMER_ID_BASE 0UL
+#endif
+static SCR_TL unsigned long scr_interval_next_id = SCR_TIMER_ID_BASE + 1;
 static SCR_TL unsigned long scr_firing_id = 0; /* interval currently running */
 /* The immediate whose callback is running (0 outside one). */
 static SCR_TL unsigned long scr_immediate_firing = 0;
@@ -1667,10 +1905,13 @@ void scr_clear_interval(double handle) {
 /* ── immediates (Node's check phase) ──────────────────────────────────
  * setImmediate callbacks run once per loop turn, AFTER due timers, in
  * FIFO order — and immediates queued while the phase runs wait for the
- * NEXT turn (the phase snapshots its end index). The queue is an
- * append-only array with a head cursor; clearImmediate NULLs the slot in
- * place (order and indices stay stable mid-phase). Ids ride their own
- * space — clearTimeout of an Immediate is a no-op, like Node. */
+ * NEXT turn (the phase snapshots its end index). The queue is an array
+ * with a head cursor that is appended to; clearImmediate NULLs the slot in
+ * place (order and indices stay stable mid-phase), and the loop reuses the
+ * fired and cleared slots between phases (scr_loop_run_pass). An
+ * immediate's id comes
+ * from the sequence timers use, so its number never names a timeout:
+ * clearTimeout of an Immediate is a no-op, like Node. */
 typedef struct {
   unsigned long id;
   ScrClosure *cb; /* owned; NULL once fired or cleared */
@@ -1679,7 +1920,6 @@ typedef struct {
 
 static SCR_TL ScrImmediate *scr_immediates = NULL;
 static SCR_TL size_t scr_nimmediates = 0, scr_immediates_head = 0, scr_immediates_cap = 0;
-static SCR_TL unsigned long scr_immediate_seq = 0;
 /* Pending (queued, uncleared) immediates and the reffed subset — the
  * loop's no-sleep signal and liveness count respectively. */
 static SCR_TL size_t scr_pending_immediates = 0;
@@ -1694,7 +1934,7 @@ double scr_set_immediate(ScrClosure *cb) {
     scr_immediates = realloc(scr_immediates, scr_immediates_cap * sizeof *scr_immediates);
     if (!scr_immediates) scr_oom();
   }
-  unsigned long id = ++scr_immediate_seq;
+  unsigned long id = scr_interval_next_id++;
   scr_immediates[scr_nimmediates].id = id;
   scr_immediates[scr_nimmediates].cb = cb; /* ownership moves in */
   scr_immediates[scr_nimmediates].reffed = true;
@@ -1704,8 +1944,13 @@ double scr_set_immediate(ScrClosure *cb) {
   return (double)id;
 }
 
+/* The queued, uncleared immediate of this id, searched from the newest: a
+ * turn that queues an immediate and clears it, many times over (a debounce
+ * re-armed at every event), finds each at the queue's end. Searched from
+ * the oldest, each clear walked the slots of all those cleared before it
+ * in the turn. */
 static ScrImmediate *scr_immediate_find(unsigned long id) {
-  for (size_t i = scr_immediates_head; i < scr_nimmediates; i++) {
+  for (size_t i = scr_nimmediates; i-- > scr_immediates_head;) {
     if (scr_immediates[i].id == id && scr_immediates[i].cb != NULL) return &scr_immediates[i];
   }
   return NULL;
@@ -1959,6 +2204,7 @@ static void scr_promise_settle_wake(ScrPromise *p);
  * same-inner-type adapter and the rejection path both land here. */
 static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
   if (dst->state == SCR_PROM_PENDING) {
+    SCR_PROMISE_LAZY_DROP(dst);
     dst->state = src->state;
     dst->payload_kind = src->payload_kind;
     dst->f64 = src->f64;
@@ -1976,7 +2222,18 @@ static void scr_promise_settle_from(ScrPromise *dst, ScrPromise *src) {
     }
     scr_promise_settle_wake(dst);
   }
-  if (src->state == SCR_PROM_REJECTED) scr_prom_observe(src);
+  if (src->state != SCR_PROM_REJECTED) return;
+  if (dst->identity != NULL && dst->identity == src->identity) {
+    /* A view takes the tracking over from its source without handling
+     * anything: the source is marked, and the cell does not count that mark
+     * as a reaction (scr_promise_share_identity). */
+    src->rejection_observed = true;
+    src->identity->transferred = true;
+    return;
+  }
+  /* Any other destination that takes the rejection over handles it for the
+   * source. */
+  scr_prom_observe(src);
 }
 
 /* The emitted same-type Promise.race adapter (see raceAdapterFor). */
@@ -2092,46 +2349,78 @@ static struct ScrPromiseCbWaiter *scr_promise_cb_push(ScrPromise *in) {
   return &in->cbs[in->ncbs++];
 }
 
-/* A combinator subscribing to an entry: Node's `then` on the entry. The
- * entry counts as handled from here on; a settled entry queues its
- * reaction job now, a pending one when it settles. */
-static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
-  scr_prom_observe(in);
+/* The subscription itself: a settled entry queues its reaction job now, a
+ * pending one when it settles. */
+static void scr_promise_cb_attach(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
   if (in->state != SCR_PROM_PENDING) {
     scr_promise_cb_queue(&cb, in);
   } else {
     cb.job_at = in->nwaiters;
     *scr_promise_cb_push(in) = cb;
+    scr_promise_reacted(in);
   }
 }
 
-#ifdef SCR_NATIVE_REACTIONS
+/* A combinator subscribing to an entry: Node's `then` on the entry. The
+ * entry counts as handled from here on. */
+static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
+  scr_prom_observe(in);
+  scr_promise_cb_attach(in, cb);
+}
+
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
   struct ScrPromiseCbWaiter cb = {0};
   cb.reaction = reaction;
   cb.ctx = ctx;
   scr_promise_cb_subscribe(p, cb);
 }
-#endif
+
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_attach(p, cb);
+}
+
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_queue(&cb, p);
+}
 
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
  * the conversions run in place (they settle their destinations now, so
- * those destinations' waiters queue behind this promise's). */
+ * those destinations' waiters queue behind this promise's).
+ *
+ * The callback waiters leave the promise before the first of them runs:
+ * a job envelope takes over its waiter's references and a conversion
+ * releases its destination, and either can reach a collection (a release
+ * that leaves its object alive buffers a candidate), whose trace of this
+ * promise must not name a destination whose reference is already given
+ * up (unlink before release, scr_cycle.c). The waiters not yet run are
+ * held by the detached list, which nothing traces, so the collector
+ * counts their destinations as referenced from outside. */
 static void scr_promise_settle_wake_cbs(ScrPromise *p) {
+  struct ScrPromiseCbWaiter *cbs = p->cbs;
+  size_t ncbs = p->ncbs;
+  p->cbs = NULL;
+  p->ncbs = 0;
+  p->cbs_cap = 0;
   size_t w = 0;
-  for (size_t i = 0; i < p->ncbs; i++) {
-    const struct ScrPromiseCbWaiter *cb = &p->cbs[i];
+  for (size_t i = 0; i < ncbs; i++) {
+    const struct ScrPromiseCbWaiter *cb = &cbs[i];
     if (cb->job_at == SCR_CB_SYNC) continue;
     for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
     scr_promise_cb_queue(cb, p);
   }
   for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
   p->nwaiters = 0;
-  for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&p->cbs[i], p);
+  for (size_t i = 0; i < ncbs; i++) {
+    if (cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&cbs[i], p);
   }
-  p->ncbs = 0;
+  free(cbs);
 }
 
 /* Settle helpers wake waiters into the microtask queue and dispatch the
@@ -2171,6 +2460,7 @@ void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src)) {
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
+  scr_promise_reacted(in);
 }
 
 /* Node islands (NI-8): a settled promise's dyn payload when the promise
@@ -2192,9 +2482,40 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     else scr_promise_settle_from(race, in);
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  /* A view of an island promise nobody reacted to waits with it: the view
+   * holds the promise and the adapter, and attaches at its own first
+   * reaction (scr_promise_reacted). A view something already reacted to
+   * (the destination of a promise being resolved) attaches now. */
+  if (in->island_lazy != 0 && race->state == SCR_PROM_PENDING && race->nwaiters == 0 &&
+      race->ncbs == 0 && race->island_lazy == 0) {
+    race->island_lazy = SCR_LAZY_VIEW;
+    race->rejection_observed = true;
+    race->lazy_src = scr_promise_retain(in);
+    race->lazy_adapt = adapt;
+    return;
+  }
+#endif
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race), .job_at = SCR_CB_SYNC };
+  scr_promise_reacted(in);
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A lazy view's first reaction: the attach scr_promise_race_add put off.
+ * The promise it converts may have settled since through another view. */
+static void scr_promise_view_attach(ScrPromise *view, ScrPromise *in,
+                                    void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
+  if (in->state != SCR_PROM_PENDING) {
+    if (in->state == SCR_PROM_FULFILLED) adapt(view, in);
+    else scr_promise_settle_from(view, in);
+    return;
+  }
+  *scr_promise_cb_push(in) =
+      (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(view), .job_at = SCR_CB_SYNC };
+  scr_promise_reacted(in);
+}
+#endif
 
 /* ── Promise.all / allSettled / any ───────────────────────────────────
  * The builder takes the entries in input order. Every entry subscribes a
@@ -2239,11 +2560,21 @@ __attribute__((always_inline)) static inline void scr_combine_begin(ScrCombine *
   c->open = false;
 }
 
+#ifdef SCR_NODE_ISLANDS
+static inline void scr_combine_flush(ScrCombine *c);
+#endif
+
 __attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
                                                                   ScrPromise *in) {
   ScrAllState *st = c->st;
   size_t i = c->next++;
   if (in->state == SCR_PROM_PENDING) {
+#ifdef SCR_NODE_ISLANDS
+    /* Subscribing to an island promise that already settled queues its
+     * reaction job in V8 now: the jobs of the settled entries before it
+     * come first, as in Node's iteration. */
+    if (in->island_lazy != 0) scr_combine_flush(c);
+#endif
     st->rc++;
     scr_promise_cb_subscribe(
         in, (struct ScrPromiseCbWaiter){ .dst = scr_promise_retain(c->result), .all = st, .all_idx = i });
@@ -2374,6 +2705,7 @@ void *scr_promise_payload_ref(ScrPromise *p) {
  * (the cell resets to NONE). Shared by fiber completion and the new-Promise
  * executor runners; callers wake waiters themselves. */
 static void scr_promise_reject_from_cell(ScrPromise *p, ScrExcCell *cell) {
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_REJECTED;
   p->payload_kind = cell->kind;
   p->f64 = cell->f64;
@@ -2913,6 +3245,7 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
 
   if (dependency->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(dependency, f);
+    scr_promise_reacted(dependency);
   } else {
     scr_ready_push(f);
   }
@@ -2959,6 +3292,7 @@ static void scr_await_park(ScrPromise *p) {
 #ifdef SCR_WORKERS
   self->waiting = p;
 #endif
+  scr_promise_reacted(p);
   scr_switch(&self->ctx, scr_fiber_park_awaiters(self), NULL);
 #ifdef SCR_WORKERS
   /* Shutdown resumes suspended stacks without settling their dependencies.
@@ -2982,6 +3316,7 @@ static void scr_await_park(ScrPromise *p) {
 void scr_wasi_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(p, self);
+    scr_promise_reacted(p);
   } else {
     scr_ready_push(self);
   }
@@ -3030,6 +3365,7 @@ static bool scr_coro_hop_needed(ScrFiber *self) {
 bool scr_coro_await_prepare(ScrFiber *self, ScrPromise *p) {
   if (p->state == SCR_PROM_PENDING) {
     scr_promise_add_waiter(p, self);
+    scr_promise_reacted(p);
     return true;
   }
   return scr_coro_hop_needed(self);
@@ -3188,8 +3524,28 @@ static void scr_promise_rethrow(ScrPromise *p) {
   case SCR_EXC_F64: scr_throw_f64(p->f64); break;
   case SCR_EXC_BOOL: scr_throw_bool(p->b); break;
   case SCR_EXC_STR: scr_throw_str(scr_str_retain((ScrStr *)p->payload)); break;
+#ifdef SCR_PROMISE_REJECT_DYN
+  /* A checked-dynamic reason re-throws like `throw reason` does: a boxed
+   * native Error arrives as that %Error instance (the dyn cache keeps it
+   * reference-equal both ways), a primitive as the primitive, anything
+   * else as the REF payload its typeof deserves. Re-throwing the raw dyn
+   * payload instead left an `await`ed Error reason opaque to a caught
+   * `(e as Error)` cast, which failed its instance check. */
+  case SCR_EXC_REF:
+  case SCR_EXC_PRIMITIVE_REF:
+    if (p->retain_fn == scr_dyn_retain_v) {
+      scr_dyn_throw(scr_dyn_retain((ScrDyn *)p->payload));
+      break;
+    }
+    if (p->payload_kind == SCR_EXC_REF)
+      scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    else
+      scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    break;
+#else
   case SCR_EXC_REF: scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_PRIMITIVE_REF: scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
+#endif
   case SCR_EXC_OBJ: scr_throw_obj(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_NONE:
   case SCR_EXC_TERMINATE:
@@ -3294,6 +3650,7 @@ void scr_promise_rethrow_top_level(ScrPromise *p) {
 /* Fulfillment storers, called by the compiled trampolines / resolve thunks. */
 void scr_promise_fulfill_f64(ScrPromise *p, double v) {
   if (p->state != SCR_PROM_PENDING) return; /* first settle wins */
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_F64;
   p->f64 = v;
@@ -3301,6 +3658,7 @@ void scr_promise_fulfill_f64(ScrPromise *p, double v) {
 }
 void scr_promise_fulfill_bool(ScrPromise *p, bool v) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_BOOL;
   p->b = v;
@@ -3311,6 +3669,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
     if (release) release(v); /* value was +1 for us; drop it */
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = v ? SCR_EXC_REF : SCR_EXC_NONE;
   p->payload = v;
@@ -3321,6 +3680,7 @@ void scr_promise_fulfill_ref(ScrPromise *p, void *v, void *(*retain)(void *), vo
 }
 void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = src->payload_kind;
   p->f64 = src->f64;
@@ -3333,6 +3693,7 @@ void scr_promise_fulfill_like(ScrPromise *p, const ScrPromise *src) {
 }
 void scr_promise_fulfill_void(ScrPromise *p) {
   if (p->state != SCR_PROM_PENDING) return;
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_NONE;
   scr_promise_settle_wake(p);
@@ -3344,6 +3705,7 @@ void scr_promise_fulfill_str(ScrPromise *p, ScrStr *v) {
     scr_str_release(v);
     return;
   }
+  SCR_PROMISE_LAZY_DROP(p);
   p->state = SCR_PROM_FULFILLED;
   p->payload_kind = SCR_EXC_STR;
   p->payload = v; /* ownership moves in */
@@ -3603,10 +3965,301 @@ ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
   return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
 }
 
-/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED. */
+/* ── asynchronous Dir operations ────────────────────────────────────
+ * The call's work runs immediately (a batch read or the close); the
+ * result is delivered in Node's phase: a read served from an earlier
+ * batch answers on a next tick, anything that filled a batch answers on
+ * the loop's deferred queue. Until the next tick after a batch read or a
+ * close, the handle counts as busy, like Node's operation queue.
+ *
+ * The handle, its entry batch and the synchronous operations live in
+ * scr_lib.c, and the Dirent a callback read receives lives in
+ * scr_symbol.c with the Dirent prototype; scr_dir_private.h holds the
+ * layout the units share. */
+
+static void scr_dir_op_destroy(ScrDirOp *op) {
+  scr_dyn_release(op->callback);
+  scr_dyn_release(op->argument);
+  scr_dyn_release(op->error);
+  scr_promise_release(op->promise);
+  if (op->release) op->release(op->value);
+  scr_dir_release(op->dir);
+  free(op);
+}
+
+void *scr_dir_op_retain_v(void *p) {
+  ScrDirOp *op = p;
+  op->rc++;
+  return op;
+}
+
+void scr_dir_op_release_v(void *p) {
+  ScrDirOp *op = p;
+  if (--op->rc) return;
+  scr_dir_op_destroy(op);
+}
+
+ScrDirOp *scr_dir_op_new(ScrDir *d, bool is_close) {
+  ScrDirOp *op = calloc(1, sizeof *op);
+  if (!op) scr_trap("scriptc: out of memory\n");
+  op->rc = 1;
+  op->dir = scr_dir_retain(d);
+  op->is_close = is_close;
+  return op;
+}
+
+ScrDyn *scr_dir_error_dyn(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
+/* The delayed callback frame: scr_dir_deliver_op borrows the operation
+ * from the closure's box. */
+static void scr_dir_deliver_op(ScrDirOp *op);
+
+static void scr_dir_op_thunk(ScrClosure *closure) {
+  ScrDirOp *op = scr_box_get_ref(closure->caps[0]);
+  scr_dir_deliver_op(op);
+  scr_dir_op_release_v(op);
+}
+
+static void scr_dir_clear_thunk(ScrClosure *closure);
+
+static ScrClosure *scr_dir_op_closure(ScrDirOp *op) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_op_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dir_op_retain_v, scr_dir_op_release_v, NULL);
+  scr_box_set_ref(closure->caps[0], scr_dir_op_retain_v(op));
+  return closure;
+}
+
+static void scr_dir_throw_thunk(ScrClosure *closure) {
+  ScrDyn *error = scr_box_get_ref(closure->caps[0]);
+  scr_dyn_throw(error); /* moves */
+}
+
+/* Throws `error` from a later next tick, as Node's queued continuation
+ * does when the Dir closed before it ran. */
+static void scr_dir_defer_throw(ScrDyn *error) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_throw_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], error);
+  scr_next_tick(closure);
+}
+
+/* The next tick after a delivered batch read or close: the handle is no
+ * longer busy, and the operations that waited start in order. */
+static void scr_dir_clear_thunk(ScrClosure *closure) {
+  ScrDir *d = scr_box_get_ref(closure->caps[0]);
+  d->inflight = false;
+  while (d->ops_head) {
+    ScrDirOp *op = d->ops_head;
+    d->ops_head = op->next;
+    if (!d->ops_head) d->ops_tail = NULL;
+    op->next = NULL;
+    if (op->is_close) {
+      if (d->closed) {
+        op->error = (scr_dir_closed(), scr_dir_error_dyn());
+        op->buffered = true;
+        scr_next_tick(scr_dir_op_closure(op));
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      d->closed = true;
+      scr_dir_batch_clear(d);
+      scr_dir_close_stream(d);
+      d->inflight = true;
+      scr_loop_defer(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      break;
+    }
+    if (d->closed) {
+      /* Node's queued read continuation re-enters readImpl, which throws
+       * ERR_DIR_CLOSED from the next tick. */
+      scr_dir_closed();
+      scr_dir_defer_throw(scr_dir_error_dyn());
+      scr_dir_op_release_v(op);
+      continue;
+    }
+    if (op->promise) {
+      if (op->error) {
+        scr_dyn_throw(op->error);
+        op->error = NULL;
+        scr_promise_reject_pending(op->promise);
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      if (op->buffered) {
+        scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+        op->value = NULL;
+        scr_dir_op_release_v(op);
+        continue;
+      }
+      d->inflight = true;
+      scr_loop_defer(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      break;
+    }
+    /* A callback read that waited delivers the entry it took when it was
+     * called. */
+    if (op->buffered && !op->error) {
+      scr_next_tick(scr_dir_op_closure(op));
+      scr_dir_op_release_v(op);
+      continue;
+    }
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    break;
+  }
+  scr_dir_release(d);
+}
+
+static void scr_dir_schedule_clear(ScrDir *d) {
+  ScrClosure *closure = scr_closure_new((void *)scr_dir_clear_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dir_retain_v, scr_dir_release_v, NULL);
+  scr_box_set_ref(closure->caps[0], scr_dir_retain(d));
+  scr_next_tick(closure);
+}
+
+/* Queues the operation: one runs at a time, the rest wait in call order. */
+void scr_dir_push(ScrDirOp *op) {
+  ScrDir *d = op->dir;
+  if (d->inflight || d->ops_head) {
+    if (d->ops_tail) d->ops_tail->next = op;
+    else d->ops_head = op;
+    d->ops_tail = op;
+    return;
+  }
+  if (op->is_close) {
+    d->closed = true;
+    scr_dir_batch_clear(d);
+    scr_dir_close_stream(d);
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  if (op->promise) {
+    if (op->buffered) {
+      scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+      op->value = NULL;
+      scr_dir_op_release_v(op);
+      return;
+    }
+    d->inflight = true;
+    scr_loop_defer(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  if (op->buffered) {
+    scr_next_tick(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  d->inflight = true;
+  scr_loop_defer(scr_dir_op_closure(op));
+  scr_dir_op_release_v(op);
+}
+
+static void scr_dir_deliver_op(ScrDirOp *op) {
+  ScrDir *d = op->dir;
+  if (!op->buffered) scr_dir_schedule_clear(d); /* before the callback, as Node does */
+  if (op->promise) {
+    if (op->error) {
+      /* An operation that finds the Dir closed rejects: the second close
+       * of a Dir answers ERR_DIR_CLOSED, not a second fulfillment. */
+      scr_dyn_throw(op->error);
+      op->error = NULL;
+      scr_promise_reject_pending(op->promise);
+    } else if (op->is_close) {
+      scr_promise_fulfill_void(op->promise);
+    } else {
+      scr_promise_fulfill_ref(op->promise, op->value, op->retain, op->release, op->trace);
+      op->value = NULL;
+    }
+    return;
+  }
+  ScrDyn *arguments = scr_dyn_new_arr();
+  if (op->error) {
+    scr_dyn_arr_push(arguments, scr_dyn_retain(op->error));
+  } else {
+    scr_dyn_arr_push(arguments, scr_dyn_new_null());
+    if (!op->is_close) {
+      scr_dyn_arr_push(arguments, op->argument ? scr_dyn_retain(op->argument) : scr_dyn_new_null());
+    }
+  }
+  ScrDyn *result = scr_dyn_apply(op->callback, arguments, "the filesystem callback");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(arguments);
+}
+
+/* dir.close(callback): the callback is validated before anything else
+ * (Node's validateFunction runs ahead of its closed check), a closed Dir
+ * reports ERR_DIR_CLOSED on a next tick, and otherwise the handle closes
+ * now and the callback follows on the loop. */
+void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
+  if (callback->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return;
+  }
+  ScrDirOp *op = scr_dir_op_new(d, true);
+  op->callback = scr_dyn_retain(callback);
+  if (d->closed) {
+    scr_dir_closed();
+    op->error = scr_dir_error_dyn();
+    op->buffered = true;
+    scr_next_tick(scr_dir_op_closure(op));
+    scr_dir_op_release_v(op);
+    return;
+  }
+  scr_dir_push(op);
+}
+
+/* dir.read() promise form: the emitter consumed the entry when the call
+ * ran and passes the built Dirent | null union; a closed Dir (or a failed
+ * read) answers a rejected promise through the pending exception. */
+ScrPromise *scr_dir_read_promise(ScrDir *d, void *value, bool buffered, void *(*retain)(void *),
+                                 void (*release)(void *), ScrTraceFn trace) {
+  if (scr_exc_pending()) return scr_promise_settled_ref(value, retain, release, trace);
+  ScrDirOp *op = scr_dir_op_new(d, false);
+  op->promise = scr_promise_new();
+  op->value = value;
+  op->retain = retain;
+  op->release = release;
+  op->trace = trace;
+  op->buffered = buffered;
+  ScrPromise *promise = scr_promise_retain(op->promise);
+  scr_dir_push(op);
+  return promise;
+}
+
+/* dir.close(): a closed Dir rejects with ERR_DIR_CLOSED; otherwise the
+ * handle closes now and the promise settles after the loop's turn. */
 ScrPromise *scr_dir_close_promise(ScrDir *d) {
-  scr_dir_close(d);
-  return scr_promise_settled_void();
+  if (d->closed) {
+    scr_dir_closed();
+    return scr_promise_settled_void();
+  }
+  ScrDirOp *op = scr_dir_op_new(d, true);
+  op->promise = scr_promise_new();
+  ScrPromise *promise = scr_promise_retain(op->promise);
+  scr_dir_push(op);
+  return promise;
+}
+
+/* dir[Symbol.asyncDispose](): close() when the Dir is still open. */
+ScrPromise *scr_dir_async_dispose(ScrDir *d) {
+  if (d->closed) return scr_promise_settled_void();
+  return scr_dir_close_promise(d);
+}
+
+/* Throws the pending exception from a later next tick (a completion
+ * callback that finds invalid options after the open). */
+void scr_defer_pending_throw(void) {
+  ScrDyn *error = scr_dir_error_dyn();
+  scr_dir_defer_throw(error);
 }
 
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
@@ -4674,6 +5327,23 @@ static void scr_micro_dyn_fire(ScrClosure *c) {
   scr_dyn_release(fn);
 }
 
+/* Node's ERR_INVALID_ARG_TYPE gate over a checked-dynamic timer callback
+ * (its "Received ..." rendering): raised after every argument expression
+ * evaluates, before the delay converts and before anything schedules.
+ * scr_dyn_check_listener carries the identical gate, but scr_dyn_handle.c
+ * compiles only for the emitter/net families — a timer-only program must
+ * not link that unit, so the gate is inlined here beside the other
+ * checked-dynamic entry points the loop owns. */
+void scr_timers_check_callback(const ScrDyn *cb) {
+  if (cb->kind == SCR_DYN_FUNC) return;
+#ifdef SCR_NODE_ISLANDS
+  /* A function a Node island made is a function: the timer calls it
+   * through its typed view. */
+  if (scr_ni_dyn_handle(cb) && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->is_function(cb)) return;
+#endif
+  scr_dyn_arg_type_fail("callback", "of type function", cb);
+}
+
 /* The closure that calls a dyn function value, or NULL with Node's
  * ERR_INVALID_ARG_TYPE pending for a non-function. */
 static ScrClosure *scr_micro_dyn_closure(const ScrDyn *cb) {
@@ -4910,6 +5580,17 @@ void scr_loop_set_stream(bool (*pending)(void), void (*dispatch)(void)) {
   scr_stream_dispatch_fn = dispatch;
 }
 
+/* The event-loop metrics hook (scr_perf_loop.c, when linked): `turn` counts
+ * one loop turn, `exit` records the loop's end. scr_perf_loop_mark installs
+ * them only in programs that read the metrics. */
+static SCR_TL void (*scr_loop_metrics_turn_fn)(void) = NULL;
+static SCR_TL void (*scr_loop_metrics_exit_fn)(void) = NULL;
+
+void scr_loop_set_metrics_hooks(void (*turn)(void), void (*exit)(void)) {
+  scr_loop_metrics_turn_fn = turn;
+  scr_loop_metrics_exit_fn = exit;
+}
+
 #ifdef SCR_WORKERS
 static SCR_TL bool (*scr_workers_pending_fn)(void);
 static SCR_TL void (*scr_workers_dispatch_fn)(void);
@@ -5013,6 +5694,9 @@ typedef enum {
   SCR_HJ_TICK = SCR_NODE_JOB_TICK,
   SCR_HJ_TIMER = SCR_NODE_JOB_TIMER,
   SCR_HJ_IMMEDIATE = SCR_NODE_JOB_IMMEDIATE,
+  /* Not a scheduled job: the bootstrap's word that the turn the runtime
+   * asked it to finish ran to its end (scr_hosted_finish_turn). */
+  SCR_HJ_TURN = 5,
 } ScrHJobKind;
 
 /* One scheduled runtime job; its token (index + 1) travels through the
@@ -5164,6 +5848,13 @@ static void scr_hosted_microtask(ScrFiber *f) {
 }
 
 static void scr_hosted_tick(ScrNtick *t) {
+  /* Node drops what process.nextTick is given once the exit sequence began
+   * (an 'exit' listener's ticks never run), and so does the hosted queue. */
+  if (scr_process_exiting()) {
+    if (t->cb) scr_closure_release(t->cb);
+    scr_mem_free(t);
+    return;
+  }
   uint32_t token = scr_hjob_new(SCR_HJ_TICK, t);
   scr_hosted_queued++;
   scr_loop_hosted->tick(token);
@@ -5253,7 +5944,7 @@ static bool scr_hosted_timer_op(unsigned long id, int op) {
 }
 
 static double scr_hosted_set_immediate(ScrClosure *cb) {
-  unsigned long id = ++scr_immediate_seq;
+  unsigned long id = scr_interval_next_id++;
   uint32_t token = scr_hjob_new(SCR_HJ_IMMEDIATE, cb);
   scr_hjobs[token - 1].id = id;
   scr_hjobs[token - 1].reffed = true;
@@ -5326,6 +6017,8 @@ static void scr_hosted_settle_exception(void) {
   scr_exc_print_uncaught();
   scr_process_exit((double)scr_exit_code_hint_get());
 }
+
+static SCR_TL bool scr_hosted_turn_ran = false;
 
 void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
   switch (kind) {
@@ -5405,23 +6098,157 @@ void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
     scr_closure_release(cb);
     break;
   }
+  case SCR_HJ_TURN:
+    scr_hosted_turn_ran = true;
+    return;
   default:
+    /* Island code cleared one of the program's handles by its number
+     * (scr_node_island_host.cjs): the runtime's own clear of that handle,
+     * as if the program had called it, so its callback is released and the
+     * count of live timers stays right. Timers and immediates draw from one
+     * id sequence, so the other kind's clear finds nothing here, as in
+     * Node. */
+    if ((kind & SCR_HOSTED_ISLAND_CLEAR) != 0) {
+      double id = (double)((uint64_t)SCR_TIMER_ID_BASE + (((uint64_t)(kind >> 8)) << 32) + token);
+      if ((kind & SCR_HOSTED_ISLAND_IMMEDIATE) != 0) scr_clear_immediate(id);
+      else scr_clear_interval(id);
+    }
     return;
   }
   scr_hosted_settle_exception();
 }
 
-/* V8 finished a microtask checkpoint: the runtime's unhandled rejections
- * are decided here, where Node decides its own. An unhandled one ends the
- * process like main's reported-rejection path. */
-void scr_loop_hosted_microtasks_done(void) {
-  if (scr_nunhandled == 0) return;
-  if (!scr_report_unhandled_rejections()) {
+/* A promise settled from inside one of V8's reaction jobs (the mirror of an
+ * island promise, scr_node_island_handle.c): the reaction job is the turn
+ * its native reactions take in Node, so the jobs the settlement queues run
+ * in it, in order, instead of each waiting for a microtask of its own.
+ * Between _begin and _run the caller only settles promises; a job that
+ * queues further jobs queues them on V8 as usual. */
+void scr_loop_hosted_settle_begin(void) {
+  if (scr_loop_hosted != NULL) scr_settle_collect = true;
+}
+
+void scr_loop_hosted_settle_run(void) {
+  scr_settle_collect = false;
+  size_t n = scr_settle_jobs_len;
+  if (n == 0) return;
+  /* A job may settle another mirror from a nested reaction job: the list
+   * is this call's from here on. */
+  ScrFiber **jobs = scr_settle_jobs;
+  scr_settle_jobs = NULL;
+  scr_settle_jobs_len = scr_settle_jobs_cap = 0;
+  for (size_t i = 0; i < n; i++) {
+    scr_resume_fiber(jobs[i]);
     scr_hosted_settle_exception();
+  }
+  if (scr_settle_jobs == NULL) {
+    scr_settle_jobs = jobs;
+    scr_settle_jobs_cap = n;
+  } else {
+    free(jobs);
+  }
+}
+
+/* The rejections the runtime tracks that nobody observed yet; entries
+ * observed since they were tracked leave the ledger, as they leave it in
+ * a report. */
+static bool scr_hosted_unobserved_rejections(void) {
+  size_t kept = 0;
+  for (size_t i = 0; i < scr_nunhandled; i++) {
+    ScrPromise *p = scr_maybe_unhandled[i];
+    if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p)) scr_maybe_unhandled[kept++] = p;
+    else scr_promise_release(p);
+  }
+  scr_nunhandled = kept;
+  return kept > 0;
+}
+
+/* Runs the rest of Node's turn from inside a tick: the tick queue to
+ * exhaustion, the microtasks, and again while a tick is queued, then
+ * Node's decision about its own rejections (the bootstrap calls Node's
+ * tick callback). Ticks of island code, which the runtime cannot see, run
+ * like its own. false: a tick threw, which leaves through Node as an
+ * uncaught exception, and the turn is not over. */
+static bool scr_hosted_finish_turn(void) {
+  ScrStr *name = scr_str_new("turn", 4);
+  scr_hosted_turn_ran = false;
+  scr_node_island_emit(SCR_NODE_ISLAND_EVENT_TURN, 0, name, 0);
+  scr_str_release(name);
+  return scr_hosted_turn_ran;
+}
+
+/* A deciding tick is queued or running. */
+static SCR_TL bool scr_hosted_deciding = false;
+
+/* The deciding tick: the rest of the turn runs inside it, and what is
+ * still unobserved then is unhandled. An unhandled rejection ends the
+ * process like main's reported-rejection path. When listeners handled
+ * them, the turn goes round once more, as Node's does after its own
+ * listeners: what they queued belongs to this turn. */
+static void scr_hosted_deciding_tick(void) {
+  while (scr_hosted_finish_turn() && scr_hosted_unobserved_rejections()) {
+    if (scr_report_unhandled_rejections()) {
+      scr_discard_unhandled_rejections();
+      scr_process_exit((double)scr_exit_code_hint_get());
+    }
+    scr_hosted_settle_exception();
+  }
+  scr_hosted_deciding = false;
+}
+
+/* V8 finished a microtask checkpoint. Node decides its unhandled
+ * rejections at the end of a turn's processTicksAndRejections: the tick
+ * queue to exhaustion, the microtasks, and again while a tick is queued;
+ * only then the rejections. A handler that a later tick of the same turn
+ * attaches is in time, so V8's checkpoint alone is too early. A rejection
+ * nobody observed by now is therefore decided by a tick of the runtime's
+ * own, which first runs the rest of the turn. (V8 runs no microtasks from
+ * inside this callback, so the turn cannot be finished here.)
+ *
+ * A rejected main module is the exception: Node's loader ends the program
+ * at the promise-job checkpoint that rejects it, before the turn's ticks
+ * (the loop pass's root check), so it is decided at once. */
+void scr_loop_hosted_microtasks_done(void) {
+  if (scr_nunhandled == 0 || scr_hosted_deciding) return;
+  if (!scr_hosted_unobserved_rejections()) return;
+  const ScrPromise *root = scr_loop_root;
+  if (root != NULL && root->state == SCR_PROM_REJECTED && !scr_prom_observed(root) &&
+      !root->top_level_handled) {
+    /* Also when Node holds the listeners (below): the report raises the
+     * rejection through Node's process._fatalException
+     * (scr_uncaught_exception_hook), at once, where handing it to Node's
+     * tracking would let the turn's ticks run first. */
+    if (scr_report_unhandled_rejections()) {
+      scr_discard_unhandled_rejections();
+      scr_process_exit((double)scr_exit_code_hint_get());
+    }
+    scr_hosted_settle_exception();
+  }
+  if (scr_urj_node_fn != NULL) {
+    if (scr_nunhandled == 0) return; /* the main module's rejection was all there was */
+    /* Node's `process` holds the listeners (scr_node_island_events.c), so
+     * Node decides: each rejection nobody observed becomes the rejection
+     * of the promise's V8 promise, which Node tracks like its own. The
+     * runtime promise counts as reported: a handler native code attaches
+     * later tells Node (scr_rjh_notify_fn). */
+    size_t count = scr_nunhandled;
+    ScrPromise **reported = malloc(count * sizeof *reported);
+    if (!reported) scr_oom();
+    memcpy(reported, scr_maybe_unhandled, count * sizeof *reported);
+    scr_nunhandled = 0;
+    for (size_t i = 0; i < count; i++) {
+      ScrPromise *p = reported[i];
+      if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p)) {
+        scr_urj_node_fn(p);
+        scr_prom_reported(p);
+      }
+      scr_promise_release(p);
+    }
+    free(reported);
     return;
   }
-  scr_discard_unhandled_rejections();
-  scr_process_exit((double)scr_exit_code_hint_get());
+  scr_hosted_deciding = true;
+  scr_next_tick_raw(scr_hosted_deciding_tick);
 }
 
 /* ── the runtime's I/O on Node's loop ── */
@@ -5448,6 +6275,10 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool kids = scr_loop_children != NULL && scr_loop_children->pending();
   bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
   bool kids_failed = scr_loop_children != NULL && scr_loop_children->failed_pending();
+  /* exec/execFile's timeout: Node's setTimeout timer keeps the loop alive
+   * and wakes it, even for an unref'd child. */
+  double kids_deadline =
+      scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
   bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
   bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
   bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
@@ -5460,18 +6291,33 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool crypto = scr_crypto_bytes_pending();
   bool deferred = scr_loop_deferred_pending();
   bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+  /* Island operations another thread posted to this one (the island's
+   * thread): ready work that an fd announces. */
+  bool islands = scr_ni_remote_pending();
+#endif
   /* Deferred native callbacks (the fs callbacks) become deliverable at the
    * end of the turn that queued them and run in the next one, as the loop
    * pass delivers them; Node's own fs requests take a turn or more too. */
   if (st->phase == SCR_NODE_IO_CHECK) scr_loop_deferred_ready = scr_loop_deferred_count;
   /* jobs this thread completed during the turn: delivered next turn */
   bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
-  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
-              renames || crypto || deferred || workers;
+#ifdef SCR_NODE_ISLANDS
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers || islands;
+#else
+  st->alive = kids_reffed || kids_failed || kids_deadline >= 0 || events || net || dgram ||
+              watch || ffi || stream || renames || crypto || deferred || workers;
+#endif
   /* Queued deferred callbacks keep the poll from sleeping (their work is
    * done; only the delivery waits for the next turn). */
+#ifdef SCR_NODE_ISLANDS
+  st->ready = stream || crypto || deferred || promoted || kids_failed || islands ||
+              (scr_loop_children != NULL && scr_loop_children->ready());
+#else
   st->ready = stream || crypto || deferred || promoted || kids_failed ||
               (scr_loop_children != NULL && scr_loop_children->ready());
+#endif
 #ifdef SCR_WORKERS
   if (scr_workers_ready_fn && scr_workers_ready_fn()) st->ready = 1;
 #endif
@@ -5516,11 +6362,31 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
     if (fd >= 0) scr_hosted_io_fd(st, fd);
     else scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
   }
+#ifdef SCR_NODE_ISLANDS
+  /* The wake fd is watched whether or not an operation is queued already:
+   * one posted between this state and the poll must wake the poll, and the
+   * pending count alone cannot. It is not liveness: an idle process still
+   * sleeps until its own next deadline. */
+  {
+    int fd = scr_ni_remote_pollfd();
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else if (islands) scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+  }
+#endif
 #else
   (void)evw;
+#ifdef SCR_NODE_ISLANDS
+  if (evw || net_io || dgram || watch || ffi || kids || renames || workers || islands)
+#else
   if (evw || net_io || dgram || watch || ffi || kids || renames || workers)
+#endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
+  /* exec/execFile's timeout deadline caps the sleep, as Node's timer does. */
+  if (kids_deadline >= 0) {
+    double wait = kids_deadline - scr_now_ms();
+    scr_hosted_io_cap(st, wait > 0 ? wait : 0);
+  }
 }
 
 /* The end of one runtime macrotask inside a dispatch station: the throw
@@ -5538,6 +6404,11 @@ void scr_loop_hosted_io(void) {
    * the poll phase is open again, as after the pass's check phase. */
   scr_loop_io_open = true;
   scr_loop_io_batches = 0;
+  /* Island operations posted by other threads run first: their callers are
+   * blocked until they answer. */
+#ifdef SCR_NODE_ISLANDS
+  scr_ni_remote_dispatch();
+#endif
   while (scr_fs_renames_pending() && scr_fs_renames_dispatch()) scr_hosted_macrotask_done();
   while (scr_crypto_bytes_pending() && scr_crypto_bytes_dispatch()) scr_hosted_macrotask_done();
   while (scr_loop_deferred_dispatch()) scr_hosted_macrotask_done();
@@ -5648,10 +6519,11 @@ static void scr_loop_run_hosted(bool first_checkpoint) {
   free(scr_hosted_due);
   scr_hosted_due = NULL;
   scr_hosted_due_len = scr_hosted_due_cap = 0;
-  /* process.exitCode is one property in Node; island code's assignment
-   * becomes the program's code when the loop ends. */
+  /* process.exitCode is Node's property once Node is loaded: native code's
+   * assignments went to it, so its value when the loop ends is the
+   * program's code (0: unset, or set to 0). */
   int code = scr_loop_hosted->run_loop(scr_hosted_continue_turn ? 1 : 0);
-  if (code != 0) scr_process_set_exit_code_tracked((double)code);
+  scr_exit_code_note(code);
 }
 #endif /* SCR_NODE_ISLANDS */
 
@@ -5693,6 +6565,10 @@ static bool scr_loop_run_checkpoint(void) {
   return true;
 }
 
+/* Defined beside the death rule at the end of the pass (the 'beforeExit'
+ * branch re-tests it after listeners ran). */
+static bool scr_loop_has_reffed_work(void);
+
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -5702,10 +6578,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
   for (;;) {
-#ifdef SCR_NODE_ISLANDS
-    /* Node loaded during this turn: its loop takes over (scr_loop_run). */
-    if (scr_loop_hosted != NULL) return rejection_failed;
-#endif
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
     /* process.nextTick callbacks BEFORE promise jobs (Node's checkpoint
      * order): the tick queue to exhaustion, then the microtask queue to
@@ -5721,6 +6594,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       SCR_RESUME_JOB(f);
     }
     first_checkpoint = false;
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a tick or a promise job */
     /* The ESM loader observes a rejected entry evaluation at a promise-job
      * checkpoint and terminates before later ref'd timers or I/O can run.
      * Wait until this checkpoint's ready queue is drained — the root's
@@ -5740,6 +6614,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       rejection_failed = true;
       break;
     }
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
     /* Quiescent between turns (microtasks drained, nothing running):
      * collect any cycles the turn left behind. One SCHEDULED pass — almost
@@ -5772,6 +6647,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * the microtask checkpoint before considering the next queued post. */
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
       if (scr_exc_pending()) return false;
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
     }
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
@@ -5782,11 +6658,27 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_stream_dispatch_fn != NULL) {
       scr_stream_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
       if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     }
+#ifdef SCR_NODE_ISLANDS
+    /* Island operations posted by other threads run here; each caller is
+     * blocked until its answer exists. Restart the turn so the jobs the
+     * served operation queued drain first. */
+    if (scr_ni_remote_pending()) {
+      scr_ni_remote_dispatch();
+      if (scr_exc_pending()) return false;
+      /* A worker's operation may be the program's first island use: Node
+       * started inside the dispatch, and the pass ends there like after any
+       * callback that loaded Node. */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
+      continue;
+    }
+#endif
     scr_workers_dispatch();
     if (scr_exc_pending()) return false;
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
 #ifdef SCR_WORKERS
     if (scr_workers_more_fn != NULL && scr_workers_more_fn()) continue;
@@ -5799,6 +6691,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_events_dispatch_fn != NULL) {
       scr_events_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Net dispatch (scr_net.c, when linked): accepts, arrived data,
@@ -5808,6 +6701,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_net_dispatch_fn != NULL) {
       scr_net_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Dgram dispatch (scr_dgram.c, when linked): arrived datagrams and
@@ -5816,6 +6710,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_dgram_dispatch_fn != NULL) {
       scr_dgram_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Watch dispatch (scr_watch.c, when linked): file events queued on
@@ -5824,6 +6719,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_watch_dispatch_fn != NULL) {
       scr_watch_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
     /* Reap spawned children and fire their listeners (before timers,
@@ -5841,6 +6737,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       bool held =
           scr_reffed_timers > 0 || scr_reffed_immediates > 0 ||
           scr_loop_children->reffed_pending() ||
+          /* a pending exec/execFile timeout keeps the loop turning */
+          scr_loop_children->next_deadline() >= 0 ||
           /* spawn failures settle regardless: their 'error' is a
            * next-tick event, delivered even on an unref'd child */
           scr_loop_children->failed_pending() ||
@@ -5855,6 +6753,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (held) {
         scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
+        if (SCR_PASS_HANDED_OVER()) return rejection_failed;
         if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
       }
     }
@@ -5864,12 +6763,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * nextTicks enqueued by a station listener are the same story. */
     if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     if (scr_nt_head != NULL) continue;
-#ifdef SCR_NODE_ISLANDS
-    /* Node loaded during this turn: its loop takes over (scr_loop_run). */
-    if (scr_loop_hosted != NULL) return rejection_failed;
-#endif
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* never wait once Node's loop does */
     bool kids = scr_loop_children != NULL && scr_loop_children->pending();
     bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+    /* exec/execFile's timeout: the deadline keeps the loop alive and wakes
+     * it, like Node's setTimeout timer. */
+    double kids_deadline =
+        scr_loop_children != NULL ? scr_loop_children->next_deadline() : -1;
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
     bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
     /* `net` keeps the process alive; `net_io` (unref'd handles too) decides
@@ -5881,13 +6781,44 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool renames = scr_fs_renames_pending();
     bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
     bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+    /* Island operations another thread posted to this one (the island's
+     * thread). Their callers are blocked until they run. */
+    bool islands = scr_ni_remote_pending();
+#endif
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
      * the heap (and fires if the loop runs on for other reasons) but does
      * not by itself keep the process alive — Node's unref semantics.
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+#ifdef SCR_NODE_ISLANDS
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers && !islands) {
+#else
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && kids_deadline < 0 && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) {
+#endif
+      /* Out of ref'd work: Node emits 'beforeExit' here — the per-thread
+       * loop's exhaustion, so a worker's own loop emits it too — with
+       * process.exitCode as the argument, and re-enters the loop when the
+       * listeners scheduled more of it. The emit's own tick/microtask
+       * checkpoint runs first, so a listener's nextTick or microtask does
+       * run — but alone never causes another emission, exactly Node's
+       * liveness test. A throwing listener leaves its exception pending:
+       * the caller settles it as any macrotask throw (an
+       * uncaughtException listener can therefore keep re-emitting). */
+      if (scr_process_before_exit_hook == NULL) break;
+      if (!scr_process_before_exit_hook((double)scr_exit_code_hint_get())) break;
+      if (!scr_loop_run_checkpoint()) return false;
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
+      if (!scr_loop_has_reffed_work()) break;
+      continue;
+    }
+    /* One loop turn begins here: the turn's remaining phases (timers, poll,
+     * check) and their callbacks read the counter as libuv's loop_count
+     * reports it, and a pass restarted before this point (ticks, a woken
+     * fiber) stays part of the turn that queued them. scr_perf_loop_mark
+     * installs the counter in the programs that read the metrics. */
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -5908,6 +6839,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * - timers only: plain nanosleep to the deadline. */
     double now = scr_now_ms();
     double due = scr_ntimers > 0 ? scr_timers[0].deadline_ms : now + SCR_IO_POLL_MS;
+    /* The earliest exec/execFile timeout wakes the loop exactly there. */
+    if (kids_deadline >= 0 && kids_deadline < due) due = kids_deadline;
     /* The worker pool's wake ends the sleep when a job completes: its pipe
      * joins the poll(2) set on POSIX, and the Windows sleeps wait on its
      * event. Without one (a failed pipe or event, or a child wait that
@@ -5927,6 +6860,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       due = now;
       scr_loop_deferred_ready = scr_loop_deferred_count;
     }
+#ifdef SCR_NODE_ISLANDS
+    /* Posted island operations are ready work: no sleep. */
+    if (islands) due = now;
+#endif
     /* Jobs this thread completed during the turn (scr_work_submit_done)
      * join the done queue: the next turn delivers them, no sleep. */
     if (scr_fs_renames_promote()) due = now;
@@ -5946,14 +6883,38 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     if (due > now) scr_sa_loop_waiting(true);
 #endif
+#if defined(SCR_MUSL) && !defined(SCR_LIB)
+    if (due > now) scr_musl_malloc_idle();
+#endif
+    /* The loop is about to wait, whichever arm below takes the wait: a
+     * build that buffers stdout (--stdout-buffering) publishes what the
+     * program has written so a reader waiting on it — an interactive
+     * consumer, a test harness — is not left looking at an empty pipe until
+     * the next wakeup. Every wait arm is covered, including the worker
+     * pool's, the child watch's, and the plain timer sleep of a loop with
+     * nothing else pending. */
+    scr_stdout_settle();
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
+#ifdef SCR_NODE_ISLANDS
+    /* The worker mailbox wait watches only the mailbox: an island
+     * operation another thread posts would have to wait for its timeout.
+     * With island units linked the loop's own poll takes the sleep
+     * instead, and it watches the island wake fd too. */
+    bool island_wake = scr_ni_remote_pollfd() >= 0;
+    if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+#else
     if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+#endif
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
+#ifdef SCR_NODE_ISLANDS
+    if (evw || net_io || dgram || watch || ffi || workers || islands || renames_fd >= 0) {
+#else
     if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+#endif
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -5992,7 +6953,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * events are pending); unrepresentable children keep the ~1ms reap cap
        * instead. Dispatch happens at the next turn's top — the poll only
        * decides how long to sleep. */
+#ifdef SCR_NODE_ISLANDS
+      struct pollfd fds[11];
+#else
       struct pollfd fds[10];
+#endif
       int nfds = 0;
       int evfds[2];
       int nev = evw && scr_events_pollfds_fn != NULL ? scr_events_pollfds_fn(evfds) : 0;
@@ -6072,6 +7037,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           due = now + SCR_CHILD_POLL_MS;
         }
       }
+#ifdef SCR_NODE_ISLANDS
+      {
+        /* Watched even with nothing queued: an operation posted between
+         * the pending check above and this poll must still wake it. */
+        int island_fd = scr_ni_remote_pollfd();
+        if (island_fd >= 0) {
+          fds[nfds].fd = island_fd;
+          fds[nfds].events = POLLIN;
+          fds[nfds++].revents = 0;
+        } else if (islands && due > now + SCR_CHILD_POLL_MS) {
+          due = now + SCR_CHILD_POLL_MS;
+        }
+      }
+#endif
       double wait = due > now ? due - now : 0;
       if (wait > 1e9) wait = 1e9; /* poll takes int ms */
       (void)poll(fds, (nfds_t)nfds, (int)(wait + 0.999));
@@ -6137,10 +7116,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */
-#ifdef SCR_NODE_ISLANDS
-      /* Node loaded during this turn: its loop takes over (scr_loop_run). */
-      if (scr_loop_hosted != NULL) return rejection_failed;
-#endif
+      if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       /* Drain ticks and microtasks, and report the rejections the callback
        * left, before more timers (Node's runNextTicks between timers). */
       if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
@@ -6155,6 +7131,21 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * drained checkpoint. */
     bool check_ran = false;
     if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
+      /* The slots of the immediates that ran are reused first. An earlier
+       * phase left one pending whenever a callback queued the next, as a
+       * chain of immediates does at every turn; once the fired part is at
+       * least as long as the pending tail, the tail moves to the front, in
+       * its order (a slot moves at most once per slot fired), and the slots
+       * it leaves are cleared. Here and not at the phase's end, which a
+       * callback that throws never reaches: a chain whose callbacks all
+       * throw would grow the array by a slot for each of them. */
+      if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
+        size_t pending = scr_nimmediates - scr_immediates_head;
+        memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
+        memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
+        scr_nimmediates = pending;
+        scr_immediates_head = 0;
+      }
       size_t end = scr_nimmediates;
 #ifdef SCR_NODE_ISLANDS
       scr_check_end = end; /* a switch inside this phase finishes it first */
@@ -6175,28 +7166,37 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_immediate_firing = 0;
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
-#ifdef SCR_NODE_ISLANDS
-        if (scr_loop_hosted != NULL) return rejection_failed;
-#endif
+        if (SCR_PASS_HANDED_OVER()) return rejection_failed;
         if (!scr_loop_run_checkpoint()) return false;
+        if (SCR_PASS_HANDED_OVER()) return rejection_failed;
         /* Node's runNextTicks between immediates also reports the
          * rejections the callback left before the next one runs; a
          * listener's jobs drain before the next report. */
         while (scr_nunhandled > 0 && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
           if (scr_report_unhandled_rejections()) return true;
+          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
           if (!scr_loop_run_checkpoint()) return false;
+          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
         }
         if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
       }
 #ifdef SCR_NODE_ISLANDS
       scr_check_end = 0;
 #endif
-      /* Fully drained: reset the cursor so the array reuses its slots. */
-      if (scr_immediates_head == scr_nimmediates) {
-        scr_immediates_head = 0;
-        scr_nimmediates = 0;
-      }
       check_ran = true;
+    }
+    /* No immediate is pending: every slot is fired or cleared, and the
+     * queue starts over at its first slot. In every turn and not only after
+     * a phase, which runs only while an immediate is pending: a turn that
+     * queues immediates and clears them all (a debounce that a timer or a
+     * socket drives) has none, and would grow the array by a slot for every
+     * immediate the program ever queues. */
+    if (scr_pending_immediates == 0) {
+      scr_immediates_head = 0;
+      scr_nimmediates = 0;
+#ifdef SCR_NODE_ISLANDS
+      scr_check_end = 0; /* nothing is left of a phase that a throw ended either */
+#endif
     }
     /* The next poll phase opens once this iteration's check phase ran (or
      * had nothing to run). A check phase deferred for pending microtasks
@@ -6208,6 +7208,32 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     }
   }
   return rejection_failed;
+}
+
+/* Whether any ref'd work would keep the loop alive: the death rule's test
+ * below, recomputed after a 'beforeExit' emission (whose listeners may
+ * have scheduled a timer, an immediate or I/O) — ticks and microtasks are
+ * drained by the emission's own checkpoint instead and never keep Node's
+ * loop alive by themselves. */
+static bool scr_loop_has_reffed_work(void) {
+  bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+  bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
+  bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
+  bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+  bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
+  bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
+  bool renames = scr_fs_renames_pending();
+  bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
+  bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+  bool islands = scr_ni_remote_pending();
+#endif
+  return !(scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net &&
+           !dgram && !watch && !ffi && !renames && !crypto && !workers
+#ifdef SCR_NODE_ISLANDS
+           && !islands
+#endif
+  );
 }
 
 /* A CommonJS main module runs synchronously (Module._load), so the first
@@ -6225,6 +7251,9 @@ bool scr_loop_run(ScrPromise *top_level) {
   if (scr_als_main_slot != NULL) scr_als_main_clear();
   bool first_checkpoint = !scr_loop_cjs_entry;
   bool rejection_failed;
+#ifdef SCR_NODE_ISLANDS
+  scr_loop_root = top_level;
+#endif
   for (;;) {
 #ifdef SCR_NODE_ISLANDS
     /* Node is loaded (in the main body or a callback of an earlier pass):
@@ -6239,13 +7268,25 @@ bool scr_loop_run(ScrPromise *top_level) {
 #endif
     rejection_failed = scr_loop_run_pass(top_level && !top_level->top_level_handled ? top_level : NULL, first_checkpoint);
     first_checkpoint = false;
+#ifdef SCR_NODE_ISLANDS
+    /* Node loaded inside a callback of this pass. What that callback threw
+     * is settled as a throw from a job of the hosted loop is: unhandled,
+     * it ends the process here, and nothing queued on Node runs. The same
+     * for a rejection listener that loaded Node and then threw, which the
+     * pass has reported. */
+    if (scr_loop_hosted != NULL) {
+      if (rejection_failed) {
+        scr_discard_unhandled_rejections();
+        scr_process_exit((double)scr_exit_code_hint_get());
+      }
+      scr_hosted_settle_exception();
+      continue;
+    }
+#endif
     if (scr_exc_pending()) {
       if (scr_exc_handle_uncaught(false)) continue;
       break; /* main reports the original or handler-thrown exception */
     }
-#ifdef SCR_NODE_ISLANDS
-    if (scr_loop_hosted != NULL) continue;
-#endif
     if (rejection_failed) break;
     if (top_level && top_level->state == SCR_PROM_REJECTED && !top_level->top_level_handled) {
       scr_promise_rethrow(top_level);
@@ -6259,6 +7300,12 @@ bool scr_loop_run(ScrPromise *top_level) {
     }
     break;
   }
+#ifdef SCR_NODE_ISLANDS
+  scr_loop_root = NULL; /* the caller owns it; checkpoints after the loop do not read it */
+#endif
+  /* The loop has stopped: performance.nodeTiming's loopExit is now fixed, so
+   * exit listeners (inline here, or atexit) still see the final value. */
+  if (scr_loop_metrics_exit_fn != NULL) scr_loop_metrics_exit_fn();
   /* Exit can now leave UNREF'd timers armed in the heap (ordinary
    * exhaustion, a fatal module root, or an unhandled rejection). They
    * never fire, so release their closures here or the RC audit counts
@@ -6284,6 +7331,9 @@ bool scr_loop_run(ScrPromise *top_level) {
    * exiting, Node's behavior; the OS reparents the children). */
   if (scr_loop_children != NULL) scr_loop_children->teardown();
   scr_fibers_abandoned = scr_fibers_live;
+#ifdef SCR_RC_AUDIT
+  scr_fibers_abandoned += scr_dyn_reactions_pending;
+#endif
   scr_note_abandoned_fibers(scr_fibers_abandoned);
   return rejection_failed;
 }
@@ -6299,6 +7349,38 @@ bool scr_loop_run(ScrPromise *top_level) {
  * listener threw (the uncaught crash path). */
 SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p) = NULL;
 
+#ifdef SCR_PROMISE_REJECT_DYN
+/* Prints a checked-dynamic rejection reason for the default unhandled-
+ * rejection report: a boxed native Error as "name: message" and the frames
+ * it captured, a string as its text, and a number, boolean, null or
+ * undefined by its name. Returns false for any other value, which the
+ * report prints as "[object]". */
+static bool scr_unhandled_print_dyn(const ScrDyn *d) {
+  ScrError *error = scr_errdyn_err_of(d);
+  if (error != NULL) {
+    ScrStr *s = scr_error_to_string(error);
+    fwrite(s->data, 1, s->len, stderr);
+    scr_str_release(s);
+    scr_error_report_frames(error);
+    scr_error_release(error);
+    return true;
+  }
+  switch (d->kind) {
+  case SCR_DYN_STR: fwrite(d->v.str->data, 1, d->v.str->len, stderr); return true;
+  case SCR_DYN_NUM: {
+    char buf[32];
+    size_t len = scr_f64_to_str(d->v.num, buf);
+    fwrite(buf, 1, len, stderr);
+    return true;
+  }
+  case SCR_DYN_BOOL: fputs(d->v.b ? "true" : "false", stderr); return true;
+  case SCR_DYN_NULL: fputs("null", stderr); return true;
+  case SCR_DYN_UNDEF: fputs("undefined", stderr); return true;
+  default: return false;
+  }
+}
+#endif
+
 /* Unhandled rejections at a completed nextTick/microtask checkpoint:
  * Node prints an error and exits 1 when no listener handles the event.
  * Snapshot the ledger: a listener can reject another promise, but that
@@ -6309,7 +7391,7 @@ bool scr_report_unhandled_rejections(void) {
   size_t report_count = scr_nunhandled;
   for (size_t i = 0; i < report_count; i++) {
     ScrPromise *p = scr_maybe_unhandled[i];
-    if (p->state == SCR_PROM_REJECTED && !p->rejection_observed && !crashed) {
+    if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p) && !crashed) {
       if (scr_urj_deliver_fn != NULL) {
         /* Listener dispatch (scr_async_dyn.c installed the hook at
          * registration): the event handles it, like Node — per entry,
@@ -6317,14 +7399,12 @@ bool scr_report_unhandled_rejections(void) {
          * reported_unhandled arms the 'rejectionHandled' window: a
          * handler the listener itself attaches fires the sibling event
          * (scr_prom_observe). */
-        p->rejection_observed = true;
-        p->reported_unhandled = true;
+        scr_prom_reported(p);
         if (!scr_urj_deliver_fn(p) && !scr_exc_handle_uncaught(false)) crashed = true;
       } else if (scr_uncaught_exception_hook != NULL) {
         scr_promise_rethrow(p);
         if (scr_exc_handle_uncaught(true)) {
-          p->rejection_observed = true;
-          p->reported_unhandled = true;
+          scr_prom_reported(p);
         } else {
           crashed = true;
         }
@@ -6340,6 +7420,7 @@ bool scr_report_unhandled_rejections(void) {
           continue;
         }
 #endif
+        scr_stdout_settle();
         fflush(stdout);
         fputs("Unhandled promise rejection: ", stderr);
         switch (p->payload_kind) {
@@ -6352,15 +7433,27 @@ bool scr_report_unhandled_rejections(void) {
         case SCR_EXC_BOOL: fputs(p->b ? "true" : "false", stderr); break;
         case SCR_EXC_STR: fputs(((ScrStr *)p->payload)->data, stderr); break;
         case SCR_EXC_OBJ:
-          /* Error rejections render "name: message", like the uncaught path. */
+          /* Error rejections render "name: message" and the frames the
+           * error captured, like the uncaught path. */
           if (scr_error_is(p->payload)) {
             ScrStr *s = scr_error_to_string((ScrError *)p->payload);
             fwrite(s->data, 1, s->len, stderr);
             scr_str_release(s);
+            scr_error_report_frames((const ScrError *)p->payload);
             break;
           }
           /* fall through */
-        default: fputs("[object]", stderr); break;
+        default:
+#ifdef SCR_PROMISE_REJECT_DYN
+          /* A checked-dynamic reason renders like the uncaught path renders
+           * `throw reason`: a boxed native Error as "name: message", a
+           * primitive by its text. */
+          if (p->release_fn == scr_dyn_release_v && p->payload != NULL &&
+              scr_unhandled_print_dyn((const ScrDyn *)p->payload))
+            break;
+#endif
+          fputs("[object]", stderr);
+          break;
         }
         fputc('\n', stderr);
       }
@@ -6395,28 +7488,87 @@ void scr_discard_unhandled_rejections(void) {
 
 /* ── new Promise(executor) ────────────────────────────────────────────── */
 
+/* Hands the value a losing second settle passed to the 'multipleResolves'
+ * machinery (scr_async_dyn.c) as a dyn value (+1), or drops it when nobody
+ * listens — the settle paths below only build the dyn value while a
+ * listener is registered, so listener-free programs pay one NULL test.
+ * `retain` is the REF payload's retain function, which is how a
+ * checked-dynamic payload is told from a typed one; a value the dyn world
+ * cannot represent (a typed record, class instance or array) crosses as an
+ * empty object, the dyn-vs-typed boundary's usual stand-in. */
+static void scr_multiple_resolves_note(ScrPromise *p, int type, ScrExcKind kind,
+                                       double f64, bool b, void *payload,
+                                       void *(*retain)(void *)) {
+  if (scr_multiple_resolves_fn == NULL) return;
+  ScrDyn *value;
+  switch (kind) {
+  case SCR_EXC_F64: value = scr_dyn_new_num(f64); break;
+  case SCR_EXC_BOOL: value = scr_dyn_new_bool(b); break;
+  case SCR_EXC_STR:
+    value = payload != NULL ? scr_dyn_new_str((ScrStr *)payload) : scr_dyn_undefined();
+    break;
+  case SCR_EXC_OBJ:
+    value = payload != NULL && scr_error_is(payload)
+                ? scr_dyn_from_error((const ScrError *)payload)
+                : scr_dyn_new_obj();
+    break;
+  case SCR_EXC_REF:
+  case SCR_EXC_PRIMITIVE_REF:
+    value = payload == NULL            ? scr_dyn_undefined()
+            : retain == scr_dyn_retain_v ? scr_dyn_retain((ScrDyn *)payload)
+                                         : scr_dyn_new_obj();
+    break;
+  default: value = scr_dyn_undefined(); break;
+  }
+  scr_multiple_resolves_fn(p, type, value);
+}
+
+/* The same for a value carried by an exception cell (an executor that threw
+ * after settling its promise — V8's reject-after-resolve); scr_async_dyn.c's
+ * checked-dynamic executor path shares it. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell) {
+  scr_multiple_resolves_note(p, type, cell->kind, cell->f64, cell->b, cell->payload, cell->retain_fn);
+}
+
 /* resolve closures: caps[0] is a box whose slot holds the promise (+1). */
 static ScrPromise *scr_resolve_target(ScrClosure *self) {
   return (ScrPromise *)scr_box_get_ref(self->caps[0]);
 }
 static void scr_resolve_thunk_f64(ScrClosure *self, double v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_f64(p, v);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_F64, v, false, NULL, NULL);
+  } else {
+    scr_promise_fulfill_f64(p, v);
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_bool(ScrClosure *self, bool v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_bool(p, v);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_BOOL, 0, v, NULL, NULL);
+  } else {
+    scr_promise_fulfill_bool(p, v);
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_str(ScrClosure *self, ScrStr *v) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_str(p, v); /* callee owns its params: moves in */
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_STR, 0, false, v, NULL);
+    scr_str_release(v);
+  } else {
+    scr_promise_fulfill_str(p, v); /* callee owns its params: moves in */
+  }
   scr_promise_release(p);
 }
 static void scr_resolve_thunk_void(ScrClosure *self) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_void(p);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, SCR_EXC_NONE, 0, false, NULL, NULL);
+  } else {
+    scr_promise_fulfill_void(p);
+  }
   scr_promise_release(p);
 }
 /* Ref payloads: emitted code passes the concrete retain/release via a
@@ -6439,7 +7591,33 @@ ScrClosure *scr_make_resolve(ScrPromise *p, int kind /*0 f64,1 bool,2 str,3 void
 /* Emitted ref-kind resolve thunks call this. */
 void scr_resolve_ref_impl(ScrClosure *self, void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
   ScrPromise *p = scr_resolve_target(self);
-  scr_promise_fulfill_ref(p, v, retain, release, trace);
+#ifdef SCR_NODE_ISLANDS
+  /* An executor's resolve(v) with an island object: it may be a thenable,
+   * which the resolution adopts (scr_async_dyn.c reads its `then` in V8). */
+  if (p->island_resolved) {
+    /* Resolved with a thenable already: the first resolution stands, and the
+     * losing value reaches 'multipleResolves' listeners. */
+    scr_multiple_resolves_note(p, 0, v != NULL ? SCR_EXC_REF : SCR_EXC_NONE, 0, false, v, retain);
+    if (v != NULL) release(v);
+    scr_promise_release(p);
+    return;
+  }
+  if (retain == scr_dyn_retain_v && v != NULL && scr_ni_dyn_handle((const ScrDyn *)v) &&
+      p->state == SCR_PROM_PENDING) {
+    scr_dyn_promise_resolve_with(p, (ScrDyn *)v);
+    /* Still pending: `v` is a thenable whose job settles the promise. */
+    if (p->state == SCR_PROM_PENDING) p->island_resolved = true;
+    scr_dyn_release((ScrDyn *)v);
+    scr_promise_release(p);
+    return;
+  }
+#endif
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 0, v != NULL ? SCR_EXC_REF : SCR_EXC_NONE, 0, false, v, retain);
+    if (v != NULL && release != NULL) release(v);
+  } else {
+    scr_promise_fulfill_ref(p, v, retain, release, trace);
+  }
   scr_promise_release(p);
 }
 
@@ -6471,9 +7649,11 @@ ScrClosure *scr_make_resolve_fn(ScrPromise *p, void *fn) {
  * own its param, like every compiled callee. */
 static void scr_reject_thunk(ScrClosure *self, ScrError *reason) {
   ScrPromise *p = scr_resolve_target(self);
-  if (p->state != SCR_PROM_PENDING) {
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    scr_multiple_resolves_note(p, 1, SCR_EXC_OBJ, 0, false, reason, NULL);
     scr_error_release(reason);
   } else {
+    SCR_PROMISE_LAZY_DROP(p);
     p->state = SCR_PROM_REJECTED;
     p->payload_kind = SCR_EXC_OBJ;
     p->payload = reason; /* ownership moves in */
@@ -6494,15 +7674,58 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
   return c;
 }
 
+#ifdef SCR_PROMISE_REJECT_DYN
+/* The checked-dynamic promise's reject closure: a promise whose settled
+ * value is unknown has no typed payload to protect, so its reason is the
+ * dyn value the program rejected with (undefined for a bare reject(), a
+ * number, a string, an object — JS-exact). It stores as the dyn payload
+ * kind, the representation scr_promise_reason_dyn hands back identity-
+ * preserving, so a catch handler receives the very value that was
+ * rejected. First settle wins, like scr_reject_thunk.
+ *
+ * Only a program with such a promise (the promiseRejectDyn feature) links
+ * this build of the unit; every other program keeps the default object,
+ * byte for byte. */
+static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
+  ScrPromise *p = scr_resolve_target(self);
+  if (!SCR_PROMISE_UNRESOLVED(p)) {
+    if (scr_multiple_resolves_fn != NULL)
+      scr_multiple_resolves_fn(p, 1, scr_dyn_retain(reason));
+    scr_dyn_release(reason);
+  } else {
+    SCR_PROMISE_LAZY_DROP(p);
+    p->state = SCR_PROM_REJECTED;
+    p->payload_kind = SCR_EXC_REF;
+    p->payload = reason; /* ownership moves in */
+    p->retain_fn = scr_dyn_retain_v;
+    p->release_fn = scr_dyn_release_v;
+    p->trace_fn = scr_dyn_trace_v;
+    scr_promise_settle_wake(p);
+  }
+  scr_promise_release(p);
+}
+
+ScrClosure *scr_make_reject_dyn(ScrPromise *p) {
+  ScrClosure *c = scr_closure_new((void *)&scr_reject_dyn_thunk, 1);
+  ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v,
+                               scr_promise_trace_v);
+  scr_box_set_ref(b, scr_promise_retain(p));
+  c->caps[0] = b;
+  return c;
+}
+#endif /* SCR_PROMISE_REJECT_DYN */
+
 /* Shared executor epilogue: an escaping throw rejects a still-pending
  * promise (payload moved out of the active exception cell); a throw after
  * the promise settled is swallowed, like resolve-then-throw in JS. */
 static void scr_executor_check_throw(ScrPromise *p) {
   if (!scr_exc_pending()) return;
-  if (p->state == SCR_PROM_PENDING) {
+  if (SCR_PROMISE_UNRESOLVED(p)) {
     scr_promise_reject_from_cell(p, scr_exc_current_cell());
     scr_promise_settle_wake(p);
   } else {
+    /* A throw after the executor settled: V8's reject-after-resolve. */
+    scr_promise_multiple_resolves_note(p, 1, scr_exc_current_cell());
     scr_exc_clear();
   }
 }
@@ -6602,7 +7825,6 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
    * store the same value, relaxed. */
   __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
-  g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
   g->drop_args = drop_args;
   g->is_async = settle_async != NULL;
@@ -6713,7 +7935,8 @@ void scr_gen_release_v(void *g) { scr_gen_release((ScrGen *)g); }
 bool scr_gen_done(ScrGen *g) { return g->state == SCR_GEN_DONE; }
 ScrGen *scr_gen_of_fiber(ScrFiber *f) { return f->gen; }
 ScrDyn *scr_gen_receiver(void) {
-  return scr_dyn_retain(scr_current && scr_current->gen ? scr_current->gen->receiver : scr_dyn_undefined());
+  ScrDyn *receiver = scr_current && scr_current->gen ? scr_current->gen->receiver : NULL;
+  return scr_dyn_retain(receiver != NULL ? receiver : scr_dyn_undefined());
 }
 
 /* Slot setters (release the previous occupant; payloads MOVE in). */

@@ -192,6 +192,28 @@ export function isNodeModuleValue(lowerer: Lowerer, node: ts.Expression): boolea
   return isCjsModuleGlobal(lowerer, node) || nodeModuleType(lowerer, node);
 }
 
+/** Whether `node`'s value is a CommonJS module object (or one or
+ * undefined/null: `require.main`, `module.parent`), by its type: the
+ * `Module` class the standard library declares, which is a number handle in
+ * typed storage. A number-typed node answers false on the type flags. */
+export function isNodeModuleHandle(lowerer: Lowerer, node: ts.Node): boolean {
+  return isNodeModuleType(
+    lowerer,
+    lowerer.checker.getNonNullableType(lowerer.checker.getTypeAtLocation(node)),
+  );
+}
+
+/** Whether `type` is the `Module` class the standard library declares. */
+function isNodeModuleType(lowerer: Lowerer, type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    (ts.symbolName(symbol) === "Module" || ts.symbolName(symbol) === "ScriptcModule") &&
+    symbol.declarations.some((decl) => lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)))
+  );
+}
+
 export function isRequireCacheExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(node) || node.name.text !== "cache") return false;
   return cjsGlobal(lowerer, node.expression, "require");
@@ -429,10 +451,95 @@ export function lowerRequireMainProperty(
   return lowerer.maybeNarrow(optionalModule(lowerer, expr, raw, "undefined"), expr);
 }
 
+/** Whether the use of the CommonJS `module` identifier `expr` keeps the
+ * module object where its type is known: a member or element read, a
+ * comparison, `typeof`, a truthiness test, or a position that hands the
+ * value on with its type (an initializer, an assignment, a return, a
+ * literal's element, a logical or conditional operand, an argument for a
+ * parameter typed as the module). The value is a number handle there. Any
+ * other use (an argument for an untyped parameter, a string conversion, a
+ * template, an operator, `in`, a spread) would read that number where Node
+ * reads the object. A typed position that later hands the value to an
+ * untyped one is refused there (Lowerer.coerceIntoSlot). */
+function keepsModuleTyped(lowerer: Lowerer, expr: ts.Identifier): boolean {
+  let node: ts.Node = expr;
+  for (;;) {
+    const parent = node.parent;
+    if (parent === undefined) return true;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertion(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent)
+    ) {
+      node = parent;
+      continue;
+    }
+    if (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent))
+      return parent.expression === node;
+    if (ts.isBinaryExpression(parent)) {
+      switch (parent.operatorToken.kind) {
+        case ts.SyntaxKind.EqualsEqualsEqualsToken:
+        case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+        case ts.SyntaxKind.EqualsEqualsToken:
+        case ts.SyntaxKind.ExclamationEqualsToken:
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+        case ts.SyntaxKind.BarBarToken:
+        case ts.SyntaxKind.QuestionQuestionToken:
+        case ts.SyntaxKind.CommaToken:
+          return true;
+        case ts.SyntaxKind.EqualsToken:
+          return parent.right === node;
+        default:
+          return false;
+      }
+    }
+    if (ts.isPrefixUnaryExpression(parent))
+      return parent.operator === ts.SyntaxKind.ExclamationToken;
+    if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
+      if (parent.expression === node) return true;
+      const contextual = lowerer.checker.getContextualType(node as ts.Expression);
+      return (
+        contextual !== undefined &&
+        isNodeModuleType(lowerer, lowerer.checker.getNonNullableType(contextual))
+      );
+    }
+    return (
+      ts.isTypeOfExpression(parent) ||
+      ts.isVoidExpression(parent) ||
+      ts.isConditionalExpression(parent) ||
+      ts.isIfStatement(parent) ||
+      ts.isWhileStatement(parent) ||
+      ts.isDoStatement(parent) ||
+      ts.isForStatement(parent) ||
+      ts.isVariableDeclaration(parent) ||
+      ts.isReturnStatement(parent) ||
+      ts.isArrowFunction(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isShorthandPropertyAssignment(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isExpressionStatement(parent)
+    );
+  }
+}
+
+/** The refusal of the CommonJS module object in an untyped position. */
+export function untypedModuleValueFence(lowerer: Lowerer, node: ts.Node): never {
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    "the CommonJS 'module' object as a value in an untyped position (its members, typeof, and comparisons such as require.main === module lower; an untyped use would see a number where Node has the object)",
+  );
+}
+
 export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier): IrExpr | null {
   if (!isCjsModuleGlobal(lowerer, expr)) return null;
   const ref = cjsModuleRef(lowerer, expr);
-  if (ref) return ref;
+  if (ref) {
+    if (!keepsModuleTyped(lowerer, expr)) untypedModuleValueFence(lowerer, expr);
+    return ref;
+  }
   if (isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
     lowerer.unsupported(
       "SC1090",

@@ -26,6 +26,7 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_json.c"),
     join(testDir, "../src/scr_json.c"),
+    join(testDir, "../src/scr_dyn_class_test.c"),
     join(testDir, "../src/scr_bigint.c"),
     join(testDir, "../src/scr_string.c"),
     join(testDir, "../src/scr_array.c"),

@@ -2,5 +2,6 @@
   "entry": "workloads/value-records.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

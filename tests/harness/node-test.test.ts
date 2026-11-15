@@ -174,3 +174,23 @@ describe(`node:test snapshot update mode${sanitize ? " (sanitized)" : ""}`, () =
     }
   }, 120_000);
 });
+
+/* A timed-out t.waitFor() clears its poll timer, as Node's done() does, so
+ * nothing outlives the result. The fixture's poll interval (5000ms)
+ * dwarfs its timeout (30ms), so a leaked timer shows up as wall-clock time
+ * rather than output — hence the bound here, not in the output diff. */
+describe(`node:test waitFor timeout${sanitize ? " (sanitized)" : ""}`, () => {
+  test("a timed-out waitFor clears its poll timer", async () => {
+    const fixture = join(fixturesRoot, "timing/wait-for-exit.ts");
+    const binary = await build(fixture);
+    const runTimed = async (cmd: string, args: string[]) => {
+      const started = performance.now();
+      const run = await runLane(cmd, args);
+      return { ...run, elapsed: performance.now() - started };
+    };
+    const [node, native] = await Promise.all([runTimed("node", [fixture]), runTimed(binary, [])]);
+    expect(normalize(native.stdout)).toBe(normalize(node.stdout));
+    expect(native.exitCode).toBe(node.exitCode);
+    expect(native.elapsed).toBeLessThan(2000);
+  }, 120_000);
+});

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8878-function-literal-slot-arity.ts"
+ ],
+ "diags": []
+}

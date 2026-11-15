@@ -30,9 +30,11 @@ import {
  * that reads it into checked f64 arithmetic and every reference read into
  * an out-of-line retained box load.
  *
- * This pass keeps the boxes (environments still capture and trace them
- * exactly as before, so ownership and cycle collection are unchanged) and
- * moves the reads onto plain locals:
+ * This pass keeps the boxes in the IR (environments still name them, so
+ * every later pass sees the same captures) and moves the reads onto plain
+ * locals. Whether such a binding has a box at run time is the backend's
+ * choice (backend/llvm/value-captures.ts copies the value into the
+ * environment when nothing can observe the difference):
  *
  * - In the declaring function, `varDecl x = init` becomes
  *   `varDecl x' = init; varDecl x = x'`, and every read of `x` reads `x'`.

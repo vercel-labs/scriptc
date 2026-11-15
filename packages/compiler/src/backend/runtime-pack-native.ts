@@ -28,7 +28,9 @@ import type { NativeTargetSpec } from "./targets.js";
 import {
   RuntimePackError,
   parseRuntimePackManifest,
+  reportSpeedFlavorFallback,
   selectRuntimePackArtifacts,
+  speedFlavorFallbackWarning,
   validateRuntimePackIdentity,
   type RuntimePackArtifact,
   type RuntimePackArtifacts,
@@ -100,10 +102,13 @@ function storeKey(text: string): string {
  * identities, returned. */
 interface StoredSelection {
   /** 2 adds the selection's data artifacts: a stored selection from before
-   * them would make an Intl build stage none of them, so it is discarded. */
-  schema: 2;
+   * them would make an Intl build stage none of them, so it is discarded.
+   * 3 adds the speed-flavor fallback warning: a stored selection from before
+   * it would make a later build link the release runtime objects silently. */
+  schema: 3;
   licenses: RuntimePackManifest["licenses"];
   selected: RuntimePackArtifacts;
+  speedFallback: string | null;
 }
 
 export function selectNativeRuntimePack(
@@ -151,6 +156,10 @@ export function selectNativeRuntimePack(
           sameIdentity(fileIdentity(packagePath), identities[0]!) &&
           sameIdentity(fileIdentity(manifestPath), identities[1]!)
         ) {
+          // The stored selection's manifest is not parsed, so the warning it
+          // carries is what keeps this build from linking the release runtime
+          // objects silently.
+          reportSpeedFlavorFallback(root, stored.speedFallback);
           return {
             root,
             licenses: stored.licenses,
@@ -170,6 +179,8 @@ export function selectNativeRuntimePack(
   const identity = JSON.parse(packageText) as { name?: string; version?: string };
   const manifest = parseRuntimePackManifest(JSON.parse(manifestText));
   validateRuntimePackIdentity(manifest, identity.name, identity.version, target, compilerVersion);
+  const speedFallback = speedFlavorFallbackWarning(manifest, flavor, mode);
+  reportSpeedFlavorFallback(root, speedFallback);
   const selected = selectRuntimePackArtifacts(manifest, features, flavor, process.env, mode);
   if (store !== undefined && key !== null) {
     try {
@@ -179,7 +190,12 @@ export function selectNativeRuntimePack(
         sameIdentity(fileIdentity(packagePath), identities[0]!) &&
         sameIdentity(fileIdentity(manifestPath), identities[1]!)
       ) {
-        const entry: StoredSelection = { schema: 2, licenses: manifest.licenses, selected };
+        const entry: StoredSelection = {
+          schema: 3,
+          licenses: manifest.licenses,
+          selected,
+          speedFallback,
+        };
         store.write(key, JSON.stringify(entry));
       }
     } catch {
@@ -208,8 +224,9 @@ function readStoredSelection(text: string | null): StoredSelection | null {
   if (value === null || typeof value !== "object") return null;
   const entry = value as Partial<StoredSelection>;
   if (
-    entry.schema !== 2 ||
+    entry.schema !== 3 ||
     !Array.isArray(entry.licenses) ||
+    (entry.speedFallback !== null && typeof entry.speedFallback !== "string") ||
     entry.selected === undefined ||
     entry.selected === null ||
     typeof entry.selected !== "object" ||

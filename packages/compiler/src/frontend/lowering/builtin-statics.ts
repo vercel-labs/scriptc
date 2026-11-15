@@ -14,12 +14,14 @@ import {
   F64,
   STRING,
   SYMBOL_T,
+  VOID,
   type IrExpr,
   type IrFunction,
   type IrStmt,
   type IrType,
   type SrcLoc,
   funcOf,
+  primitiveConstructorType,
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -33,6 +35,7 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { numberPredicateValue } from "./builtins/numbers.js";
+import { reflectMemberValue } from "./builtins/reflection.js";
 
 const LOOKUP_FN = "%builtin.staticValue";
 
@@ -104,10 +107,15 @@ const WELL_KNOWN_SYMBOLS = [
 const SYMBOL_CONSTANT = -1;
 
 /** The compiled closures the primitive constructors read as (lower-exprs.ts
- * primitiveCtorClosure, and Symbol's in global-function-values.ts). The
- * runtime does not intern them, so the lookup names their constructor when
- * the runtime asks for the key "". */
+ * primitiveCtorClosure, and Symbol's in global-function-values.ts), and the
+ * conversion closures an array callback position holds in their place
+ * (primitiveConversionCallback). The runtime does not intern them, so the
+ * lookup names their constructor when the runtime asks for the key "". */
 const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
+  ["%builtin.constructor.String", "String"],
+  ["%builtin.constructor.Number", "Number"],
+  ["%builtin.constructor.Boolean", "Boolean"],
+  ["%builtin.constructor.BigInt", "BigInt"],
   ["%builtin.String", "String"],
   ["%builtin.String.dyn", "String"],
   ["%builtin.Number", "Number"],
@@ -159,6 +167,10 @@ export function constructorStaticValue(
       return key === "captureStackTrace"
         ? { kind: "libCall", fn: "dyn.errorCaptureStackTraceFunction", args: [], type: DYN, loc }
         : null;
+    // The Reflect namespace reads as its member values: the same closures
+    // its JavaScript namespace object answers, with Node's name and length.
+    case "Reflect":
+      return reflectMemberValue(lowerer, key, loc);
     default:
       return null;
   }
@@ -199,7 +211,7 @@ function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr |
           loc,
         }
       : { kind: "libCall", fn: "sym.keyForDyn", args: [argument], type: DYN, loc };
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -216,7 +228,7 @@ function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr |
 export function objectFreezeValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   lowerer.untypedIntegrity = true;
   const name = "%builtin.Object.freeze";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -302,6 +314,49 @@ function constructorValueOf(expr: IrExpr): ConstructorValue | null {
   return null;
 }
 
+/** In a program with Node islands, registers the program's functions for
+ * the primitive constructors (`%builtin.constructor.String`) with the island
+ * runtime at the start of the entry module, so one that crosses into an
+ * island is the island's own `String` there, and the island's comes back as
+ * the program's (scr_node_island_export.c, SCR_NVF_INTRINSIC). Programs
+ * that never call into Node (through an island package or @scriptc/node),
+ * or that hold no such function, emit nothing. */
+export function registerIslandIntrinsics(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (!lowerer.usesNodeIsland) return;
+  const entryInit = lowerer.initNameOf.get(lowerer.entry);
+  const entry = functions.find((fn) => fn.name === entryInit);
+  if (entry === undefined) return;
+  const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
+  const registrations: IrStmt[] = [];
+  for (const fn of functions) {
+    const owner = fn.name.startsWith("%builtin.constructor.")
+      ? PRIMITIVE_CONSTRUCTORS.get(fn.name)
+      : undefined;
+    if (owner === undefined) continue;
+    const type = primitiveConstructorType(fn.returnType);
+    registrations.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "nodeIsland.intrinsic",
+        args: [
+          { kind: "strLit", value: owner, type: STRING, loc },
+          {
+            kind: "dynFrom",
+            value: { kind: "closure", fnName: fn.name, captures: [], type, loc },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  if (registrations.length > 0) entry.body.unshift(...registrations);
+}
+
 /** Installs the program's static-member lookup at the start of the entry
  * module when `functions` read a builtin constructor value or a
  * `constructor` member of an untyped value. The lookup answers the static
@@ -354,7 +409,7 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
     }
   const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
   const lifted = lowerer.liftedFns.length;
-  if (!lowerer.liftedFns.some((fn) => fn.name === LOOKUP_FN)) {
+  if (lowerer.liftedFnNamed(LOOKUP_FN) === undefined) {
     const value: IrExpr = { kind: "varRef", localId: "value.0", type: DYN, loc };
     const key: IrExpr = { kind: "varRef", localId: "key.0", type: STRING, loc };
     const body: IrStmt[] = [];

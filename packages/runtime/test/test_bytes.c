@@ -345,6 +345,136 @@ static void test_raw_storage_encodings(void) {
   for (size_t e = 0; e < sizeof encs / sizeof encs[0]; e++) scr_str_release(encs[e]);
 }
 
+/* Buffer.write in latin1 or ascii stores the low byte of each UTF-16 unit,
+ * in order (an astral code point contributes both surrogates' low bytes),
+ * and a budget that ends inside a surrogate pair splits it. Both encodings
+ * mean the same thing, the run-time encoding name takes the same path, and
+ * the bytes past the write keep their previous value. */
+static void check_write_str(const uint8_t *in, size_t n, const char *label) {
+  static const size_t caps[] = {0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 24};
+  ScrStr *s = scr_str_new((const char *)in, n);
+  ScrStr *encs[] = {S("latin1"), S("ascii")};
+  uint16_t *units = malloc((n ? n : 1) * sizeof *units);
+  size_t k = ref_units(in, n, units);
+  char what[160];
+  for (size_t ci = 0; ci < sizeof caps / sizeof caps[0]; ci++) {
+    size_t capacity = caps[ci], remaining;
+    for (int variant = 0; variant < 4; variant++) {
+      size_t offset = variant == 0 ? 0 : variant == 1 ? 1 : variant == 2 ? capacity / 2 : capacity;
+      if (offset > capacity) continue;
+      remaining = capacity - offset;
+      for (int pick = 0; pick < 8; pick++) {
+        size_t budget = pick == 0 ? 0 : pick == 1 ? 1 : pick == 2 ? 2 : pick == 3 ? 3
+                        : pick == 4 ? (k ? k - 1 : 0) : pick == 5 ? k : pick == 6 ? k + 1 : capacity;
+        if (budget > capacity) budget = capacity;
+        bool has_len = pick < 7;
+        for (int e = 0; e < 4; e++) {
+          ScrStr *enc = encs[e < 2 ? e : e - 2];
+          ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)capacity);
+          if (capacity) memset(b->data, 0xaa, capacity);
+          double got =
+              e < 2 ? scr_bytes_write_str(b, s, enc, (double)offset, (double)budget, has_len)
+                    : has_len ? scr_bytes_write_str_dyn_len(b, s, enc, (double)offset, (double)budget)
+                              : scr_bytes_write_str_dyn(b, s, enc, (double)offset);
+          /* The write takes at most the budget and at most the units left. */
+          size_t want = has_len && budget < remaining ? budget : remaining;
+          if (want > k) want = k;
+          snprintf(what, sizeof what, "%s: cap %zu offset %zu budget %zu len %d dyn %d", label,
+                   capacity, offset, budget, (int)has_len, e >= 2);
+          check_f64(got, (double)want, what);
+          size_t j = 0;
+          for (; j < capacity; j++) {
+            uint8_t expect = j >= offset && j - offset < want ? (uint8_t)units[j - offset] : 0xaa;
+            if (b->data[j] != expect) break;
+          }
+          check(j == capacity, what);
+          if (j != capacity) {
+            fprintf(stderr, "  byte %zu got 0x%02x want 0x%02x\n", j, b->data[j],
+                    j >= offset && j - offset < k ? (unsigned)(uint8_t)units[j - offset] : 0xaa);
+          }
+          scr_bytes_release(b);
+        }
+      }
+    }
+  }
+  scr_str_release(s);
+  for (size_t e = 0; e < 2; e++) scr_str_release(encs[e]);
+  free(units);
+}
+
+/* Buffer.write in utf16le stores every unit in two bytes and stops before a
+ * unit the budget cannot hold. */
+static void check_write_utf16(const uint8_t *in, size_t n, const char *label) {
+  ScrStr *s = scr_str_new((const char *)in, n);
+  ScrStr *enc = S("utf16le");
+  uint16_t *units = malloc((n ? n : 1) * sizeof *units);
+  size_t k = ref_units(in, n, units), total = 0;
+  char what[160];
+  for (size_t capacity = 0; capacity <= 13; capacity++) {
+    for (int variant = 0; variant < 4; variant++) {
+      size_t offset = variant == 0 ? 0 : variant == 1 ? 1 : variant == 2 ? 2 : capacity;
+      if (offset > capacity) continue;
+      size_t remaining = capacity - offset;
+      for (size_t budget = 0; budget <= capacity; budget++) {
+        ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)capacity);
+        if (capacity) memset(b->data, 0xaa, capacity);
+        double got = scr_bytes_write_str(b, s, enc, (double)offset, (double)budget, true);
+        size_t room = budget < remaining ? budget : remaining;
+        size_t units_written = k < room / 2 ? k : room / 2, want = 2 * units_written;
+        snprintf(what, sizeof what, "%s: cap %zu offset %zu budget %zu", label, capacity, offset,
+                 budget);
+        check_f64(got, (double)want, what);
+        size_t j = 0;
+        for (; j < capacity; j++) {
+          size_t u = j - offset;
+          uint8_t expect = j >= offset && u < want
+                               ? (uint8_t)(u % 2 ? units[u / 2] >> 8 : units[u / 2])
+                               : 0xaa;
+          if (b->data[j] != expect) break;
+        }
+        check(j == capacity, what);
+        scr_bytes_release(b);
+        total += want;
+      }
+    }
+  }
+  /* The checks above are not vacuous: this shape writes real units. */
+  check(total > 1000, label);
+  scr_str_release(s);
+  scr_str_release(enc);
+  free(units);
+}
+
+static void test_write_str_latin1(void) {
+  /* The one-byte unit shift puts each pattern at every position in an
+   * eight-byte word the encoder steps through. */
+  static const char *shapes[] = {
+      "",
+      "hello, world",
+      "\xc3\xa9t\xc3\xa9",
+      "\xf0\x9f\x92\xa9",                        /* one astral code point */
+      "a\xf0\x9f\x92\xa9z\xc3\xa9",
+      "\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9", /* nine bytes, crosses words */
+      "\x80\xc3\xa9\xe2\x82\xac\xff\xfe",         /* raw bytes and a three-byte character */
+      "\xe2\x82\xac\xe2\x82\xac\xf0\x9f\x98\x80\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3",
+  };
+  for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++)
+    check_write_str((const uint8_t *)shapes[i], strlen(shapes[i]), "write latin1");
+  check_write_utf16((const uint8_t *)"\xc3\xa9\xf0\x9f\x92\xa9t", strlen("\xc3\xa9\xf0\x9f\x92\xa9t"),
+                    "write utf16le mixed");
+  /* A long receiver and a short budget: only the first units are encoded. */
+  static uint8_t big[4096];
+  for (size_t i = 0; i < sizeof big; i++) big[i] = i % 3 == 0 ? (uint8_t)'x' : i % 3 == 1 ? 0xc3 : 0xa9;
+  check_write_str(big, sizeof big, "write latin1 long");
+  /* A long ASCII run with non-ASCII text after it, under budgets that end
+   * inside the run: the write is the run's first bytes, however much text
+   * follows. */
+  static uint8_t prefixed[4096];
+  memset(prefixed, 'p', 4000);
+  memcpy(prefixed + 4000, "\xc3\xa9\xe2\x82\xac\xf0\x9f\x92\xa9", 9);
+  check_write_str(prefixed, 4009, "write latin1 long prefix");
+}
+
 static void test_concat_and_u32be(void) {
   ScrArr *list = scr_arr_new(SCR_ELEM_BYTES, 0);
   ScrBytes *a = scr_bytes_new(SCR_BYTES_U8, 2);
@@ -575,6 +705,7 @@ int main(int argc, char **argv) {
   scr_bytes_test_buffer_pool();
   test_encodings();
   test_raw_storage_encodings();
+  test_write_str_latin1();
   test_concat_and_u32be();
   test_from_arr_and_random();
   test_zlib_roundtrip();

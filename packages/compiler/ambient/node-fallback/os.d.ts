@@ -27,7 +27,17 @@ declare module "os" {
     shell: string | null;
     homedir: string;
   }
-  export function userInfo(): UserInfo;
+  /* userInfo({ encoding: 'buffer' }): the same passwd fields with the
+   * three strings as Buffers (Node's own switch on the encoding). */
+  export interface BufferUserInfo {
+    username: Buffer;
+    uid: number;
+    gid: number;
+    shell: Buffer;
+    homedir: Buffer;
+  }
+  export function userInfo(options: { encoding: "buffer" }): BufferUserInfo;
+  export function userInfo(options?: { encoding?: string }): UserInfo;
   /* The TARGET platform's line terminator (a compile-time constant:
    * "\r\n" under a win32 triple, "\n" everywhere else). */
   export const EOL: "\r\n" | "\n";

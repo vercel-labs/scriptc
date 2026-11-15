@@ -6,7 +6,7 @@ import { createProgram } from "../../src/frontend/ts7/program-adapter.js";
  * proxy over 5.9.3, committed JSONs): commander-calc 2,613 calls,
  * mock-gateway 32,226 — dominated by getBaseTypeOfLiteralType,
  * getTypeOfSymbol, isTupleType, isArrayType, getSymbolAtLocation,
- * getTypeAtLocation. Naive per-call use of the 7.0.2 sync client costs
+ * getTypeAtLocation. Naive per-call use of the sync client costs
  * 0.1-0.3 ms per query (IPC round trip), which projects to seconds per
  * lowering; the facade's batching + memoization must bring the same call
  * mix back to the survey's batched rate (~0.005 ms/call — 5.9.3 parity).

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-require-binding-snapshot/snapshot.cjs",
+  "<repo>/tests/corpus/cjs-require-binding-snapshot/wrapper.cjs",
+  "<repo>/tests/corpus/cjs-require-binding-snapshot/main.cjs"
+ ],
+ "diags": []
+}

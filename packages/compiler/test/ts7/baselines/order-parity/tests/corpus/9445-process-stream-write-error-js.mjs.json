@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9445-process-stream-write-error-js.mjs"
+ ],
+ "diags": []
+}

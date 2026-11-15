@@ -37,4 +37,7 @@ export interface CliHost {
   /** `scriptc types patch|list` (frontend/type-patches/command.ts). */
   typePatches: (request: TypePatchCommandRequest) => Promise<TypePatchCommandResult>;
   run: (binary: string) => Promise<number>;
+  /** The executable and arguments that run this same compiler with the command-line arguments
+   * `args`; `scriptc mcp` runs each tool call this way. */
+  reinvoke: (args: string[]) => { file: string; args: string[] };
 }

@@ -1,0 +1,55 @@
+keyed-write-asserted-copy.ts:14:3 - error SC1090: a keyed write through a type assertion that converts '{ hits: number; misses: number | undefined }' into '{ hits: number }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  13 | function bump(counts: Counts): void {
+  14 |   (counts as { hits: number })["hits"] += 1;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 | }
+
+keyed-write-asserted-copy.ts:18:3 - error SC1090: a keyed write through a type assertion that converts '{ hits: number; misses: number | undefined }' into '{ hits: number }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  17 | function increment(counts: Counts): void {
+  18 |   (counts as { hits: number })["hits"]++;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | }
+
+keyed-write-asserted-copy.ts:22:3 - error SC1090: a keyed write through a type assertion that converts '{ hits: number; misses: number | undefined }' into '{ misses: number | undefined }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  21 | function fill(counts: Counts): void {
+  22 |   (counts as { misses?: number })["misses"] ??= 0;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 | }
+
+keyed-write-asserted-copy.ts:27:3 - error SC1090: a keyed write through a type assertion that converts '{ [key: string]: number }' into '{ [key: string]: number | undefined }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  26 | function widen(table: Record<string, number>, key: string): void {
+  27 |   (table as Record<string, number | undefined>)["fixed"] = 1;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  28 |   (table as Record<string, number | undefined>)[key] = 2;
+
+keyed-write-asserted-copy.ts:28:3 - error SC1090: a keyed write through a type assertion that converts '{ [key: string]: number }' into '{ [key: string]: number | undefined }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  27 |   (table as Record<string, number | undefined>)["fixed"] = 1;
+  28 |   (table as Record<string, number | undefined>)[key] = 2;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  29 | }
+
+keyed-write-asserted-copy.ts:33:3 - error SC1090: a keyed write through a type assertion that converts '{ hits: number; misses: number | undefined }' into '{ misses: number | string | undefined }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  32 | function retype(counts: Counts): void {
+  33 |   (counts as { misses?: number | string })["misses"] = "many";
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | }
+
+keyed-write-asserted-copy.ts:38:3 - error SC1090: writing 'extra' through a type assertion to a member the value's own layout does not hold (the write would land on a converted copy; declare the member on the value's type) is not supported yet
+
+  37 | function add(counts: Counts): void {
+  38 |   (counts as Counts & { extra?: number })!.extra = 1;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  39 | }
+
+keyed-write-asserted-copy.ts:43:11 - error SC1090: a keyed write through a type assertion that converts '{ hits: number; misses: number | undefined }' into '{ hits: number }' (Node erases the assertion and writes to the value itself; the conversion builds a copy, so the write would land on the temporary and disappear — assign a declared member by its literal name, or write through the value's own type) is not supported yet
+
+  42 | function value(counts: Counts): number {
+  43 |   return ((counts as { hits: number })["hits"] = 3);
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  44 | }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8930-node-island-closed-const-tdz/main.ts"
+ ],
+ "diags": []
+}

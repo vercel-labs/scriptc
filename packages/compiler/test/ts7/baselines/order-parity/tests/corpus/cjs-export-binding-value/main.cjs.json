@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-export-binding-value/probe.cjs",
+  "<repo>/tests/corpus/cjs-export-binding-value/counted.cjs",
+  "<repo>/tests/corpus/cjs-export-binding-value/main.cjs"
+ ],
+ "diags": []
+}

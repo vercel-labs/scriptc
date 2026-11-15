@@ -6,6 +6,7 @@ import {
   type IrParam,
   type IrType,
   type SrcLoc,
+  DYN,
   VOID,
   funcOf,
   typeKey,
@@ -27,10 +28,31 @@ export function adaptPromiseExecutor(
   loc: SrcLoc,
 ): IrExpr | null {
   const execT = executor.type;
+  // A variadic executor takes the two settling functions JavaScript passes:
+  // the slot here is that whole list, a declared one (function-adapters.ts,
+  // THE RULE). One the adapter does not serve stays variadic and is refused
+  // where the promise would call it (variadic-functions.ts).
+  if (execT.kind === "func" && execT.rest === true && execT.restAbi === undefined) {
+    const settle = funcOf(
+      [
+        funcOf(inner.kind === "void" ? [] : [inner], VOID),
+        funcOf([inner.kind === "dyn" ? DYN : { kind: "object", className: "%Error" }], VOID),
+      ],
+      VOID,
+    );
+    const adapted = lowerer.withDeclaredCallList(() => lowerer.coerceToExpected(executor, settle));
+    return adapted.type.kind === "func" && adapted.type.rest !== true ? adapted : null;
+  }
   if (execT.kind !== "func" || execT.rest || execT.params.length > 2) return null;
   if (!execT.params.some((p) => p.kind === "dyn")) return null;
   const resolveT = funcOf(inner.kind === "void" ? [] : [inner], VOID);
-  const rejectT = funcOf([{ kind: "object", className: "%Error" }], VOID);
+  // The rejection channel keeps the promise's own reason representation:
+  // Error for a typed payload, the checked-dynamic value for a promise
+  // whose settled value is unknown.
+  const rejectT = funcOf(
+    [inner.kind === "dyn" ? DYN : { kind: "object", className: "%Error" }],
+    VOID,
+  );
   const native = [resolveT, rejectT];
   if (
     !execT.params.every((p, i) => p.kind === "dyn" || typeKey(p) === typeKey(native[i]!)) ||

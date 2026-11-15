@@ -7,6 +7,17 @@
 
 /* ── console ──────────────────────────────────────────────────────────── */
 
+/* Build-time stdout policy (`--stdout-buffering`): the program object defines
+ * scr_stdout_buffering = 1, overriding the runtime's weak 0. When it is set
+ * and fd 1 is not a terminal, JavaScript-visible stdout bytes stay in the
+ * runtime's buffer until the buffer fills or the runtime settles them at an
+ * observable boundary — a stderr write, the event loop's sleep, a blocking
+ * stdin read, process.kill, process.exit, an uncaught exception, or exit. */
+extern const unsigned char scr_stdout_buffering;
+/* Submit buffered JavaScript-visible stdout. A no-op when the build did not
+ * opt in or stdout is a terminal. */
+void scr_stdout_settle(void);
+
 enum {
   SCR_ARG_F64,  /* a number argument: inspect rendering (-0 prints "-0") */
   SCR_ARG_STR,  /* a string, verbatim */
@@ -40,6 +51,12 @@ void scr_console_error(size_t n, const ScrLogArg *args);
  * runtime that does not understand them. */
 void scr_console_log_parts(size_t n, const ScrLogArg *args);
 void scr_console_error_parts(size_t n, const ScrLogArg *args);
+/* console.trace: "Trace" (then ": " and the formatted arguments) on stderr
+ * followed by the frames the call captured. The frames are scriptc's own
+ * function and file text (SEMANTICS.md divergence 11), as an uncaught
+ * Error's report has them; the line before them is Node's. Borrows. */
+void scr_console_trace(size_t n, const ScrLogArg *args);
+void scr_console_trace_parts(size_t n, const ScrLogArg *args);
 /* A Console instance's line on fd 1 or 2, without the global console's
  * group indentation, under the instance's ignoreErrors. */
 void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors);

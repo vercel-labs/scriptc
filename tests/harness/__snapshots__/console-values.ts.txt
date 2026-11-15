@@ -1,0 +1,80 @@
+console-values.ts:6:15 - error SC2020: 'console.table as a value' is part of the standard library types but has no scriptc lowering yet
+
+  5 | // into holds console's members, so comparing it with console is refused.
+  6 | const table = console.table;
+    |               ^~~~~~~~~~~~~
+  7 | const { time } = console;
+
+  hint: console's log, info, debug, warn and error are function values; call console.table directly, or keep a function that does, such as (...args: unknown[]) => console.table(...args)
+
+console-values.ts:7:9 - error SC2020: 'console.time as a value' is part of the standard library types but has no scriptc lowering yet
+
+  6 | const table = console.table;
+  7 | const { time } = console;
+    |         ^~~~
+  8 | function watch(onError: (error: unknown) => void = console.trace): void {
+
+  hint: console's log, info, debug, warn and error are function values; call console.time directly, or keep a function that does, such as (...args: unknown[]) => console.time(...args)
+
+console-values.ts:8:52 - error SC2020: 'console.trace as a value' is part of the standard library types but has no scriptc lowering yet
+
+  7 | const { time } = console;
+  8 | function watch(onError: (error: unknown) => void = console.trace): void {
+    |                                                    ^~~~~~~~~~~~~
+  9 |   onError(1);
+
+  hint: console's log, info, debug, warn and error are function values; call console.trace directly, or keep a function that does, such as (...args: unknown[]) => console.trace(...args)
+
+console-values.ts:19:9 - error SC1090: console flowing into '{ log: () => void; table: (unknown) => void }', which declares 'console.table' as a member (only its direct call has a lowering) is not supported yet
+
+  18 | }
+  19 | useWide(console);
+     |         ^~~~~~~
+  20 | 
+
+  hint: console's log, info, debug, warn and error are function values; pass an object literal that calls the other members, such as { table: (data: unknown) => console.table(data) }
+
+console-values.ts:22:16 - error SC1090: console flowing into '{ log: () => void; panic: (string) => void }', which requires the member 'panic' that console does not have is not supported yet
+
+  21 | // Reachable only through an assertion: tsc rejects the plain flows.
+  22 | const panics = console as unknown as {
+     |                ^~~~~~~~~~~~~~~~~~~~~~~
+  23 |   log(...args: unknown[]): void;
+
+  hint: console's log, info, debug, warn and error are function values; pass an object literal that calls the other members, such as { table: (data: unknown) => console.table(data) }
+
+console-values.ts:26:17 - error SC1090: console flowing into '{ level: string; log: () => void }', which requires the member 'level' that console does not have is not supported yet
+
+  25 | };
+  26 | const leveled = console as unknown as { log(...args: unknown[]): void; level: string };
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 | 
+
+  hint: console's log, info, debug, warn and error are function values; pass an object literal that calls the other members, such as { table: (data: unknown) => console.table(data) }
+
+console-values.ts:32:10 - error SC1090: comparing console with a '{ log: () => void }' value (a record that console flowed into holds console's members, not console itself) is not supported yet
+
+  31 | function isDefault(logger: Logger): boolean {
+  32 |   return logger === console;
+     |          ^~~~~~~~~~~~~~~~~~
+  33 | }
+
+  hint: compare a member instead, such as logger.log === console.log, or keep the logger in a slot typed 'unknown' or 'Console'
+
+console-values.ts:35:10 - error SC1090: comparing console with a '{ log: () => void } | undefined' value (a record that console flowed into holds console's members, not console itself) is not supported yet
+
+  34 | function isCustom(logger: Logger | undefined): boolean {
+  35 |   return console !== logger;
+     |          ^~~~~~~~~~~~~~~~~~
+  36 | }
+
+  hint: compare a member instead, such as logger.log === console.log, or keep the logger in a slot typed 'unknown' or 'Console'
+
+console-values.ts:41:1 - error SC2020: 'assigning to 'console.log'' is part of the standard library types but has no scriptc lowering yet
+
+  40 | // the member.
+  41 | console.log = (...args: unknown[]): void => {
+     | ^~~~~~~~~~~
+  42 |   process.stdout.write(`${args.length}\n`);
+
+  hint: console's members cannot be replaced: direct console calls compile to the native writers; route the output through a function or object the program owns instead

@@ -21,7 +21,7 @@ import {
   llvmEmitterRequest,
   type LlvmEmitterRequest,
 } from "./self-hosting-llvm-emitter-cases.js";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const entry = join(root, "tests/fixtures/self-hosting/llvm-emitter.ts");
@@ -114,12 +114,8 @@ const title = `the complete LLVM emitter bootstraps natively (${backend})`;
 
 // The bootstrap's two halves are separate tests so SCRIPTC_TEST_SHARD can run
 // them on different shards (tests/harness/shard.ts). Both need the seed: a
-// shard builds it once for whichever halves it owns. Milliseconds measured
-// under ASan, where the fixed point takes three times the cases' share.
-const halfCosts = {
-  [`${title}: emitter cases and programs`]: 232_000,
-  [`${title}: fixed point`]: 741_000,
-};
+// shard builds it once for whichever halves it owns.
+const halfCosts = suiteCosts(import.meta.filename);
 
 const dir = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-llvm-emitter-"),
@@ -145,6 +141,10 @@ function buildSeed(): Promise<IrModule> {
     const { stdout } = await execFileAsync(
       process.execPath,
       [
+        // The seed's frontend peak is about 2.0 GB; the other self-hosting
+        // harnesses raise the bound too, and darwin's default heap is that
+        // size exactly (the plain macOS lane died at 2042 MB).
+        "--max-old-space-size=8192",
         "--import",
         "tsx",
         "--input-type=module",
@@ -319,6 +319,26 @@ describe(title, () => {
       const second = await execFileAsync(secondStage, [input, again, config], {
         ...runOptions,
         timeout: emitTimeout,
+      }).catch((cause: unknown) => {
+        // The fixture reports what it catches on stdout and exits non-zero, so
+        // a bare "Command failed" hides whether the second generation crashed,
+        // overran its stack or timed out. Say what the child said. Promisified
+        // execFile exposes the exit status as `code` (a number, or an error
+        // string such as ENOENT when the child never ran), not `status`.
+        const failed = cause as {
+          code?: number | string;
+          signal?: string | null;
+          stdout?: string;
+          stderr?: string;
+        };
+        const said = (text: string | undefined): string => (text ?? "").slice(0, 2_000);
+        throw new Error(
+          `the second generation did not reproduce the module: code=${String(failed.code)}` +
+            ` signal=${String(failed.signal)}` +
+            `\nstdout: ${said(failed.stdout)}` +
+            `\nstderr: ${said(failed.stderr)}`,
+          { cause },
+        );
       });
       expect(second.stdout).toBe("");
       expect(second.stderr).toBe("");

@@ -1,0 +1,10 @@
+{
+  "name": "node-island-array-buffers",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "buffer-pkg": "node"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/os-priority-callable.cjs"
+ ],
+ "diags": []
+}

@@ -22,11 +22,24 @@ function main(): void {
   if (out === null || err === null || sink === null || pipe === null) {
     throw new Error("missing pipe");
   }
-  err.on("data", (chunk) => console.log("err", String(chunk)));
-  out.on("data", (chunk) => console.log("out", String(chunk).trim()));
+  /* Where the pipe splits a write into data events, and whether an exit
+   * arrives before stdout reaches EOF, depends on scheduling. Collect the
+   * text and report it from close, which follows both streams. */
+  let echoed = "";
+  let errors = "";
+  err.on("data", (chunk) => {
+    errors += String(chunk);
+  });
+  out.on("data", (chunk) => {
+    echoed += String(chunk);
+  });
   console.log("writable", sink.writable);
   writeAll(pipe, ["one", "two"]);
-  child.on("exit", (code) => console.log("exit", code));
+  child.on("close", (code) => {
+    console.log("out", JSON.stringify(echoed));
+    console.log("err", JSON.stringify(errors));
+    console.log("exit", code);
+  });
 }
 
 main();

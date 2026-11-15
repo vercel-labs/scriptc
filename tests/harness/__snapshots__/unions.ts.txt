@@ -7,13 +7,6 @@ unions.ts:18:10 - error SC2003: union conversion has no unambiguous layout mappi
 
   hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's
 
-unions.ts:61:22 - error SC1090: string conversions of unions with object arms (narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
-
-  60 | // honest text (JS prints "[object Object]") and stays fenced.
-  61 | const templated = `${mkAB()}`;
-     |                      ^~~~~~
-  62 | 
-
 unions.ts:92:10 - error SC1090: reading 'valueOf' on a union-typed value (every arm must be an object/record with a same-typed field 'valueOf'; narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
 
   91 | function chainSubUnion(x: number | string | undefined): number {

@@ -1,0 +1,62 @@
+define-changed-variable.ts:5:1 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+  4 | 
+  5 | process.env.NODE_ENV = "development";
+    | ^~~~~~~~~~~~~~~~~~~~
+  6 | process.env["NODE_ENV"] = "development";
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:6:1 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+  5 | process.env.NODE_ENV = "development";
+  6 | process.env["NODE_ENV"] = "development";
+    | ^~~~~~~~~~~~~~~~~~~~~~~
+  7 | env.NODE_ENV = "development";
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:7:1 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+  6 | process.env["NODE_ENV"] = "development";
+  7 | env.NODE_ENV = "development";
+    | ^~~~~~~~~~~~
+  8 | delete process.env.NODE_ENV;
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:8:8 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+  7 | env.NODE_ENV = "development";
+  8 | delete process.env.NODE_ENV;
+    |        ^~~~~~~~~~~~~~~~~~~~
+  9 | console.log(delete process.env.NODE_ENV);
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:9:20 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+   8 | delete process.env.NODE_ENV;
+   9 | console.log(delete process.env.NODE_ENV);
+     |                    ^~~~~~~~~~~~~~~~~~~~
+  10 | console.log(delete process.env["NODE_ENV"]);
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:10:20 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+   9 | console.log(delete process.env.NODE_ENV);
+  10 | console.log(delete process.env["NODE_ENV"]);
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~
+  11 | console.log(delete env.NODE_ENV);
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change
+
+define-changed-variable.ts:11:20 - error SC1090: changing process.env.NODE_ENV when --define fixes its value is not supported yet
+
+  10 | console.log(delete process.env["NODE_ENV"]);
+  11 | console.log(delete env.NODE_ENV);
+     |                    ^~~~~~~~~~~~
+  12 | 
+
+  hint: the conditions it decides were resolved at build time, so they would not follow the change

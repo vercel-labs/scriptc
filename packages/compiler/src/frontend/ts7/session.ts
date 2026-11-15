@@ -65,9 +65,11 @@ interface Ts71SnapshotData {
   };
 }
 
-/** TypeScript 7.1's compiler options in 7.0's values: 7.1 swaps JsxEmit's
- * React (2) and ReactNative (3). */
-function options71<T extends { jsx?: number | undefined }>(options: T): T {
+/** TypeScript 7.0's compiler options in 7.1's values: 7.0 numbers JsxEmit's
+ * React 3 and ReactNative 2, and 7.1 the other way round. The client works
+ * in the pinned SDK's numbering, so a 7.0 server's options convert on the
+ * way in. */
+function options70<T extends { jsx?: number | undefined }>(options: T): T {
   if (options.jsx === 2) options.jsx = 3;
   else if (options.jsx === 3) options.jsx = 2;
   return options;
@@ -77,9 +79,31 @@ function project71(data: Ts71ProjectData): Ts7ReportedProjectData {
   return {
     id: data.id,
     configFileName: data.configFileName ?? data.id,
-    compilerOptions: options71(data.parsedCommandLine.options),
+    compilerOptions: data.parsedCommandLine.options,
     rootFiles: data.parsedCommandLine.fileNames,
   };
+}
+
+/** The projects whose reported compiler options changed between two
+ * snapshots. The server tracks source-file CONTENT changes only: a parsed
+ * syntax tree also depends on parse options (jsx, target, module, implied
+ * node format), and a change to them re-parses files the change record does
+ * not list, so those trees must not carry forward. Options are compared
+ * whole; any change costs one snapshot of retention for that project. */
+function reparsedProjects(
+  previous: Ts7SessionSnapshot,
+  next: Ts7SessionSnapshot,
+): ReadonlySet<string> {
+  const before = new Map<string, string>();
+  for (const project of previous.projectData)
+    before.set(project.id, JSON.stringify(project.compilerOptions));
+  const reparsed = new Set<string>();
+  for (const project of next.projectData) {
+    const options = before.get(project.id);
+    if (options !== undefined && options !== JSON.stringify(project.compilerOptions))
+      reparsed.add(project.id);
+  }
+  return reparsed;
 }
 
 export interface Ts7FileChanges {
@@ -178,7 +202,7 @@ export class Ts7Session {
     this.initialize();
     const data = this.request<Ts7ConfigData>("parseConfigFile", { file });
     // TypeScript 7.1 also reports the raw config, errors and compileOnSave.
-    return this.ts71 ? { options: options71(data.options), fileNames: data.fileNames } : data;
+    return this.ts71 ? data : { options: options70(data.options), fileNames: data.fileNames };
   }
 
   /** Whether initialize found a TypeScript 7.1 server; false before it. */
@@ -199,6 +223,7 @@ export class Ts7Session {
       : parseSemanticJson<Ts7ReportedSnapshotData>(
           this.text("updateSnapshot", JSON.stringify(params)),
         );
+    if (!this.ts71) for (const project of data.projects) options70(project.compilerOptions);
     const snapshot = new Ts7SessionSnapshot(data, this, paths);
     const previous = this.latest;
     if (previous !== undefined) {
@@ -207,7 +232,13 @@ export class Ts7Session {
       // project's source changed, so its old cache references are not proof
       // that the new source is identical.
       if (previous.isDisposed()) this.cache.release(previous.id);
-      else this.cache.retain(snapshot.id, previous.id, data.changes);
+      else
+        this.cache.retain(
+          snapshot.id,
+          previous.id,
+          data.changes,
+          reparsedProjects(previous, snapshot),
+        );
     }
     this.latest = snapshot;
     this.snapshots.add(snapshot);

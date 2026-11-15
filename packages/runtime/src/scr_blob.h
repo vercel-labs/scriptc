@@ -22,6 +22,10 @@ ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
+/* A Blob or File as a fetch body: the blob's bytes (+1) and its type
+ * (+1, NULL when the Blob has none), which becomes Content-Type. False,
+ * touching neither output, for every other value. */
+bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`
@@ -40,8 +44,15 @@ ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
  * module `id`, Node's sorted export names as enumerable read-only accessors
  * whose getters call `getter` with the name, `Symbol.toStringTag` "Module"
  * (the well-known symbol is `tag_key`), and Node's strict-mode write
- * TypeErrors. Borrows all four; +1 object. */
+ * TypeErrors. A program module's ("file:") id and a builtin's ES module
+ * spelling ("esm:") carry Node's util.types brand; a sub-namespace member's
+ * bare builtin id does not. Borrows all four; +1 object. */
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
+/* A JavaScript source's namespace taken as a value (moduleNamespaceObject):
+ * the object built from the module's export values, which the runtime keeps
+ * for module `id` and answers to every later request, marked as a module
+ * namespace. Borrows both; +1 object. */
+ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
@@ -74,6 +85,11 @@ ScrDyn *scr_process_stdio(double fd);
  * the chunk is invalid. */
 bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
+/* scr_tty_colors.c, called by the SCR_TTY_COLORS build of scr_events.c: the
+ * stream object's getColorDepth or hasColors function for that member name
+ * (+1), NULL for any other name; and the release of both at exit. */
+ScrDyn *scr_tty_colors_method(const char *key, size_t length);
+void scr_tty_colors_cleanup(void);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
@@ -94,6 +110,21 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag);
  * identity, no copy); anything else throws the path-annotated catchable
  * TypeError and returns NULL. */
 void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPath *path, const char *want);
+/* Own properties JavaScript adds to a runtime handle (scr_dyn_handle_props.c,
+ * linked only by programs that add them). `child` is 1 when the program adds
+ * properties to children. */
+void scr_dyn_handle_props_install(double child);
+/* The member names the compiler reroutes through the box,
+ * `<Class>:<name>,<name>;<Class>:*`; a member key outside them (and every
+ * protocol and implicit-conversion name) keeps the member refusal. */
+void scr_dyn_handle_props_grant(ScrStr *grants);
+/* Object.defineProperties with a handle target. */
+ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs);
+/* The graph walkers' refusal: a value whose graph holds a handle with added
+ * properties cannot be printed or compared (+1, or NULL pending). */
+ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer);
+ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer);
+void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer);
 /* Keyed read on a HANDLE box (the emitted sc_dyn_key_get's arm): the
  * tag's modeled properties answer boxed values; everything else answers
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)

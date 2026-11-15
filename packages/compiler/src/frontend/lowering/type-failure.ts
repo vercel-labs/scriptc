@@ -20,19 +20,23 @@ import type {
   TypeFailureFamily,
   TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import * as ts from "../ts7/adapter.js";
 
 /** Families a checked-dynamic slot can hold (design §3.7). The others
  * name values the compiler cannot produce (opaque stdlib and @types/node
  * types, engine-backed ambient types), package value types that scope B
  * routes to Node islands, enum objects with no runtime value, and generic
- * implementations without an erased instance. */
+ * implementations without an erased instance. The library's PromiseLike is
+ * no such type: its values are the program's promises and its own objects
+ * with a `then` method. */
 const DEGRADABLE_FAMILIES: ReadonlySet<TypeFailureFamily> = new Set<TypeFailureFamily>([
   "index-signature",
   "overloads",
   "intersection",
   "component",
   "record-member",
+  "thenable",
   "unsupported",
   "dyn-field-policy",
 ]);
@@ -152,7 +156,7 @@ export function typeFailureSlot(node: ts.Node): { slot: TypeFailureSlot; name: s
 function programTypeScript(node: ts.Node): boolean {
   const sf = ts.getSourceFileOfNode(node);
   const file = sf.fileName;
-  if (file.includes("/node_modules/")) return false;
+  if (isInstalledPackagePath(file)) return false;
   if (sf.isDeclarationFile) return false;
   return !/\.(?:[cm]?js|jsx)$/.test(file);
 }

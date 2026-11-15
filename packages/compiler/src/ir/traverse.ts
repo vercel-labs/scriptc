@@ -218,6 +218,8 @@ export function everyExprChild(
     case "dynScalarEq":
       return expr(node.left) && expr(node.right);
     case "upcast":
+    case "viewOf":
+    case "viewSource":
       return expr(node.value);
     case "bin":
       return expr(node.left) && expr(node.right);
@@ -267,6 +269,8 @@ export function everyExprChild(
       return expr(node.arr) && expr(node.index);
     case "arrayState":
       return expr(node.arr) && expr(node.index);
+    case "constCell":
+      return expr(node.index);
     case "arrIntrinsic":
       return expr(node.receiver) && everyOf(node.args, expr);
     case "bytesNew":
@@ -542,6 +546,8 @@ export function mapExprChildren(
     case "dynScalarEq":
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "upcast":
+    case "viewOf":
+    case "viewSource":
       return { ...node, value: expr(node.value) };
     case "bin":
       return { ...node, left: expr(node.left), right: expr(node.right) };
@@ -599,6 +605,8 @@ export function mapExprChildren(
       return { ...node, arr: expr(node.arr), index: expr(node.index) };
     case "arrayState":
       return { ...node, arr: expr(node.arr), index: expr(node.index) };
+    case "constCell":
+      return { ...node, index: expr(node.index) };
     case "arrIntrinsic":
       return {
         ...node,

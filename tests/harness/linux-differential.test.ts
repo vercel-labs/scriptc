@@ -1,16 +1,25 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  globSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { npmCases } from "./npm-cases.js";
 import { normalizeNodeTestOutput } from "./node-test-normalize.js";
 import { eventLoopCases, type StdinScript } from "./event-loop-cases.js";
 import { requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const enabled = process.env["SCRIPTC_LINUX"] === "1";
@@ -57,7 +66,7 @@ function wantsTscDecorators(file: string): boolean {
  * programs) its deterministic ES2022 downlevel — differential.test.ts's
  * nodeOracleFile, with the identical transform and cache key. */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -197,34 +206,41 @@ function inContainer(hostPath: string): string {
 }
 
 async function runLinuxNode(file: string): Promise<RunResult> {
-  return runInContainer([
-    "node",
-    ...(wantsTransformTypes(file)
-      ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
-      : []),
-    ...(directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l))
-      ? ["--no-deprecation"]
-      : []),
-    ...(directiveHead(file).some((l) => /^\/\/ @disallow-code-generation\s*$/.test(l))
-      ? ["--disallow-code-generation-from-strings"]
-      : []),
-    ...(directiveHead(file).includes("// @no-node-shims")
-      ? []
-      : ["--import", inContainer(join(repoRoot, "tests/harness/comptime-shim.mjs")), "--import"]),
-    inContainer(nodeOracleFile(file)),
-  ]);
+  return runInContainer(
+    [
+      "node",
+      ...(wantsTransformTypes(file)
+        ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
+        : []),
+      ...(directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l))
+        ? ["--no-deprecation"]
+        : []),
+      ...(directiveHead(file).some((l) => /^\/\/ @disallow-code-generation\s*$/.test(l))
+        ? ["--disallow-code-generation-from-strings"]
+        : []),
+      ...(directiveHead(file).includes("// @no-node-shims")
+        ? []
+        : ["--import", inContainer(join(repoRoot, "tests/harness/comptime-shim.mjs")), "--import"]),
+      inContainer(nodeOracleFile(file)),
+    ],
+    programDefines(directiveHead(file))?.env,
+  );
 }
 
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 async function crossCompileAndRun(file: string): Promise<RunResult> {
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash.update("linux\0").update(target).digest("hex").slice(0, 16);
@@ -234,6 +250,7 @@ async function crossCompileAndRun(file: string): Promise<RunResult> {
     outPath: join(outDir, "program"),
     outDir,
     backend: "llvm",
+    ...(defines ? { define: defines.define } : {}),
   });
   if (!result.ok) {
     throw new Error(

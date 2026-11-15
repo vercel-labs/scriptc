@@ -28,6 +28,7 @@ import {
   implicitDependencyProbeIncludes,
   parseLinkTraceFiles,
   resolveBuildCacheRoot,
+  resolveCompilerStateRoot,
   runtimeFingerprint,
   runtimeSrcDir,
   stageRuntimeObjects,
@@ -156,6 +157,36 @@ test("the production cache root follows overrides, platform defaults, and the ha
       "/Users/tester",
     ),
   ).toBe("/Users/tester/AppData/Local/scriptc/cache/build");
+});
+
+test("the compiler-level store follows the hard disable but not the build cache's location", () => {
+  // A build with an empty build cache still reads what an earlier build
+  // derived, so the store's root does not move with the build cache's.
+  expect(resolveCompilerStateRoot({}, "linux", "/home/tester")).toBe(
+    "/home/tester/.cache/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "/var/tmp/cold" }, "linux", "/home/tester"),
+  ).toBe("/home/tester/.cache/scriptc/compiler");
+  expect(
+    resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "/var/tmp/state" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/state");
+  expect(
+    resolveCompilerStateRoot({ XDG_CACHE_HOME: "/var/tmp/xdg" }, "linux", "/home/tester"),
+  ).toBe("/var/tmp/xdg/scriptc/compiler");
+  expect(resolveCompilerStateRoot({}, "darwin", "/Users/tester")).toBe(
+    "/Users/tester/Library/Caches/scriptc/compiler",
+  );
+  expect(
+    resolveCompilerStateRoot(
+      { LOCALAPPDATA: "/Users/tester/AppData/Local" },
+      "win32",
+      "/Users/tester",
+    ),
+  ).toBe("/Users/tester/AppData/Local/scriptc/cache/compiler");
+  expect(resolveCompilerStateRoot({ SCRIPTC_NO_CACHE: "1" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_CACHE_DIR: "" }, "linux", "/home/tester")).toBeNull();
+  expect(resolveCompilerStateRoot({ SCRIPTC_STATE_DIR: "" }, "linux", "/home/tester")).toBeNull();
 });
 
 test("executable section elimination flags are target-aware", () => {
@@ -2165,6 +2196,13 @@ test("the hard disable bypasses vendor prerequisite caches", async () => {
   }
 });
 
+// Vendor archive budgets. This test and the five after it that end in
+// 300_000 each build a vendor archive (mbedTLS, about 10 s of a free
+// machine) into a cache of their own, so their time is the machine's load:
+// in 113 Sandbox lane rounds on 2026-11-07, beside a shard's corpus workers,
+// the slowest of them took 87 s at the median and 114 s at the 90th
+// percentile, and 23 runs passed the 120 s these tests used to have. 300 s
+// is the suite's hang detector (vitest.config.ts), not a bound on the build.
 test.skipIf(process.platform === "win32")(
   "shared vendor prerequisites re-key when vendored source bytes change",
   async () => {
@@ -2234,7 +2272,7 @@ test.skipIf(process.platform === "win32")(
       else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
     }
   },
-  120_000,
+  300_000,
 );
 
 test.skipIf(process.platform === "win32")(
@@ -2288,7 +2326,7 @@ test.skipIf(process.platform === "win32")(
       else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
     }
   },
-  120_000,
+  300_000,
 );
 
 test("native cache warming seeds exact runtime and vendor families without complete binaries", async () => {
@@ -2327,7 +2365,7 @@ test("native cache warming seeds exact runtime and vendor families without compl
     if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
     else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
   }
-}, 120_000);
+}, 300_000);
 
 test("damaged shared vendor archives are rejected and rebuilt before linking", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-vendor-integrity-"));
@@ -2374,7 +2412,7 @@ test("damaged shared vendor archives are rejected and rebuilt before linking", a
     if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
     else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
   }
-}, 120_000);
+}, 300_000);
 
 test("TLS builds promote staged vendor archives before bounded LRU eviction", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-vendor-lru-"));
@@ -2428,7 +2466,7 @@ test("TLS builds promote staged vendor archives before bounded LRU eviction", as
     if (oldVendorCacheDir === undefined) delete process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
     else process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"] = oldVendorCacheDir;
   }
-}, 120_000);
+}, 300_000);
 
 test("native cache warming follows the hard cache disable", async () => {
   const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
@@ -2504,7 +2542,7 @@ test("parallel native cache warming fails cleanly when the bounded cache cannot 
     if (oldMax === undefined) delete process.env["SCRIPTC_CACHE_MAX_MB"];
     else process.env["SCRIPTC_CACHE_MAX_MB"] = oldMax;
   }
-}, 120_000);
+}, 300_000);
 
 test.skipIf(process.platform !== "darwin")(
   "vendor object caches separate deployment-target environments",

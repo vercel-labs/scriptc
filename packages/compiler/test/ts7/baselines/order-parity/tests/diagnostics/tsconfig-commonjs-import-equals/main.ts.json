@@ -1,0 +1,37 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tsconfig-commonjs-import-equals/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0016",
+   "message": "this project's tsconfig sets \"module\": \"commonjs\", which scriptc does not follow: TypeScript files are compiled as ES modules, the format Node gives them, where 'import x = require(…)' and 'export =' do not exist (2 places in this program)",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-commonjs-import-equals/main.ts",
+    "start": 142,
+    "end": 172
+   },
+   "hint": "write 'import x from \"m\"' or 'import * as x from \"m\"', and 'export default'"
+  },
+  {
+   "code": "SC1013",
+   "message": "import = require(...) assignments are not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-commonjs-import-equals/main.ts",
+    "start": 142,
+    "end": 172
+   },
+   "milestone": "later"
+  },
+  {
+   "code": "SC1013",
+   "message": "import = require(...) assignments are not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-commonjs-import-equals/main.ts",
+    "start": 173,
+    "end": 199
+   },
+   "milestone": "later"
+  }
+ ]
+}

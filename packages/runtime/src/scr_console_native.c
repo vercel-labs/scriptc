@@ -4,12 +4,58 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Stored console methods use the same native rendering as direct output.
- * Reflection, mutation, and further Console APIs remain explicit boundaries. */
-static SCR_TL ScrDyn *scr_console_methods[5];
+/* The console object as a value. Its function-valued members are one
+ * function object each per thread, so `console.log === console.log` holds
+ * and a detached method needs no receiver (Node binds them the same way).
+ * The output members format their arguments as Node's own methods do:
+ * util.format over whatever the caller passed, one line to stdout or
+ * stderr through the direct calls' writers (group indentation included).
+ * The other keys answer a function too, so `typeof`, a truthiness probe,
+ * a copy into another object and a save-and-restore all see what Node
+ * shows; calling one through the value is the named boundary, since only
+ * its direct call (or `new console.Console`) has a lowering. Mutation and
+ * console's internal slots stay explicit boundaries. */
+typedef struct {
+  const char *name;
+  const char *surface;
+  int target; /* 0 stdout, 1 stderr, -1 no call through the value */
+  uint32_t length;
+} ScrConsoleMember;
+
+/* Node's own enumeration order of the console object's keys. */
+static const ScrConsoleMember scr_console_members[] = {
+  {"log", "console.log", 0, 0},
+  {"info", "console.info", 0, 0},
+  {"debug", "console.debug", 0, 0},
+  {"warn", "console.warn", 1, 0},
+  {"error", "console.error", 1, 0},
+  {"dir", "console.dir", -1, 0},
+  {"time", "console.time", -1, 0},
+  {"timeEnd", "console.timeEnd", -1, 0},
+  {"timeLog", "console.timeLog", -1, 0},
+  {"trace", "console.trace", -1, 0},
+  {"assert", "console.assert", -1, 0},
+  {"clear", "console.clear", -1, 0},
+  {"count", "console.count", -1, 0},
+  {"countReset", "console.countReset", -1, 0},
+  {"group", "console.group", -1, 0},
+  {"groupEnd", "console.groupEnd", -1, 0},
+  {"table", "console.table", -1, 0},
+  {"dirxml", "console.dirxml", -1, 0},
+  {"groupCollapsed", "console.groupCollapsed", -1, 0},
+  {"Console", "console.Console", -1, 1},
+  {"profile", "console.profile", -1, 0},
+  {"profileEnd", "console.profileEnd", -1, 0},
+  {"timeStamp", "console.timeStamp", -1, 0},
+  {"context", "console.context", -1, 1},
+  {"createTask", "console.createTask", -1, 0},
+};
+enum { SCR_CONSOLE_MEMBERS = sizeof scr_console_members / sizeof scr_console_members[0] };
+
+static SCR_TL ScrDyn *scr_console_methods[SCR_CONSOLE_MEMBERS];
 static SCR_TL bool scr_console_registered;
 static void scr_console_methods_cleanup(void) {
-  for (size_t i = 0; i < 5; i++) {
+  for (size_t i = 0; i < SCR_CONSOLE_MEMBERS; i++) {
     ScrDyn *method = scr_console_methods[i];
     scr_console_methods[i] = NULL;
     scr_dyn_release(method);
@@ -17,30 +63,25 @@ static void scr_console_methods_cleanup(void) {
 }
 
 static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  if (argc > 1 && args[0]->kind == SCR_DYN_STR) {
-    ScrStr *format = args[0]->v.str;
-    for (size_t i = 0; i + 1 < format->len; i++) if (format->data[i] == '%' &&
-        strchr("sdifjoOc%", format->data[i + 1])) {
-      static const char message[] = "Format strings through stored console methods have no lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-      return NULL;
-    }
+  const ScrConsoleMember *member = &scr_console_members[(size_t)scr_box_get_f64(closure->caps[0])];
+  if (member->target < 0) {
+    char message[96];
+    int len = snprintf(message, sizeof message,
+                       "Calling %s through a stored value has no lowering; call it directly",
+                       member->surface);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
+    return NULL;
   }
-  ScrLogArg *rendered = argc ? calloc(argc, sizeof *rendered) : NULL;
-  if (argc && !rendered) scr_trap("scriptc: out of memory\n");
-  size_t count = 0;
-  for (; count < argc; count++) {
-    rendered[count].tag = SCR_ARG_STR;
-    rendered[count].v.s = scr_insp_dyn_s(args[count], 2);
-    if (scr_exc_pending()) break;
-  }
-  if (!scr_exc_pending()) {
-    if (scr_box_get_f64(closure->caps[0]) != 0) scr_console_error(argc, rendered);
-    else scr_console_log(argc, rendered);
-  }
-  for (size_t i = 0; i < argc; i++) scr_str_release(rendered[i].v.s);
-  free(rendered);
-  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, member->surface);
+  ScrStr *line = scr_insp_format(args, argc, &options);
+  if (!line) return NULL;
+  ScrLogArg arg = {.tag = SCR_ARG_STR};
+  arg.v.s = line;
+  if (member->target) scr_console_error(1, &arg);
+  else scr_console_log(1, &arg);
+  scr_str_release(line);
+  return scr_dyn_retain(scr_dyn_undefined());
 }
 
 static void *scr_console_retain(void *ptr) { return ptr; }
@@ -53,17 +94,19 @@ static bool scr_console_set(void *ptr, const char *key, size_t len, const ScrDyn
 }
 static ScrDyn *scr_console_get(void *ptr, const char *key, size_t len) {
   (void)ptr;
-  const char *names[] = {"log", "info", "debug", "error", "warn"};
-  for (size_t i = 0; i < 5; i++) if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) {
+  for (size_t i = 0; i < SCR_CONSOLE_MEMBERS; i++) {
+    const char *name = scr_console_members[i].name;
+    if (strlen(name) != len || memcmp(name, key, len) != 0) continue;
     if (!scr_console_methods[i]) {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_F64);
-      scr_box_set_f64(closure->caps[0], i >= 3 ? 1 : 0);
-      scr_console_methods[i] = scr_dyn_new_func(closure, scr_console_method_call, 0, "", names[i]);
+      scr_box_set_f64(closure->caps[0], (double)i);
+      scr_console_methods[i] = scr_dyn_new_func(closure, scr_console_method_call,
+                                                scr_console_members[i].length, "", name);
     }
     return scr_dyn_retain(scr_console_methods[i]);
   }
-  static const char *unsupported[] = {"Console", "assert", "clear", "count", "countReset", "dir", "dirxml", "group", "groupCollapsed", "groupEnd", "table", "time", "timeEnd", "timeLog", "trace", "profile", "profileEnd", "timeStamp", "context", "_stdout", "_stderr"};
+  static const char *unsupported[] = {"_stdout", "_stderr"};
   for (size_t i = 0; i < sizeof unsupported / sizeof unsupported[0]; i++)
     if (strlen(unsupported[i]) == len && memcmp(unsupported[i], key, len) == 0) {
       static const char message[] = "This stored console member has no lowering";

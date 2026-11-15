@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9966-cycle-called-binding-without-storage/layout.ts",
+  "<repo>/tests/corpus/9966-cycle-called-binding-without-storage/ledger.ts",
+  "<repo>/tests/corpus/9966-cycle-called-binding-without-storage/main.ts"
+ ],
+ "diags": []
+}

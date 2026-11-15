@@ -124,7 +124,7 @@ export function atomicsMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
     type: DYN,
   }));
   const ret = member === "wait" ? STRING : F64;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const number = (index: number): IrExpr => ({
       kind: "libCall",
       fn: "dyn.toNumberCoerce",

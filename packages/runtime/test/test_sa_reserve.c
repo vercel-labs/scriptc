@@ -1,9 +1,8 @@
-/* The worker allocator's reservation under a limited address space. With
- * RLIMIT_AS at 60 GiB, too little for 32 arenas of 1 GiB class slices, the
- * region holds 4 arenas of 256 MiB slices rather than 32 arenas of 16 MiB
- * slices: 400,000 blocks of 56 bytes (more than a 16 MiB slice holds) all
- * come from the first thread's arena. Of four more threads alive at once,
- * three get the other arenas and one uses the system allocator; blocks
+/* The worker allocator's window under a limited address space, as under
+ * valgrind. With RLIMIT_AS at 12 GiB, too little for the 28 GiB window, the
+ * window is halved until it fits: 400,000 blocks of 56 bytes (more than a
+ * chunk holds) all come from the first thread's arena. Four more threads
+ * alive at once all get arenas of their own in the same window, and blocks
  * freed across threads go back to their owners. */
 #include "../src/scr_runtime.h"
 
@@ -31,8 +30,12 @@ static void check(bool condition, const char *message) {
   exit(EXIT_FAILURE);
 }
 
-/* Whether p lies in the calling thread's arena. */
-static bool in_arena(const void *p) { return (uintptr_t)p - scr_sa.base < scr_sa.span; }
+/* Whether p lies in the calling thread's arena: a chunk of the window that
+ * carries the thread's tag. */
+static bool in_arena(const void *p) {
+  uintptr_t off = (uintptr_t)p - scr_sa.base;
+  return off < scr_sa.span && (scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT] & 0xff00) == scr_sa.tag;
+}
 
 static unsigned char *thread_blocks[THREADS][PER_THREAD];
 static atomic_int with_arena, started;
@@ -56,7 +59,7 @@ static void *allocate(void *arg) {
 }
 
 int main(void) {
-  struct rlimit limit = {(rlim_t)60 << 30, (rlim_t)60 << 30};
+  struct rlimit limit = {(rlim_t)12 << 30, (rlim_t)12 << 30};
   check(setrlimit(RLIMIT_AS, &limit) == 0, "limit the address space");
   unsigned char **blocks = malloc(COUNT * sizeof *blocks);
   check(blocks != NULL, "block table");
@@ -65,14 +68,14 @@ int main(void) {
     check(blocks[i] != NULL, "allocate");
     memset(blocks[i], (int)(i & 0xff), SIZE);
   }
-  check(scr_sa.shift == 28, "the class slices are 256 MiB");
+  check(scr_sa.span != 0 && scr_sa.span < ((uintptr_t)12 << 30), "the window is smaller");
   for (size_t i = 0; i < COUNT; i++) check(in_arena(blocks[i]), "every block comes from the arena");
   pthread_t threads[THREADS];
   for (int t = 0; t < THREADS; t++)
     check(pthread_create(&threads[t], NULL, allocate, thread_blocks[t]) == 0, "start a thread");
   while (atomic_load(&started) < THREADS) {
   }
-  check(atomic_load(&with_arena) == THREADS - 1, "three more threads get arenas");
+  check(atomic_load(&with_arena) == THREADS, "every thread gets an arena");
   atomic_store(&done, true);
   for (int t = 0; t < THREADS; t++) check(pthread_join(threads[t], NULL) == 0, "join a thread");
   for (int t = 0; t < THREADS; t++)

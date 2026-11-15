@@ -1,8 +1,0 @@
-arrow-bind.ts:4:14 - error SC1100: passing 'unknown' values where '(number[]) => number' is expected is not supported yet
-
-  3 | const preset = ((value: number) => value).bind(null, 1);
-  4 | const rest = ((...values: number[]) => values.length).bind(null);
-    |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  5 | export {};
-
-  hint: validate with 'as <type>' first — the cast checks the dynamic value at runtime and throws on mismatch

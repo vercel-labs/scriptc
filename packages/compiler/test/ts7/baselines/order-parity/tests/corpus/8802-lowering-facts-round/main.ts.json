@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8802-lowering-facts-round/attributes.cjs",
+  "<repo>/tests/corpus/8802-lowering-facts-round/main.ts"
+ ],
+ "diags": []
+}

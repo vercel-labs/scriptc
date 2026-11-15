@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6488-weak-drain-keys-die-in-pass.ts"
+ ],
+ "diags": []
+}

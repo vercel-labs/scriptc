@@ -13,11 +13,11 @@ import { emitTlsLibCall } from "./lib-tls.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
+import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { arrayOf, NETSOCKET_T, STRING } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
-import { emitAlwaysThrowLibCall } from "./lib-shared.js";
 
 export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (
@@ -58,6 +58,32 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     return finishRuntimeCall(host, e, "scr_http_request_conn", [
       ...args.slice(0, 6).map((arg) => abiValue(host, arg)),
       ...handler,
+    ]);
+  }
+  if (e.fn === "https.requestFnDyn" || e.fn === "https.requestFnDynCb") {
+    // [secure, options, autoEnd(, cb)] — the options walk and the dial both
+    // follow the binding's runtime choice.
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    host.usesTimers = true;
+    const cb = args[3];
+    const handler =
+      cb === undefined
+        ? [ptr(), ptr()]
+        : callbackAdapter(
+            host,
+            cb,
+            callbackType(cb).params.length === 0
+              ? "scr_http_resp_thunk0"
+              : "scr_http_resp_thunk_res",
+            ["ptr", "ptr"],
+          );
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    return finishRuntimeCall(host, e, "scr_http_request_dyn_secure", [
+      abiValue(host, args[1]!),
+      abiValue(host, args[2]!),
+      abiValue(host, args[0]!),
+      ...handler,
+      ptr("@scr_events_add_abort_listener"),
     ]);
   }
   if (
@@ -107,6 +133,28 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     ]);
   }
   const B = host.B;
+  if (e.fn === "net.listenBound" || e.fn === "net.listenBoundCb") {
+    // listen(boundSocket[, cb]): the server adopts the bound descriptor. The
+    // callback moves into the 'listening' list; the already-listening and
+    // already-adopted errors are synchronous and catchable.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.listenBoundCb") {
+      host.toHeap(args[2]!);
+      cb = args[2]!.name;
+    }
+    if (e.fn === "net.listenBoundCb") {
+      host.declare(`declare void @scr_net_listen_bound_cb(ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_net_listen_bound_cb(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+      );
+    } else {
+      host.declare(`declare void @scr_net_listen_bound(ptr, ptr)`);
+      B.line(`call void @scr_net_listen_bound(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    }
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.listenPath" || e.fn === "net.listenPathCb") {
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
@@ -116,10 +164,32 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     }
     host.declare(`declare void @scr_net_listen_path(ptr, ptr, ptr)`);
     B.line(`call void @scr_net_listen_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`);
+    // The callback joins the 'listening' list before the bind: a
+    // 'newListener' handler can throw out of the call. A second listen on
+    // a listening server throws ERR_SERVER_ALREADY_LISTEN either way.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "net.connectOptsChk") {
-    return emitAlwaysThrowLibCall(host, e, "scr_net_connect_opts_chk");
+  if (e.fn === "net.listenDyn" || e.fn === "net.listenDynCb") {
+    // listen over dynamic arguments: Node's normalizeArgs, the already-
+    // listening check, the callback registration, then the bag's signal,
+    // fd, port and path in Node's order. The signal's listener comes from
+    // the event-target unit (runtime-features links it for this call).
+    const args = e.args.map((a) => host.emitExpr(a));
+    const withCb = e.fn === "net.listenDynCb";
+    const fence = args[withCb ? 5 : 4]!;
+    let cb = "null";
+    if (withCb) {
+      host.toHeap(args[4]!);
+      cb = args[4]!.name;
+    }
+    host.declare(`declare void @scr_net_listen_dyn(ptr, ptr, ptr, ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    B.line(
+      `call void @scr_net_listen_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb}, ptr @scr_events_add_abort_listener, ptr ${fence.name})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
   }
   if (e.fn === "net.createServer" || e.fn === "net.createServerCb") {
     const args = e.args.map((a) => host.emitExpr(a));
@@ -148,6 +218,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     }
     host.declare(`declare void @scr_net_listen(ptr, double, ptr)`);
     B.line(`call void @scr_net_listen(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${cb})`);
+    // A 'newListener' handler can throw out of the callback add, and a
+    // second listen throws ERR_SERVER_ALREADY_LISTEN.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -190,6 +263,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         .map((a) => `${host.llType(a.type)} ${a.name}`)
         .join(", ")}, ptr ${cb})`,
     );
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.clientSignal") {
@@ -310,6 +384,26 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the server's registration.
+    if (e.fn === "net.serverOnError") host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.serverOnNewListener") {
+    // The meta event's listener takes the event name (0 or 1 parameters).
+    const cbT = e.args[1]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[1]!);
+    const adapter =
+      cbT.params.length === 0 ? "scr_net_new_listener_thunk0" : "scr_net_new_listener_thunk1";
+    host.declare(`declare void @${adapter}(ptr, ptr)`);
+    host.declare(`declare void @scr_net_server_on_new_listener(ptr, ptr, ptr, i1 zeroext)`);
+    B.line(
+      `call void @scr_net_server_on_new_listener(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
+    );
+    // The 'newListener' handlers this add fires can throw.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -326,6 +420,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnClose" ||
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
+    e.fn === "http.resOnPrefinish" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
@@ -347,6 +442,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnClose": "scr_http_req_on_close",
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
+      "http.resOnPrefinish": "scr_http_res_on_prefinish",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",
@@ -357,6 +453,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.toHeap(args[1]!);
     host.declare(`declare void @${entry}(ptr, ptr, i1 zeroext)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, i1 ${args[2]!.name})`);
+    // A registration the runtime can refuse raises ('prefinish' on the
+    // HTTP/2 compatibility response): the caller sees it here, before the
+    // statement after the registration runs.
+    if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -379,6 +479,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @scr_net_server_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
       );
+      // The callback joins the 'timeout' list the same way on() adds it: a
+      // 'newListener' handler can throw out of the call, and the add never
+      // happens.
+      host.emitPendingCheck();
     } else {
       const entry =
         e.fn === "net.serverOnSecureConnection"
@@ -392,6 +496,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
       );
+      // A 'newListener' handler can throw out of the registration.
+      if (e.fn !== "http.clientOnSocket") host.emitPendingCheck();
     }
     return { name: "", type: e.type };
   }
@@ -406,6 +512,28 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     const t = B.tmp();
     B.line(
       `${t} = call ptr @scr_net_connect_checked(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "net.connectDyn" || e.fn === "net.connectDynCb") {
+    // connect over dynamic arguments: the runtime runs Node's normalizeArgs
+    // and lookupAndConnect ladder, dials with the options it models, and
+    // attaches a signal through events.addAbortListener (event-target unit).
+    const args = e.args.map((a) => host.emitExpr(a));
+    const withCb = e.fn === "net.connectDynCb";
+    const fence = args[withCb ? 4 : 3]!;
+    let cb = "null";
+    if (withCb) {
+      host.toHeap(args[3]!);
+      cb = args[3]!.name;
+    }
+    host.declare(`declare ptr @scr_net_connect_dyn(ptr, ptr, ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_connect_dyn(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb}, ptr @scr_events_add_abort_listener, ptr ${fence.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -642,35 +770,56 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @scr_http_server_on_check(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name}, i1 ${args[3]!.name})`,
       );
+      // A 'newListener' handler can throw out of the registration.
+      host.emitPendingCheck();
       return { name: "", type: e.type };
     }
     host.declare(`declare void @scr_http_server_on_request(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @scr_http_server_on_request(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the registration.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.serverOnUpgrade" || e.fn === "http.clientOnUpgrade") {
+  if (
+    e.fn === "http.serverOnUpgrade" ||
+    e.fn === "http.serverOnDropRequest" ||
+    e.fn === "http.clientOnUpgrade" ||
+    e.fn === "http.clientOnConnect"
+  ) {
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
+    // dropRequest hands over (req, socket) only: no head parameter.
+    const arity =
+      e.fn === "http.serverOnDropRequest" ? Math.min(cbT.params.length, 2) : cbT.params.length;
     const adapter =
-      cbT.params.length === 3
+      arity === 3
         ? "scr_http_upgrade_thunk3"
-        : cbT.params.length === 2
+        : arity === 2
           ? "scr_http_upgrade_thunk2"
-          : cbT.params.length === 1
+          : arity === 1
             ? "scr_http_upgrade_thunk1"
             : "scr_http_upgrade_thunk0";
     const entry =
-      e.fn === "http.serverOnUpgrade" ? "scr_http_server_on_upgrade" : "scr_http_client_on_upgrade";
+      e.fn === "http.serverOnUpgrade"
+        ? "scr_http_server_on_upgrade"
+        : e.fn === "http.serverOnDropRequest"
+          ? "scr_http_server_on_drop_request"
+          : e.fn === "http.clientOnUpgrade"
+            ? "scr_http_client_on_upgrade"
+            : "scr_http_client_on_connect";
     host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr)`);
     host.declare(`declare void @${entry}(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the server's registration.
+    if (e.fn === "http.serverOnUpgrade" || e.fn === "http.serverOnDropRequest")
+      host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.serverOnClientError") {
@@ -685,10 +834,12 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_http_server_on_client_error(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
     e.fn === "http.clientOnResponse" ||
+    e.fn === "http.clientOnInformation" ||
     e.fn === "http.clientOnError" ||
     e.fn === "http.reqOnError"
   ) {
@@ -702,11 +853,16 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         ? cbT.params.length === 0
           ? "scr_http_resp_thunk0"
           : "scr_http_resp_thunk_res"
-        : cbT.params.length === 0
-          ? "scr_child_err_thunk0"
-          : "scr_child_err_thunk_error";
+        : e.fn === "http.clientOnInformation"
+          ? cbT.params.length === 0
+            ? "scr_http_resp_thunk0"
+            : "scr_http_information_thunk_dyn"
+          : cbT.params.length === 0
+            ? "scr_child_err_thunk0"
+            : "scr_child_err_thunk_error";
     const entry = {
       "http.clientOnResponse": "scr_http_client_on_response",
+      "http.clientOnInformation": "scr_http_client_on_information",
       "http.clientOnError": "scr_http_client_on_error",
       "http.reqOnError": "scr_http_req_on_error",
     }[e.fn]!;
@@ -767,6 +923,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_net_sock_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name})`,
     );
+    // The runtime raises ERR_OUT_OF_RANGE for a delay out of range: the
+    // caller sees it here, before the statement after the call runs.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   return host.emitGenericLibCall(e);

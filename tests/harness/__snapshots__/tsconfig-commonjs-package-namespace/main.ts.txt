@@ -1,0 +1,8 @@
+tsconfig-commonjs-package-namespace/main.ts:6:26 - error SC0001: Cannot find namespace 'Kit'.
+
+  5 | 
+  6 | export function parse(): Kit.Options {
+    |                          ^~~
+  7 |   return Kit(["--x"]);
+
+  hint: this project compiles to CommonJS ("module": "commonjs"), where a package resolves through its 'require' entry and that entry's declarations; scriptc compiles TypeScript files as ES modules, the format Node gives them, and resolved the package's 'import' entry, which declares no namespace 'Kit'

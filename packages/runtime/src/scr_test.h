@@ -46,6 +46,16 @@ void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 void scr_test_ctx_plan(ScrTestCtx *t, double count);
+/* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on
+ * are dropped unless marked { only }. */
+void scr_test_ctx_run_only(ScrTestCtx *t, bool value);
+/* t.waitFor(condition[, { interval, timeout }]): polls the condition until it
+ * stops throwing or rejecting, or the timeout elapses; the result promise
+ * (+1) fulfills with the first non-throwing result. `has_interval`/
+ * `has_timeout` say whether the options object carried the property (Node's
+ * defaults are 50 and 1000). Both arguments are borrowed. */
+ScrDyn *scr_test_ctx_wait_for(ScrTestCtx *t, const ScrDyn *condition, bool has_interval,
+                              double interval, bool has_timeout, double timeout);
 void scr_test_ctx_count(ScrTestCtx *t);
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t);
 /* t.passed, and t.workerId as a number with 0 for undefined. */
@@ -105,12 +115,14 @@ double scr_test_mt_set_timeout_handle(ScrClosure *cb, double ms);
 double scr_test_mt_set_interval(ScrClosure *cb, double ms);
 void scr_test_mt_clear_timeout(double handle);
 void scr_test_mt_clear_interval(double handle);
+void scr_test_mt_close(double handle);
 void scr_test_mt_unref(double handle);
 void scr_test_mt_ref(double handle);
 void scr_test_mt_refresh(double handle);
 bool scr_test_mt_has_ref(double handle);
 double scr_test_mt_set_immediate(ScrClosure *cb);
 void scr_test_mt_clear_immediate(double handle);
+void scr_test_mt_immediate_close(double handle);
 void scr_test_mt_immediate_unref(double handle);
 void scr_test_mt_immediate_ref(double handle);
 bool scr_test_mt_immediate_has_ref(double handle);

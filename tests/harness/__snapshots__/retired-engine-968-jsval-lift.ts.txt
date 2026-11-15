@@ -34,7 +34,7 @@ retired-engine-968-jsval-lift.ts:14:29 - error SC2004: uses of 'm' inherit the b
 
   hint: the declaration of 'm' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-968-jsval-lift.ts:26:7 - error SC2009: values of type '{ content: any[]; role: string; }[]' cannot be compiled: the array shape is supported, but its element type '{ content: any[]; role: string; }' does not compile
+retired-engine-968-jsval-lift.ts:26:7 - error SC2009: values of type '{ content: any[]; role: string; }[]' cannot be compiled: the array shape is supported, but its element type '{ content: any[]; role: string; }' does not compile: the record shape is supported, but its member 'content' has type 'any[]', which does not compile
 
   25 | // element, the array itself stays static.
   26 | const msgs = [
@@ -43,7 +43,7 @@ retired-engine-968-jsval-lift.ts:26:7 - error SC2009: values of type '{ content:
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-retired-engine-968-jsval-lift.ts:26:14 - error SC2009: values of type '{ content: any[]; role: string; }[]' cannot be compiled: the array shape is supported, but its element type '{ content: any[]; role: string; }' does not compile
+retired-engine-968-jsval-lift.ts:26:14 - error SC2009: values of type '{ content: any[]; role: string; }[]' cannot be compiled: the array shape is supported, but its element type '{ content: any[]; role: string; }' does not compile: the record shape is supported, but its member 'content' has type 'any[]', which does not compile
 
   25 | // element, the array itself stays static.
   26 | const msgs = [
@@ -61,7 +61,7 @@ retired-engine-968-jsval-lift.ts:30:24 - error SC2004: uses of 'msgs' inherit th
 
   hint: the declaration of 'msgs' did not compile — fix the diagnostic reported there and these sites clear with it
 
-retired-engine-968-jsval-lift.ts:36:15 - error SC2009: values of type 'P' cannot be compiled: the union shape is supported, but its arm 'any[]' does not compile
+retired-engine-968-jsval-lift.ts:36:15 - error SC2009: values of type 'P' cannot be compiled: the union shape is supported, but its arm 'any[]' does not compile: the array shape is supported, but its element type 'any' does not compile
 
   35 | type P = any[] | string;
   36 | function take(p: P): string {

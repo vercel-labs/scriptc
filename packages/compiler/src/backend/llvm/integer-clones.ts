@@ -473,6 +473,11 @@ export function dispatchesCall(clones: IntegerClones, caller: string, callee: st
   return own === undefined || own !== clones.component.get(callee);
 }
 
+/** What the clone emitter reads of the module's emitter. Callers pass
+ * `emitter.integerCloneHost()`, a record, and never the LlEmitter itself:
+ * the compiler compiles its own source, and an emitter handed over where
+ * this interface is declared becomes a dynamic value (see
+ * LlEmitter.integerCloneHost). */
 export interface IntegerCloneHost {
   readonly integerClones: IntegerClones;
   /** The range every caller passes to a number parameter (int32-slots

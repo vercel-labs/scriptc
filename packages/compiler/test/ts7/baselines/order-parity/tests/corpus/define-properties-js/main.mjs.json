@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-properties-js/js-map-literal.mjs",
+  "<repo>/tests/corpus/define-properties-js/js-errors.mjs",
+  "<repo>/tests/corpus/define-properties-js/js-receivers.mjs",
+  "<repo>/tests/corpus/define-properties-js/main.mjs"
+ ],
+ "diags": []
+}

@@ -7,33 +7,6 @@ const h: Hybrid = { base: "b", extra: "e" };
 delete h["extra"];
 console.log(h.base);
 
-// An OPTIONAL checked-dynamic field (`unknown`/`any`) has no ABSENT state
-// for a delete to write — the slot cannot represent "no property", and an
-// omitted one already reads as present — so the refusal names that reason
-// instead of calling the optional field required.
-interface Dyn {
-  content: string[];
-  structured?: unknown;
-}
-const d: Dyn = { content: [] };
-delete d.structured;
-
-// The same fence on a union of records: every arm declares the field
-// optional and checked-dynamic.
-interface DynA {
-  content: string[];
-  structured?: unknown;
-  extra?: any;
-}
-interface DynB {
-  content: string[];
-  structured?: unknown;
-}
-function drop(u: DynA | DynB): void {
-  delete u.structured;
-}
-drop(d);
-
 // A key of SEVERAL literals (a parameter keeps the union; a `const`
 // binding narrows to its initializer's literal and folds) names no single
 // slot statically; the refusal names the key form instead of claiming a
@@ -60,6 +33,19 @@ const required: StrictRecord = { a: "a", b: 1 };
 // @ts-expect-error -- a required field cannot be removed; the fence says why
 delete required.b;
 console.log(required.a);
+
+// A key the layout does not declare has its home in the record's
+// kept-source view only when the record can keep one; a checked-identity
+// record with accessor slots has no source to note the key into, so the
+// key has no home and the refusal names that.
+const theme = {
+  get color() {
+    return "red";
+  },
+};
+// @ts-expect-error -- `extra` is not a member of the literal's type
+delete theme.extra;
+console.log(theme.color);
 
 // A CLASS field lives in the instance's fixed layout: nothing can make
 // Object.keys, `in`, or JSON.stringify forget it, so the fence says the

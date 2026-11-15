@@ -80,6 +80,11 @@ void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
 void scr_gen_set_tag(ScrGen *g, const char *tag);
 /* An adapter generator prints with the tag of the generator it adapts. */
 void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
+/* Records the receiver of the call that made `g`, which scr_gen_receiver
+ * answers on the generator's fiber. The spawn wrappers of a program that
+ * reads a generator's `this` call it; no other generator holds one. It
+ * lives in scr_gen_receiver.c, a unit only those programs link. */
+void scr_gen_capture_receiver(ScrGen *g);
 const char *scr_gen_tag(const ScrGen *g);
 /* scr_gen_tag for units that also link without the generator runtime (a
  * library links none): the generator runtime sets it when it creates a
@@ -272,5 +277,10 @@ void scr_webstream_install(void);
 ScrDyn *scr_webstream_class(double kind);
 /* `value instanceof <class>` for those classes (value borrowed). */
 bool scr_webstream_instanceof(ScrDyn *value, double kind);
+/* `ReadableStream.from(iterable)` (webstream.from): the class's static,
+ * which steps a synchronous or asynchronous iterable, a compiled generator
+ * among them; +1. The call also counts as a runtime iterator step, so a
+ * program that passes a generator here registers its member getters. */
+ScrDyn *scr_webstream_from(ScrDyn *iterable);
 
 #endif /* SCR_GENERATOR_H */

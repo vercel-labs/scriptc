@@ -2,5 +2,6 @@
   "entry": "workloads/async-pipeline.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

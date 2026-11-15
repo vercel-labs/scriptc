@@ -1,0 +1,10 @@
+{
+  "plain": {
+    "the complete LLVM emitter bootstraps natively (llvm): emitter cases and programs": 201544,
+    "the complete LLVM emitter bootstraps natively (llvm): fixed point": 638925
+  },
+  "san": {
+    "the complete LLVM emitter bootstraps natively (llvm): emitter cases and programs": 363329,
+    "the complete LLVM emitter bootstraps natively (llvm): fixed point": 1028550
+  }
+}

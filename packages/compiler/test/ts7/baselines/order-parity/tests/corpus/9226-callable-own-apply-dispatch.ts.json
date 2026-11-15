@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9226-callable-own-apply-dispatch.ts"
+ ],
+ "diags": []
+}

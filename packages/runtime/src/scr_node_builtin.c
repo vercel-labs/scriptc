@@ -303,6 +303,31 @@ void scr_global_values_install(ScrDyn *lookup) {
   scr_atexit(scr_global_values_cleanup);
 }
 
+/* A JavaScript read of a name no declaration binds (+1): the global object's
+ * own property of that name (`globalThis.X = value` before the read, in any
+ * module), or Node's ReferenceError "<name> is not defined" when the global
+ * object has none (NULL, the exception pending). Borrows `name`. */
+ScrDyn *scr_global_binding_read(ScrStr *name) {
+  ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, name->data, name->len) : NULL;
+  if (own) return scr_dyn_retain(own);
+  scr_undef_global_read(name);
+  return NULL;
+}
+
+/* The value `typeof name` inspects for a name no declaration binds (+1): the
+ * global object's own property of that name, or undefined. Borrows `name`. */
+ScrDyn *scr_global_binding_value(ScrStr *name) {
+  ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, name->data, name->len) : NULL;
+  return own ? scr_dyn_retain(own) : scr_dyn_undefined();
+}
+
+/* Whether the global object has an own property `name` the program created
+ * (`typeof name` for a name the global object also inherits). Borrows
+ * `name`. */
+bool scr_global_binding_has(ScrStr *name) {
+  return scr_global_own && scr_dyn_obj_get(scr_global_own, name->data, name->len) != NULL;
+}
+
 /* What `for (key in globalThis)` visits (+1): Node 24's enumerable global
  * properties in its order, then the program's own global properties in
  * creation order, as keys of a fresh object. */

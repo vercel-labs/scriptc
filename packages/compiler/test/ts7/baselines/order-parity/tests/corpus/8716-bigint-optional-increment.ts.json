@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8716-bigint-optional-increment.ts"
+ ],
+ "diags": []
+}

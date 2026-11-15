@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/unassigned-let-listener-arity.ts"
+ ],
+ "diags": []
+}

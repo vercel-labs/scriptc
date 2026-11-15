@@ -1,4 +1,4 @@
-// Generated from typescript@7.0.2 by scripts/generate-ts7-ast-schema.mjs.
+// Generated from typescript@7.1.0-beta by scripts/generate-ts7-ast-schema.mjs.
 // TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 
@@ -151,6 +151,7 @@ export function tokenToString(kind: SyntaxKind): string | undefined {
     case 164: return "override";
     case 165: return "of";
     case 166: return "defer";
+    case 167: return "source";
     default: return undefined;
   }
 }

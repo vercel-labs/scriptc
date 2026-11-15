@@ -1,6 +1,16 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -277,14 +287,14 @@ async function emit(dir: string, source: string, options: EmitOptions): Promise<
   return (await emitReporting(dir, source, options)).outputs;
 }
 
-/** `emit`, also returning the helper's stdout (its profile match report). */
-async function emitReporting(dir: string, source: string, options: EmitOptions) {
+/** Writes `source` and returns the arguments an `emit` of it takes. */
+async function emitArguments(dir: string, source: string, options: EmitOptions) {
   const input = join(dir, `${options.name}.ll`);
   await writeFile(input, source);
   const outputs = Array.from({ length: options.outputs }, (_, index) =>
     join(dir, `${options.name}.${index}.o`),
   );
-  const { stdout } = await execFileAsync(helper!, [
+  const args = [
     "emit",
     "--input",
     input,
@@ -306,8 +316,108 @@ async function emitReporting(dir: string, source: string, options: EmitOptions) 
     ...(options.blocks === undefined ? [] : ["--profile-blocks", options.blocks]),
     ...(options.record === undefined ? [] : ["--record-profile-blocks", options.record]),
     ...(options.cache === undefined ? [] : ["--cache-dir", options.cache]),
-  ]);
+  ];
+  return { args, outputs };
+}
+
+/** `emit`, also returning the helper's stdout (its profile match report). */
+async function emitReporting(dir: string, source: string, options: EmitOptions) {
+  const { args, outputs } = await emitArguments(dir, source, options);
+  const { stdout } = await execFileAsync(helper!, args);
   return { outputs, stdout };
+}
+
+type ServerReply = { status: number; stdout: string; stderr: string };
+
+/** Starts the helper as a server and sends `requests` to it in order on one
+ * connection, the way a build sends its commands to a resident helper. */
+async function serveRequests(
+  dir: string,
+  requests: readonly (readonly string[])[],
+): Promise<ServerReply[]> {
+  const socket = join(dir, "resident.sock");
+  const server = spawn(helper!, ["serve", "--socket", socket, "--idle-exit", "30"], {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  const exited = new Promise<void>((resolve) =>
+    server.exitCode === null ? server.once("exit", () => resolve()) : resolve(),
+  );
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await access(socket);
+        break;
+      } catch (error) {
+        if (attempt === 100) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    const connection = connect(socket);
+    await new Promise<void>((resolve, reject) => {
+      connection.once("connect", () => resolve());
+      connection.once("error", reject);
+    });
+    let pending = Buffer.alloc(0);
+    let arrived: (() => void) | null = null;
+    let closed: Error | null = null;
+    connection.on("data", (chunk: Buffer) => {
+      pending = Buffer.concat([pending, chunk]);
+      arrived?.();
+      arrived = null;
+    });
+    connection.on("end", () => {
+      closed = new Error("the server closed the connection");
+      arrived?.();
+      arrived = null;
+    });
+    const wait = async () => {
+      if (closed !== null) throw closed;
+      await new Promise<void>((resolve) => (arrived = resolve));
+      if (closed !== null) throw closed;
+    };
+    const take = async (length: number) => {
+      while (pending.length < length) await wait();
+      const taken = Buffer.from(pending.subarray(0, length));
+      pending = pending.subarray(length);
+      return taken;
+    };
+    const line = async () => {
+      for (;;) {
+        const newline = pending.indexOf(0x0a);
+        if (newline !== -1) {
+          const text = pending.subarray(0, newline).toString("utf8");
+          pending = pending.subarray(newline + 1);
+          return text;
+        }
+        await wait();
+      }
+    };
+    const replies: ServerReply[] = [];
+    for (const args of requests) {
+      const directory = Buffer.from(dir, "utf8");
+      connection.write(
+        Buffer.concat([
+          Buffer.from(`SCGEN1 ${args.length} ${directory.length}\n`, "utf8"),
+          directory,
+          ...args.flatMap((arg) => {
+            const bytes = Buffer.from(arg, "utf8");
+            return [Buffer.from(`${bytes.length}\n`, "utf8"), bytes];
+          }),
+        ]),
+      );
+      const header = (await line()).split(" ");
+      expect(header[0]).toBe("SCGEN1");
+      const status = Number(header[1]);
+      const stdout = (await take(Number(header[2]))).toString("utf8");
+      const stderr = (await take(Number(header[3]))).toString("utf8");
+      replies.push({ status, stdout, stderr });
+    }
+    connection.destroy();
+    return replies;
+  } finally {
+    server.kill();
+    await exited;
+  }
 }
 
 async function link(dir: string, objects: string[], name: string, instrumented = false) {
@@ -347,8 +457,8 @@ async function merge(output: string, inputs: string[], sparse = false) {
   ]);
 }
 
-/** An instrumented build of `source` run with 1 and 3 arguments, its raw
- * profiles merged into one indexed profile. */
+/** An instrumented build of `source` run with each of `argcs` (1 and 3 by
+ * default), its raw profiles merged into one indexed profile. */
 async function collect(
   dir: string,
   source: string,
@@ -356,14 +466,14 @@ async function collect(
   name: string,
   expected: (argc: number) => number = expectedExit,
   sparse = false,
+  argcs: readonly number[] = [1, 3],
 ) {
   const raw = join(dir, `${name}-raw`);
   const objects = await emit(dir, source, { outputs, name, generate: join(raw, "%p.profraw") });
   const executable = await link(dir, objects, name, true);
-  expect(await run(executable, 1)).toBe(expected(1));
-  expect(await run(executable, 3)).toBe(expected(3));
+  for (const argc of argcs) expect(await run(executable, argc)).toBe(expected(argc));
   const profiles = (await readdir(raw)).map((file) => join(raw, file));
-  expect(profiles).toHaveLength(2);
+  expect(profiles).toHaveLength(argcs.length);
   const profile = join(dir, `${name}.profdata`);
   await merge(profile, profiles, sparse);
   return { profile, raws: profiles };
@@ -425,6 +535,122 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       ).rejects.toMatchObject({
         stderr: expect.stringContaining("already holds context-sensitive counts"),
       });
+      // A resident server answers the emit after the context-sensitive one as
+      // a build without the profile would, not with this profile's layout.
+      const [after] = await emit(dir, inlinedProgram(), { outputs: 1, name: "after" });
+      const placed = await emitArguments(dir, inlinedProgram(), {
+        outputs: 1,
+        name: "placed",
+        use: merged,
+      });
+      const plain = await emitArguments(dir, inlinedProgram(), {
+        outputs: 1,
+        name: "placed-after",
+      });
+      const again = await emitArguments(dir, inlinedProgram(), {
+        outputs: 1,
+        name: "placed-again",
+        use: merged,
+      });
+      const replies = await serveRequests(dir, [placed.args, plain.args, again.args]);
+      expect(replies.map((reply) => reply.status)).toEqual([0, 0, 0]);
+      // The emit after the plain one gets this profile's layout back.
+      expect(await readFile(again.outputs[0]!)).toEqual(await readFile(placed.outputs[0]!));
+      expect(await readFile(plain.outputs[0]!)).toEqual(await readFile(after));
+    },
+  );
+
+  test.runIf(profileLinker !== null)(
+    "a resident server starts each emit without the profile state of the last one",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-resident-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "resident");
+      // The object a one-shot helper makes of the same source with no profile.
+      const [reference] = await emit(dir, program(), { outputs: 1, name: "reference" });
+      const recording = await emitArguments(dir, program(), {
+        outputs: 1,
+        name: "recording",
+        use: profile,
+        record: join(dir, "recording.blocks"),
+      });
+      const plain = await emitArguments(dir, program(), { outputs: 1, name: "plain" });
+      // The two emits run in the process a server keeps between builds.
+      const replies = await serveRequests(dir, [recording.args, plain.args]);
+      expect(replies.map((reply) => reply.status)).toEqual([0, 0]);
+      // The first wrote the block counts it collected...
+      expect((await readFile(join(dir, "recording.blocks"))).length).toBeGreaterThan(0);
+      // ...and the second made the object a one-shot helper makes, without
+      // recording counts to the path the first was given.
+      expect(await readFile(plain.outputs[0]!)).toEqual(await readFile(reference));
+    },
+  );
+
+  test.runIf(profileLinker !== null)(
+    "a resident server weighs each emit by the profile that emit names",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-resident-counts-"));
+      dirs.push(dir);
+      // Two profiles of the same program from different amounts of training.
+      const light = await collect(dir, program(), 1, "light");
+      const heavy = await collect(dir, program(), 1, "heavy", expectedExit, false, [1, 3, 5]);
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      const lightOnce = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "light-once",
+        use: light.profile,
+      });
+      const heavyOnce = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "heavy-once",
+        use: heavy.profile,
+      });
+      // The profiles weigh the same functions by different totals.
+      expect(report(heavyOnce.stdout).annotated_counts).not.toBe(
+        report(lightOnce.stdout).annotated_counts,
+      );
+      const first = await emitArguments(dir, program(), {
+        outputs: 1,
+        name: "resident-light",
+        use: light.profile,
+      });
+      const second = await emitArguments(dir, program(), {
+        outputs: 1,
+        name: "resident-heavy",
+        use: heavy.profile,
+      });
+      const replies = await serveRequests(dir, [first.args, second.args]);
+      expect(replies.map((reply) => reply.status)).toEqual([0, 0]);
+      expect(report(replies[0]!.stdout)).toEqual(report(lightOnce.stdout));
+      expect(report(replies[1]!.stdout)).toEqual(report(heavyOnce.stdout));
+    },
+  );
+
+  test.runIf(profileLinker !== null)(
+    "a partitioned build weighs every partition by the whole profile",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-partition-counts-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "counts");
+      const report = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!).profile;
+      // The one module build weighs the annotated functions once. A build with
+      // four partitions weighs them on separate threads, so a partition that
+      // read the profile's totals while another was still adding them up would
+      // report fewer counts than the whole profile holds.
+      const single = await emitReporting(dir, program(), {
+        outputs: 1,
+        name: "single",
+        use: profile,
+      });
+      const partitioned = await emitReporting(dir, program(), {
+        outputs: 4,
+        name: "partitioned",
+        use: profile,
+      });
+      expect(report(single.stdout).annotated_counts).toBeGreaterThan(0);
+      expect(report(partitioned.stdout).annotated_counts).toBe(
+        report(single.stdout).annotated_counts,
+      );
     },
   );
 

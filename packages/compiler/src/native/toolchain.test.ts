@@ -29,6 +29,7 @@ test("native toolchain installation paths relocate with the manifest", () => {
       join(root, "typescript/tsc"),
     );
     expect(toolchain.helperExecutable).toBe(join(root, "llvm/bin/scriptc-llvm-codegen"));
+    expect(toolchain.comptimeExecutable).toBe(join(root, "llvm/bin/scriptc-comptime"));
     expect(toolchain.runtimePackRoot).toBe(join(root, "runtime"));
     expect(toolchain.linker).toBe(join(root, "tools/linker"));
     expect(toolchain.linkerArgs).toEqual(["cc"]);
@@ -116,7 +117,6 @@ test("native toolchain assets resolve from the physical manifest through package
     runtime_packs: [{ target: "windows-x64-msvc", path: asset("runtime") }],
     runtime_sources: asset("runtime-sources"),
     declarations: asset("declarations"),
-    comptime: asset("comptime.exe"),
     wasi_node_runner: asset("wasi/cli/wasi-runner.js"),
     linker: asset("tools/linker.exe"),
     linker_args: ["cc"],
@@ -139,6 +139,7 @@ test("native toolchain assets resolve from the physical manifest through package
         .ts7Executable,
     ).toBe(join(assets, "typescript/lib/tsc.exe"));
     expect(viaLink.helperExecutable).toBe(join(assets, "llvm/bin/scriptc-llvm-codegen.exe"));
+    expect(viaLink.comptimeExecutable).toBe(join(assets, "llvm/bin/scriptc-comptime.exe"));
     expect(
       loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), {
         SCRIPTC_RUNTIME_PACK: "../explicit",

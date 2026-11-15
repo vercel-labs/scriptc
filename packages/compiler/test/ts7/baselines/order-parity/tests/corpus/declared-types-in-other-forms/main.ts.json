@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/declared-types-in-other-forms/main.ts"
+ ],
+ "diags": []
+}

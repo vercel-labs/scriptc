@@ -38,6 +38,8 @@ const { values } = parseArgs({
     warmup: { type: "string", default: "2" },
     timeout: { type: "string", default: "120" },
     layouts: { type: "string", default: "1" },
+    steady: { type: "string" },
+    "steady-runs": { type: "string", default: "5" },
     "baseline-optimization": { type: "string", default: "release" },
     "candidate-optimization": { type: "string", default: "release" },
     "baseline-target-cpu": { type: "string" },
@@ -55,6 +57,7 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage: node scripts/bench-runtime.mjs [--candidate=<checkout>] [--baseline=<checkout>]
        [--workloads=a,b] [--runs=15] [--warmup=2] [--timeout=120] [--layouts=1] [--json=<file>]
+       [--steady=<factor>] [--steady-runs=5]
        [--baseline-optimization=release] [--candidate-optimization=release]
        [--baseline-target-cpu=<level>] [--candidate-target-cpu=<level>]
        [--baseline-cpu-dispatch] [--candidate-cpu-dispatch]
@@ -70,6 +73,16 @@ and program code by 0, 16, 32, ... bytes of padding, and spreads the timed runs
 evenly over those layouts, so verdicts cover code-placement luck instead of one
 placement.
 Use it for small codegen changes (e.g. --layouts=4 --runs=16).
+
+--steady=K (for example --steady=4) adds a steady-state candidate/Node ratio
+beside the whole-process one. A whole launch includes process start-up, which
+costs Node tens of milliseconds and a compiled executable about one, so the
+whole-process ratio of a short workload mostly compares start-up. Workloads that
+name the argument that scales their work ("scaleArg" in the workload file) are
+also timed with that argument multiplied by K, --steady-runs times each, and
+the steady ratio is the candidate's extra time over Node's extra time:
+(scaled - unscaled) / (scaled - unscaled). Start-up and most JIT warm-up cancel
+out of both differences. The scaled output must match Node's too.
 
 Workload names are the file names in benchmarks/runtime/workloads/*.json; for example
 --workloads=cli-config,http-api runs only the startup and server workloads.
@@ -104,9 +117,20 @@ assert.ok(
   "--layouts needs macOS or Linux",
 );
 
+const steadyFactor = values.steady === undefined ? null : Number(values.steady);
+const steadyRuns = Number(values["steady-runs"]);
+assert.ok(
+  steadyFactor === null || (Number.isFinite(steadyFactor) && steadyFactor > 1),
+  "--steady must be a number above 1",
+);
+assert.ok(steadyFactor === null || values.node, "--steady compares with Node; drop --no-node");
+assert.ok(
+  Number.isInteger(steadyRuns) && steadyRuns >= 3 && steadyRuns <= 200,
+  "--steady-runs must be 3..200",
+);
+
 const allWorkloads = readWorkloads(suiteRoot);
 const selected = values.workloads ? new Set(values.workloads.split(",")) : null;
-const workloads = allWorkloads.filter((w) => selected === null || selected.has(w.name));
 if (selected) {
   for (const name of selected)
     assert.ok(
@@ -114,10 +138,48 @@ if (selected) {
       `unknown workload ${name}`,
     );
 }
+/* What a workload needs beyond a built checkout and is missing here.
+ * "libnode": the program has Node islands, whose executables load a libnode
+ * pack from SCRIPTC_LIBNODE. Such a workload is left out of the run, with a
+ * line that says so (also when it was named: runners that split the set
+ * name every workload). */
+function missingRequirement(w) {
+  for (const need of w.requires ?? []) {
+    assert.equal(need, "libnode", `${w.name}: unknown requirement ${need}`);
+    if (!process.env.SCRIPTC_LIBNODE) return "a libnode pack in SCRIPTC_LIBNODE";
+  }
+  return null;
+}
+const skipped = [];
+const workloads = allWorkloads.filter((w) => {
+  if (selected !== null && !selected.has(w.name)) return false;
+  const missing = missingRequirement(w);
+  if (missing === null) return true;
+  console.error(`skipping ${w.name}: needs ${missing}`);
+  skipped.push({ name: w.name, reason: `needs ${missing}` });
+  return false;
+});
 
 const work = mkdtempSync(
   join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-bench-runtime-"),
 );
+// Programs with Node islands install their island modules below the cache
+// directory on their first launch: this run's own, so every contender starts
+// from an empty cache and the timed launches find the modules installed. A
+// workload with `"cache": "cold"` measures that first launch instead: each
+// of its timed launches gets an empty cache directory.
+if (workloads.some((w) => (w.requires ?? []).includes("libnode")))
+  process.env.XDG_CACHE_HOME = join(work, "cache");
+let coldCaches = 0;
+function launchEnv(w) {
+  if (w.cache !== "cold") return { env: process.env, done: () => {} };
+  const cache = join(work, `cold-cache-${coldCaches++}`);
+  mkdirSync(cache, { recursive: true });
+  return {
+    env: { ...process.env, XDG_CACHE_HOME: cache },
+    done: () => rmSync(cache, { recursive: true, force: true }),
+  };
+}
 
 /* ── code-layout perturbation ──────────────────────────────────────────── */
 // Layout k > 0 links a retained k*16-byte padding object before every other
@@ -446,6 +508,38 @@ function bootstrapRatio(candidate, baseline, resamples = 2000) {
   };
 }
 
+/** The 95% interval of (scaled - unscaled) for the candidate over the same
+ * difference for Node, resampling the four sample sets independently. A
+ * resample in which Node's difference is not positive counts as unbounded. */
+function bootstrapMarginalRatio(candidateScaled, candidate, nodeScaled, node, resamples = 2000) {
+  const random = makeRandom(0x57ead);
+  const pick = (xs) =>
+    Array.from({ length: xs.length }, () => xs[Math.floor(random() * xs.length)]);
+  const ratios = [];
+  for (let i = 0; i < resamples; i++) {
+    const numerator = median(pick(candidateScaled)) - median(pick(candidate));
+    const denominator = median(pick(nodeScaled)) - median(pick(node));
+    ratios.push(denominator > 0 ? numerator / denominator : Infinity);
+  }
+  ratios.sort((a, b) => a - b);
+  return {
+    low: ratios[Math.floor(resamples * 0.025)],
+    high: ratios[Math.floor(resamples * 0.975)],
+  };
+}
+
+/** The arguments of a workload's steady-state leg: its own with the scale
+ * argument multiplied by --steady, or null when the workload has none.
+ * Startup-bound and server workloads have no scaled leg: their samples are
+ * not whole launches of one size. */
+function steadyArgs(w) {
+  if (steadyFactor === null || w.scaleArg === undefined) return null;
+  if (w.kind === "server" || (w.launches ?? 1) > 1) return null;
+  const args = [...w.args];
+  args[w.scaleArg] = String(Number(args[w.scaleArg]) * steadyFactor);
+  return args;
+}
+
 /* ── build ─────────────────────────────────────────────────────────────── */
 function cliFor(root) {
   const cli = join(resolve(root), "packages/cli/dist/bootstrap.js");
@@ -539,6 +633,8 @@ const report = {
   layouts,
   contenders: contenders.map((c) => ({ ...c, revision: revision(c.root) })),
   workloads: [],
+  // Workloads left out because the host lacks what they need.
+  skipped,
 };
 
 /* Workload kinds: "process" (default) times whole launches; `launches` > 1
@@ -549,6 +645,16 @@ for (const w of workloads) {
   if (w.kind === "server") assert.ok(w.client?.script, `${w.name}: server workloads need a client`);
   const launches = w.launches ?? 1;
   assert.ok(Number.isInteger(launches) && launches >= 1, `${w.name}: launches must be >= 1`);
+  // "scaleArg" names the argument that multiplies the workload's work.
+  if (w.scaleArg !== undefined)
+    assert.ok(
+      Number.isInteger(w.scaleArg) && Number.isFinite(Number(w.args[w.scaleArg] ?? "x")),
+      `${w.name}: scaleArg must be the index of a numeric argument`,
+    );
+  assert.ok(
+    w.cache === undefined || w.cache === "warm" || w.cache === "cold",
+    `${w.name}: cache must be "warm" or "cold"`,
+  );
 }
 
 /** One timing sample: { ms } on success, { failed } otherwise. */
@@ -563,7 +669,9 @@ async function sample(w, command, args) {
   // per launch is easily disturbed by unrelated activity on the host.
   const times = [];
   for (let i = 0; i < (w.launches ?? 1); i++) {
-    const result = run(command, args);
+    const launch = launchEnv(w);
+    const result = run(command, args, { env: launch.env });
+    launch.done();
     if (result.timedOut || result.status !== 0)
       return { failed: result.timedOut ? "timeout" : "unstable-exit" };
     times.push(result.ms);
@@ -680,6 +788,32 @@ try {
     }
     entry.node_ms = Math.round(oracle.ms ?? oracle.bench.measured_ms);
     entry.nodeCommand = nodeCommand;
+    // The steady-state leg runs the candidate and Node at the scaled size;
+    // their output must agree there too before either is timed.
+    const scaled = steadyArgs(w)?.map((a) => (a === "{input}" ? inputs.get(w.input) : a)) ?? null;
+    const reference = entry.results.candidate;
+    if (scaled !== null && reference.status === "ok") {
+      const scaledNodeCommand = [
+        ...nodeCommand.slice(0, nodeCommand.length - args.length),
+        ...scaled,
+      ];
+      const scaledOracle = run(process.execPath, scaledNodeCommand);
+      const scaledCheck = run(reference.binary, scaled);
+      entry.steady = { factor: steadyFactor, args: scaled, status: "ok" };
+      if (scaledOracle.timedOut || scaledCheck.timedOut) entry.steady.status = "timeout";
+      else if (scaledOracle.status !== 0) {
+        entry.steady.status = "node-failed";
+        entry.steady.error = `node exited ${scaledOracle.status} at the scaled size: ${scaledOracle.stderr.slice(0, 2000)}`;
+      } else if (
+        scaledCheck.status !== scaledOracle.status ||
+        scaledCheck.stdout !== scaledOracle.stdout ||
+        scaledCheck.stderr !== scaledOracle.stderr
+      ) {
+        entry.steady.status = "mismatch";
+        entry.steady.error = `scaled size: expected status ${scaledOracle.status}, got ${scaledCheck.status}; stdout ${scaledCheck.stdout === scaledOracle.stdout ? "matches" : "differs"}; stderr ${scaledCheck.stderr === scaledOracle.stderr ? "matches" : "differs"}`;
+      }
+      entry.steadyNodeCommand = scaledNodeCommand;
+    }
     entry.workload = w;
     prepared.push(entry);
     process.stderr.write(`prepared ${w.name}\n`);
@@ -761,6 +895,43 @@ try {
       }
       const base = entry.results.baseline;
       const cand = entry.results.candidate;
+      if (entry.steady?.status === "ok" && cand?.status === "ok" && nodeSamples.length > 0) {
+        const steady = entry.steady;
+        run(cand.binaries[0], steady.args);
+        run(process.execPath, entry.steadyNodeCommand);
+        const candScaled = [];
+        const nodeScaled = [];
+        for (let r = 0; r < steadyRuns; r++) {
+          // The scaled runs rotate through the layouts like the unscaled ones.
+          const c = await sample(w, cand.binaries[r % cand.binaries.length], steady.args);
+          const n = c.failed ? c : await sample(w, process.execPath, entry.steadyNodeCommand);
+          if (n.failed) {
+            steady.status = n.failed;
+            break;
+          }
+          candScaled.push(Math.round(c.ms * 100) / 100);
+          nodeScaled.push(Math.round(n.ms * 100) / 100);
+        }
+        if (steady.status === "ok") {
+          const round = (ms) => Math.round(ms * 100) / 100;
+          steady.candidate_samples = candScaled;
+          steady.node_samples = nodeScaled;
+          steady.candidate_ms = round(median(candScaled));
+          steady.node_ms = round(median(nodeScaled));
+          const candMarginal = median(candScaled) - median(cand.samples);
+          const nodeMarginal = median(nodeScaled) - median(nodeSamples);
+          steady.candidate_marginal_ms = round(candMarginal);
+          steady.node_marginal_ms = round(nodeMarginal);
+          // A size whose extra work does not show in both times has no ratio.
+          if (candMarginal > 0 && nodeMarginal > 0) {
+            steady.vs_node = Math.round((candMarginal / nodeMarginal) * 1000) / 1000;
+            const ci = bootstrapMarginalRatio(candScaled, cand.samples, nodeScaled, nodeSamples);
+            steady.ci95 = [ci.low, ci.high].map((x) =>
+              Number.isFinite(x) ? Math.round(x * 1000) / 1000 : null,
+            );
+          } else steady.status = "no-growth";
+        }
+      }
       if (base?.status === "ok" && cand?.status === "ok") {
         const ci = bootstrapRatio(cand.samples, base.samples);
         entry.ratio = Math.round((cand.median_ms / base.median_ms) * 10000) / 10000;
@@ -780,6 +951,7 @@ try {
       delete result.benches;
     }
     delete entry.nodeCommand;
+    delete entry.steadyNodeCommand;
     delete entry.workload;
     report.workloads.push(entry);
   }
@@ -798,6 +970,22 @@ try {
         1000,
       );
   }
+  // The steady-state geomean, and the whole-process one over the same
+  // workloads so the two can be compared.
+  const steady = report.workloads.filter((w) => w.steady?.vs_node !== undefined);
+  if (steadyFactor !== null) {
+    report.steady = { factor: steadyFactor, runs: steadyRuns, workloads: steady.length };
+    if (steady.length > 0) {
+      report.steady.geomean_vs_node = geomean(
+        steady.map((w) => w.steady.vs_node),
+        1000,
+      );
+      report.steady.whole_process_geomean_vs_node = geomean(
+        steady.map((w) => w.vs_node),
+        1000,
+      );
+    }
+  }
   const ratios = report.workloads.filter((w) => w.ratio !== undefined).map((w) => w.ratio);
   if (ratios.length > 0) report.geomean_ratio = geomean(ratios, 10000);
 } finally {
@@ -810,18 +998,27 @@ if (values.json) writeFileSync(values.json, JSON.stringify(report, null, 2) + "\
 const pct = (r) => `${r < 1 ? "" : "+"}${((r - 1) * 100).toFixed(1)}%`;
 const lines = [];
 const xNode = (w) => (w.vs_node === undefined ? "-" : `${w.vs_node.toFixed(2)}x`);
+// The steady-state column exists only with --steady: " <ratio> |" per row.
+const steadyHeader = (who) => (steadyFactor === null ? "" : ` steady ${who}/node |`);
+const steadyRule = steadyFactor === null ? "" : " ---: |";
+const steadyCell = (w) =>
+  steadyFactor === null
+    ? ""
+    : ` ${w.steady === undefined ? "-" : w.steady.vs_node === undefined ? w.steady.status : `${w.steady.vs_node.toFixed(2)}x`} |`;
 // Server rows show the measured-phase wall time for the fixed request count;
 // startup rows show the mean time per launch.
 const label = (w) =>
   w.kind === "server" ? `${w.name} (server)` : w.launches ? `${w.name} (per launch)` : w.name;
 if (values.baseline) {
   lines.push(
-    "| workload | baseline ms | candidate ms | change | 95% CI | verdict | size | node ms | candidate/node |",
+    `| workload | baseline ms | candidate ms | change | 95% CI | verdict | size | node ms | candidate/node |${steadyHeader("candidate")}`,
   );
-  lines.push("| --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: |");
+  lines.push(`| --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: |${steadyRule}`);
 } else {
-  lines.push("| workload | median ms | status | bytes | peak RSS MiB | node ms | scriptc/node |");
-  lines.push("| --- | ---: | --- | ---: | ---: | ---: | ---: |");
+  lines.push(
+    `| workload | median ms | status | bytes | peak RSS MiB | node ms | scriptc/node |${steadyHeader("scriptc")}`,
+  );
+  lines.push(`| --- | ---: | --- | ---: | ---: | ---: | ---: |${steadyRule}`);
 }
 for (const w of report.workloads) {
   const b = w.results.baseline;
@@ -831,11 +1028,11 @@ for (const w of report.workloads) {
   } else if (values.baseline) {
     const show = (r) => (r?.status === "ok" ? r.median_ms.toFixed(1) : (r?.status ?? "-"));
     lines.push(
-      `| ${label(w)} | ${show(b)} | ${show(c)} | ${w.ratio ? pct(w.ratio) : "-"} | ${w.ci95 ? `${pct(w.ci95[0])} .. ${pct(w.ci95[1])}` : "-"} | ${w.verdict ?? "-"} | ${w.size_ratio ? pct(w.size_ratio) : "-"} | ${w.node_ms} | ${xNode(w)} |`,
+      `| ${label(w)} | ${show(b)} | ${show(c)} | ${w.ratio ? pct(w.ratio) : "-"} | ${w.ci95 ? `${pct(w.ci95[0])} .. ${pct(w.ci95[1])}` : "-"} | ${w.verdict ?? "-"} | ${w.size_ratio ? pct(w.size_ratio) : "-"} | ${w.node_ms} | ${xNode(w)} |${steadyCell(w)}`,
     );
   } else {
     lines.push(
-      `| ${label(w)} | ${c?.median_ms?.toFixed(1) ?? "-"} | ${c?.status ?? "-"} | ${c?.bytes ?? "-"} | ${c?.peak_rss_bytes ? (c.peak_rss_bytes / 1048576).toFixed(1) : "-"} | ${w.node_ms} | ${xNode(w)} |`,
+      `| ${label(w)} | ${c?.median_ms?.toFixed(1) ?? "-"} | ${c?.status ?? "-"} | ${c?.bytes ?? "-"} | ${c?.peak_rss_bytes ? (c.peak_rss_bytes / 1048576).toFixed(1) : "-"} | ${w.node_ms} | ${xNode(w)} |${steadyCell(w)}`,
     );
   }
 }
@@ -883,8 +1080,20 @@ if (report.geomean_vs_node !== undefined) {
   if (byCategory.length > 1)
     lines.push(`  by category: ${byCategory.map(([k, v]) => `${k} ${v.toFixed(3)}x`).join(", ")}`);
 }
+if (report.steady?.geomean_vs_node !== undefined)
+  lines.push(
+    `geomean steady-state candidate/node: ${report.steady.geomean_vs_node.toFixed(3)}x over ${report.steady.workloads} workloads at ${steadyFactor}x scale (whole-process over the same workloads: ${report.steady.whole_process_geomean_vs_node.toFixed(3)}x)`,
+  );
 console.log(lines.join("\n"));
+// A scaled run that diverges from Node is a wrong result, like any other, and
+// so is a scaled launch that exits nonzero while it is timed after the same
+// launch passed the comparison; one that is too slow or shows no growth only
+// leaves its steady cell empty.
 const broken = report.workloads.some(
-  (w) => w.error || Object.values(w.results).some((r) => r.status !== "ok"),
+  (w) =>
+    w.error ||
+    Object.values(w.results).some((r) => r.status !== "ok") ||
+    w.steady?.status === "mismatch" ||
+    w.steady?.status === "unstable-exit",
 );
 process.exitCode = broken ? 1 : 0;

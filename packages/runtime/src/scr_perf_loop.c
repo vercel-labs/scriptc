@@ -33,6 +33,17 @@
 
 static SCR_TL double scr_perf_loop_start_ms = 0; /* performance.now() at loop start */
 static SCR_TL double scr_perf_loop_cpu0_ms = 0;  /* thread CPU time at loop start */
+static SCR_TL double scr_perf_loop_exit_ms = -1; /* performance.now() at loop exit */
+static SCR_TL double scr_perf_loop_turns = 0;    /* loop turns taken */
+
+/* The loop's per-turn and exit hooks (scr_async.c calls them when set): one
+ * turn is one iteration of the loop, its end is when the loop stops with
+ * work left to do. */
+static void scr_perf_loop_turn(void) { scr_perf_loop_turns += 1; }
+
+static void scr_perf_loop_exit_mark(void) {
+  if (scr_perf_loop_exit_ms < 0) scr_perf_loop_exit_ms = scr_perf_now();
+}
 
 /* The calling thread's CPU time in milliseconds; 0 where unavailable. */
 static double scr_perf_thread_cpu_ms(void) {
@@ -56,6 +67,7 @@ static double scr_perf_thread_cpu_ms(void) {
 
 void scr_perf_loop_mark(void) {
   if (scr_perf_loop_start_ms > 0) return;
+  scr_loop_set_metrics_hooks(scr_perf_loop_turn, scr_perf_loop_exit_mark);
   scr_perf_loop_cpu0_ms = scr_perf_thread_cpu_ms();
   double now = scr_perf_now();
   /* Node's loopStart is positive once set; a mark at the very first
@@ -63,7 +75,22 @@ void scr_perf_loop_mark(void) {
   scr_perf_loop_start_ms = now > 0 ? now : 1e-6;
 }
 
+/* A program whose main never runs the loop (a synchronous program that
+ * reads the milestones only from its exit listeners): the emitted main
+ * calls this just before those listeners run, so the loop's end is the
+ * moment Node's loop would have stopped. */
+void scr_perf_loop_end(void) { scr_perf_loop_exit_mark(); }
+
 double scr_perf_loop_start(void) { return scr_perf_loop_start_ms; }
+
+/* performance.nodeTiming's loopStart: -1 until the loop starts, like Node. */
+double scr_perf_node_loop_start(void) { return scr_perf_loop_start_ms > 0 ? scr_perf_loop_start_ms : -1; }
+
+/* performance.nodeTiming's loopExit: -1 until the loop ends. */
+double scr_perf_loop_exit(void) { return scr_perf_loop_exit_ms; }
+
+/* performance.nodeTiming's uvMetricsInfo.loopCount: the turns taken. */
+double scr_perf_loop_count(void) { return scr_perf_loop_turns; }
 
 double scr_perf_idle_time(void) {
   if (scr_perf_loop_start_ms <= 0) return 0;

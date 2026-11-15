@@ -2,11 +2,13 @@
 // the local where the previous pass ended must start the next scan from that
 // suffix, not from unit 0 of the original string. A cursor scan may only
 // start over at the loop's entry when that entry value is what the pass
-// scans: a local declared inside an enclosing loop is a fresh binding each
-// pass, and an assignment before the loop in the enclosing loop's body runs
-// on every pass. An outer loop that holds the scan's reads itself continues
-// the scan, so the cursor spans the outer loop and starts over only when the
-// function does.
+// scans: a local declared inside the loop the scan sits in is a fresh
+// binding each pass, and an assignment before the loop in that loop's body
+// runs on every pass. A declaration in an outer loop is not rerun by an
+// inner loop's pass, so that scan starts over only from where the source
+// itself starts one. An outer loop that holds the scan's reads itself
+// continues the scan, so the cursor spans the outer loop and starts over
+// only when the function does.
 
 function reentered(text: string, rounds: number): number {
   let rest = text;
@@ -101,6 +103,25 @@ function outerReads(text: string, rounds: number): number {
   return n * 100 + left;
 }
 
+// A local declared in an outer loop is not fresh on a pass of an inner
+// loop: the second pass runs over the suffix the first left, and a fresh
+// scan may only start where the source starts one.
+function outerDeclaration(text: string): string {
+  let seen = "";
+  let round = 0;
+  while (round < 2) {
+    let rest = text;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      while (rest.length > 0) {
+        seen += rest.charAt(0);
+        rest = rest.slice(1);
+      }
+    }
+    round += 1;
+  }
+  return seen;
+}
+
 const text = "abc;def;ghijkl;mn";
 const other = "aaabbbccc";
 console.log(reentered(text, 2), reentered(text, 5), reentered("", 3));
@@ -109,3 +130,4 @@ console.log(freshEachEntry(text, 4), freshEachEntry(other, 3));
 console.log(declaredEachPass(text, 4), declaredEachPass(other, 3));
 console.log(reenteredDoWhile(text, 3), reenteredDoWhile("x", 2));
 console.log(outerReads(text, 3), outerReads(other, 9));
+console.log(outerDeclaration("abc"), outerDeclaration(""), outerDeclaration(text));

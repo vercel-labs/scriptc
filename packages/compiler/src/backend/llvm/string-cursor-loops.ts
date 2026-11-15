@@ -129,17 +129,23 @@ interface Declaration {
 
 /** Whether every entry into `loop` begins from a value the current pass
  * wrote, so that starting the cursor at unit 0 reads the right string: the
- * local is declared in an enclosing loop, or a statement directly before
- * `loop` in its enclosing loop's body assigns it in full. */
+ * local is declared inside the loop `loop` sits in, so each pass of that
+ * loop makes a fresh binding before the scan, or a statement directly
+ * before `loop` in that loop's body assigns it in full. A declaration in an
+ * outer ancestor loop is not rerun by a pass of an inner loop: entering
+ * `loop` again there would start from the string the previous pass left in
+ * the slot. */
 function freshEachEntry(
   loop: AnyLoop,
   enclosing: readonly AnyLoop[],
   id: string,
   declared: readonly Declaration[],
 ): boolean {
-  if (declared.some((declaration) => enclosing.some((outer) => declaration.chain.includes(outer))))
-    return true;
   const parent = enclosing[enclosing.length - 1]!;
+  // `declaration.chain` is the loop stack at the declaration statement, so
+  // its last entry is the innermost loop that reruns the declaration.
+  if (declared.some((declaration) => declaration.chain[declaration.chain.length - 1] === parent))
+    return true;
   const at = parent.body.indexOf(loop);
   return (
     at > 0 &&

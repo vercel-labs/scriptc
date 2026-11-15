@@ -24,6 +24,7 @@ import {
   type SrcLoc,
   VOID,
   canBoxFuncIntoDyn,
+  funcHiddenParamCount,
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
@@ -547,9 +548,10 @@ export function lowerLambda(
       params,
       prologue,
       loc,
-      funcType.rest === true &&
-        funcType.restAbi === undefined &&
-        !shapes.some((s) => s.mode === "dynRest"),
+      // The hidden slot is the last shape: a checked-dynamic rest pack
+      // belongs to the parameters themselves, while an `arguments` shape is
+      // appended past them (a typed rest array included).
+      shapes[shapes.length - 1]?.mode === "arguments",
     );
     // An async arrow a field initializer calls on the spot is where a
     // membership test inside it can land on either side of a suspension:
@@ -806,9 +808,10 @@ export function lowerLambda(
         type: t,
       }));
       // A REST-MARKED value type hides one synthetic trailing dyn-array
-      // param in the lifted function (the boxed call thunk fills it) —
-      // the fence lambda must spell that slot too to preserve its ABI.
-      if (funcType.rest === true && funcType.restAbi === undefined) {
+      // param in the lifted function (the boxed call thunk fills it), and
+      // an `argumentsAll` type hides the actual-argument array — the fence
+      // lambda must spell that slot too to preserve its ABI.
+      if (funcHiddenParamCount(funcType) > 0) {
         params.push({ localId: "%pfrest", name: "%pfrest", type: DYN });
       }
       const fence = lowerer.deferToRuntimeFence(diagsBefore, node, {

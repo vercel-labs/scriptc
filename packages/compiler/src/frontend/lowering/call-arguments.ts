@@ -706,6 +706,10 @@ export function completeFuncValueArgs(
       mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
     }));
     shapes.push({ type: rest, mode: "rest" });
+    // The value receives the arguments its caller actually passed as a
+    // hidden trailing array (argumentsAll): the rest array only holds the
+    // ones the named parameters do not cover.
+    if (funcType.argumentsAll === true) shapes.push({ type: DYN, mode: "arguments" });
     return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
   }
   // A fixed-tuple spread (`fn(...args)` over a tuple-typed rest binding)

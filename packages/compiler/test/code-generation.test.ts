@@ -152,8 +152,9 @@ console.log(made.constructor());
 /** The construction a `new <function>.constructor(...)` site lowers to,
  * found by the `%constructorReceiver` slot its receiver is evaluated into.
  * The value the read answers is constructed through the checked-dynamic
- * tier: a lifted `%class.construct:` helper for a fixed argument list, or
- * `dyn.construct` over a packed one for a runtime-length spread. */
+ * tier's lifted `%class.construct:` helpers, the fixed-arity one or the
+ * packed one a runtime-length spread uses, so a class value reaches the
+ * class's own dispatch. */
 function constructorConstruct(mod: IrModule): {
   slot: string;
   stmts: IrStmt[];
@@ -167,8 +168,8 @@ function constructorConstruct(mod: IrModule): {
       return { slot: decl.localId, stmts: sequence.stmts, result };
     if (
       result.kind === "seqExpr" &&
-      result.result.kind === "libCall" &&
-      result.result.fn === "dyn.construct"
+      result.result.kind === "call" &&
+      result.result.callee.startsWith("%class.construct:")
     )
       return {
         slot: decl.localId,
@@ -230,6 +231,8 @@ new (pick().constructor)(...values);
   expect(codeGenerationThrows(mod)).toEqual([]);
   const dispatched = constructorConstruct(mod);
   expect(dispatched).not.toBeNull();
+  const call = dispatched!.result as Extract<IrExpr, { kind: "call" }>;
+  expect(call.callee).toBe("%class.construct:packed:pick(...).constructor");
   // The read is held in its own slot before the argument pack evaluates, so
   // a nullish receiver throws before any argument runs.
   expect(dispatched!.stmts.map((stmt) => stmt.kind)).toContain("varDecl");
@@ -237,4 +240,41 @@ new (pick().constructor)(...values);
   expect(dispatched!.stmts[1]!.kind === "varDecl" && dispatched!.stmts[1]!.localId).toMatch(
     /^%constructorMember/,
   );
+  expect(call.args[1]).toMatchObject({ kind: "varRef", localId: /^%spreadArgs/ });
+});
+
+test("a spread construction through a class-valued constructor dispatches to the class", async () => {
+  const mod = await compileToIr(
+    `class Box {
+  constructor(value) {
+    this.value = value;
+  }
+}
+/**
+ * @returns {() => number}
+ */
+function pick() {
+  const made = () => 1;
+  made.constructor = Box;
+  return made;
+}
+const values = [2];
+new (pick().constructor)(...values);
+`,
+    "js",
+  );
+  const dispatched = constructorConstruct(mod);
+  expect(dispatched).not.toBeNull();
+  expect(dispatched!.result).toMatchObject({
+    kind: "call",
+    callee: "%class.construct:packed:pick(...).constructor",
+  });
+  // The packed helper carries the class dispatch, so a class value the
+  // function's own `constructor` property names constructs the class
+  // instead of reaching the runtime's untyped constructor path.
+  const helper = mod.functions.find((fn) =>
+    fn.name.startsWith("%class.construct:packed:pick(...).constructor"),
+  );
+  expect(helper).toBeDefined();
+  expect(JSON.stringify(helper!.body)).toContain("classval:Box");
 });

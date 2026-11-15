@@ -25,7 +25,7 @@ import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { v8CalleeText } from "./expressions/narrowing.js";
 import { dynArgumentPack, lowerSpreadArgsCall } from "./call-arguments.js";
-import { checkedClassConstruction } from "./class-construction.js";
+import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
@@ -258,19 +258,22 @@ function lowerConstructorMember(
   } else {
     // A runtime-length spread determines the argument list before the
     // construction check runs. The read still happens first, so a nullish
-    // receiver throws before any argument evaluates.
+    // receiver throws before any argument evaluates. The packed construction
+    // helper carries the classes' dispatch, so a value the program made
+    // `constructor` constructs the class it names instead of reaching the
+    // runtime's untyped constructor path.
     const memberSlot = lowerer.declareHiddenLocal("%constructorMember", DYN);
     const { stmts, pack } = dynArgumentPack(lowerer, argNodes, loc, { blame: expr });
     result = {
       kind: "seqExpr",
       stmts: [{ kind: "varDecl", localId: memberSlot.id, init: member, loc }, ...stmts],
-      result: {
-        kind: "libCall",
-        fn: "dyn.construct",
-        args: [varRef(memberSlot.id, DYN, loc), pack(), strLit(calleeName, loc)],
-        type: DYN,
+      result: checkedClassConstructionPacked(
+        lowerer,
+        varRef(memberSlot.id, DYN, loc),
+        pack(),
         loc,
-      },
+        calleeName,
+      ),
       type: DYN,
       loc,
     };

@@ -523,6 +523,32 @@ static void scr_dgram_throw(const char *msg) {
   }
 }
 
+/* snprintf's STORED length: the formatted text when it fit, else the
+ * capacity minus the terminator. Callers hand this length to an error
+ * constructor, which copies it — truncation must never overrun the
+ * destination (a long Received tail could otherwise disclose stack
+ * bytes). */
+static size_t scr_dgram_fmt_len(int n, size_t cap) {
+  if (n < 0) return 0;
+  return (size_t)n < cap ? (size_t)n : cap - 1;
+}
+
+/* An error whose tail is a value's rendering (scr_dyn_specific_type):
+ * built in the growing JSON buffer so a long BigInt or Symbol description
+ * is copied in full, `head` ending just before the rendering. */
+static void scr_dgram_throw_received(int kind, const char *code, const char *head, const ScrDyn *v,
+                                     const char *tail) {
+  char detail[1024];
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, head);
+  scr_jb_puts(&b, scr_dyn_specific_type(v, detail, sizeof detail));
+  scr_jb_puts(&b, tail);
+  ScrStr *text = scr_jb_finish(&b);
+  scr_throw_error_msg_code(kind, text->data, text->len, code);
+  scr_str_release(text);
+}
+
 /* Forward declarations: the helpers below the socket surface. */
 static bool scr_dgram_ip6(const char *text, struct in6_addr *addr, unsigned *scope);
 static bool scr_dgram_dyn_truthy(const ScrDyn *v);
@@ -558,7 +584,7 @@ static void scr_dgram_throw_invalid_arg_value(const char *name, const ScrStr *va
                    strchr(name, '.') != NULL ? "property" : "argument", name, reason,
                    (int)(cut ? 128 : shown->len), shown->data, cut ? "..." : "");
   scr_str_release(shown);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, text, n < 0 ? 0 : (size_t)n, "ERR_INVALID_ARG_VALUE");
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, scr_dgram_fmt_len(n, sizeof text), "ERR_INVALID_ARG_VALUE");
 }
 
 /* Node's validatePort(port, name, allowZero): an integer in 0..65535
@@ -571,7 +597,7 @@ static bool scr_dgram_valid_port(double port, const char *name, bool allow_zero)
   char text[192];
   int n = snprintf(text, sizeof text, "%s should be %s 0 and < 65536. Received type number (%s).",
                    name, allow_zero ? ">=" : ">", shown);
-  scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_SOCKET_BAD_PORT");
+  scr_throw_error_msg_code(SCR_ERR_RANGE, text, scr_dgram_fmt_len(n, sizeof text), "ERR_SOCKET_BAD_PORT");
   return false;
 }
 
@@ -930,29 +956,32 @@ static void scr_dgram_received_number(double v, char *buf, size_t cap) {
 /* Node's validateUint32 for an options member: the integer check first,
  * then the 32-bit range. False with ERR_OUT_OF_RANGE pending. */
 static bool scr_dgram_uint32_option(const ScrDyn *v, const char *name) {
-  char shown[96];
-  if (v->kind != SCR_DYN_NUM || trunc(v->v.num) != v->v.num || isinf(v->v.num)) {
-    char detail[256];
-    const char *received =
-        v->kind == SCR_DYN_NUM
-            ? (snprintf(shown, sizeof shown, "%g", v->v.num), shown)
-            : scr_dyn_specific_type(v, detail, sizeof detail);
-    char text[256];
+  /* Node's validateUint32: a non-number is ERR_INVALID_ARG_TYPE (the
+   * specific-type tail, which a long BigInt or Symbol makes long and the
+   * error builder handles), then the integer and range checks. */
+  if (v->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail(name, "of type number", v);
+    return false;
+  }
+  if (trunc(v->v.num) != v->v.num || isinf(v->v.num)) {
+    char shown[64], text[224];
+    scr_dgram_number_text(v->v.num, shown, sizeof shown);
     int n = snprintf(text, sizeof text,
                      "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
-                     received);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+                     shown);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, scr_dgram_fmt_len(n, sizeof text),
+                             "ERR_OUT_OF_RANGE");
     return false;
   }
   if (v->v.num < 0 || v->v.num > 4294967295.0) {
-    char num[64];
+    char num[64], text[224];
     scr_dgram_received_number(v->v.num, num, sizeof num);
-    char text[256];
     int n = snprintf(text, sizeof text,
                      "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. "
                      "Received %s",
                      name, num);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, scr_dgram_fmt_len(n, sizeof text),
+                             "ERR_OUT_OF_RANGE");
     return false;
   }
   return true;
@@ -1165,13 +1194,8 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
     } else {
       /* validatePort's non-number arm: ERR_SOCKET_BAD_PORT with the
        * specific-type tail. */
-      char detail[256];
-      char text[224];
-      int n = snprintf(text, sizeof text,
-                       "options.port should be >= 0 and < 65536. Received %s",
-                       scr_dyn_specific_type(p, detail, sizeof detail));
-      scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n,
-                               "ERR_SOCKET_BAD_PORT");
+      scr_dgram_throw_received(SCR_ERR_RANGE, "ERR_SOCKET_BAD_PORT",
+                               "options.port should be >= 0 and < 65536. Received ", p, ".");
       scr_dyn_release(owned);
       return;
     }
@@ -1359,7 +1383,7 @@ static void scr_dgram_throw_errno(int err, const char *syscall) {
   const ScrUvError *uv = scr_dgram_uv_error(err);
   char text[96];
   int n = snprintf(text, sizeof text, "%s %s", syscall, uv->name);
-  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrStr *msg = scr_str_new(text, scr_dgram_fmt_len(n, sizeof text));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
   scr_str_release(msg);
   scr_error_set_code(e, uv->name);
@@ -1377,7 +1401,7 @@ static void scr_dgram_throw_exception_host_port(int err, const char *syscall, co
   char text[160];
   int n = port > 0 ? snprintf(text, sizeof text, "%s %s %s:%d", syscall, uv->name, ip, port)
                    : snprintf(text, sizeof text, "%s %s %s", syscall, uv->name, ip);
-  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrStr *msg = scr_str_new(text, scr_dgram_fmt_len(n, sizeof text));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
   scr_str_release(msg);
   scr_error_set_code(e, uv->name);
@@ -1397,7 +1421,7 @@ static void scr_dgram_throw_buffer_size(int err, const char *syscall) {
   char text[192];
   int n = snprintf(text, sizeof text, "Could not get or set buffer size: %s returned %s (%s)", syscall,
                    uv->name, uv->message);
-  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrStr *msg = scr_str_new(text, scr_dgram_fmt_len(n, sizeof text));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
   scr_str_release(msg);
   scr_str_release(e->name);
@@ -1413,7 +1437,7 @@ static bool scr_dgram_handle_gone(const ScrDgramSocket *s, const char *member) {
   if (!s->closing && !s->close_emitted) return false;
   char text[96];
   int n = snprintf(text, sizeof text, "Cannot read properties of null (reading '%s')", member);
-  scr_throw_error_msg(SCR_ERR_TYPE, text, n < 0 ? 0 : (size_t)n);
+  scr_throw_error_msg(SCR_ERR_TYPE, text, scr_dgram_fmt_len(n, sizeof text));
   return true;
 }
 
@@ -1447,12 +1471,17 @@ void scr_dgram_set_broadcast(ScrDgramSocket *s, bool flag) {
     scr_dgram_throw_errno(errno, "setBroadcast");
 }
 
+/* The TTL and multicast knobs dispatch on the socket's family, as libuv's
+ * uv_udp_set_ttl / set_multicast_ttl / set_multicast_loopback do: a udp6
+ * socket sets the IPV6_* option, not the IP_ one. */
 double scr_dgram_set_ttl(ScrDgramSocket *s, double ttl) {
   if (scr_dgram_handle_gone(s, "setTTL")) return ttl;
   int value = scr_dgram_to_int32(ttl);
+  int level = s->v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+  int name = s->v6 ? IPV6_UNICAST_HOPS : IP_TTL;
   if (value < 1 || value > 255) {
     scr_dgram_throw_errno(EINVAL, "setTTL");
-  } else if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_TTL, value)) {
+  } else if (!scr_dgram_setopt_int(s, level, name, value)) {
     scr_dgram_throw_errno(errno, "setTTL");
   }
   return ttl;
@@ -1461,9 +1490,11 @@ double scr_dgram_set_ttl(ScrDgramSocket *s, double ttl) {
 double scr_dgram_set_multicast_ttl(ScrDgramSocket *s, double ttl) {
   if (scr_dgram_handle_gone(s, "setMulticastTTL")) return ttl;
   int value = scr_dgram_to_int32(ttl);
+  int level = s->v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+  int name = s->v6 ? IPV6_MULTICAST_HOPS : IP_MULTICAST_TTL;
   if (value < 0 || value > 255) {
     scr_dgram_throw_errno(EINVAL, "setMulticastTTL");
-  } else if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_MULTICAST_TTL, value)) {
+  } else if (!scr_dgram_setopt_int(s, level, name, value)) {
     scr_dgram_throw_errno(errno, "setMulticastTTL");
   }
   return ttl;
@@ -1471,7 +1502,9 @@ double scr_dgram_set_multicast_ttl(ScrDgramSocket *s, double ttl) {
 
 bool scr_dgram_set_multicast_loopback(ScrDgramSocket *s, bool flag) {
   if (scr_dgram_handle_gone(s, "setMulticastLoopback")) return flag;
-  if (!scr_dgram_setopt_int(s, IPPROTO_IP, IP_MULTICAST_LOOP, flag ? 1 : 0))
+  int level = s->v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+  int name = s->v6 ? IPV6_MULTICAST_LOOP : IP_MULTICAST_LOOP;
+  if (!scr_dgram_setopt_int(s, level, name, flag ? 1 : 0))
     scr_dgram_throw_errno(errno, "setMulticastLoopback");
   return flag;
 }
@@ -2537,20 +2570,27 @@ static void scr_dgram_sweep(void) {
   while (s) {
     ScrDgramSocket *next = s->next; /* may unregister below */
     scr_dgram_retain(s);           /* callbacks may drop every other ref */
+    /* Node's emitListeningNT/emitConnectNT emit only while the handle
+     * exists; close() nulls it at once, so a close right after
+     * bindSync()/connectSync() suppresses the pending emission. */
     if (s->emit_listening) {
       s->emit_listening = false;
-      scr_dgram_fire0(&s->listening_ls);
-      if (scr_exc_pending()) {
-        scr_dgram_release(s);
-        return;
+      if (!s->closing) {
+        scr_dgram_fire0(&s->listening_ls);
+        if (scr_exc_pending()) {
+          scr_dgram_release(s);
+          return;
+        }
       }
     }
     if (s->emit_connect) {
       s->emit_connect = false;
-      scr_dgram_fire0(&s->conn_ls);
-      if (scr_exc_pending()) {
-        scr_dgram_release(s);
-        return;
+      if (!s->closing) {
+        scr_dgram_fire0(&s->conn_ls);
+        if (scr_exc_pending()) {
+          scr_dgram_release(s);
+          return;
+        }
       }
     }
     if (s->pending_err) {

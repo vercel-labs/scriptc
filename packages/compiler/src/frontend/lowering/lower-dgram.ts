@@ -112,6 +112,68 @@ function lowerMessageListener(lowerer: Lowerer, node: ts.Expression): IrExpr {
   return cb;
 }
 
+/** createSocket's / new dgram.Socket's construction: the socket, with the
+ * message listener registered as Node's constructor does. A typed listener
+ * rides the per-shape adapter; an untyped JavaScript one registers through
+ * the socket's checked-dynamic handle (socket.on("message", listener)), the
+ * same route an untyped socket.on('message') takes. */
+function lowerDgramCreate(
+  lowerer: Lowerer,
+  options: IrExpr,
+  listener: ts.Expression | undefined,
+  loc: SrcLoc,
+): IrExpr {
+  const create: IrExpr = {
+    kind: "libCall",
+    fn: "dgram.createSocket",
+    args: [options],
+    type: DGRAMSOCK_T,
+    loc,
+  };
+  if (listener === undefined) return create;
+  if (isJsSourceFile(ts.getSourceFileOfNode(listener)) && untypedJsListener(lowerer, listener)) {
+    const sockLocal = lowerer.declareHiddenLocal("%dgramCtor", DGRAMSOCK_T);
+    const sock = (): IrExpr => ({ kind: "varRef", localId: sockLocal.id, type: DGRAMSOCK_T, loc });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: sockLocal.id, init: create, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "dynInvoke",
+            recv: lowerer.coerceToExpected(sock(), DYN),
+            method: "on",
+            calleeName: "socket.on",
+            args: [
+              {
+                kind: "dynFrom",
+                value: { kind: "strLit", value: "message", type: STRING, loc },
+                type: DYN,
+                loc,
+              },
+              lowerer.lowerExprExpecting(listener, DYN),
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: sock(),
+      type: DGRAMSOCK_T,
+      loc,
+    };
+  }
+  return {
+    kind: "libCall",
+    fn: "dgram.createSocketCb",
+    args: [options, lowerMessageListener(lowerer, listener)],
+    type: DGRAMSOCK_T,
+    loc,
+  };
+}
+
 /** `new dgram.Socket(type | options[, listener])`: the constructor names the
  * same socket createSocket does (Node's own Socket constructor). Null for
  * every other callee. */
@@ -134,16 +196,7 @@ export function lowerDgramSocketNew(lowerer: Lowerer, expr: ts.NewExpression): I
     );
   }
   const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
-  if (args.length === 2) {
-    return {
-      kind: "libCall",
-      fn: "dgram.createSocketCb",
-      args: [options, lowerMessageListener(lowerer, args[1]!)],
-      type: DGRAMSOCK_T,
-      loc,
-    };
-  }
-  return { kind: "libCall", fn: "dgram.createSocket", args: [options], type: DGRAMSOCK_T, loc };
+  return lowerDgramCreate(lowerer, options, args.length === 2 ? args[1] : undefined, loc);
 }
 
 /** True for a callee that names dgram.Socket. */
@@ -255,16 +308,7 @@ export function lowerDgramDnsModuleCall(
       );
     }
     const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
-    if (args.length === 2) {
-      return {
-        kind: "libCall",
-        fn: "dgram.createSocketCb",
-        args: [options, lowerMessageListener(lowerer, args[1]!)],
-        type: DGRAMSOCK_T,
-        loc,
-      };
-    }
-    return { kind: "libCall", fn: "dgram.createSocket", args: [options], type: DGRAMSOCK_T, loc };
+    return lowerDgramCreate(lowerer, options, args.length === 2 ? args[1] : undefined, loc);
   }
   lowerer.noLowering(
     `dgram.${bi.member}`,

@@ -50,8 +50,28 @@ declare module "dgram" {
     connect(port: number, callback: () => void): void;
     connectSync(port: number, address?: string): void;
     disconnect(): void;
+    /* Node's send ladder: one datagram or a list of chunks, a connected
+     * send, the offset/length slice, and the completion callback in any of
+     * its positions. */
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      port?: number,
+      address?: string,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      port?: number,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
     send(
       msg: string | Uint8Array,
+      offset: number,
+      length: number,
       port?: number,
       address?: string,
       callback?: (error: Error | null, bytes: number) => void,
@@ -61,7 +81,12 @@ declare module "dgram" {
       offset: number,
       length: number,
       port?: number,
-      address?: string,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array,
+      offset: number,
+      length: number,
       callback?: (error: Error | null, bytes: number) => void,
     ): void;
     address(): AddressInfo;

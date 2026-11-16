@@ -27,6 +27,22 @@ await new Promise<void>((resolve) => {
   });
 });
 
+// The TTL and multicast knobs set the IPv6 options on a udp6 socket.
+await new Promise<void>((resolve) => {
+  const socket = dgram.createSocket("udp6");
+  socket.on("close", () => resolve());
+  socket.bind(0, "::1", () => {
+    socket.setBroadcast(true);
+    console.log(
+      "options",
+      socket.setTTL(64),
+      socket.setMulticastTTL(2),
+      socket.setMulticastLoopback(true),
+    );
+    socket.close();
+  });
+});
+
 // A connected udp6 pair, the remoteAddress record, and the connected
 // one-argument send.
 await new Promise<void>((resolve) => {

@@ -35,7 +35,11 @@ function declaredMethods(file: string, name: string): Map<string, DeclaredMethod
   // plain property (no parameters) is not a handle member the table
   // describes (the dedicated lowerings own those reads).
   for (const declaration of body.split(";")) {
-    const signature = declaration.replace(/\s+/g, " ").trim();
+    // Comments attached to a declaration are prose, not a signature.
+    const signature = declaration
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     if (signature === "" || !signature.includes("(")) continue;
     const match = /^(\[[^\]]+\]|\w+)\((.*)\): (.+)$/.exec(signature);
     expect(match, `${file}: ${signature}`).not.toBeNull();

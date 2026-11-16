@@ -1438,8 +1438,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dgram.disconnect",
   // The assert surface: every entry point except sameValue, bytesDeepEq,
   // looseF64Eq, looseBytesEq, partialEqDyn,
-  // and the shape accumulator's begin/slot/test calls throws the
-  // catchable AssertionError on failure.
+  // and the shape accumulator's begin/slot/test calls throws a catchable
+  // error on failure — the AssertionError, or throwsAmbiguous's
+  // ERR_AMBIGUOUS_ARGUMENT TypeError.
   "assert.ok",
   "assert.errorNew",
   "assert.eqF64",
@@ -1460,6 +1461,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsNone",
   "assert.throwsMismatch",
   "assert.throwsRegex",
+  "assert.throwsAmbiguous",
   "assert.shapeEnd",
   "assert.unwantedRejection",
   "assert.unwantedError",

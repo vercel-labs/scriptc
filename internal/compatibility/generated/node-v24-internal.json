@@ -34128,6 +34128,7 @@
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-error-validation-codes.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
@@ -34879,8 +34880,11 @@
       "anchor": "err_ambiguous_argument",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_AMBIGUOUS_ARGUMENT",
+        "tests": [
+          "tests/corpus/compat-error-validation-codes.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34897,10 +34901,10 @@
       "anchor": "err_arg_not_iterable",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ARG_NOT_ITERABLE",
         "tests": [
-          "tests/corpus/compat-errors-core.mjs"
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -35057,10 +35061,11 @@
       "anchor": "err_buffer_out_of_bounds",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_BUFFER_OUT_OF_BOUNDS",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -36360,10 +36365,11 @@
       "anchor": "err_encoding_not_supported",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ENCODING_NOT_SUPPORTED",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -37818,10 +37824,10 @@
       "anchor": "err_incompatible_option_pair",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INCOMPATIBLE_OPTION_PAIR",
         "tests": [
-          "tests/corpus/5568-fs-cp-errors.js"
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38061,12 +38067,13 @@
       "anchor": "err_invalid_arg_type",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_TYPE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38084,12 +38091,13 @@
       "anchor": "err_invalid_arg_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_VALUE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38149,10 +38157,11 @@
       "anchor": "err_invalid_char",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_CHAR",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38227,10 +38236,11 @@
       "anchor": "err_invalid_file_url_host",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_HOST",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38248,10 +38258,11 @@
       "anchor": "err_invalid_file_url_path",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_PATH",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38290,10 +38301,11 @@
       "anchor": "err_invalid_http_token",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_HTTP_TOKEN",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38333,10 +38345,11 @@
       "anchor": "err_invalid_mime_syntax",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_MIME_SYNTAX",
         "tests": [
-          "tests/corpus/7707-util-mime-type.cjs"
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38444,10 +38457,11 @@
       "anchor": "err_invalid_protocol",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_PROTOCOL",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38624,10 +38638,10 @@
       "anchor": "err_invalid_tuple",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_TUPLE",
         "tests": [
-          "tests/corpus/compat-errors-core.mjs"
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38684,10 +38698,11 @@
       "anchor": "err_invalid_url",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_URL",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38726,10 +38741,11 @@
       "anchor": "err_invalid_url_scheme",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_URL_SCHEME",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38933,10 +38949,10 @@
       "anchor": "err_missing_args",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MISSING_ARGS",
         "tests": [
-          "tests/corpus/5656-dgram-option-states.ts"
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39344,12 +39360,13 @@
       "anchor": "err_out_of_range",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_OUT_OF_RANGE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39499,10 +39516,11 @@
       "anchor": "err_parse_args_unknown_option",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_UNKNOWN_OPTION",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39918,8 +39936,11 @@
       "anchor": "err_server_already_listen",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SERVER_ALREADY_LISTEN",
+        "tests": [
+          "tests/corpus/compat-error-validation-codes.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39936,10 +39957,10 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SERVER_NOT_RUNNING",
         "tests": [
-          "tests/corpus/compat-errors-net.mjs"
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40017,10 +40038,11 @@
       "anchor": "err_socket_bad_port",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_PORT",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41094,10 +41116,11 @@
       "anchor": "err_unescaped_characters",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNESCAPED_CHARACTERS",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41115,10 +41138,11 @@
       "anchor": "err_unhandled_error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNHANDLED_ERROR",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41178,10 +41202,11 @@
       "anchor": "err_unknown_encoding",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_ENCODING",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41235,12 +41260,13 @@
       "anchor": "err_unknown_signal",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_SIGNAL",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"

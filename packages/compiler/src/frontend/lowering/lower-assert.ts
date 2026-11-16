@@ -2495,8 +2495,19 @@ function assertThrowsHelper(
   } else {
     switch (expected.form) {
       case "bare":
-      case "message":
         catchBody = [doReturn];
+        break;
+      case "message":
+        // The string is the message here, but Node still refuses the call
+        // when the thrown value could also be read as the expectation
+        // (expectsError's ambiguity check).
+        catchBody = [
+          lib("assert.throwsAmbiguous", [
+            { kind: "caughtToDyn", value: caughtRef(), type: DYN, loc },
+            m(),
+          ]),
+          doReturn,
+        ];
         break;
       case "class":
         catchBody = [

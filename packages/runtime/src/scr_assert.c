@@ -2721,6 +2721,40 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
   scr_assert_fail(text, true);
 }
 
+/* assert.throws/rejects with a STRING in the expectation position: the
+ * string is the assertion's message (lib/assert.js expectsError), and Node
+ * refuses the call as ambiguous — ERR_AMBIGUOUS_ARGUMENT, a TypeError —
+ * when the value the callback threw would support the other reading: an
+ * object whose `message` is that string, or the string itself. The check
+ * runs only once the callback threw; a callback that returned reaches the
+ * missing-exception throw instead. Borrows both arguments. */
+void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message) {
+  const bool object = actual->kind == SCR_DYN_OBJ || actual->kind == SCR_DYN_ARR ||
+                      actual->kind == SCR_DYN_BYTES || actual->kind == SCR_DYN_HANDLE;
+  const ScrStr *shown = NULL;
+  if (object) {
+    if (actual->kind == SCR_DYN_OBJ) {
+      const ScrDyn *member = scr_dyn_obj_get(actual, "message", 7);
+      if (member != NULL && member->kind == SCR_DYN_STR && scr_str_eq(member->v.str, message))
+        shown = member->v.str;
+    }
+  } else if (actual->kind == SCR_DYN_STR && scr_str_eq(actual->v.str, message)) {
+    shown = actual->v.str;
+  }
+  if (shown == NULL) return;
+  ScrAssertBuf b = {0};
+  ab_cstr(&b, "The \"error/message\" argument is ambiguous. ");
+  ab_cstr(&b, object ? "The error message \"" : "The error \"");
+  ab_str(&b, shown);
+  ab_cstr(&b, "\" is identical to the message.");
+  ScrStr *text = ab_take(&b);
+  static const char code_text[] = "ERR_AMBIGUOUS_ARGUMENT";
+  ScrStr *code = scr_str_new(code_text, sizeof code_text - 1);
+  scr_throw_node_coded(SCR_ERR_TYPE, code, text);
+  scr_str_release(code);
+  scr_str_release(text);
+}
+
 /* assert.throws(fn) that did NOT throw / assert.rejects whose promise
  * fulfilled: "Missing expected exception|rejection" with Node's details —
  * ` (${expected.name})` when the expected class or shape carries a name,

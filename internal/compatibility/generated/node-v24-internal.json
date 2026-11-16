@@ -104881,8 +104881,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "supported",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -104904,8 +104907,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.node:trace_events",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104927,8 +104933,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.Tracing",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104950,8 +104959,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.tracing.disable",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104973,8 +104985,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.tracing.enable",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104996,8 +105011,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.categories",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -105019,8 +105037,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.enabled",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -105065,8 +105086,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.trace_events.createTracing",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105088,8 +105112,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.trace_events.getEnabledCategories",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

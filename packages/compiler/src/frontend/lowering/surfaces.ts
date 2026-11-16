@@ -2421,6 +2421,14 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // literal of five Channels) is special-cased in lowerBuiltinModuleCall.
       tracingChannel: { fn: "dc.tracingChannel", params: [STRING], result: F64 },
     },
+    // node:trace_events — createTracing answers a native Tracing handle
+    // (type-mapper.ts maps Tracing to the checked-dynamic value, so member
+    // reads and enable()/disable() ride the dyn tree); the options object
+    // crosses as a dyn value (special-cased in lowerBuiltinModuleCall).
+    trace_events: {
+      createTracing: { fn: "te.createTracing", params: [DYN], result: DYN },
+      getEnabledCategories: { fn: "te.getEnabledCategories", params: [], result: DYN },
+    },
   };
 }
 

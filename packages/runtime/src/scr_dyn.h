@@ -276,6 +276,7 @@ typedef enum {
   Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the

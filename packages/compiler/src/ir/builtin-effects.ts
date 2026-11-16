@@ -353,6 +353,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
   // non-function subscribers.
+  // trace_events.createTracing validates its options object.
+  "te.createTracing",
   "dc.publish",
   "dc.subscribe",
   "dc.unsubscribe",

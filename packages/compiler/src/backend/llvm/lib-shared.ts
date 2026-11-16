@@ -2106,6 +2106,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
+  // node:trace_events (scr_async_dyn.c): native Tracing handles.
+  "te.createTracing": "scr_te_create",
+  "te.getEnabledCategories": "scr_te_get_enabled_categories",
   // process warning/rejection events (scr_lib.c / scr_async_dyn.c):
   // dyn listeners are borrowed (the runtime retains its copy);
   // onUnhandledRejection marks the loop live (the checkpoint report

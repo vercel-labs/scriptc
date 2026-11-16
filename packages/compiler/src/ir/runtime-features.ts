@@ -191,6 +191,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+
+  // trace_events.Tracing handles (same unit: the checked-dynamic handle
+  // table and the registry).
+  "te.createTracing",
+  "te.getEnabledCategories",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",

@@ -1,16 +1,31 @@
 #include "scr_worker.h"
 
 #ifdef SCR_WORKERS
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 extern int sc_worker_entry(uint32_t root);
+
+/* One terminate() call's promise, answered when the worker exits. */
+typedef struct ScrTermWait {
+  ScrPromise *promise;
+  struct ScrTermWait *next;
+} ScrTermWait;
 
 typedef struct ScrWorkerView {
   size_t rc;
   ScrEmitter *events;
   ScrWorkerThread *thread;
-  ScrPromise *termination;
+  /* terminate()'s promises: Node answers a fresh promise per call, each
+   * resolving with the exit code (undefined when the worker had already
+   * stopped). */
+  ScrTermWait *termination;
   ScrPromise *disposal; /* worker[Symbol.asyncDispose]()'s promise */
   bool port;
   bool closed;
@@ -157,7 +172,7 @@ static ScrStream *scr_worker_stdin_new(ScrWorkerThread *thread) {
 static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   ScrWorkerView *view = ptr;
   visit(view->events, ctx);
-  visit(view->termination, ctx);
+  for (ScrTermWait *wait = view->termination; wait; wait = wait->next) visit(wait->promise, ctx);
   visit(view->disposal, ctx);
   for (int i = 0; i < 2; i++) {
     visit(view->stdio[i], ctx);
@@ -186,7 +201,12 @@ static void scr_worker_view_gcfree(void *ptr) {
 static void scr_worker_view_destroy(void *ptr) {
   ScrWorkerView *view = ptr;
   scr_emitter_release(view->events);
-  scr_promise_release(view->termination);
+  while (view->termination) {
+    ScrTermWait *wait = view->termination;
+    view->termination = wait->next;
+    scr_promise_release(wait->promise);
+    free(wait);
+  }
   scr_promise_release(view->disposal);
   for (int i = 0; i < 2; i++) {
     if (view->stdio[i]) scr_worker_stdio_ops->release(view->stdio[i]);
@@ -381,6 +401,26 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
         scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
         return NULL;
       }
+      /* Node validates the list before it clones: one port listed twice is a
+       * duplicate, and a value that is no transferable at all is invalid. An
+       * ArrayBuffer or SharedArrayBuffer keeps the documented refusal. */
+      if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.tag == SCR_DYNH_MESSAGE_PORT) {
+        for (size_t j = 0; j < i; j++) {
+          const ScrDyn *earlier = value->v.arr.items[j];
+          if (earlier && earlier->kind == SCR_DYN_HANDLE &&
+              earlier->v.handle.tag == SCR_DYNH_MESSAGE_PORT &&
+              earlier->v.handle.ptr == item->v.handle.ptr) {
+            scr_dyn_release(own);
+            scr_throw_domex("DataCloneError", "Transfer list contains duplicate MessagePort");
+            return NULL;
+          }
+        }
+        continue;
+      }
+      if (scr_array_buffer_is(item) || scr_shared_array_buffer_is(item)) continue;
+      scr_dyn_release(own);
+      scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+      return NULL;
     }
     ScrDyn *result = scr_dyn_retain(value);
     scr_dyn_release(own);
@@ -420,17 +460,29 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
   if (view->port && method_is(method, "hasRef"))
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
   if (!view->port && method_is(method, "terminate")) {
-    /* Node's terminate() refs the worker before stopping the thread, so the
-     * loop stays up until the exit event settles the promise. */
+    /* Node's terminate() returns a fresh promise per call. It refs the worker
+     * before stopping the thread, so the loop stays up until the exit event
+     * settles it; a worker that had already stopped answers undefined. */
     view->referenced = true;
     view->message_port_ref = true;
-    if (!view->termination) {
-      view->termination = scr_promise_new();
-      if (view->closed) scr_promise_fulfill_ref(view->termination,
-        scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-      else scr_worker_thread_terminate(view->thread);
+    ScrPromise *promise = scr_promise_new();
+    ScrDyn *result = scr_dyn_new_promise(promise);
+    if (view->closed) {
+      /* Node answers undefined once the worker has stopped, which the
+       * declared Promise<number> cannot spell; a typed handler would reject
+       * there, an untyped one reads exactly Node's value. */
+      scr_promise_fulfill_ref(promise, scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v,
+                              scr_dyn_release_v, scr_dyn_trace_v);
+    } else {
+      ScrTermWait *wait = malloc(sizeof *wait);
+      if (!wait) scr_trap("scriptc: out of memory\n");
+      wait->promise = scr_promise_retain(promise);
+      wait->next = view->termination;
+      view->termination = wait;
+      scr_worker_thread_terminate(view->thread);
     }
-    return scr_dyn_new_promise(view->termination);
+    scr_promise_release(promise);
+    return result;
   }
   if (method_is(method, "postMessage")) {
     /* Worker drops messages after exit before validating or cloning. A
@@ -601,6 +653,8 @@ static ScrDyn *scr_worker_async_dispose_call(ScrClosure *closure, ScrDyn *const 
       view->disposal = scr_promise_new();
       if (view->closed) scr_promise_fulfill_ref(view->disposal,
         scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      /* Node's disposal promise resolves with undefined, not the exit code
+       * its terminate() answers (the exit event settles it below). */
       else if (!view->termination) scr_worker_thread_terminate(view->thread);
     }
     result = scr_dyn_new_promise(view->disposal);
@@ -629,11 +683,13 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     return scr_dyn_retain(view->stdin_box);
   }
   if (!view->port && length == 6 && (!memcmp(key, "stdout", 6) || !memcmp(key, "stderr", 6))) {
+    /* Node's getter always answers the stream: without the option the
+     * worker's writes also reach the process's own output. */
     int i = key[3] == 'e' ? 1 : 0;
-    if (!view->stdio_captured[i])
-      return scr_worker_refusal(i ? "worker.stderr without the stderr option is not supported yet"
-                                  : "worker.stdout without the stdout option is not supported yet");
-    if (!view->stdio[i]) return scr_dyn_new_null();
+    if (!view->stdio[i]) {
+      if (!scr_worker_stdio_ops) return scr_dyn_new_null();
+      view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
+    }
     if (!view->stdio_box[i]) view->stdio_box[i] = scr_worker_stdio_box(view->stdio[i]);
     return scr_dyn_retain(view->stdio_box[i]);
   }
@@ -855,6 +911,21 @@ static bool scr_workers_more(void) {
   return false;
 }
 
+/* A worker's write to the process's own output: the pipe Node makes when the
+ * stdout or stderr option is absent. */
+static void scr_worker_pipe_output(int fd, const unsigned char *data, size_t length) {
+  while (length > 0) {
+#ifdef _WIN32
+    int written = _write(fd, data, (unsigned)(length > INT_MAX ? INT_MAX : length));
+#else
+    ssize_t written = write(fd, data, length);
+#endif
+    if (written <= 0) return;
+    data += written;
+    length -= (size_t)written;
+  }
+}
+
 static void scr_worker_dispatch(void) {
   bool batch = scr_worker_batch_queued;
   scr_worker_batch_queued = false;
@@ -899,10 +970,25 @@ static void scr_worker_dispatch(void) {
     return;
   }
   if (event->kind == SCR_WORKER_STDOUT || event->kind == SCR_WORKER_STDERR) {
+    int stderr_stream = event->kind == SCR_WORKER_STDERR;
     ScrWorkerView *source = scr_worker_views;
     while (source && scr_worker_thread_id(source->thread) != event->source) source = source->next;
-    ScrStream *stream = source ? source->stdio[event->kind == SCR_WORKER_STDERR] : NULL;
-    if (stream) {
+    ScrStream *stream = source ? source->stdio[stderr_stream] : NULL;
+    /* Node pipes a stream the options did not capture to the process's own
+     * output, and its pipe is registered at construction: the chunk reaches
+     * that output before a listener the program adds later runs. */
+    if (source && !source->stdio_captured[stderr_stream] && event->data && event->length)
+      scr_worker_pipe_output(stderr_stream ? 2 : 1, event->data, event->length);
+    /* Pushing into a Readable nothing reads grows its buffer without bound.
+     * A stream the options captured is Node's own buffered Readable; one they
+     * did not capture is drained by the pipe above, so it takes a chunk only
+     * while a reader (a 'data' listener or resume()) is flowing, as Node's
+     * pipe consumes everything else. */
+    /* A chunk nobody will read is forwarded and dropped: pushing it into a
+     * Readable that never drains it would grow the parent without bound. */
+    bool wanted = stream != NULL && scr_worker_stdio_ops->wanted != NULL &&
+                  scr_worker_stdio_ops->wanted(stream);
+    if (stream && (source->stdio_captured[stderr_stream] || wanted)) {
       ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)event->length);
       memcpy(chunk->data, event->data, event->length);
       chunk->is_buffer = true;
@@ -948,8 +1034,24 @@ static void scr_worker_dispatch(void) {
   if (event->kind == SCR_WORKER_EXIT) {
     scr_worker_thread_join(view->thread);
     view->closed = true;
-    if (view->termination) scr_promise_fulfill_ref(view->termination,
-      scr_dyn_new_num(event->code), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    /* The list holds a call at the head when it is made, and Node settles
+     * the calls in the order they were made: reverse it first, so each
+     * promise's reactions run in call order. */
+    ScrTermWait *settle = NULL;
+    while (view->termination) {
+      ScrTermWait *wait = view->termination;
+      view->termination = wait->next;
+      wait->next = settle;
+      settle = wait;
+    }
+    while (settle) {
+      ScrTermWait *wait = settle;
+      settle = wait->next;
+      scr_promise_fulfill_ref(wait->promise, scr_dyn_new_num(event->code),
+                              scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      scr_promise_release(wait->promise);
+      free(wait);
+    }
     if (view->disposal) scr_promise_fulfill_ref(view->disposal,
       scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     ScrWorkerView **slot = &scr_worker_views;
@@ -1609,6 +1711,8 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrDyn *name = scr_dyn_undefined();
   ScrDyn *env = scr_dyn_undefined();
   unsigned capture = 0;
+  bool option_stdout = false;
+  bool option_stderr = false;
   if (options->kind != SCR_DYN_UNDEF) {
     if (options->kind != SCR_DYN_OBJ) {
       scr_dyn_arg_type_fail("options", "object", options);
@@ -1623,12 +1727,15 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       else if (entry.key_len == 14 && !memcmp(entry.key, "resourceLimits", 14)) limits = entry.value;
       else if (entry.key_len == 4 && !memcmp(entry.key, "name", 4)) name = entry.value;
       else if (entry.key_len == 3 && !memcmp(entry.key, "env", 3)) env = entry.value;
-      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) capture |= scr_dyn_truthy(entry.value) ? 1 : 0;
-      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) capture |= scr_dyn_truthy(entry.value) ? 2 : 0;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) option_stdout = scr_dyn_truthy(entry.value);
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) option_stderr = scr_dyn_truthy(entry.value);
       else if (entry.key_len == 5 && !memcmp(entry.key, "stdin", 5)) capture |= scr_dyn_truthy(entry.value) ? 4 : 0;
       else return scr_worker_refusal("This Worker constructor option is not supported yet");
     }
   }
+  /* Both streams are captured: one the options did not ask for is piped to
+   * the process's own output by the dispatcher, as Node pipes it. */
+  capture |= 3;
   size_t stack_size = 0;
   if (!scr_worker_stack_size(limits, &stack_size)) return NULL;
   ScrArr *arguments = scr_worker_arguments(filename, argv);
@@ -1680,10 +1787,9 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrWorkerView *view = scr_worker_view_new(false);
   view->thread = thread;
   for (int i = 0; i < 2; i++) {
-    view->stdio_captured[i] = (capture >> i) & 1;
+    view->stdio_captured[i] = i == 0 ? option_stdout : option_stderr;
     /* without the stream unit nothing can read the stream: the output is dropped */
-    if (view->stdio_captured[i] && scr_worker_stdio_ops)
-      view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
+    if (scr_worker_stdio_ops) view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
   }
   view->stdin_captured = capture & 4;
   if (view->stdin_captured && scr_worker_stdio_ops) view->stdin_stream = scr_worker_stdin_new(thread);

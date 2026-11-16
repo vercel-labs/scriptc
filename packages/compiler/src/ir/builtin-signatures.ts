@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  WATCHEVENTS_T,
   HTTP2SESSION_T,
   HTTP2STREAM_T,
   HTTPCLIENTREQ_T,
@@ -1457,6 +1458,10 @@ function buildLibFnSignatures() {
      * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. A registered blob
      * answers a fresh "blob:nodedata:<uuid v4>" id. */
     "url.createObjectURL": { argTypes: [DYN], result: STRING },
+    /** buffer.resolveObjectURL(id): the id arrives as a checked value and
+     * the runtime applies Node's ToString (a symbol throws), then answers
+     * the registered Blob as a handle, or undefined when it names nothing. */
+    "buffer.resolveObjectURL": { argTypes: [DYN], result: DYN },
     /** URL.revokeObjectURL(id): the id arrives already converted. The
      * runtime parses it as a URL and drops the registration whose id is
      * the pathname text between its first and second colon, so a query or
@@ -1656,6 +1661,9 @@ function buildLibFnSignatures() {
     "util.setTraceSigInt": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
+     * WritableStream and the option flags; a Writable. */
+    "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -1795,6 +1803,17 @@ function buildLibFnSignatures() {
      * takes a borrowed listener; the null slot is the absent one. */
     "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
+    /** fsPromises.watch(path, persistent) → the async iterator
+     * (scr_watch_async.c — its own gated unit over scr_watch.c's watcher;
+     * moduleUsesFsWatchEvents is the switch, and scr_watch_events_install()
+     * is emitted with it). Consumed only as a `for await` source: the loop
+     * awaits watchEvents.wait and pops one entry with watchEvents.take,
+     * whose `{ eventType, filename } | null` result the lowering types.
+     * close() is the loop's finally. */
+    "fsp.watch": { argTypes: [STRING, BOOL, F64, BOOL], result: WATCHEVENTS_T },
+    "watchEvents.wait": { argTypes: [WATCHEVENTS_T], result: { kind: "promise", inner: BOOL } },
+    "watchEvents.take": { argTypes: [WATCHEVENTS_T], result: DYN },
+    "watchEvents.close": { argTypes: [WATCHEVENTS_T], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
      * uppercase colon-separated, over PEM or raw-DER Buffer input; other
@@ -2726,13 +2745,13 @@ function buildLibFnSignatures() {
     "http.resWriteContinue": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteProcessing": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteEarlyHints": { argTypes: [HTTPRES_T, arrayOf(STRING)], result: VOID },
-    "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: VOID },
-    "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
+    "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: BOOL },
+    "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: BOOL },
     "http.resEnd": { argTypes: [HTTPRES_T], result: VOID },
     "http.resEndStr": { argTypes: [HTTPRES_T, STRING], result: VOID },
     "http.resEndBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
-    "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: BOOL },
     "http.resEndDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resHeadersSent": { argTypes: [HTTPRES_T], result: BOOL },
     "http.resWritableEnded": { argTypes: [HTTPRES_T], result: BOOL },
@@ -2741,6 +2760,15 @@ function buildLibFnSignatures() {
     "http.resCork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resUncork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableCorked": { argTypes: [HTTPRES_T], result: F64 },
+    /* write()'s answer and the OutgoingMessage state behind it: Node's
+     * writableLength (corked bytes + chunk framing + held head + the
+     * socket's unsent bytes), writableNeedDrain, the 'drain' event, and
+     * setHeaders/pipe. */
+    "http.resWritableLength": { argTypes: [HTTPRES_T], result: F64 },
+    "http.resWritableNeedDrain": { argTypes: [HTTPRES_T], result: BOOL },
+    "http.resOnDrain": { argTypes: [HTTPRES_T, null, BOOL], result: VOID },
+    "http.resSetHeaders": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http.resPipe": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableHighWaterMark": { argTypes: [HTTPRES_T], result: F64 },
     "http.resWritableObjectMode": { argTypes: [HTTPRES_T], result: BOOL },
     /** res.on("prefinish", cb): fires inside end(). Throws for the HTTP/2
@@ -3180,6 +3208,8 @@ function buildLibFnSignatures() {
      * callback fires post-handshake — Node's secureConnect timing. */
     "tls.connect": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
     "tls.connectCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
+    /** tls.connect(path[, options][, callback]): the Unix-socket client. */
+    "tls.connectPath": { argTypes: [STRING, DYN, null], result: NETSOCKET_T },
     // The TLSSocket member surface (authError's `string | null` union is
     // shape-checked in the special cases in validate.ts — the reqHeader pattern).
     /** The TLSSocket member surface on the socket kind: authorized (bool —
@@ -3192,6 +3222,12 @@ function buildLibFnSignatures() {
     /** getProtocol() (string | null), getCipher() (CipherNameAndProtocol,
      * undefined before the handshake, null after close) and alpnProtocol
      * (string | false | null), as dyn values. */
+    /** tlsSocket.servername (string or false) and getSession() (a Buffer
+     * or null) as dyn values, and disableRenegotiation's no-op. */
+    "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** disableRenegotiation(): a no-op call, so the receiver is still
+     * evaluated (and its exceptions still surface). */
+    "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
     "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
@@ -3479,7 +3515,7 @@ function buildLibFnSignatures() {
       argTypes: [BOOL, DYN, BOOL, null],
       result: HTTPCLIENTREQ_T,
     },
-    "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+    "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
@@ -3487,18 +3523,22 @@ function buildLibFnSignatures() {
     "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
     "http.clientGetRawHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
     "http.clientGetHeaders": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
-    "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
+    "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: BOOL },
     "http.clientEnd": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientEndStr": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientEndBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
-    "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
+    "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: BOOL },
     "http.clientEndDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     "http.clientFlushHeaders": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientAddTrailers": { argTypes: [HTTPCLIENTREQ_T, arrayOf(STRING)], result: VOID },
     "http.clientCork": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientUncork": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientWritableCorked": { argTypes: [HTTPCLIENTREQ_T], result: F64 },
+    "http.clientWritableLength": { argTypes: [HTTPCLIENTREQ_T], result: F64 },
+    "http.clientWritableNeedDrain": { argTypes: [HTTPCLIENTREQ_T], result: BOOL },
+    "http.clientOnDrain": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    "http.clientPipe": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientMethod": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
     "http.clientPath": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
     "http.clientHost": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
@@ -4169,6 +4209,9 @@ function buildLibFnSignatures() {
     "webcrypto.unwrapKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "webcrypto.getPublicKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "webcrypto.keyObjectToCryptoKey": { argTypes: [DYN], result: DYN },
+    "webcrypto.keyObjectFrom": { argTypes: [DYN], result: DYN },
     "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
     "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
@@ -5783,6 +5826,10 @@ function buildLibFnSignatures() {
      * stream). Both answer the stream (+1) and throw ERR_INVALID_ARG_TYPE
      * for a value that is not an AbortSignal; they link the event-target
      * unit (addAbortListener). */
+    /** stream.getDefaultHighWaterMark(objectMode) (scr_stream_get_default_hwm): the default new streams take. */
+    "stream.getDefaultHwm": { argTypes: [BOOL], result: F64 },
+    /** stream.setDefaultHighWaterMark(objectMode, value): ERR_OUT_OF_RANGE for a negative or fractional value. */
+    "stream.setDefaultHwm": { argTypes: [BOOL, F64], result: VOID },
     "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
     "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
     "stream.finished": { argTypes: [null, null], result: VOID },

@@ -2649,8 +2649,11 @@ static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     return scr_dyn_new_bool(same);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    sp_not_supported("KeyObject.toCryptoKey");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      sp_not_supported("KeyObject.toCryptoKey");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
@@ -6086,6 +6089,15 @@ void scr_pki_key_release(ScrPkiKey *key) { sp_key_release(key); }
 
 bool scr_pki_key_is_private(const ScrPkiKey *key) { return key->private_key; }
 
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value) {
+  SpKey *key = sp_key_of(value);
+  return key ? sp_key_retain(key) : NULL;
+}
+
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key) {
+  return sp_key_box(sp_key_retain(key));
+}
+
 bool scr_pki_key_is_rsa_pss(const ScrPkiKey *key) { return key->rsa_pss; }
 
 bool scr_pki_key_is_rsa(const ScrPkiKey *key) { return sp_is_rsa(key); }
@@ -6275,6 +6287,9 @@ static bool sp_webcrypto_md(const char *hash, mbedtls_md_type_t *md) {
   else if (strcmp(hash, "SHA-256") == 0) *md = MBEDTLS_MD_SHA256;
   else if (strcmp(hash, "SHA-384") == 0) *md = MBEDTLS_MD_SHA384;
   else if (strcmp(hash, "SHA-512") == 0) *md = MBEDTLS_MD_SHA512;
+  else if (strcmp(hash, "SHA3-256") == 0) *md = MBEDTLS_MD_SHA3_256;
+  else if (strcmp(hash, "SHA3-384") == 0) *md = MBEDTLS_MD_SHA3_384;
+  else if (strcmp(hash, "SHA3-512") == 0) *md = MBEDTLS_MD_SHA3_512;
   else return false;
   return true;
 }

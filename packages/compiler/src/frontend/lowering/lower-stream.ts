@@ -2504,7 +2504,9 @@ function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   const writable: IrExpr = {
     kind: "libCall",
     fn: "webstream.writableFromWeb",
-    args: [member("writable"), numLit(0, loc)],
+    /* flags bit 0: the web pair's member — destroying it aborts the writer
+     * (Node's web-pair adapter) instead of closing it. */
+    args: [member("writable"), numLit(1, loc)],
     type: { kind: "object", className: "%Writable" },
     loc,
   };

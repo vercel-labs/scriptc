@@ -5396,6 +5396,12 @@ static void scr_dupx_r_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
  * same outcome, so a failing web sink reaches the caller's write callback. */
 static void scr_dupx_write_done(ScrClosure *cb) {
   ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  /* The completion may arrive after the duplex was torn down (a web sink
+   * that settles late): there is no stream left to complete. */
+  if (!x->d) {
+    scr_dupx_release_v(x);
+    return;
+  }
   ScrError *err = scr_stream_write_cb_error();
   scr_stream_write_done(x->d, err ? scr_error_retain(err) : NULL);
   scr_dupx_release_v(x);

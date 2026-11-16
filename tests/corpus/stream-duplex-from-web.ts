@@ -61,6 +61,7 @@ async function main(): Promise<void> {
   await tick();
 
   // destroy() without an error closes cleanly: no error event.
+  const cleanHooks: string[] = [];
   const clean = Duplex.fromWeb({
     readable: new ReadableStream<Uint8Array>({
       start(controller): void {
@@ -69,12 +70,44 @@ async function main(): Promise<void> {
     }),
     writable: new WritableStream<Uint8Array>({
       write(): void {},
+      close(): void {
+        cleanHooks.push("sink close");
+      },
+      abort(reason): void {
+        cleanHooks.push(reason === null ? "sink abort null" : "sink abort reason");
+      },
     }),
   });
   clean.on("error", (error: Error) => log.push(`clean error ${error.message}`));
   clean.destroy();
   await tick();
-  log.push(`clean destroyed ${clean.destroyed} errored ${clean.errored?.message ?? "-"}`);
+  log.push(
+    `clean hooks ${cleanHooks.join(",")} destroyed ${clean.destroyed} errored ${clean.errored?.message ?? "-"}`,
+  );
+
+  // A web sink that settles after the Duplex was destroyed: the late write
+  // completion must not touch the torn-down Duplex.
+  let settleWrite: (() => void) | null = null;
+  const late = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.close();
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): Promise<void> {
+        return new Promise<void>((resolve) => {
+          settleWrite = resolve;
+        });
+      },
+    }),
+  });
+  late.write(Buffer.from("x"));
+  await tick();
+  late.destroy();
+  if (settleWrite !== null) (settleWrite as () => void)();
+  await tick();
+  log.push(`late completion ${late.destroyed}`);
 }
 
 main().then(() => {

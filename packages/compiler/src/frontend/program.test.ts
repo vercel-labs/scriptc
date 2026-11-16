@@ -17,7 +17,7 @@ import { AstNode } from "./ts7/ast-node.js";
 import { SemanticChecker } from "./ts7/semantic-checker.js";
 import { DECL_BOUNDARY_PREFIX } from "./decl-projection.js";
 import { elideProgramImports } from "./import-elision.js";
-import { cjsVoidInitPreambleTargets } from "./program.js";
+import { cjsVoidInitPreambleTargets, type CjsVoidInitPreamble } from "./program.js";
 import * as adapter from "./ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
 
@@ -679,9 +679,9 @@ test("asking for the module order first leaves the report and the order as they 
   }
 });
 
-/** Whether the first `= void 0` export write in `source` is a preamble the
- * lowering may drop (program.ts, cjsVoidInitPreambleTargets). */
-function voidPreambleDropped(source: string): boolean {
+/** The first `= void 0` export write in `source` as a preamble the lowering
+ * may elide (program.ts, cjsVoidInitPreambleTargets). */
+function voidPreambleOf(source: string): CjsVoidInitPreamble | null {
   const file = parseSourceFile("/pkg/index.js", source, "js");
   const writes: adapter.BinaryExpression[] = [];
   adapter.walkPreorder(file, (node) => {
@@ -700,7 +700,13 @@ function voidPreambleDropped(source: string): boolean {
     return undefined;
   });
   if (writes.length === 0) throw new Error("no void write");
-  return cjsVoidInitPreambleTargets(writes[0]!) !== null;
+  return cjsVoidInitPreambleTargets(writes[0]!);
+}
+
+/** Whether the first `= void 0` export write in `source` is a preamble the
+ * lowering may elide. */
+function voidPreambleDropped(source: string): boolean {
+  return voidPreambleOf(source) !== null;
 }
 
 test("a void export preamble lowers to nothing when both conditional arms assign", () => {
@@ -786,6 +792,30 @@ test.each([
   ],
 ])("a void export preamble stays when there is %s", (_what, source) => {
   expect(voidPreambleDropped(source)).toBe(false);
+});
+
+test("a void 0 preamble has no operand to evaluate when it is elided", () => {
+  expect(
+    voidPreambleOf(`exports.now = void 0;\nexports.now = function () { return 1; };\n`)?.effect,
+  ).toBeNull();
+});
+
+test("an elided preamble keeps an effectful void operand to evaluate", () => {
+  const preamble = voidPreambleOf(`
+exports.now = void mark();
+if (cond) { exports.now = function () { return 1; }; }
+else { exports.now = function () { return 2; }; }
+`);
+  expect(preamble).not.toBeNull();
+  const effect = preamble!.effect;
+  expect(effect === null ? "" : adapter.getTextOfNode(effect)).toBe("mark()");
+});
+
+test("a pure void operand has nothing to evaluate", () => {
+  expect(
+    voidPreambleOf(`exports.now = void "value";\nexports.now = function () { return 1; };\n`)
+      ?.effect,
+  ).toBeNull();
 });
 
 test("a void export preamble stays when one conditional arm assigns a different member", () => {

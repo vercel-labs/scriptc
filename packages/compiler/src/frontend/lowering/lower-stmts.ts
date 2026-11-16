@@ -218,6 +218,8 @@ import {
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
   cjsVoidInitPreambleTargets,
+  cjsVoidInitWriteEffect,
+  type CjsVoidInitPreamble,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -10233,6 +10235,14 @@ function lowerFunctionConstructorWrite(
   };
 }
 
+/** A preamble write's elision: nothing for a pure `void 0`, and the `void`
+ * operand's evaluation for an effectful one (its value is discarded at the
+ * original statement position too). */
+function cjsVoidInitElision(lowerer: Lowerer, preamble: CjsVoidInitPreamble, loc: SrcLoc): IrStmt {
+  if (preamble.effect === null) return { kind: "block", body: [], loc };
+  return { kind: "exprStmt", expr: lowerer.lowerExpr(preamble.effect), loc };
+}
+
 /** Whether the export storage behind every target of a `void 0` preamble
  * write cannot hold undefined, which is what makes the write trap: a static
  * slot with no undefined arm. Dynamic and explicitly optional storage holds
@@ -10365,16 +10375,26 @@ function lowerCjsExportStatement(
     // the real assignment's position already orders. Preambles with no
     // later real assignment keep the ordinary path (the export IS
     // undefined then).
-    if (cjsVoidInitPreambleReals(cjs) !== null) return { kind: "block", body: [], loc };
-    // The same preamble whose real assignments sit inside a conditional
-    // (`if (…) { exports.now = f } else { exports.now = g }`): every path
-    // past the statement assigns the export, and a static slot without an
-    // undefined arm cannot hold the transient value, so the write lowers to
-    // nothing.
     {
-      const targets = cjsVoidInitPreambleTargets(cjs.expr);
-      if (targets !== null && cjsVoidInitTargetsCannotHoldUndefined(lowerer, targets))
-        return { kind: "block", body: [], loc };
+      const preamble = cjsVoidInitPreambleTargets(cjs.expr);
+      // The preamble's real assignments may sit inside a conditional
+      // (`if (…) { exports.now = f } else { exports.now = g }`): every path
+      // past the statement assigns the export, and a static slot without an
+      // undefined arm cannot hold the transient value. A later top-level
+      // real assignment elides the write even for other storage. Both keep
+      // an effectful `void` operand's evaluation.
+      if (
+        preamble !== null &&
+        (cjsVoidInitPreambleReals(cjs) !== null ||
+          cjsVoidInitTargetsCannotHoldUndefined(lowerer, preamble.targets))
+      )
+        return cjsVoidInitElision(lowerer, preamble, loc);
+      if (cjsVoidInitPreambleReals(cjs) !== null) {
+        const effect = cjsVoidInitWriteEffect(cjs.expr);
+        return effect === null
+          ? { kind: "block", body: [], loc }
+          : { kind: "exprStmt", expr: lowerer.lowerExpr(effect), loc };
+      }
     }
     const sf = ts.getSourceFileOfNode(cjs.expr);
     let root: IrGlobal | undefined;
@@ -12060,12 +12080,16 @@ export function lowerExprStatement(
         if (g) {
           const loc = locOf(expr);
           // A `void 0` preamble write whose every continuing path assigns
-          // this export later, in a slot that cannot hold undefined,
-          // lowers to nothing instead of trapping at load.
+          // this export later, in a slot that cannot hold undefined, is
+          // elided instead of trapping at load; an effectful `void` operand
+          // still runs.
           {
-            const targets = cjsVoidInitPreambleTargets(expr);
-            if (targets !== null && cjsVoidInitTargetsCannotHoldUndefined(lowerer, targets))
-              return { kind: "block", body: [], loc };
+            const preamble = cjsVoidInitPreambleTargets(expr);
+            if (
+              preamble !== null &&
+              cjsVoidInitTargetsCannotHoldUndefined(lowerer, preamble.targets)
+            )
+              return cjsVoidInitElision(lowerer, preamble, loc);
           }
           const value = lowerer.lowerExprExpecting(expr.right, g.type);
           if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {

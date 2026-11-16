@@ -8,7 +8,9 @@
 import { now, later, since } from "clock-export";
 import { now as earlyNow, later as earlyLater } from "clock-export-early";
 import { a, b, describe } from "clock-export-chain";
+import { later as effectLater, now as effectNow, calls } from "clock-export-effect";
 
 console.log(typeof now, later(), String(since()));
 console.log(typeof earlyNow, earlyLater(), String(earlyLater() === "number"));
 console.log(describe(), a() + b());
+console.log(effectLater(), effectNow(), calls());

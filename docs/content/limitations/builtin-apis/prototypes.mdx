@@ -16,6 +16,7 @@
   Static accessors of TypeScript classes compile, including inherited ones and `super` in a static member; compound assignment and `++` on a static accessor are unsupported.
   `Object.prototype`'s own members read as values; its mutation and other reflection, such as `isPrototypeOf` and `__proto__`, are unsupported.
   In a JavaScript source, `Date.prototype` and `ArrayBuffer.prototype` read as the prototype objects the language defines — an ordinary object carrying the interface's members and constructor, with ArrayBuffer's `byteLength`, `maxByteLength`, `resizable` and `detached` as getters — so existence tests such as `Object.prototype.hasOwnProperty.call(ArrayBuffer.prototype, "detached")` answer as in Node, and a method called on the prototype object itself throws a TypeError.
+  ArrayBuffer's prototype getters and methods brand-check an ArrayBuffer receiver, so one run on a SharedArrayBuffer or any other value throws the TypeError Node throws.
   The constructors `Object`, `Function`, `Date`, `RegExp`, `Map`, `Set`, `WeakMap`, `WeakSet`, and `Promise` read as function values; through a stored value only `Object` and `RegExp` can be called.
   A stored `RegExp` call builds what `new RegExp(...)` builds, except that a pattern that is a RegExp is answered itself when no flags are passed, as in Node.
   `new` through a stored `Object`, `Date`, `RegExp`, `Map`, `Set`, `WeakMap`, or `WeakSet` builds the same value as the `new` expression.

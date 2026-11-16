@@ -150,9 +150,9 @@ static ScrDyn *dyn_stdlib_prototype_build_date(const ScrStr *name) {
 /* ArrayBuffer.prototype's interface, in Node's own-property order: the four
  * methods (each carrying its ECMAScript `length`), and the four accessors
  * whose getters answer a view's byteLength, maxByteLength, resizable and
- * detached. A getter called on anything but an ArrayBuffer or
- * SharedArrayBuffer view throws Node's TypeError for an incompatible
- * receiver. */
+ * detached. Their getters brand-check an ArrayBuffer receiver: a
+ * SharedArrayBuffer has its own prototype, so it throws the TypeError an
+ * incompatible receiver throws, as does any other value. */
 typedef struct {
   const char *property;
   /* The getter's `name`: Node's "get byteLength". NULL for a method, whose
@@ -174,17 +174,16 @@ static const DynArrayBufferPrototypeMember dyn_array_buffer_prototype_members[] 
 };
 
 /* The getters of those accessors: closure->fn names the member, and the
- * receiver is the view the read ran on. */
+ * receiver is the view the read ran on. Only an ArrayBuffer view answers;
+ * the dyn member read is the one that dispatches a handle's own getters. */
 static ScrDyn *dyn_stdlib_array_buffer_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   const char *member = closure->fn;
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (receiver->kind == SCR_DYN_HANDLE &&
-      (receiver->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
-       receiver->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER)) {
-    result = scr_dyn_obj_read_with_receiver(receiver, member, strlen(member), receiver);
+  if (receiver->kind == SCR_DYN_HANDLE && receiver->v.handle.tag == SCR_DYNH_ARRAY_BUFFER) {
+    result = scr_dyn_obj_read(receiver, member, strlen(member));
   } else {
     char message[96];
     int length = snprintf(message, sizeof message,

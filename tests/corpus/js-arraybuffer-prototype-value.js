@@ -45,6 +45,38 @@ console.log(
   buffer.detached,
 );
 
+// A prototype getter run on a real ArrayBuffer answers its member; a
+// SharedArrayBuffer, which has a prototype of its own, and any other value
+// throw the TypeError an incompatible receiver throws.
+const getterOf = (name) => Object.getOwnPropertyDescriptor(prototype, name).get;
+const invoke = (fn, receiver) => fn.call(receiver);
+const getters = ["byteLength", "maxByteLength", "resizable", "detached"];
+console.log(
+  "getters",
+  getters.map((name) => String(invoke(getterOf(name), buffer))).join(","),
+);
+const shared = new SharedArrayBuffer(8);
+for (const name of getters) {
+  try {
+    invoke(getterOf(name), shared);
+    console.log(name, "no-throw");
+  } catch (error) {
+    console.log(name, error instanceof TypeError);
+  }
+}
+
+// The methods brand-check the receiver the same way.
+const copy = invoke(prototype.slice, buffer);
+console.log("slice copy", copy.byteLength, copy.constructor === ArrayBuffer);
+for (const method of ["slice", "resize"]) {
+  try {
+    invoke(prototype[method], shared);
+    console.log("method", method, "no-throw");
+  } catch (error) {
+    console.log("method", method, error instanceof TypeError);
+  }
+}
+
 // On the prototype object itself the getters and methods throw TypeError.
 function report(name, call) {
   try {

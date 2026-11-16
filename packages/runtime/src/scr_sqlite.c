@@ -1818,10 +1818,14 @@ static void scr_sqlite_func_destroy(void *self) { scr_sqlite_func_release(self);
  * `acc`) followed by the SQLite arguments, as checked-dynamic values. All
  * arguments are borrowed; the result is +1, or NULL with the exception
  * pending. */
-static ScrDyn *scr_sqlite_call_js(ScrSqliteFunc *f, ScrDyn *acc, sqlite3_value **argv, int argc) {
+static ScrDyn *scr_sqlite_call_js(ScrSqliteFunc *f, const ScrDyn *fn, ScrDyn *acc,
+                                  sqlite3_value **argv, int argc) {
   scr_dyn_this_push_dyn(scr_dyn_undefined());
-  ScrDyn **values = argc + 1 <= 1 ? NULL : malloc((size_t)(argc + 1) * sizeof *values);
-  if (argc + 1 > 1 && values == NULL) scr_sqlite_oom();
+  /* Room for the accumulator and the value arguments: a zero-argument
+   * aggregate still carries the accumulator. */
+  size_t capacity = (size_t)argc + (acc != NULL ? 1 : 0);
+  ScrDyn **values = capacity == 0 ? NULL : malloc(capacity * sizeof *values);
+  if (capacity > 0 && values == NULL) scr_sqlite_oom();
   size_t count = 0;
   ScrDyn *result = NULL;
   if (acc != NULL) values[count++] = scr_dyn_retain(acc);
@@ -1830,7 +1834,7 @@ static ScrDyn *scr_sqlite_call_js(ScrSqliteFunc *f, ScrDyn *acc, sqlite3_value *
     if (value == NULL) goto done;
     values[count++] = value;
   }
-  result = scr_dyn_call(f->fn, values, count, f->name);
+  result = scr_dyn_call(fn, values, count, f->name);
 done:
   for (size_t i = 0; i < count; i++) scr_dyn_release(values[i]);
   free(values);
@@ -1849,7 +1853,7 @@ static void scr_sqlite_callback_failed(ScrSqliteFunc *f, sqlite3_context *ctx) {
 static void scr_sqlite_func_xfunc(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   ScrSqliteFunc *f = sqlite3_user_data(ctx);
   f->db->callback_depth++;
-  ScrDyn *result = scr_sqlite_call_js(f, NULL, argv, argc);
+  ScrDyn *result = scr_sqlite_call_js(f, f->fn, NULL, argv, argc);
   f->db->callback_depth--;
   if (result == NULL) {
     scr_sqlite_callback_failed(f, ctx);
@@ -1892,7 +1896,13 @@ static void scr_sqlite_agg_step_base(sqlite3_context *ctx, int argc, sqlite3_val
     agg->value = start;
     agg->ready = true;
   }
-  ScrDyn *result = scr_sqlite_call_js(f, agg->value, argv, argc);
+  /* A row leaving the window frame runs the inverse function, which
+   * removes the row's effect from the accumulator; every other step runs
+   * the step function. SQLite only calls this path with an inverse
+   * registered when one was given. */
+  const ScrDyn *fn = inverse ? f->inverse : f->fn;
+  if (fn == NULL) fn = f->fn;
+  ScrDyn *result = scr_sqlite_call_js(f, fn, agg->value, argv, argc);
   f->db->callback_depth--;
   if (result == NULL) {
     scr_sqlite_callback_failed(f, ctx);
@@ -1900,7 +1910,6 @@ static void scr_sqlite_agg_step_base(sqlite3_context *ctx, int argc, sqlite3_val
   }
   scr_dyn_release(agg->value);
   agg->value = result;
-  (void)inverse;
 }
 
 static void scr_sqlite_agg_step(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -2078,8 +2087,9 @@ static bool scr_sqlite_db_register_function(ScrSqliteDb *db, ScrDyn *const *args
                                      scr_sqlite_func_xfunc, NULL, NULL,
                                      scr_sqlite_func_destroy);
   if (r != SQLITE_OK) {
+    /* SQLite invokes the destroy callback on a failed registration, so the
+     * function's user data is already gone here. */
     scr_sqlite_throw_db_error(db);
-    scr_sqlite_func_release(f);
     scr_dyn_release(name);
     return false;
   }
@@ -2165,8 +2175,8 @@ static bool scr_sqlite_db_register_aggregate(ScrSqliteDb *db, ScrDyn *const *arg
         f->inverse != NULL ? scr_sqlite_agg_value : NULL,
         f->inverse != NULL ? scr_sqlite_agg_inverse : NULL, scr_sqlite_func_destroy);
     if (r != SQLITE_OK) {
+      /* SQLite invokes the destroy callback on a failed registration. */
       scr_sqlite_throw_db_error(db);
-      scr_sqlite_func_release(f);
       goto done;
     }
   }
@@ -2316,6 +2326,8 @@ static void scr_sqlite_session_untrack(ScrSqliteDb *db, ScrSqliteSession *sessio
   }
 }
 
+static void scr_sqlite_session_delete(ScrSqliteSession *session);
+
 static void *scr_sqlite_session_retain(void *h) {
   ((ScrSqliteSession *)h)->rc++;
   return h;
@@ -2325,10 +2337,10 @@ static void scr_sqlite_session_release(void *h) {
   ScrSqliteSession *session = h;
   if (session == NULL || --session->rc > 0) return;
   ScrSqliteDb *db = session->db;
-  if (session->session != NULL) {
-    sqlite3session_delete(session->session);
-    session->session = NULL;
-  }
+  /* Delete (which is idempotent and unlinks the session from the
+   * database) before the wrapper goes: a database close later must not
+   * walk a freed wrapper. */
+  scr_sqlite_session_delete(session);
   free(session);
   scr_sqlite_db_release(db);
 }

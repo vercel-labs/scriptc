@@ -962,22 +962,23 @@ interface CryptoKeyPair {
   publicKey: CryptoKey;
 }
 /* HMAC and AES keys generate, import and export as 'raw' and 'jwk'
- * (PBKDF2 and HKDF keys import as 'raw'); ECDSA and RSA keys generate,
- * import and export as 'spki', 'pkcs8' and 'jwk', and ECDSA public keys as
- * 'raw'. */
+ * (PBKDF2 and HKDF keys import as 'raw'); ECDSA, ECDH, X25519 and RSA keys
+ * generate, import and export as 'spki', 'pkcs8' and 'jwk', ECDSA and
+ * ECDH public keys as 'raw', and X25519 public keys as 'raw'. RSA-OAEP
+ * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   deriveBits(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     length?: number | null,
   ): Promise<ArrayBuffer>;
   deriveKey(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
     extractable: boolean,
@@ -985,14 +986,20 @@ interface SubtleCrypto {
   ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
   exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
   generateKey(
-    algorithm: EcKeyGenParams | RsaHashedKeyGenParams | "Ed25519" | { name: "Ed25519" },
+    algorithm:
+      | EcKeyGenParams
+      | RsaHashedKeyGenParams
+      | "Ed25519"
+      | { name: "Ed25519" }
+      | "X25519"
+      | { name: "X25519" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;

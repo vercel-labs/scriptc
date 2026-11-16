@@ -35,6 +35,10 @@ declare module "node:test" {
     readonly attempt: number;
     readonly passed: boolean;
     diagnostic(message: string): void;
+    log(message: string, data?: unknown): void;
+  }
+  interface TestContextPlanOptions {
+    wait?: number | undefined;
   }
   interface TestOptions {
     skip?: boolean | string;
@@ -61,7 +65,8 @@ declare module "node:test" {
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
-    plan(count: number): void;
+    log(message: string, data?: unknown): void;
+    plan(count: number, options?: TestContextPlanOptions): void;
     runOnly(shouldRunOnlyTests: boolean): void;
     waitFor<T>(condition: () => T, options?: TestContextWaitForOptions): Promise<Awaited<T>>;
     after(fn: HookFn): void;

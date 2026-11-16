@@ -74,6 +74,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "test.sub",
   "test.subEmpty",
   "test.suite",
+  // t.plan's second-plan failure and { wait } range check.
+  "test.ctxPlan",
   // mock.timers: Node's ERR_INVALID_STATE and ERR_INVALID_ARG_VALUE, and
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",

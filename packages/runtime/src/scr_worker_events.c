@@ -1,8 +1,14 @@
 #include "scr_worker.h"
 
 #ifdef SCR_WORKERS
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 extern int sc_worker_entry(uint32_t root);
 
@@ -649,11 +655,13 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     return scr_dyn_retain(view->stdin_box);
   }
   if (!view->port && length == 6 && (!memcmp(key, "stdout", 6) || !memcmp(key, "stderr", 6))) {
+    /* Node's getter always answers the stream: without the option the
+     * worker's writes also reach the process's own output. */
     int i = key[3] == 'e' ? 1 : 0;
-    if (!view->stdio_captured[i])
-      return scr_worker_refusal(i ? "worker.stderr without the stderr option is not supported yet"
-                                  : "worker.stdout without the stdout option is not supported yet");
-    if (!view->stdio[i]) return scr_dyn_new_null();
+    if (!view->stdio[i]) {
+      if (!scr_worker_stdio_ops) return scr_dyn_new_null();
+      view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
+    }
     if (!view->stdio_box[i]) view->stdio_box[i] = scr_worker_stdio_box(view->stdio[i]);
     return scr_dyn_retain(view->stdio_box[i]);
   }
@@ -875,6 +883,21 @@ static bool scr_workers_more(void) {
   return false;
 }
 
+/* A worker's write to the process's own output: the pipe Node makes when the
+ * stdout or stderr option is absent. */
+static void scr_worker_pipe_output(int fd, const unsigned char *data, size_t length) {
+  while (length > 0) {
+#ifdef _WIN32
+    int written = _write(fd, data, (unsigned)(length > INT_MAX ? INT_MAX : length));
+#else
+    ssize_t written = write(fd, data, length);
+#endif
+    if (written <= 0) return;
+    data += written;
+    length -= (size_t)written;
+  }
+}
+
 static void scr_worker_dispatch(void) {
   bool batch = scr_worker_batch_queued;
   scr_worker_batch_queued = false;
@@ -919,9 +942,10 @@ static void scr_worker_dispatch(void) {
     return;
   }
   if (event->kind == SCR_WORKER_STDOUT || event->kind == SCR_WORKER_STDERR) {
+    int stderr_stream = event->kind == SCR_WORKER_STDERR;
     ScrWorkerView *source = scr_worker_views;
     while (source && scr_worker_thread_id(source->thread) != event->source) source = source->next;
-    ScrStream *stream = source ? source->stdio[event->kind == SCR_WORKER_STDERR] : NULL;
+    ScrStream *stream = source ? source->stdio[stderr_stream] : NULL;
     if (stream) {
       ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)event->length);
       memcpy(chunk->data, event->data, event->length);
@@ -929,6 +953,10 @@ static void scr_worker_dispatch(void) {
       scr_worker_stdio_ops->push(stream, chunk);
       scr_bytes_release(chunk);
     }
+    /* Node pipes a stream the options did not capture to the process's own
+     * output. */
+    if (source && !source->stdio_captured[stderr_stream] && event->data && event->length)
+      scr_worker_pipe_output(stderr_stream ? 2 : 1, event->data, event->length);
     scr_mail_event_free(event);
     return;
   }
@@ -1629,6 +1657,8 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrDyn *name = scr_dyn_undefined();
   ScrDyn *env = scr_dyn_undefined();
   unsigned capture = 0;
+  bool option_stdout = false;
+  bool option_stderr = false;
   if (options->kind != SCR_DYN_UNDEF) {
     if (options->kind != SCR_DYN_OBJ) {
       scr_dyn_arg_type_fail("options", "object", options);
@@ -1643,12 +1673,15 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       else if (entry.key_len == 14 && !memcmp(entry.key, "resourceLimits", 14)) limits = entry.value;
       else if (entry.key_len == 4 && !memcmp(entry.key, "name", 4)) name = entry.value;
       else if (entry.key_len == 3 && !memcmp(entry.key, "env", 3)) env = entry.value;
-      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) capture |= scr_dyn_truthy(entry.value) ? 1 : 0;
-      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) capture |= scr_dyn_truthy(entry.value) ? 2 : 0;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) option_stdout = scr_dyn_truthy(entry.value);
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) option_stderr = scr_dyn_truthy(entry.value);
       else if (entry.key_len == 5 && !memcmp(entry.key, "stdin", 5)) capture |= scr_dyn_truthy(entry.value) ? 4 : 0;
       else return scr_worker_refusal("This Worker constructor option is not supported yet");
     }
   }
+  /* Both streams are captured: one the options did not ask for is piped to
+   * the process's own output by the dispatcher, as Node pipes it. */
+  capture |= 3;
   size_t stack_size = 0;
   if (!scr_worker_stack_size(limits, &stack_size)) return NULL;
   ScrArr *arguments = scr_worker_arguments(filename, argv);
@@ -1700,10 +1733,9 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   ScrWorkerView *view = scr_worker_view_new(false);
   view->thread = thread;
   for (int i = 0; i < 2; i++) {
-    view->stdio_captured[i] = (capture >> i) & 1;
+    view->stdio_captured[i] = i == 0 ? option_stdout : option_stderr;
     /* without the stream unit nothing can read the stream: the output is dropped */
-    if (view->stdio_captured[i] && scr_worker_stdio_ops)
-      view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
+    if (scr_worker_stdio_ops) view->stdio[i] = scr_worker_stdio_ops->readable("ReadableWorkerStdio");
   }
   view->stdin_captured = capture & 4;
   if (view->stdin_captured && scr_worker_stdio_ops) view->stdin_stream = scr_worker_stdin_new(thread);

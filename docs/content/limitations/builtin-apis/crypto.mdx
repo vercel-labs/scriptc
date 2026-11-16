@@ -72,6 +72,7 @@
   `deriveBits()` and `deriveKey()` derive an ECDH or X25519 shared secret, truncated to the requested bit length the way Node truncates it, and an AES or HMAC key from it.
   ECDSA, Ed25519, ECDH, X25519, and RSA are refused in wasm32-wasi builds.
   The asymmetric algorithms link when a string literal in the program names one; a name built only at run time throws a coded SC2020 error.
+  `getPublicKey()` derives the public CryptoKey of a private ECDSA, Ed25519, ECDH, X25519 or RSA key, reporting Node's ExperimentalWarning once per process.
   `wrapKey()` and `unwrapKey()` of ECDSA, Ed25519, ECDH, X25519, and RSA keys throw a coded SC2020 error.
   Other SubtleCrypto methods, algorithms, and key formats are refused or throw a coded SC2020 error.
   Native derivations finish before their deferred callbacks, so computation blocks the caller.

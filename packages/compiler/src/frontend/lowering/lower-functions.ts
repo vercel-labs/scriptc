@@ -296,6 +296,7 @@ export function lowerLambda(
     | ts.GetAccessorDeclaration
     | ts.SetAccessorDeclaration,
   checkedReceiver = false,
+  intoDynamicValue = false,
 ): IrExpr {
   // A generic lambda used as a value has no per-call instantiation: it
   // lowers once with its type parameters bound to `unknown`, the erased
@@ -311,7 +312,7 @@ export function lowerLambda(
     lowerer.erasingLambdas.add(node);
     lowerer.erasingDepth++;
     try {
-      return lowerLambda(lowerer, node, checkedReceiver);
+      return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
     } finally {
       lowerer.erasingDepth--;
       lowerer.erasingLambdas.delete(node);
@@ -335,7 +336,7 @@ export function lowerLambda(
       lowerer.erasingLambdas.add(node);
       lowerer.erasingDepth++;
       try {
-        return lowerLambda(lowerer, node, checkedReceiver);
+        return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
       } finally {
         lowerer.erasingDepth--;
         lowerer.erasingLambdas.delete(node);
@@ -397,9 +398,15 @@ export function lowerLambda(
   // the length Node reports for it, and that box completes omitted
   // arguments with undefined like any other checked-dynamic function, so a
   // boxable signature passes as it does under an 'any' slot.
+  // A class member lowered for a checked-dynamic value (a class value's
+  // property table holds every entry as one) is boxed at that store too, so
+  // the same rule admits a signature whose optional or defaulted parameters
+  // the box completes: the table holds the function Node holds, not a
+  // refusal that would keep the whole class's statics fenced.
   const boxedAtBirth =
     ((ts.isMethodDeclaration(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) ||
-      isIslandSubclassDecl(node.parent)) &&
+      isIslandSubclassDecl(node.parent) ||
+      (intoDynamicValue && (ts.isMethodDeclaration(node) || ts.isAccessor(node)))) &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),
@@ -826,7 +833,7 @@ export function lowerLambda(
   } finally {
     lowerer.fnStack.pop();
   }
-  return lowerLambdaTyped(lowerer, node, checkedReceiver);
+  return lowerLambdaTyped(lowerer, node, checkedReceiver, intoDynamicValue);
 }
 
 /** The first lowering's diagnostics of a lambda that is lowering a second
@@ -837,10 +844,11 @@ function lowerLambdaTyped(
   lowerer: Lowerer,
   node: Parameters<typeof lowerLambda>[1],
   checkedReceiver: boolean,
+  intoDynamicValue: boolean,
 ): IrExpr {
   lowerer.setBindingTypedRetry(true);
   try {
-    return lowerLambda(lowerer, node, checkedReceiver);
+    return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
   } finally {
     lowerer.setBindingTypedRetry(false);
     typedRetryFirstAttempts.delete(node);

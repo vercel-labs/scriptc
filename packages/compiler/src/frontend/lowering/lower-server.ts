@@ -383,6 +383,57 @@ const ERROR_T: IrType = { kind: "object", className: "%Error" };
  * callback rides an interned cast-and-discard adapter (the stream lane's
  * bare-expression-body discard, generalized to closure VALUES): same
  * parameters, void return, the underlying result discarded unread. */
+/** `outgoingMessage.pipe(...args)`: Node evaluates every argument of the
+ * call and then ignores them, so the arguments must still run (side effects,
+ * throws) before the runtime answers ERR_STREAM_CANNOT_PIPE. They ride an
+ * interned lifted helper whose body ignores them and makes the one runtime
+ * call. */
+function pipeWithArguments(
+  lowerer: Lowerer,
+  prefix: string,
+  fn: IrLibFn,
+  receiver: IrExpr,
+  evaluated: readonly IrExpr[],
+  loc: SrcLoc,
+): IrExpr {
+  const direct: IrExpr = { kind: "libCall", fn, args: [receiver], type: VOID, loc };
+  if (evaluated.length === 0) return direct;
+  const all = [receiver, ...evaluated];
+  const key = `${prefix}:${all.map((arg) => typeKey(arg.type)).join(",")}`;
+  const existing = lowerer.arrHofHelpers.get(key);
+  const name = existing ?? keyedHelperName(lowerer, prefix, key);
+  if (!existing) {
+    lowerer.arrHofHelpers.set(key, name);
+    const params = all.map((arg, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: arg.type }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: param.type,
+        mutable: false,
+      })),
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn,
+            args: [varRef(params[0]!.localId, params[0]!.type, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: all, type: VOID, loc };
+}
+
 export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrExpr {
   if (cb.type.kind !== "func" || cb.type.ret.kind === "void") return cb;
   const fromT = cb.type;
@@ -5138,6 +5189,29 @@ export function lowerServerProperty(
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPCLIENTREQ_T);
     return { kind: "libCall", fn: "http.clientWritableCorked", args: [receiver], type: F64, loc };
   }
+  if (
+    recvKind === "httpClientReq" &&
+    lowerer.isStdlibMember(expr) &&
+    (expr.name.text === "writableLength" ||
+      expr.name.text === "writableNeedDrain" ||
+      expr.name.text === "writableHighWaterMark" ||
+      expr.name.text === "writableObjectMode")
+  ) {
+    // The same OutgoingMessage write-buffer state on a ClientRequest: the
+    // request's buffer is a byte stream with Node's 64 KiB default
+    // high-water mark and object mode off.
+    const receiver = coerceToHandle(lowerer, expr.expression, HTTPCLIENTREQ_T);
+    const name = expr.name.text;
+    if (name === "writableHighWaterMark") {
+      return { kind: "numLit", value: 65536, type: F64, loc };
+    }
+    if (name === "writableObjectMode") {
+      return { kind: "boolLit", value: false, type: BOOL, loc };
+    }
+    return name === "writableLength"
+      ? { kind: "libCall", fn: "http.clientWritableLength", args: [receiver], type: F64, loc }
+      : { kind: "libCall", fn: "http.clientWritableNeedDrain", args: [receiver], type: BOOL, loc };
+  }
   if (recvKind === "httpClientReq" && lowerer.isStdlibMember(expr)) {
     const name = expr.name.text;
     const strFn: IrLibFn | null =
@@ -5236,6 +5310,20 @@ export function lowerServerProperty(
   ) {
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
     return { kind: "libCall", fn: "http.resWritableCorked", args: [receiver], type: F64, loc };
+  }
+  if (
+    recvKind === "httpRes" &&
+    lowerer.isStdlibMember(expr) &&
+    (expr.name.text === "writableLength" || expr.name.text === "writableNeedDrain")
+  ) {
+    // OutgoingMessage's write-buffer state: the unsent bytes (the corked
+    // chunk with its framing, a held head, and the socket's own buffer)
+    // and whether a write() that answered false is still waiting for
+    // 'drain'.
+    const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+    return expr.name.text === "writableLength"
+      ? { kind: "libCall", fn: "http.resWritableLength", args: [receiver], type: F64, loc }
+      : { kind: "libCall", fn: "http.resWritableNeedDrain", args: [receiver], type: BOOL, loc };
   }
   if (recvKind === "httpRes" && lowerer.isStdlibMember(expr) && expr.name.text === "statusCode") {
     // 200 until assigned — Node's fresh-response default; the assignment
@@ -8930,7 +9018,10 @@ function lowerHttpClientMethodCall(
     };
   }
   if (name === "write" || name === "end") {
-    requireStatementPosition(lowerer, call, `request.${name}(...)`);
+    // write() answers Node's boolean (the request's buffer is below its
+    // high-water mark), so it may stand in an expression; end() still only
+    // as a statement.
+    if (name === "end") requireStatementPosition(lowerer, call, `request.${name}(...)`);
     const minArgs = name === "write" ? 1 : 0;
     if (args.length < minArgs || args.length > 1) {
       lowerer.noLowering(
@@ -8942,27 +9033,45 @@ function lowerHttpClientMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
+    const resultType: IrType = name === "write" ? BOOL : VOID;
     if (args.length === 0) {
-      return { kind: "libCall", fn: "http.clientEnd", args: [receiver], type: VOID, loc };
+      return { kind: "libCall", fn: "http.clientEnd", args: [receiver], type: resultType, loc };
     }
     const data = lowerer.lowerExpr(args[0]!);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.clientWrite" : "http.clientEndStr";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload — the net.sockWriteDyn story.
       const fn: IrLibFn = name === "write" ? "http.clientWriteDyn" : "http.clientEndDyn";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "http.clientWriteBytes" : "http.clientEndBytes";
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     lowerer.noLowering(
       `${name} of '${lowerer.fmt(data.type)}' data`,
       args[0] ?? call,
       NARROW_DATA_HINT,
+    );
+  }
+  if (name === "pipe") {
+    // OutgoingMessage.prototype.pipe overrides Stream's with a shape that
+    // takes anything and ignores it: an outgoing message is not readable, so
+    // Node evaluates the arguments and then emits ERR_STREAM_CANNOT_PIPE on
+    // the request's 'error' list — or throws it at the call when no
+    // listener is registered.
+    requireStatementPosition(lowerer, call, "request.pipe(...)");
+    const receiver = lowerer.lowerExpr(access.expression);
+    return pipeWithArguments(
+      lowerer,
+      "%request.pipe",
+      "http.clientPipe",
+      receiver,
+      args.map((arg) => lowerer.lowerExpr(arg)),
+      loc,
     );
   }
   if (name === "destroy" && args.length === 1) {
@@ -9075,7 +9184,8 @@ function lowerHttpClientMethodCall(
         event === "close" ||
         event === "finish" ||
         event === "abort" ||
-        event === "continue"
+        event === "continue" ||
+        event === "drain"
       ) {
         const { cb } = lowerCallbackArg(
           lowerer,
@@ -9095,7 +9205,9 @@ function lowerHttpClientMethodCall(
                 ? "http.clientOnAbort"
                 : event === "continue"
                   ? "http.clientOnContinue"
-                  : "http.clientOnFinish";
+                  : event === "drain"
+                    ? "http.clientOnDrain"
+                    : "http.clientOnFinish";
         return { kind: "libCall", fn, args: [receiver, cb, once], type: VOID, loc };
       }
       if (event === "information") {
@@ -9936,7 +10048,10 @@ function lowerHttpResMethodCall(
     return headResult("http.resWriteHeadN", [receiver, status, namesArr, valuesArr]);
   }
   if (name === "write" || name === "end") {
-    requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    // write() answers Node's boolean (the buffer is below its high-water
+    // mark), so it may stand in an expression; end() still only as a
+    // statement.
+    if (name === "end") requireStatementPosition(lowerer, call, `res.${name}(...)`);
     const minArgs = name === "write" ? 1 : 0;
     const maxArgs = name === "write" ? 1 : 2;
     if (args.length < minArgs || args.length > maxArgs) {
@@ -9949,6 +10064,7 @@ function lowerHttpResMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const resultType: IrType = name === "write" ? BOOL : VOID;
     // end's callback forms — end(cb) / end(data, cb): the callback fires
     // deferred once the body went out (just before Node's 'finish' emit),
     // through the resOnEndCallback slot registered just before the end
@@ -10039,28 +10155,28 @@ function lowerHttpResMethodCall(
           loc,
         });
       }
-      return { kind: "call", callee: helper, args: all, type: VOID, loc };
+      return { kind: "call", callee: helper, args: all, type: resultType, loc };
     };
     if (dataNode === undefined) {
       if (cbArg !== null) return endWithCb("http.resEnd", [receiver], cbArg);
-      return { kind: "libCall", fn: "http.resEnd", args: [receiver], type: VOID, loc };
+      return { kind: "libCall", fn: "http.resEnd", args: [receiver], type: resultType, loc };
     }
     const data = lowerer.lowerExpr(dataNode);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.resWrite" : "http.resEndStr";
       if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "http.resWriteBytes" : "http.resEndBytes";
       if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload — the net.sockWriteDyn story.
       const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
       if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
-      return { kind: "libCall", fn, args: [receiver, data], type: VOID, loc };
+      return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     // end(payload ? text : undefined): an absent chunk ends without data,
     // as end() does. The checked-dynamic end takes each arm at run time.
@@ -10083,13 +10199,63 @@ function lowerHttpResMethodCall(
         const dynData: IrExpr = { kind: "dynFrom", value: data, type: DYN, loc: locOf(dataNode) };
         const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
         if (cbArg !== null) return endWithCb(fn, [receiver, dynData], cbArg);
-        return { kind: "libCall", fn, args: [receiver, dynData], type: VOID, loc };
+        return { kind: "libCall", fn, args: [receiver, dynData], type: resultType, loc };
       }
     }
     lowerer.noLowering(
       `${name} of '${lowerer.fmt(data.type)}' data`,
       dataNode ?? call,
       NARROW_DATA_HINT,
+    );
+  }
+  if (name === "setHeaders") {
+    // Node's OutgoingMessage.setHeaders(headers): a Map (or Headers) whose
+    // entries go through setHeader in iteration order, set-cookie's values
+    // collected into one array.
+    requireStatementPosition(lowerer, call, "res.setHeaders(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `setHeaders with ${args.length} arguments`,
+        call,
+        "the supported form is setHeaders(headers) with a Map",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const value = lowerer.lowerExpr(args[0]!);
+    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type)) {
+      lowerer.noLowering(
+        `setHeaders headers of '${lowerer.fmt(value.type)}'`,
+        args[0]!,
+        "pass a Map (or a Headers object) of header names to values",
+      );
+    }
+    const headers: IrExpr =
+      value.type.kind === "dyn"
+        ? value
+        : { kind: "dynFrom", value, type: DYN, loc: locOf(args[0]!) };
+    return {
+      kind: "libCall",
+      fn: "http.resSetHeaders",
+      args: [receiver, headers],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "pipe") {
+    // OutgoingMessage.prototype.pipe: Stream's shape takes anything and
+    // ignores it — a response is write-only, so Node emits
+    // ERR_STREAM_CANNOT_PIPE (an unhandled 'error' is the throw at the
+    // call). Node evaluates every argument before the call runs, so their
+    // side effects and throws happen first.
+    requireStatementPosition(lowerer, call, "res.pipe(...)");
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    return pipeWithArguments(
+      lowerer,
+      "%server.pipe",
+      "http.resPipe",
+      receiver,
+      args.map((arg) => lowerer.lowerExpr(arg)),
+      loc,
     );
   }
   if (name === "getHeader" || name === "hasHeader" || name === "removeHeader") {
@@ -10207,10 +10373,30 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
+    if (event === "drain") {
+      // OutgoingMessage's backpressure event: fires once a write() that
+      // answered false has its bytes out.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "drain listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.resOnDrain",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `res.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"close", "finish", and "prefinish" are the supported response events (as literals)',
+      '"close", "finish", "prefinish", and "drain" are the supported response events (as literals)',
     );
   }
   lowerer.noLowering(

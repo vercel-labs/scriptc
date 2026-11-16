@@ -85,6 +85,9 @@ import {
   vendorBuildCacheRoot,
   tlsArchivePath,
   brotliArchivePath,
+  vendorSqliteDir,
+  sqliteArchivePath,
+  ensureSqliteArchive,
   ensureIcuSources,
   icuArchivePath,
   ensureIcuArchive,
@@ -132,6 +135,7 @@ interface RuntimeUnitContext {
   zstdObjects: readonly string[];
   tlsArchive: string | null;
   brotliArchive: string | null;
+  sqliteArchive: string | null;
   icuArchive: string | null;
   /** The include roots of the ICU headers scr_intl.c compiles against: the
    * runtime pack's, or the fetched release's common/ and i18n/. */
@@ -336,6 +340,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     u.zstdObjects.length === 0
       ? []
       : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
+  ),
+  // node:sqlite (scr_sqlite.c) over the vendored SQLite amalgamation.
+  unitArgs((u) =>
+    u.sqliteArchive === null
+      ? []
+      : ["-I", vendorSqliteDir(), u.rt(join(u.rtDir, "scr_sqlite.c")), u.sqliteArchive],
   ),
   // Intl over ICU (scr_intl.c): ICU's C API only, at the default locale,
   // reading its data file from beside the executable. The ICU headers come
@@ -665,6 +675,7 @@ export async function compileCInternal(
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
   const zstd = (opts.zlib ?? false) && opts.zstd === true;
   const icu = opts.intl ?? false;
+  const sqlite = opts.sqlite ?? false;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -908,6 +919,9 @@ export async function compileCInternal(
   let brotliArchive = brotli
     ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let sqliteArchive = sqlite
+    ? sqliteArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
   // The installed runtime pack's ICU archive is the one this path would
   // build (uninstrumented either way), so a pack that ships it and its
   // headers spares the Zig C++ build and the source download.
@@ -984,6 +998,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
       brotliArchive = paths[0]!;
+    }
+    if (sqlite) {
+      const cachedArchive = sqliteArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureSqliteArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "sqlite"));
+      sqliteArchive = paths[0]!;
     }
     if (icu && icuPack === null) {
       const cachedArchive = icuArchivePath(driver, vendorBuildIdentity, materializeCacheRoot);
@@ -1100,6 +1131,7 @@ export async function compileCInternal(
       zstdObjects,
       tlsArchive,
       brotliArchive,
+      sqliteArchive,
       icuArchive,
       icuIncludeDirs,
     }),
@@ -1150,6 +1182,7 @@ export async function compileCInternal(
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
     ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...(sqliteArchive !== null ? ["-I", vendorSqliteDir()] : []),
     ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),
   ];
   // Keep sanitizer runtime objects optimized in both postures. Large dev

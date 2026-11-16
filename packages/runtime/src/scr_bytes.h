@@ -683,6 +683,13 @@ void scr_buffer_pool_reset(void);
 /* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
  * are returned as they are. Consumes `b`. */
 ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over the element window [offset, offset+length).
+ * `mask` bit 0 marks a supplied offset and bit 1 a supplied length; a
+ * supplied position takes Node's validateInteger, and an empty view answers
+ * an empty Buffer. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and

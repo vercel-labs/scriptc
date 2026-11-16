@@ -484,6 +484,7 @@ const BUILTIN_NAMESPACE_MEMBERS: Record<string, readonly string[]> = {
 const BUILTIN_VALUE_MEMBERS: Record<string, readonly string[]> = {
   crypto: ["constants"],
   fs: ["constants"],
+  "fs/promises": ["constants"],
   os: ["constants"],
   zlib: ["constants"],
 };

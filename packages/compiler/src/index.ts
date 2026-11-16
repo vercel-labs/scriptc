@@ -904,6 +904,7 @@ async function compileExecutableNative(
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.sqlite ? { sqlite: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it

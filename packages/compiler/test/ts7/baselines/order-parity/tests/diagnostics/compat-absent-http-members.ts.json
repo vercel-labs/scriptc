@@ -8,8 +8,8 @@
    "message": "Property 'createConnection' does not exist on type 'Agent'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 508,
-    "end": 524
+    "start": 699,
+    "end": 715
    }
   },
   {
@@ -17,8 +17,8 @@
    "message": "Property 'keepSocketAlive' does not exist on type 'Agent'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 539,
-    "end": 554
+    "start": 730,
+    "end": 745
    }
   },
   {
@@ -26,8 +26,8 @@
    "message": "Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 569,
-    "end": 580
+    "start": 760,
+    "end": 771
    }
   },
   {
@@ -35,8 +35,8 @@
    "message": "Property 'maxTotalSockets' does not exist on type 'Agent'. Did you mean 'maxSockets'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 601,
-    "end": 616
+    "start": 792,
+    "end": 807
    }
   },
   {
@@ -44,35 +44,8 @@
    "message": "Property 'signal' does not exist on type 'IncomingMessage'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 901,
-    "end": 907
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1153,
-    "end": 1163
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'writableLength' does not exist on type 'ServerResponse'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1213,
-    "end": 1227
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Argument of type '\"drain\"' is not assignable to parameter of type '\"close\" | \"finish\" | \"prefinish\"'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1244,
-    "end": 1251
+    "start": 1092,
+    "end": 1098
    }
   },
   {
@@ -80,8 +53,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1358,
-    "end": 1379
+    "start": 1203,
+    "end": 1224
    }
   }
  ]

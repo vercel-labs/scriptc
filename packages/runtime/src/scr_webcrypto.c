@@ -888,13 +888,21 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
-static const char *const scr_wc_asymmetric_names[] = {"ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5"};
+static const char *const scr_wc_asymmetric_names[] = {
+    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519",
+};
+
+/* Whether an asymmetric algorithm name is one of the key-agreement ones
+ * (deriveBits and deriveKey). */
+static bool scr_wc_is_derive_algorithm(const char *name) {
+  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0;
+}
 
 /* Whether the AlgorithmIdentifier at args[index] names ECDSA,
- * RSASSA-PKCS1-v1_5, RSA-PSS or Ed25519, read without side effects or errors: a
- * string, or the name member of an object (a statically typed one through
- * its plain view). A value that does not read cleanly takes the HMAC path,
- * which reports its errors. */
+ * RSASSA-PKCS1-v1_5, RSA-PSS, Ed25519, ECDH, RSA-OAEP or X25519, read
+ * without side effects or errors: a string, or the name member of an object
+ * (a statically typed one through its plain view). A value that does not
+ * read cleanly takes the HMAC path, which reports its errors. */
 static const char *scr_wc_asymmetric_name(const ScrDyn *args, size_t index) {
   if ((size_t)scr_dyn_arr_len(args) <= index) return NULL;
   ScrDyn *identifier = scr_dyn_arr_at(args, (double)index);
@@ -1437,6 +1445,81 @@ ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
   return p;
 }
 
+/* ── getPublicKey ──────────────────────────────────────────────────────
+ * Node reports the method as experimental the first time a program calls
+ * it, before its arguments are checked, and delivers the warning on the
+ * next tick: to the 'warning' listeners when the process-warning unit is
+ * linked, and otherwise to the default report. */
+static SCR_TL bool scr_wc_warned_get_public_key = false;
+
+static void scr_wc_warning_tick(ScrClosure *self) {
+  ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[1]);
+  if (scr_warning_emit_hook) {
+    char name[32];
+    snprintf(name, sizeof name, "%.*s", (int)type->len, type->data);
+    scr_warning_emit_hook(name, NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)type->len, type->data,
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(type);
+  scr_str_release(message);
+}
+
+static void scr_wc_warn_experimental(const char *text) {
+  ScrClosure *tick = scr_closure_new((void *)&scr_wc_warning_tick, 2);
+  tick->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[0], scr_str_new("ExperimentalWarning", 19));
+  tick->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[1], scr_str_new(text, strlen(text)));
+  scr_next_tick(tick);
+}
+
+/* getPublicKey(key, keyUsages): the public CryptoKey of a private
+ * asymmetric one. A secret key answers NotSupportedError and a public key
+ * InvalidAccessError, both as "key must be a private key". */
+ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args) {
+  static const char prefix[] = "Failed to execute 'getPublicKey' on 'SubtleCrypto'";
+  if (!scr_wc_warned_get_public_key) {
+    scr_wc_warned_get_public_key = true;
+    scr_wc_warn_experimental(
+        "The getPublicKey Web Crypto API method is an experimental feature and might change at any time");
+  }
+  if (!scr_wc_required(prefix, args, 2)) return scr_wc_rejected();
+  ScrWcArgs a;
+  scr_wc_args_take(&a, args, 2);
+  ScrDyn *key = NULL;
+  ScrPromise *result = NULL;
+  if (!scr_webcrypto_is_crypto_key(a.v[0])) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "%s: 1st argument is not of type CryptoKey.", prefix);
+    goto done;
+  }
+  long usages = scr_wc_key_usages(prefix, 1, a.v[1]);
+  if (usages < 0) goto done;
+  if (scr_crypto_key_of(a.v[0])) {
+    scr_throw_domex("NotSupportedError", "key must be a private key");
+    goto done;
+  }
+  if (!scr_wc_asymmetric || !scr_wc_asymmetric->get_public_key) {
+    scr_wc_unsupported("getPublicKey", "an asymmetric CryptoKey from a computed algorithm");
+    goto done;
+  }
+  key = scr_wc_asymmetric->get_public_key(a.v[0], usages);
+  /* Node answers an already-fulfilled promise, like importKey and
+   * exportKey, so a reaction runs in the current microtask batch. */
+  if (key) result = scr_wc_resolved(key);
+done:
+  scr_wc_args_drop(&a, 2);
+  return result ? result : scr_wc_rejected();
+}
+
 /* digest(algorithm, data). */
 ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
   static const char prefix[] = "Failed to execute 'digest' on 'SubtleCrypto'";
@@ -1512,6 +1595,13 @@ static bool scr_wc_member_buffer(const ScrDyn *dict, const char *dict_name, cons
   }
   scr_dyn_release(value);
   return ok;
+}
+
+/* scr_webcrypto_pki.c's view of scr_wc_member_buffer: an algorithm
+ * dictionary's BufferSource member (the RSA-OAEP label). */
+bool scr_wc_dictionary_buffer(const ScrDyn *dict, const char *dict_name, const char *key,
+                              bool required, ScrBytes **out) {
+  return scr_wc_member_buffer(dict, dict_name, key, required, out);
 }
 
 /* validateByteLength / validateMaxBufferLength over a converted member. */
@@ -1699,6 +1789,12 @@ static ScrPromise *scr_wc_run_cipher(ScrWebCryptoAesFn aes, const char *name, bo
 }
 
 ScrPromise *scr_webcrypto_cipher(ScrDyn *args, bool decrypt, ScrWebCryptoAesFn aes) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric && strcmp(asymmetric, "RSA-OAEP") == 0) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->encrypt)
+      return scr_wc_asymmetric_missing(decrypt ? "decrypt" : "encrypt", asymmetric);
+    return decrypt ? scr_wc_asymmetric->decrypt(args) : scr_wc_asymmetric->encrypt(args);
+  }
   const char *method = decrypt ? "decrypt" : "encrypt";
   const char *prefix = decrypt ? "Failed to execute 'decrypt' on 'SubtleCrypto'"
                                : "Failed to execute 'encrypt' on 'SubtleCrypto'";
@@ -2143,6 +2239,17 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
   double length = 0;
   if (!null_length && !scr_wc_enforce_range(prefix, "3rd argument", a.v[2], 4294967295.0, &length))
     goto done;
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric && scr_wc_is_derive_algorithm(asymmetric)) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
+      result = scr_wc_asymmetric_missing("deriveBits", asymmetric);
+      goto done;
+    }
+    ScrBytes *bits =
+        scr_wc_asymmetric->derive_bits(a.v[0], a.v[1], null_length, length, "deriveBits");
+    if (bits) result = scr_wc_deferred_buffer(bits);
+    goto done;
+  }
   if (!scr_wc_normalize_kdf(a.v[0], "deriveBits", &params)) goto done;
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_BITS,
                              "deriveBits"))
@@ -2217,7 +2324,9 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   bool extractable = scr_dyn_truthy(a.v[3]);
   long usages = scr_wc_key_usages(prefix, 4, a.v[4]);
   if (usages < 0) goto done;
-  if (!scr_wc_normalize_kdf(a.v[0], "deriveKey", &params)) goto done;
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  bool agreement = asymmetric && scr_wc_is_derive_algorithm(asymmetric);
+  if (!agreement && !scr_wc_normalize_kdf(a.v[0], "deriveKey", &params)) goto done;
   ScrWcAlgorithm imported;
   if (!scr_wc_normalize(a.v[2], scr_wc_import_names, SCR_WC_COUNT(scr_wc_import_names),
                         SCR_WC_OP_IMPORT, &imported))
@@ -2228,6 +2337,20 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   if (strcmp(imported.name, "HMAC") != 0 && !scr_wc_is_aes(imported.name) &&
       !scr_wc_is_kdf(imported.name)) {
     scr_wc_unsupported_algorithm("deriveKey", imported.name);
+    goto done;
+  }
+  if (agreement) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
+      result = scr_wc_asymmetric_missing("deriveKey", asymmetric);
+      goto done;
+    }
+    ScrBytes *bits =
+        scr_wc_asymmetric->derive_bits(a.v[0], a.v[1], null_length, length, "deriveKey");
+    if (!bits) goto done;
+    ScrDyn *derived = scr_wc_import_key_sync("raw-secret", bits, NULL, &imported, extractable,
+                                             usages);
+    scr_bytes_release(bits);
+    result = derived ? scr_wc_deferred(derived) : scr_wc_deferred_rejection();
     goto done;
   }
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_KEY,

@@ -3192,6 +3192,9 @@ function buildLibFnSignatures() {
      * callback fires post-handshake — Node's secureConnect timing. */
     "tls.connect": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
     "tls.connectCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
+    /** tls.connect(path[, options][, callback]): the Unix-socket client. */
+    "tls.connectPath": { argTypes: [STRING, DYN], result: NETSOCKET_T },
+    "tls.connectPathCb": { argTypes: [STRING, DYN, null], result: NETSOCKET_T },
     // The TLSSocket member surface (authError's `string | null` union is
     // shape-checked in the special cases in validate.ts — the reqHeader pattern).
     /** The TLSSocket member surface on the socket kind: authorized (bool —
@@ -3204,6 +3207,11 @@ function buildLibFnSignatures() {
     /** getProtocol() (string | null), getCipher() (CipherNameAndProtocol,
      * undefined before the handshake, null after close) and alpnProtocol
      * (string | false | null), as dyn values. */
+    /** tlsSocket.servername (string or false) and getSession() (a Buffer
+     * or null) as dyn values, and disableRenegotiation's no-op. */
+    "tls.sockServername": { argTypes: [NETSOCKET_T], result: DYN },
+    "tls.sockGetSession": { argTypes: [NETSOCKET_T], result: DYN },
+    "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
     "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },

@@ -3374,6 +3374,35 @@ function lowerNetSocketMethodCall(
     }
     return receiverReturningCall(lowerer, "net.sockSetRef", callArgs, NETSOCKET_T, loc);
   }
+  if (name === "getSession" && args.length === 0) {
+    // The session a resumption would use: a Buffer, or null while the
+    // handshake has none yet.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.sockGetSession",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(call, value, declared);
+  }
+  if (name === "disableRenegotiation" && args.length === 0) {
+    // Renegotiation is off by default here: the call is a no-op, as it is
+    // under TLS 1.3 in Node.
+    requireStatementPosition(lowerer, call, "socket.disableRenegotiation()");
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return {
+      kind: "libCall",
+      fn: "tls.sockDisableRenegotiation",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
     // socket (Node's chaining).
@@ -5150,6 +5179,22 @@ export function lowerServerProperty(
         ? value
         : lowerer.coerceInto(expr, value, declared);
     }
+    if (name === "servername") {
+      // The SNI name: the client's request on a server socket, the name
+      // this client offered otherwise; false without one.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "tls.sockServername",
+        args: [receiver],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
     const scalar: { fn: IrLibFn; type: IrType } | null =
       name === "bytesRead"
         ? { fn: "net.sockBytesRead", type: F64 }
@@ -6482,6 +6527,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
 
   let port: IrExpr = numLit(-1, loc); // -1: the runtime reads options.port
   let host: IrExpr = { kind: "strLit", value: "", type: STRING, loc }; // "": options.host / localhost
+  let path: IrExpr | null = null; // connect(path[, options][, callback])
   let optsNode: ts.Expression | null = null;
   let i = 0;
   if (isObjectish(args[0]!)) {
@@ -6492,6 +6538,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   } else {
     const p = lowerer.lowerExpr(args[0]!);
     if (p.type.kind === "f64") port = p;
+    else if (p.type.kind === "string") path = p;
     else if (p.type.kind === "dyn") port = { kind: "dynCheck", value: p, type: F64, loc };
     else
       lowerer.noLowering(`tls.connect with a '${lowerer.fmt(p.type)}' port`, args[0]!, FORMS_HINT);
@@ -6551,7 +6598,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
       );
     }
   } else {
-    if (port.kind === "numLit" && port.value === -1) {
+    if (port.kind === "numLit" && port.value === -1 && path === null) {
       lowerer.noLowering("tls.connect without a port or options", expr, FORMS_HINT);
     }
     // No options: Node's defaults (rejectUnauthorized: true) — the
@@ -6573,6 +6620,17 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
       [],
     );
     cb = r.cb;
+  }
+  if (path !== null) {
+    return cb === null
+      ? { kind: "libCall", fn: "tls.connectPath", args: [path, opts], type: NETSOCKET_T, loc }
+      : {
+          kind: "libCall",
+          fn: "tls.connectPathCb",
+          args: [path, opts, cb],
+          type: NETSOCKET_T,
+          loc,
+        };
   }
   return cb !== null
     ? { kind: "libCall", fn: "tls.connectCb", args: [port, host, opts, cb], type: NETSOCKET_T, loc }
@@ -6695,12 +6753,22 @@ function lowerTlsModuleCall(
     // an SNI callback answers with. The minimal honest form: exactly the
     // cert/key pair (PEM strings or Buffers — the createServer options
     // walk, reused); ca/ciphers/etc. fence by name there.
-    if (args.length !== 1) {
+    if (args.length > 1) {
       lowerer.noLowering(
         `createSecureContext with ${args.length} arguments`,
         expr,
-        "the supported form is createSecureContext({ cert, key })",
+        "the supported forms are createSecureContext() and createSecureContext({ cert, key })",
       );
+    }
+    if (args.length === 0) {
+      // Node's default: a context with no certificate of its own.
+      return {
+        kind: "libCall",
+        fn: "tls.createSecureContext",
+        args: [strLit("", loc), strLit("", loc)],
+        type: SECURECTX_T,
+        loc,
+      };
     }
     const opts = lowerTlsServerOptionsOrDyn(
       lowerer,

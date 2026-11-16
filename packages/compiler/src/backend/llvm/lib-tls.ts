@@ -144,9 +144,19 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     case "tls.connectCb":
       if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(host, e, "scr_tls_connect_dyn", [...a.slice(0, 3), a[3] ?? ptr()]);
+    case "tls.connectPath":
+    case "tls.connectPathCb":
+      if (args[2] !== undefined) host.toHeap(args[2]);
+      return finishRuntimeCall(host, e, "scr_tls_connect_path", [a[0]!, a[1]!, a[2] ?? ptr()]);
     case "tls.sockOnSecureConnect":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
+    case "tls.sockServername":
+      return finishRuntimeCall(host, e, "scr_tls_sock_servername", a);
+    case "tls.sockGetSession":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_session", a);
+    case "tls.sockDisableRenegotiation":
+      return finishRuntimeCall(host, e, "scr_tls_sock_disable_renegotiation", a);
     case "tls.sockOnSecure":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure", a);

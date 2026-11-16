@@ -244,6 +244,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_net_server_async_dispose allocates the promise, adds a close
   // listener and starts the close; a later close failure is a rejection.
   "net.serverAsyncDispose",
+  // scr_tls_sock_servername reads the name the client asked for (the SNI
+  // name a server recorded) into a string, or answers false;
+  // scr_tls_sock_get_session copies the established session into a Buffer
+  // and answers null before there is one or when it cannot be serialized.
+  // Neither runs program code.
+  "tls.sockServername",
+  "tls.sockGetSession",
+  // scr_tls_sock_disable_renegotiation is a no-op: this provider keeps
+  // renegotiation off, which is what the call asks for.
+  "tls.sockDisableRenegotiation",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

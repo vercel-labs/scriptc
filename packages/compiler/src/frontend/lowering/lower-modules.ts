@@ -2530,6 +2530,11 @@ export function collectGlobals(
           lowerer.globalsBySymbol.set(symbol, g);
           lowerer.globalsByDeclNode.set(decl, g);
           lowerer.globalsList.push(g);
+          // JavaScript hoists this `var` to undefined at module entry: a
+          // read above the declaration must see native undefined, never the
+          // C-level NULL a dyn slot starts as (truthiness would dereference
+          // it).
+          noteVarGlobalEntryInit(lowerer, sf, g);
         }
       }
       if (rebound) continue;

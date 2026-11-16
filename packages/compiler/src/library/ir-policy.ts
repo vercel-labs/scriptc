@@ -116,6 +116,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["passthrough.", "the node:stream surface"],
   ["stream.", "the node:stream surface"],
   ["als.", "AsyncLocalStorage"],
+  ["ar.", "AsyncResource"],
   ["dc.", "the diagnostics_channel surface"],
   ["worker.new", "native worker threads"],
   ["worker.channel", "native worker threads"],

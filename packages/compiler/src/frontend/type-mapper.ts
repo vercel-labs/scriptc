@@ -4658,6 +4658,34 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // async_hooks.AsyncResource: a 1-based f64 handle into the runtime's
+  // resource registry (the AsyncLocalStorage story).
+  if (
+    psym !== undefined &&
+    psymName === "AsyncResource" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return F64;
+  }
+  // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
+  // object carrying dispose and [Symbol.dispose] — the runtime builds it.
+  if (
+    psym !== undefined &&
+    psymName === "RunScope" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
   // diagnostics_channel.TracingChannel: the same f64-handle story over the
   // runtime's tracing registry (five event channels per entry).
   if (

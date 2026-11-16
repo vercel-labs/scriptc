@@ -6701,6 +6701,28 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** AsyncLocalStorage.withScope(store): enters the store now and answers
+     * the native RunScope handle whose dispose()/[Symbol.dispose] installs
+     * the value getStore() answered before it again. */
+    "als.withScope": { argTypes: [F64, DYN], result: DYN },
+    /** AsyncResource (node:async_hooks — scr_async_dyn.c): resources are
+     * 1-based f64 handles. ar.new [type, options] applies Node's checks
+     * (MAY THROW: ERR_INVALID_ARG_TYPE for a non-string type or a non-object
+     * options read, ERR_INVALID_ASYNC_ID for a bad triggerAsyncId);
+     * ar.runInScope [handle, fn, thisArg, args-array] runs the function in
+     * the resource's store context and ids (MAY THROW: the call itself);
+     * ar.bind [handle, fn, thisArg] answers Node's bound function (MAY
+     * THROW: ERR_INVALID_ARG_TYPE for a non-function); ar.bindStatic
+     * [fn, type, thisArg] applies the same checks plus the type defaulting
+     * (MAY THROW); ar.emitDestroy answers the handle; asyncId/triggerAsyncId
+     * are the ids the resource was given. */
+    "ar.new": { argTypes: [DYN, DYN], result: F64 },
+    "ar.runInScope": { argTypes: [F64, DYN, DYN, DYN], result: DYN },
+    "ar.bind": { argTypes: [F64, DYN, DYN], result: DYN },
+    "ar.bindStatic": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.emitDestroy": { argTypes: [F64], result: F64 },
+    "ar.asyncId": { argTypes: [F64], result: F64 },
+    "ar.triggerAsyncId": { argTypes: [F64], result: F64 },
     /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
      * AsyncLocalStorage integration — set-semantics bindings per store,
      * runStores entering every bound store with transform(data) around the

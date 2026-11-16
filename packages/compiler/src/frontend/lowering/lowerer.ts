@@ -742,6 +742,7 @@ import {
   lowerDiagnosticsChannelMethodCall,
   lowerDiagnosticsChannelProperty,
   lowerAsyncLocalStorageMethodCall,
+  lowerAsyncResourceMethodCall,
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
@@ -24400,6 +24401,13 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     return lowerAsyncLocalStorageMethodCall(this, call, access);
+  }
+
+  lowerAsyncResourceMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerAsyncResourceMethodCall(this, call, access);
   }
 
   lowerDiagnosticsChannelProperty(access: ts.PropertyAccessExpression): IrExpr | null {

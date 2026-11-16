@@ -291,6 +291,436 @@ ScrDyn *scr_als_snapshot(void) {
   return scr_dyn_new_func(scr_als_context_closure(NULL, 1), scr_als_snapshot_call, 1, "(cb, ...args)", "bound");
 }
 
+/* ── AsyncLocalStorage.withScope (node:async_hooks — RunScope) ────────
+ * Node's RunScope keeps the value getStore() answered before the scope
+ * (defaultValue included) and a dispose() that enters THAT value again on
+ * the same storage — so only this store changes, and a second dispose is
+ * a no-op. The store is installed through enterWith's rules (it lasts for
+ * the rest of the current callback on the main stack). The scope is a
+ * native handle: typeof "object", Object.keys empty, util.inspect prints
+ * `RunScope {}`, dispose is a method value, and [Symbol.dispose] answers
+ * the same disposal (`using`). */
+typedef struct {
+  size_t rc;
+  double storage;   /* the AsyncLocalStorage handle */
+  ScrDyn *previous; /* owned: the effective store getStore() answered */
+  bool disposed;
+} ScrRunScope;
+
+static void *scr_rs_retain(void *h) {
+  ((ScrRunScope *)h)->rc++;
+  return h;
+}
+
+static void scr_rs_release(void *h) {
+  ScrRunScope *s = h;
+  if (!s || --s->rc > 0) return;
+  scr_dyn_release(s->previous);
+  free(s);
+}
+
+/* The scope's one outgoing edge: a store value that itself names the scope
+ * is a cycle the collector must see. */
+static void scr_rs_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrRunScope *s = p;
+  if (s->previous != NULL) scr_dyn_trace_v(s->previous, visit, ctx);
+}
+
+static void scr_rs_dispose(ScrRunScope *s) {
+  if (s->disposed) return;
+  s->disposed = true;
+  scr_als_enter_with(s->storage, s->previous);
+}
+
+static ScrDyn *scr_rs_dispose_value(ScrRunScope *s) {
+  scr_rs_dispose(s);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_rs_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  if (strcmp(method, "dispose") == 0) return scr_rs_dispose_value(h);
+  static const char message[] = "RunScope member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_rs_empty_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+/* `scope[Symbol.dispose]`: Node's RunScope.prototype[Symbol.dispose] calls
+ * the instance's dispose; a distinct function from the dispose method
+ * value, as in Node. */
+static ScrDyn *scr_rs_symbol_dispose_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrRunScope *s = scr_box_get_ref(self->caps[0]);
+  ScrDyn *result = scr_rs_dispose_value(s);
+  scr_rs_release(s);
+  return result;
+}
+
+static ScrDyn *scr_rs_symbol_get(void *h, const ScrDyn *key) {
+  if (!scr_dyn_is_dispose_symbol(key)) return NULL;
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new_obj(scr_rs_retain, scr_rs_release, scr_rs_trace);
+  scr_box_set_ref(closure->caps[0], scr_rs_retain(h));
+  return scr_dyn_new_func(closure, scr_rs_symbol_dispose_call, 0, "()", "[Symbol.dispose]");
+}
+
+static const ScrDynHandleMethod scr_rs_methods[] = {{"dispose", 0, false}, {NULL, 0, false}};
+
+static ScrDyn *scr_rs_box(ScrRunScope *s) {
+  static SCR_TL bool installed;
+  if (!installed) {
+    installed = true;
+    static const ScrDynHandleOps ops = {
+        .cls = "RunScope",
+        .retain = scr_rs_retain,
+        .release = scr_rs_release,
+        .invoke = scr_rs_invoke,
+        .inspect_view = scr_rs_empty_view,
+        .json_empty_object = true,
+        .inspect_view_empty = true,
+        .symbol_get = scr_rs_symbol_get,
+        .methods = scr_rs_methods,
+    };
+    scr_dyn_handle_install(SCR_DYNH_RUN_SCOPE, &ops);
+  }
+  ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_RUN_SCOPE);
+  scr_rs_release(s);
+  return box;
+}
+
+ScrDyn *scr_als_with_scope(double id, ScrDyn *store) {
+  ScrRunScope *s = malloc(sizeof *s);
+  if (!s) scr_ad_oom();
+  s->rc = 1;
+  s->storage = id;
+  s->previous = scr_als_get(id); /* the effective store (defaultValue too) */
+  s->disposed = false;
+  scr_als_enter_with(id, store);
+  return scr_rs_box(s);
+}
+
+/* ── AsyncResource (node:async_hooks) ─────────────────────────────────
+ * Node's ids number every async resource from one root: the program's
+ * top-level execution is id 1 with trigger id 0. This unit allocates the
+ * ids its own resources take. A resource created inside another's scope
+ * answers that resource's id as its trigger — the execution-id pair is
+ * saved and restored around runInAsyncScope, like the context.
+ *
+ * Resources are 1-based f64 handles into a process-lived registry (the
+ * Channel story): a handle carries no ownership the runtime could watch, so
+ * an entry keeps its type and its captured store context until the process
+ * exits, where Node releases them with the resource. The limitations page
+ * states this. */
+static SCR_TL double scr_ar_next_id = 1;
+static SCR_TL double scr_ar_exec_id = 1;
+static SCR_TL double scr_ar_exec_trigger = 0;
+
+double scr_ar_execution_id(void) { return scr_ar_exec_id; }
+
+double scr_ar_execution_trigger(void) { return scr_ar_exec_trigger; }
+
+static double scr_ar_next_async_id(void) { return ++scr_ar_next_id; }
+
+typedef struct {
+  ScrDyn *type;   /* owned: the validated type string */
+  ScrAlsCtx *ctx; /* owned: the store snapshot at construction (NULL: none) */
+  double async_id;
+  double trigger_id;
+  bool destroyed;
+} ScrAsyncResource;
+
+static SCR_TL ScrAsyncResource *scr_ar_entries = NULL;
+static SCR_TL size_t scr_ar_count = 0;
+static SCR_TL size_t scr_ar_cap = 0;
+
+static void scr_ar_teardown(void) {
+  for (size_t i = 0; i < scr_ar_count; i++) {
+    scr_dyn_release(scr_ar_entries[i].type);
+    scr_als_ctx_release(scr_ar_entries[i].ctx);
+  }
+  free(scr_ar_entries);
+  scr_ar_entries = NULL;
+  scr_ar_count = scr_ar_cap = 0;
+}
+
+static ScrAsyncResource *scr_ar_entry(double handle) {
+  size_t i = (size_t)handle - 1;
+  return handle >= 1 && i < scr_ar_count ? &scr_ar_entries[i] : NULL;
+}
+
+/* NumberIsSafeInteger: a finite integer within ±(2^53 - 1). */
+static bool scr_ar_safe_integer(double v) {
+  return isfinite(v) && v == floor(v) && fabs(v) <= 9007199254740991.0;
+}
+
+/* ERR_INVALID_ASYNC_ID's value text: a string prints bare and the scalars
+ * as String() renders them (Node's template shows primitives that way); an
+ * object renders as the dyn core's inspect bracket sketch, which is the
+ * only rendering available without linking the inspect unit. */
+static void scr_ar_put_value(ScrJsonBuf *b, const ScrDyn *v) {
+  if (v->kind == SCR_DYN_STR) {
+    scr_jb_put_str(b, v->v.str);
+    return;
+  }
+  char detail[64];
+  scr_jb_puts(b, scr_dyn_inspect_lite(v, detail, sizeof detail));
+}
+
+static void scr_ar_invalid_trigger(const ScrDyn *value) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Invalid triggerAsyncId value: ");
+  scr_ar_put_value(&b, value);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message->data, message->len, "ERR_INVALID_ASYNC_ID");
+  scr_str_release(message);
+}
+
+static void scr_ar_invalid_trigger_number(double value) {
+  char text[40];
+  size_t len = scr_f64_to_str(value, text);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Invalid triggerAsyncId value: ");
+  scr_jb_write(&b, text, len);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message->data, message->len, "ERR_INVALID_ASYNC_ID");
+  scr_str_release(message);
+}
+
+/* V8's TypeError for ReflectApply on a value that is not callable —
+ * runInAsyncScope's and a bound function's check, verbatim. */
+static void scr_ar_apply_type_error(const ScrDyn *fn) {
+  const char *kind;
+  switch (fn->kind) {
+  case SCR_DYN_NULL: kind = "null"; break;
+  case SCR_DYN_UNDEF: kind = "a undefined"; break;
+  case SCR_DYN_NUM: kind = "a number"; break;
+  case SCR_DYN_STR: kind = "a string"; break;
+  case SCR_DYN_BOOL: kind = "a boolean"; break;
+  case SCR_DYN_SYMBOL: kind = "a symbol"; break;
+  case SCR_DYN_BIGINT: kind = "a bigint"; break;
+  default: kind = "an object"; break;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Function.prototype.apply was called on ");
+  switch (fn->kind) {
+  case SCR_DYN_NULL: scr_jb_puts(&b, "null"); break;
+  case SCR_DYN_UNDEF: scr_jb_puts(&b, "undefined"); break;
+  case SCR_DYN_NUM: {
+    char buf[40];
+    size_t n = scr_f64_to_str(fn->v.num, buf);
+    scr_jb_write(&b, buf, n);
+    break;
+  }
+  case SCR_DYN_STR: scr_jb_put_str(&b, fn->v.str); break;
+  case SCR_DYN_BOOL: scr_jb_puts(&b, fn->v.b ? "true" : "false"); break;
+  case SCR_DYN_ARR: scr_jb_puts(&b, "[object Array]"); break;
+  default: scr_jb_puts(&b, "#<Object>"); break;
+  }
+  scr_jb_puts(&b, ", which is ");
+  scr_jb_puts(&b, kind);
+  scr_jb_puts(&b, " and not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* new AsyncResource(type[, opts]): Node's checks in its order — `type`
+ * first, then the trigger (a number opts is the legacy trigger form; an
+ * object reads triggerAsyncId, defaulting to executionAsyncId(), and
+ * requireManualDestroy). */
+double scr_ar_new(ScrDyn *type, ScrDyn *options) {
+  static SCR_TL bool teardown_registered = false;
+  if (!teardown_registered) {
+    teardown_registered = true;
+    scr_atexit(scr_ar_teardown);
+  }
+  if (type->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("type", "of type string", type);
+    return NAN;
+  }
+  double trigger = scr_ar_exec_id;
+  if (options != NULL && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind == SCR_DYN_NUM) {
+      trigger = options->v.num;
+    } else {
+      ScrStr *key_name = scr_str_new("triggerAsyncId", 14);
+      ScrDyn *key = scr_dyn_new_str(key_name);
+      scr_str_release(key_name);
+      ScrDyn *value = scr_dyn_reflect_get(options, key, options);
+      scr_dyn_release(key);
+      if (value == NULL) return NAN; /* pending: a null receiver's read */
+      /* Node reads requireManualDestroy before it validates the trigger,
+       * so a throwing getter here answers before the trigger's error. */
+      ScrStr *manual_name = scr_str_new("requireManualDestroy", 20);
+      ScrDyn *manual_key = scr_dyn_new_str(manual_name);
+      scr_str_release(manual_name);
+      ScrDyn *manual = scr_dyn_reflect_get(options, manual_key, options);
+      scr_dyn_release(manual_key);
+      if (manual == NULL) {
+        scr_dyn_release(value);
+        return NAN;
+      }
+      scr_dyn_release(manual);
+      if (value->kind == SCR_DYN_UNDEF) trigger = scr_ar_exec_id;
+      else if (value->kind == SCR_DYN_NUM) trigger = value->v.num;
+      if ((value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NUM) ||
+          !scr_ar_safe_integer(trigger) || trigger < -1) {
+        scr_ar_invalid_trigger(value);
+        scr_dyn_release(value);
+        return NAN;
+      }
+      scr_dyn_release(value);
+    }
+  }
+  /* The legacy numeric options form takes the same trigger check. */
+  if (!scr_ar_safe_integer(trigger) || trigger < -1) {
+    scr_ar_invalid_trigger_number(trigger);
+    return NAN;
+  }
+  double id = scr_ar_next_async_id();
+  if (scr_ar_count == scr_ar_cap) {
+    size_t cap = scr_ar_cap ? scr_ar_cap * 2 : 8;
+    ScrAsyncResource *grown = realloc(scr_ar_entries, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_ar_entries = grown;
+    scr_ar_cap = cap;
+  }
+  ScrAsyncResource *entry = &scr_ar_entries[scr_ar_count++];
+  entry->type = scr_dyn_retain(type);
+  entry->ctx = scr_als_capture();
+  entry->async_id = id;
+  entry->trigger_id = trigger;
+  entry->destroyed = false;
+  return (double)scr_ar_count;
+}
+
+/* The call inside a resource's scope: its store snapshot and ids for the
+ * synchronous extent, restored afterwards (the finally — a throw still
+ * restores). */
+static ScrDyn *scr_ar_call_in_scope(ScrAsyncResource *r, ScrDyn *fn, ScrDyn *this_arg,
+                                    ScrDyn *const *args, size_t argc) {
+  ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(r->ctx);
+  double saved_id = scr_ar_exec_id;
+  double saved_trigger = scr_ar_exec_trigger;
+  scr_ar_exec_id = r->async_id;
+  scr_ar_exec_trigger = r->trigger_id;
+  scr_dyn_this_push_dyn(this_arg);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "fn");
+  scr_dyn_this_pop();
+  scr_ar_exec_id = saved_id;
+  scr_ar_exec_trigger = saved_trigger;
+  scr_als_dispatch_leave(prev_ctx);
+  return result;
+}
+
+ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args) {
+  ScrAsyncResource *r = scr_ar_entry(handle);
+  if (r == NULL) return NULL;
+  if (!scr_dyn_is_callable(fn)) {
+    scr_ar_apply_type_error(fn);
+    return NULL;
+  }
+  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  return scr_ar_call_in_scope(r, fn, this_arg, items, argc);
+}
+
+/* The bound function: caps[0] the function (owned), caps[1] its receiver
+ * (owned; an absent receiver is the undefined value), caps[2] the resource
+ * handle. Node names the result "bound", or "bound runInAsyncScope" when
+ * the receiver is given, and gives it the bound function's length. */
+static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  ScrDyn *fn = scr_box_get_ref(self->caps[0]);
+  ScrDyn *this_arg = scr_box_get_ref(self->caps[1]);
+  ScrAsyncResource *r = scr_ar_entry(scr_box_get_f64(self->caps[2]));
+  ScrDyn *result = NULL;
+  if (!scr_dyn_is_callable(fn)) {
+    scr_ar_apply_type_error(fn);
+  } else if (r != NULL) {
+    result = scr_ar_call_in_scope(r, fn, this_arg, args, argc);
+  }
+  scr_dyn_release(fn);
+  scr_dyn_release(this_arg);
+  return result;
+}
+
+static ScrDyn *scr_ar_make_bound(double handle, ScrDyn *fn, ScrDyn *this_arg) {
+  ScrClosure *closure = scr_closure_new(NULL, 3);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
+  closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[1], scr_dyn_retain(this_arg));
+  closure->caps[2] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[2], handle);
+  uint32_t arity = fn->kind == SCR_DYN_FUNC ? fn->v.fn.arity : 0;
+  const char *name = this_arg->kind == SCR_DYN_UNDEF ? "bound" : "bound runInAsyncScope";
+  return scr_dyn_new_func(closure, scr_ar_bound_call, arity, "(...args)", name);
+}
+
+ScrDyn *scr_ar_bind(double handle, ScrDyn *fn, ScrDyn *this_arg) {
+  if (!scr_dyn_is_callable(fn)) {
+    scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return NULL;
+  }
+  return scr_ar_make_bound(handle, fn, this_arg);
+}
+
+ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg) {
+  ScrDyn *chosen = NULL;
+  bool owned = false;
+  if (scr_dyn_truthy(type)) {
+    chosen = type;
+  } else if (fn->kind == SCR_DYN_NULL) {
+    /* Node reads fn.name before it validates fn: a null one throws the
+     * property read, not the argument check. */
+    static const char message[] = "Cannot read properties of null (reading 'name')";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  } else {
+    const char *name = fn->kind == SCR_DYN_FUNC ? fn->v.fn.name : NULL;
+    ScrStr *text = name && name[0] ? scr_str_new(name, strlen(name))
+                                   : scr_str_new("bound-anonymous-fn", 18);
+    chosen = scr_dyn_new_str(text);
+    scr_str_release(text);
+    owned = true;
+  }
+  double handle = scr_ar_new(chosen, NULL);
+  if (owned) scr_dyn_release(chosen);
+  if (isnan(handle)) return NULL;
+  return scr_ar_bind(handle, fn, this_arg);
+}
+
+double scr_ar_emit_destroy(double handle) {
+  ScrAsyncResource *r = scr_ar_entry(handle);
+  if (r != NULL) r->destroyed = true; /* destroy hooks dispatch here */
+  return handle;
+}
+
+double scr_ar_async_id(double handle) {
+  ScrAsyncResource *r = scr_ar_entry(handle);
+  return r != NULL ? r->async_id : NAN;
+}
+
+double scr_ar_trigger_id(double handle) {
+  ScrAsyncResource *r = scr_ar_entry(handle);
+  return r != NULL ? r->trigger_id : NAN;
+}
+
 /* The two rejection-event registries share one shape: listeners with a
  * `once` flag (auto-removed after one delivery, Node's once) and
  * identity-based removal (the offWarning stance). */

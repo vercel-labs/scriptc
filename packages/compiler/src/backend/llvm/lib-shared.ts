@@ -2074,6 +2074,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "als.name": "scr_als_name",
   "als.bindCallbackDyn": "scr_als_bind_dyn",
   "als.snapshot": "scr_als_snapshot",
+  "als.withScope": "scr_als_with_scope",
+  // AsyncResource (scr_async_dyn.c): 1-based f64 handles over the resource
+  // registry; runInScope/bind/bindStatic dispatch user callbacks (may-throw).
+  "ar.new": "scr_ar_new",
+  "ar.runInScope": "scr_ar_run_in_scope",
+  "ar.bind": "scr_ar_bind",
+  "ar.bindStatic": "scr_ar_bind_static",
+  "ar.emitDestroy": "scr_ar_emit_destroy",
+  "ar.asyncId": "scr_ar_async_id",
+  "ar.triggerAsyncId": "scr_ar_trigger_id",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",

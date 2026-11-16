@@ -191,6 +191,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The RunScope handle withScope answers, and AsyncResource's registry
+  // with its bound functions.
+  "als.withScope",
+  "ar.asyncId",
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.emitDestroy",
+  "ar.new",
+  "ar.runInScope",
+  "ar.triggerAsyncId",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",

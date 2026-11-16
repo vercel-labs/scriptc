@@ -304,6 +304,37 @@ ScrDyn *scr_als_name(double id);
  * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
 ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
 ScrDyn *scr_als_snapshot(void);
+/* asyncLocalStorage.withScope(store): the store installed now (Node's
+ * enterWith), with the value getStore() answered before it kept for the
+ * scope's dispose. The result is a native RunScope handle whose dispose()
+ * and [Symbol.dispose] install that previous value again (a second dispose
+ * is a no-op). */
+ScrDyn *scr_als_with_scope(double id, ScrDyn *store);
+
+/* ── AsyncResource (node:async_hooks — scr_async_dyn.c) ───────────────
+ * Resources are process-lived 1-based f64 handles (the Channel story).
+ * A resource keeps the AsyncLocalStorage snapshot active at construction,
+ * the async id it was given, and the id that triggered it.
+ * runInAsyncScope installs that context and id for the call's synchronous
+ * extent; bind/bindStatic answer functions doing the same with their own
+ * arguments. Ids come from one counter whose root is the program's
+ * top-level execution (id 1, trigger 0); a resource built inside another
+ * one's scope answers that resource's id as its trigger. scr_ar_new validates
+ * Node's `type` string and the triggerAsyncId/requireManualDestroy
+ * options (NaN with the exception pending); runInScope/bind/bindStatic
+ * MAY THROW (their calls and Node's argument checks). */
+double scr_ar_new(ScrDyn *type, ScrDyn *options);
+ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args);
+ScrDyn *scr_ar_bind(double handle, ScrDyn *fn, ScrDyn *this_arg);
+/* AsyncResource.bind(fn[, type[, thisArg]]): `type` falsy takes fn's name,
+ * and a name that is still falsy takes 'bound-anonymous-fn' (Node's). */
+ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg);
+double scr_ar_emit_destroy(double handle); /* answers the handle */
+double scr_ar_async_id(double handle);
+double scr_ar_trigger_id(double handle);
+/* The execution context's ids: executionAsyncId()/triggerAsyncId(). */
+double scr_ar_execution_id(void);
+double scr_ar_execution_trigger(void);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask

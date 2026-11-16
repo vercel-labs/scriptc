@@ -270,6 +270,7 @@ typedef enum {
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the

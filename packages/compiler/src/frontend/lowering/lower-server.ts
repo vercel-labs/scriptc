@@ -3394,8 +3394,16 @@ function lowerNetSocketMethodCall(
     // Renegotiation is off by default here: the call is a no-op, as it is
     // under TLS 1.3 in Node.
     requireStatementPosition(lowerer, call, "socket.disableRenegotiation()");
-    // Nothing to do at run time: the answer is undefined, as in Node.
-    return dynUndefinedExpr(loc);
+    // No effect at run time, but the receiver is still evaluated (its
+    // exceptions surface, as in Node) — the call itself answers void.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return {
+      kind: "libCall",
+      fn: "tls.sockDisableRenegotiation",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
   }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the

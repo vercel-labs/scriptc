@@ -752,11 +752,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
-  if (usesHttpSignal) {
+  if (usesHttpSignal && usesHttp) {
     // The program wires the signal unit to http's message signal: neither
     // unit references the other, so a program that never reads a message
     // signal links no signal code and an AbortController program links no
-    // http code.
+    // http code. A dyn read of `signal` on some other object selects the
+    // signal unit alone, with no http to wire.
     emitter.declare(`declare void @scr_http_set_abort_factory(ptr)`);
     emitter.declare(`declare ptr @scr_fetch_abort_controller_new()`);
   }
@@ -1564,7 +1565,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
-    ...(usesHttpSignal
+    ...(usesHttpSignal && usesHttp
       ? [`  call void @scr_http_set_abort_factory(ptr @scr_fetch_abort_controller_new)`]
       : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),

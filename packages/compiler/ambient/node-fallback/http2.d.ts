@@ -75,6 +75,8 @@ declare module "http2" {
     writeContinue(): void;
     writeEarlyHints(hints: Record<string, string | string[]>): void;
     write(data: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback: () => void): void;
+    write(data: string | Uint8Array, encoding: string, callback: () => void): void;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;

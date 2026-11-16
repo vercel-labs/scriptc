@@ -2196,6 +2196,7 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
     if (!r->head_sent) scr_http_res_send_head(r, -1);
     if (scr_exc_pending()) return;
     scr_http_h2_ops->write(r->h2_stream, data, len);
+    scr_http_res_queue_wcb_handoff(r);
     return;
   }
   /* streaming: the implicit head (chunked unless the user fixed the
@@ -2981,6 +2982,15 @@ static void scr_http_proto_sweep(void) {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->wcb_queued = false; /* later write(chunk, cb)s re-queue */
       if (!scr_net_ls_has_live(&res->wcb_ls)) break;
+      if (res->h2_stream != NULL) {
+        /* the h2 lane handed the frame to its session: the chunk's callback
+         * runs from the queue's pass, off the writing stack */
+        ScrNetLs due = res->wcb_ls;
+        res->wcb_ls = (ScrNetLs){0};
+        scr_net_fire0_this(&due, res, SCR_DYNH_HTTP_RES);
+        scr_net_ls_drop(&due);
+        break;
+      }
       if (res->sock == NULL || res->close_emitted) {
         scr_net_ls_drop(&res->wcb_ls);
         break;
@@ -5916,10 +5926,9 @@ static void scr_http_client_wcb_drained_nt(ScrClosure *cb);
 static void scr_http_client_queue_wcb_handoff(ScrHttpClientReq *c) {
   c->wcb_queued = false;
   if (!scr_net_ls_has_live(&c->wcb_ls)) return;
-  if (c->sock == NULL) {
-    scr_net_ls_drop(&c->wcb_ls);
-    return;
-  }
+  /* no socket yet: the callbacks stay until one arrives (the next write's
+   * flush hands them over, and 'finish' runs any left) */
+  if (c->sock == NULL) return;
   if (!c->wcb_handed) {
     c->wcb_handed = true;
     ScrClosure *cb = scr_closure_new((void *)&scr_http_client_wcb_drained_nt, 1);
@@ -5962,7 +5971,12 @@ static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, siz
   if (!c->head_sent) scr_http_client_send_head(c, -1); /* streaming: chunked */
   if (scr_exc_pending()) return;
   scr_http_client_send_held_head(c);
-  if (!c->sock || len == 0) return;
+  if (!c->sock || len == 0) {
+    /* a write with no bytes still completes: its callback waits for the
+     * socket's buffer to be empty like any other write's */
+    scr_http_client_fire_write_flush(c);
+    return;
+  }
   if (c->chunked) {
     char size[32];
     snprintf(size, sizeof size, "%zx\r\n", len);

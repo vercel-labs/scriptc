@@ -34840,7 +34840,7 @@
       "anchor": "abort_err",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ABORT_ERR",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -34897,7 +34897,7 @@
       "anchor": "err_arg_not_iterable",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ARG_NOT_ITERABLE",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -36477,7 +36477,7 @@
       "anchor": "err_fs_cp_dir_to_non_dir",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_DIR_TO_NON_DIR",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -36498,7 +36498,7 @@
       "anchor": "err_fs_cp_eexist",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_EEXIST",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -36519,7 +36519,7 @@
       "anchor": "err_fs_cp_einval",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_EINVAL",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -36540,7 +36540,7 @@
       "anchor": "err_fs_cp_fifo_pipe",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_FIFO_PIPE",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -36561,7 +36561,7 @@
       "anchor": "err_fs_cp_non_dir_to_dir",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_NON_DIR_TO_DIR",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -36582,7 +36582,7 @@
       "anchor": "err_fs_cp_socket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_SOCKET",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -36603,7 +36603,7 @@
       "anchor": "err_fs_cp_symlink_to_subdirectory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -36642,7 +36642,7 @@
       "anchor": "err_fs_eisdir",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FS_EISDIR",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -37701,7 +37701,7 @@
       "anchor": "err_http_socket_encoding",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_SOCKET_ENCODING",
         "tests": [
           "tests/corpus/compat-errors-http.mjs"
@@ -37722,7 +37722,7 @@
       "anchor": "err_http_trailer_invalid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_TRAILER_INVALID",
         "tests": [
           "tests/corpus/compat-errors-http.mjs"
@@ -37818,7 +37818,7 @@
       "anchor": "err_incompatible_option_pair",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INCOMPATIBLE_OPTION_PAIR",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -38543,7 +38543,7 @@
       "anchor": "err_invalid_return_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_RETURN_VALUE",
         "tests": [
           "tests/corpus/5568-fs-cp-errors.js"
@@ -38624,7 +38624,7 @@
       "anchor": "err_invalid_tuple",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_TUPLE",
         "tests": [
           "tests/corpus/compat-errors-core.mjs"
@@ -38912,10 +38912,11 @@
       "anchor": "err_method_not_implemented",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_METHOD_NOT_IMPLEMENTED",
         "tests": [
-          "tests/corpus/6563-constructor-function-stream-errors.cjs"
+          "tests/corpus/6563-constructor-function-stream-errors.cjs",
+          "tests/corpus/compat-errors-stream.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40323,7 +40324,7 @@
       "anchor": "err_stream_cannot_pipe",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_CANNOT_PIPE",
         "tests": [
           "tests/corpus/compat-errors-http.mjs"
@@ -40344,10 +40345,11 @@
       "anchor": "err_stream_destroyed",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_DESTROYED",
         "tests": [
-          "tests/corpus/7510-pipeline-untyped-later-iterables.mjs"
+          "tests/corpus/7510-pipeline-untyped-later-iterables.mjs",
+          "tests/corpus/compat-errors-stream.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40383,7 +40385,7 @@
       "anchor": "err_stream_null_values",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_NULL_VALUES",
         "tests": [
           "tests/corpus/5341-readable-from-dynamic.cjs"
@@ -40404,10 +40406,11 @@
       "anchor": "err_stream_premature_close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_PREMATURE_CLOSE",
         "tests": [
-          "tests/corpus/2564-stream-promises-finished.ts"
+          "tests/corpus/2564-stream-promises-finished.ts",
+          "tests/corpus/compat-errors-stream.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40425,7 +40428,7 @@
       "anchor": "err_stream_push_after_eof",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_PUSH_AFTER_EOF",
         "tests": [
           "tests/corpus/compat-errors-stream.mjs"
@@ -40446,7 +40449,7 @@
       "anchor": "err_stream_unable_to_pipe",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_UNABLE_TO_PIPE",
         "tests": [
           "tests/corpus/compat-errors-stream.mjs"
@@ -40467,7 +40470,7 @@
       "anchor": "err_stream_unshift_after_end_event",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_UNSHIFT_AFTER_END_EVENT",
         "tests": [
           "tests/corpus/compat-errors-stream.mjs"
@@ -40506,10 +40509,11 @@
       "anchor": "err_stream_write_after_end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_STREAM_WRITE_AFTER_END",
         "tests": [
-          "tests/corpus/6563-constructor-function-stream-errors.cjs"
+          "tests/corpus/6563-constructor-function-stream-errors.cjs",
+          "tests/corpus/compat-errors-stream.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41925,7 +41929,7 @@
       "anchor": "hpe_header_overflow",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.HPE_HEADER_OVERFLOW",
         "tests": [
           "tests/corpus/compat-errors-http.mjs"

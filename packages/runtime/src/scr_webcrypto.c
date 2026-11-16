@@ -1484,8 +1484,9 @@ static bool scr_wc_exportable(const char *format, const ScrCryptoKey *key) {
     scr_throw_domex("InvalidAccessError", "key is not extractable");
     return false;
   }
+  /* Node exports these keys as raw-secret (and JWK) but not as raw. */
   if ((scr_wc_is_ocb(key->name) || scr_wc_is_chacha(key->name)) &&
-      (strcmp(format, "raw") == 0 || strcmp(format, "raw-secret") == 0)) {
+      strcmp(format, "raw") == 0) {
     char message[96];
     snprintf(message, sizeof message, "Unable to export %s secret key using %s format", key->name,
              format);

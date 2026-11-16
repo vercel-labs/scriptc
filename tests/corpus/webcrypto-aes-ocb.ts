@@ -26,6 +26,18 @@ for (const length of [1, 7, 15]) {
   console.log("ocb iv", length, hex(await crypto.subtle.encrypt({ name: "AES-OCB", iv: new Uint8Array(length) }, key, Buffer.from("x"))));
 }
 
+// A message with whole blocks and nonces whose low six bits are not zero
+// exercise the inverse cipher's key schedule and the nonce stretch.
+for (const last of [1, 42, 255]) {
+  const iv = new Uint8Array(12);
+  iv[11] = last;
+  console.log("ocb nonce", last, hex(await crypto.subtle.encrypt({ name: "AES-OCB", iv }, key, Buffer.from("0123456789abcdef0123"))));
+}
+const rawSecret = await crypto.subtle.exportKey("raw-secret", key);
+const reimported = await crypto.subtle.importKey("raw-secret", rawSecret, { name: "AES-OCB" }, true, ["encrypt", "decrypt"]);
+const reSealed = await crypto.subtle.encrypt({ name: "AES-OCB", iv: new Uint8Array(12) }, reimported, Buffer.from("0123456789abcdef0123"));
+console.log("raw-secret", rawSecret.byteLength, Buffer.from(await crypto.subtle.decrypt({ name: "AES-OCB", iv: new Uint8Array(12) }, key, reSealed)).toString());
+
 const generated = await crypto.subtle.generateKey({ name: "AES-OCB", length: 256 }, true, ["encrypt"]);
 const generatedJwk = await crypto.subtle.exportKey("jwk", generated);
 console.log("generated", generated.algorithm.name, (generated.algorithm as webcrypto.AesKeyAlgorithm).length, generatedJwk.alg);

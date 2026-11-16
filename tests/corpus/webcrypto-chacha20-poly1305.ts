@@ -18,6 +18,11 @@ const opened = await crypto.subtle.decrypt(
 );
 console.log("round trip", sealed.byteLength, Buffer.from(opened).toString());
 
+const rawSecret = await crypto.subtle.exportKey("raw-secret", key);
+const reimported = await crypto.subtle.importKey("raw-secret", rawSecret, { name: "ChaCha20-Poly1305" }, true, ["encrypt", "decrypt"]);
+const reSealedRaw = await crypto.subtle.encrypt({ name: "ChaCha20-Poly1305", iv }, reimported, Buffer.from("hello world"));
+console.log("raw-secret", rawSecret.byteLength, Buffer.from(await crypto.subtle.decrypt({ name: "ChaCha20-Poly1305", iv }, key, reSealedRaw)).toString());
+
 const jwk = await crypto.subtle.exportKey("jwk", key);
 console.log("jwk", jwk.kty, jwk.alg, jwk.ext);
 const imported = await crypto.subtle.importKey("jwk", jwk, { name: "ChaCha20-Poly1305" }, true, ["encrypt"]);

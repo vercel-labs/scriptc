@@ -253,8 +253,9 @@ static void ocb_hash(mbedtls_aes_context *aes, const unsigned char l_star[16],
 static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t key_len,
                                 const ScrWebCryptoAesParams *p, const unsigned char *in,
                                 size_t len) {
-  mbedtls_aes_context aes;
+  mbedtls_aes_context aes, dec;
   mbedtls_aes_init(&aes);
+  mbedtls_aes_init(&dec);
   ScrBytes *out = NULL;
   unsigned char l_star[16] = {0}, l_dollar[16], l[64][16];
   unsigned char nonce[16], ktop[16], stretch[24], offset[16], tag[16], sum[16];
@@ -263,6 +264,9 @@ static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t k
       (decrypt && len < tag_len))
     goto done;
   if (mbedtls_aes_setkey_enc(&aes, key, (unsigned)(key_len * 8)) != 0) goto done;
+  /* OCB decrypts a whole block with the inverse cipher, which needs its own
+   * (decryption) key schedule. */
+  if (decrypt && mbedtls_aes_setkey_dec(&dec, key, (unsigned)(key_len * 8)) != 0) goto done;
   ocb_enc(&aes, l_star, l_star);
   memcpy(l_dollar, l_star, 16);
   ocb_double(l_dollar);
@@ -283,7 +287,7 @@ static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t k
   ktop_input[15] &= 0xc0;
   ocb_enc(&aes, ktop_input, ktop);
   memcpy(stretch, ktop, 16);
-  for (int i = 0; i < 8; i++) stretch[16 + i] = (unsigned char)(ktop[i] ^ ktop[8 + i]);
+  for (int i = 0; i < 8; i++) stretch[16 + i] = (unsigned char)(ktop[i] ^ ktop[i + 1]);
   ocb_stretch_bits(stretch, bottom, offset);
   ocb_hash(&aes, l_star, l_dollar, p->aad, p->aad_len, sum);
 
@@ -301,7 +305,7 @@ static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t k
     unsigned char block[16], enc[16];
     if (decrypt) {
       for (int j = 0; j < 16; j++) block[j] = in[(i - 1) * 16 + j] ^ off[j];
-      mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_DECRYPT, block, enc);
+      mbedtls_aes_crypt_ecb(&dec, MBEDTLS_AES_DECRYPT, block, enc);
       for (int j = 0; j < 16; j++) out->data[(i - 1) * 16 + j] = enc[j] ^ off[j];
       for (int j = 0; j < 16; j++) checksum[j] ^= out->data[(i - 1) * 16 + j];
     } else {
@@ -342,6 +346,7 @@ static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t k
   }
 done:
   mbedtls_aes_free(&aes);
+  mbedtls_aes_free(&dec);
   return out;
 }
 

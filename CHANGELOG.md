@@ -4,7 +4,18 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Highlights
+
+- **Node.js parity:**
+  - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
+  - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+
 <!-- release:start -->
+
+### Fixes
+
+- A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
+- A property descriptor read from a class's prototype through an untyped value, such as a UI SDK's `Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")`, builds and answers Node's descriptor — the accessor pair the class declares, with its attributes — instead of failing the build with an empty SC3004: a class value's static table reflects a static method whose parameters complete as the checked-dynamic function Node holds, and a member the table cannot hold leaves the class's statics fenced rather than aborting lowering. Building the prototype view itself no longer reports the retry's diagnostic for a member whose body cannot run over a dynamic receiver (a typed field used as a `Map` key, say); that statement fences at run time. A native build that fails inside the compiler now names the failure, and no SC3002–SC3004 diagnostic is empty.
 
 ## 0.4.15
 

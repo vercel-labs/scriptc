@@ -116,10 +116,13 @@ import {
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
+import { fenceSqliteStaticRead } from "../builtins/sqlite.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsAbsentMemberValue,
   cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
+  cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
@@ -219,6 +222,7 @@ import {
   ambientNsRootOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
+  cjsNamespaceImportDep,
   contextualUndefReadType,
   fenceEarlyNsMemberRef,
   nodeUndefinedGlobalName,
@@ -507,6 +511,19 @@ export function lowerPropertyAccessExpr(
         return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
       return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
     }
+  }
+  // `ns.member` through a namespace import of a CommonJS module whose
+  // namespace object has no such property (Node's lexer detects the
+  // module's exports): Node reads undefined, and a namespace object
+  // inherits nothing from Object.prototype.
+  if (
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.expression) &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const nsDep = cjsNamespaceImportDep(lowerer, expr.expression);
+    if (nsDep !== null && !lowerer.cjsNamespaceOf(nsDep).names.has(expr.name.text))
+      return cjsAbsentMemberValue(lowerer, expr, expr.name);
   }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
@@ -1176,6 +1193,19 @@ export function lowerPropertyAccessExpr(
         dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, expr.name.text);
       if (slot !== null) return { kind: "varRef", localId: slot.id, type: slot.type, loc };
     }
+    // A member the module's exports object carries no export for reads
+    // undefined in Node — the shipped JavaScript never defines it
+    // (scheduler.production.js omits the log hooks react-dom reads). The
+    // read is typed with the declaration it was written against plus the
+    // undefined arm the runtime can hold. Object.prototype's own names
+    // stay on their existing paths: a plain exports object inherits them.
+    if (ts.isIdentifier(expr.name)) {
+      const dep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      if (dep !== null && cjsModuleLacksExport(lowerer, dep, expr.name.text, expr.name))
+        return cjsAbsentMemberValue(lowerer, expr, expr.name);
+    }
     return lowerExpr(lowerer, expr.name);
   }
   // `module.exports` READ in a CommonJS file whose whole export IS a
@@ -1372,6 +1402,7 @@ export function lowerPropertyAccessExpr(
     // rather than reading undefined through the field and dynamic reads.
     fenceBuiltinConstructorStaticRead(lowerer, expr) ??
     fenceMimeStaticRead(lowerer, expr) ??
+    fenceSqliteStaticRead(lowerer, expr) ??
     lowerer.lowerFieldRead(expr);
   // A union-typed field read narrows like an identifier when the
   // checker has narrowed this use to one arm.
@@ -3019,6 +3050,23 @@ export function lowerIntrinsicProperty(
       kind: "libCall",
       fn: "dyn.stdlibPrototype",
       args: [{ kind: "strLit", value: "Date", type: STRING, loc: locOf(expr) }],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
+  // ArrayBuffer.prototype in a JavaScript source: the prototype object its
+  // views inherit from (its methods and its byteLength/maxByteLength/
+  // resizable/detached getters), so an existence test such as
+  // `hasOwnProperty.call(ArrayBuffer.prototype, "detached")` answers Node's.
+  // A typed source keeps its own lowering and refusal.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.stdlibGlobalMember(expr, "ArrayBuffer") === "prototype"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dyn.stdlibPrototype",
+      args: [{ kind: "strLit", value: "ArrayBuffer", type: STRING, loc: locOf(expr) }],
       type: DYN,
       loc: locOf(expr),
     };

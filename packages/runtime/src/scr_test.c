@@ -2670,7 +2670,9 @@ double scr_test_mock_times_checked(double times) {
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  if (!(times >= 1 && times <= 9007199254740991.0)) {
+  /* Node's validateTimes accepts Infinity as "unlimited" and applies the
+   * integer range to every other count. */
+  if (times != INFINITY && !(times >= 1 && times <= 9007199254740991.0)) {
     size_t n = scr_num_received(times, recv);
     int len = snprintf(msg, sizeof msg,
                        "The value of \"options.times\" is out of range. It must be >= 1 && "

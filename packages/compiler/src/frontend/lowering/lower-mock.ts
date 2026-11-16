@@ -773,9 +773,8 @@ function mockTimesOption(
   node: ts.Expression | undefined,
   what: string,
   loc: SrcLoc,
-  stmts: IrStmt[],
-): IrExpr {
-  if (node === undefined) return numLit(-1, loc);
+): { times: IrExpr; check: IrStmt[] } {
+  if (node === undefined) return { times: numLit(-1, loc), check: [] };
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${what} options that are not an object literal`,
@@ -814,17 +813,23 @@ function mockTimesOption(
       );
     }
   }
-  if (!times) return numLit(-1, loc);
+  if (!times) return { times: numLit(-1, loc), check: [] };
   /* Node validates the count when the mock is created, so a bad one throws
-   * there (ERR_OUT_OF_RANGE) instead of at the first call. */
+   * there (ERR_OUT_OF_RANGE) instead of at the first call. The check runs
+   * where the caller places it: after the earlier arguments, as Node
+   * evaluates the call's arguments left to right before the mock is set up. */
   const slot = lowerer.declareHiddenLocal("%mockTimes", F64);
-  stmts.push({
-    kind: "varDecl",
-    localId: slot.id,
-    init: { kind: "libCall", fn: "test.mockTimes", args: [times], type: F64, loc },
-    loc,
-  });
-  return varRef(slot.id, F64, loc);
+  return {
+    times: varRef(slot.id, F64, loc),
+    check: [
+      {
+        kind: "varDecl",
+        localId: slot.id,
+        init: { kind: "libCall", fn: "test.mockTimes", args: [times], type: F64, loc },
+        loc,
+      },
+    ],
+  };
 }
 
 export function lowerMockFn(
@@ -862,7 +867,7 @@ export function lowerMockFn(
     );
   }
   const stmts: IrStmt[] = [];
-  const times = mockTimesOption(lowerer, hasOptions ? args.at(-1) : undefined, what, loc, stmts);
+  const timesOption = mockTimesOption(lowerer, hasOptions ? args.at(-1) : undefined, what, loc);
   const valueArgs = args.length - optionCount;
   const noop = valueArgs === 0 ? mockNoopOriginal(lowerer, ctxType!, fn, loc) : null;
   if (valueArgs === 0 && !noop) {
@@ -879,8 +884,19 @@ export function lowerMockFn(
     init: noop ?? lowerer.lowerExprExpecting(args[0]!, fn),
     loc,
   });
-  const implementation =
-    valueArgs === 2 ? lowerer.lowerExprExpecting(args[1]!, fn) : varRef(originalLocal.id, fn, loc);
+  /* The implementation evaluates after the original and before the options,
+   * as the call's arguments do in Node. */
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init:
+      valueArgs === 2
+        ? lowerer.lowerExprExpecting(args[1]!, fn)
+        : varRef(originalLocal.id, fn, loc),
+    loc,
+  });
+  stmts.push(...timesOption.check);
   const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
   const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
   stmts.push(
@@ -890,10 +906,10 @@ export function lowerMockFn(
       init: mockContextLiteral(
         ctxType!,
         fields,
-        implementation,
+        varRef(implLocal.id, fn, loc),
         varRef(originalLocal.id, fn, loc),
         [],
-        times,
+        timesOption.times,
         loc,
       ),
       loc,
@@ -966,7 +982,7 @@ export function lowerMockMethod(
     );
   }
   const stmts: IrStmt[] = [];
-  const times = mockTimesOption(lowerer, optionsNode, what, loc, stmts);
+  const timesOption = mockTimesOption(lowerer, optionsNode, what, loc);
   const objType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
   const objShape = objType?.kind === "record" ? lowerer.shapes.get(objType.shapeId) : undefined;
   const fn = objShape?.fields.find((f) => f.name === field)?.type;
@@ -1011,10 +1027,19 @@ export function lowerMockMethod(
     init: recordGet(obj(), field, fn!, loc),
     loc,
   });
-  const implementation =
-    implementationNode !== undefined
-      ? lowerer.lowerExprExpecting(implementationNode, fn!)
-      : original();
+  /* The object, its original field and the implementation evaluate before
+   * the options, as the call's arguments do in Node. */
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init:
+      implementationNode !== undefined
+        ? lowerer.lowerExprExpecting(implementationNode, fn!)
+        : original(),
+    loc,
+  });
+  stmts.push(...timesOption.check);
   const unmock: IrExpr = {
     kind: "call",
     callee: mockUnmockFactory(
@@ -1034,7 +1059,15 @@ export function lowerMockMethod(
     {
       kind: "varDecl",
       localId: ctxLocal.id,
-      init: mockContextLiteral(ctxType!, fields, implementation, original(), [unmock], times, loc),
+      init: mockContextLiteral(
+        ctxType!,
+        fields,
+        varRef(implLocal.id, fn!, loc),
+        original(),
+        [unmock],
+        timesOption.times,
+        loc,
+      ),
       loc,
     },
     trackMock(lowerer, tracker, ctxType!, ctx(), loc),

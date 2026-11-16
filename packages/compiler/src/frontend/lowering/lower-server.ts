@@ -3380,8 +3380,8 @@ function lowerNetSocketMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     const value: IrExpr = {
       kind: "libCall",
-      fn: "tls.sockGetSession",
-      args: [receiver],
+      fn: "tls.sockDynMember",
+      args: [receiver, numLit(1, loc)],
       type: DYN,
       loc,
     };
@@ -3394,14 +3394,8 @@ function lowerNetSocketMethodCall(
     // Renegotiation is off by default here: the call is a no-op, as it is
     // under TLS 1.3 in Node.
     requireStatementPosition(lowerer, call, "socket.disableRenegotiation()");
-    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    return {
-      kind: "libCall",
-      fn: "tls.sockDisableRenegotiation",
-      args: [receiver],
-      type: VOID,
-      loc,
-    };
+    // Nothing to do at run time: the answer is undefined, as in Node.
+    return dynUndefinedExpr(loc);
   }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
@@ -5185,8 +5179,8 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
       const value: IrExpr = {
         kind: "libCall",
-        fn: "tls.sockServername",
-        args: [receiver],
+        fn: "tls.sockDynMember",
+        args: [receiver, numLit(0, loc)],
         type: DYN,
         loc,
       };
@@ -6622,15 +6616,13 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
     cb = r.cb;
   }
   if (path !== null) {
-    return cb === null
-      ? { kind: "libCall", fn: "tls.connectPath", args: [path, opts], type: NETSOCKET_T, loc }
-      : {
-          kind: "libCall",
-          fn: "tls.connectPathCb",
-          args: [path, opts, cb],
-          type: NETSOCKET_T,
-          loc,
-        };
+    return {
+      kind: "libCall",
+      fn: "tls.connectPath",
+      args: [path, opts, cb ?? dynUndefinedExpr(loc)],
+      type: NETSOCKET_T,
+      loc,
+    };
   }
   return cb !== null
     ? { kind: "libCall", fn: "tls.connectCb", args: [port, host, opts, cb], type: NETSOCKET_T, loc }

@@ -3927,15 +3927,20 @@ static bool scr_tls_sock_verdict(const ScrTlsSock *t) {
  * name this client offered otherwise; false when there is none. +1. */
 ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
+  ScrStr *name = NULL;
   if (t != NULL) {
     if (t->cli != NULL) {
       if (t->cli->hostname != NULL)
-        return scr_dyn_new_str(scr_str_new(t->cli->hostname, strlen(t->cli->hostname)));
+        name = scr_str_new(t->cli->hostname, strlen(t->cli->hostname));
     } else if (t->sni_name != NULL) {
-      return scr_dyn_new_str(scr_str_retain(t->sni_name));
+      name = scr_str_retain(t->sni_name);
     }
   }
-  return scr_dyn_new_bool(false);
+  if (name == NULL) return scr_dyn_new_bool(false);
+  /* the dyn owns its own reference; the one taken here is released now */
+  ScrDyn *answer = scr_dyn_new_str(name);
+  scr_str_release(name);
+  return answer;
 }
 
 /* tlsSocket.getSession(): the session a resumption would use. +1 dyn
@@ -3952,6 +3957,12 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
+
+/* tlsSocket.servername (which == 0) and getSession (1) over the shared
+ * checked-dynamic member entry. */
+ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
+  return (int)which == 1 ? scr_tls_sock_get_session(s) : scr_tls_sock_servername(s);
+}
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);

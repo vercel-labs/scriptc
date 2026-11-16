@@ -435,7 +435,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.connectCb",
   // tls.connect(path...) dials and validates like the other forms.
   "tls.connectPath",
-  "tls.connectPathCb",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
   // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,

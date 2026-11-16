@@ -46808,6 +46808,7 @@
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
           "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts",
           "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
           "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
           "tests/corpus/6207-fs-constants-object.ts",
@@ -46837,9 +46838,11 @@
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-promises-constants.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs",
           "tests/corpus/fs-promises-watch.ts",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
+          "tests/corpus/fs-readdir-callback-options.ts",
           "tests/corpus/fs-readdir-encodings.ts",
           "tests/corpus/fs-readdir-recursive-types.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
@@ -47946,13 +47949,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fsPromises.cp",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47975,7 +47979,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fsPromises.glob",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -48696,7 +48700,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.watch",
         "tests": [
-          "tests/corpus/fs-promises-watch.ts"
+          "tests/corpus/fs-promises-watch.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48859,7 +48864,8 @@
         "evidence": "compiler-feature:fs.fs.chmod",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48963,7 +48969,8 @@
         "evidence": "compiler-feature:fs.fs.copyFile",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48986,13 +48993,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.cp",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49221,7 +49229,8 @@
         "evidence": "compiler-feature:fs.fs.fsync",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49300,7 +49309,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.glob",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -49474,7 +49483,8 @@
         "evidence": "compiler-feature:fs.fs.mkdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49528,7 +49538,8 @@
         "evidence": "compiler-feature:fs.fs.open",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49577,11 +49588,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.opendir",
         "tests": [
           "tests/corpus/fs-opendir-callbacks.ts",
-          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs"
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
+          "tests/corpus/fs-dir-listing.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49608,7 +49620,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49635,7 +49648,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49662,7 +49676,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49689,7 +49704,8 @@
         "evidence": "compiler-feature:fs.fs.readdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49846,7 +49862,8 @@
         "evidence": "compiler-feature:fs.fs.realpath",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49936,7 +49953,8 @@
         "evidence": "compiler-feature:fs.fs.rmdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50107,7 +50125,8 @@
         "evidence": "compiler-feature:fs.fs.unlink",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50352,7 +50371,8 @@
         "evidence": "compiler-feature:fs.fs.write",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50379,7 +50399,8 @@
         "evidence": "compiler-feature:fs.fs.write",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50712,13 +50733,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.cpSync",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50970,7 +50992,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.globSync",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -52009,9 +52031,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.Dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -52199,9 +52222,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },

@@ -8578,6 +8578,81 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
   return object;
 }
 
+/* ── checked-dynamic Dirent values (fs.readdir's callback form) ──────
+ * The Dirent rows the promise form answers as interned records cross a
+ * callback boundary as dynamic objects: an enumerable name and parentPath,
+ * and a non-enumerable %dtype the prototype's is*() probes read (the same
+ * libuv UV_DIRENT encoding the scandir snapshot uses). */
+static ScrDyn *scr_dirent_proto = NULL;
+
+static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], kind);
+  return scr_dyn_new_func(closure, thunk, arity, "native:fs.Dirent", name);
+}
+
+static ScrDyn *scr_dirent_type_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  if (self->kind == SCR_DYN_UNDEF || self->kind == SCR_DYN_NULL) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'isFile')",
+                     self->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_dyn_release(self);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  ScrDyn *kind = scr_dyn_obj_read(self, "%dtype", 6);
+  scr_dyn_release(self);
+  if (!kind) return NULL;
+  double entry = scr_dyn_number_constructor(kind);
+  scr_dyn_release(kind);
+  return scr_dyn_new_bool(!scr_exc_pending() && entry == scr_box_get_f64(closure->caps[0]));
+}
+
+static void scr_dirent_proto_teardown(void) {
+  if (!scr_dirent_proto) return;
+  scr_dirent_proto->v.obj.class_name = NULL;
+  scr_dyn_release(scr_dirent_proto);
+  scr_dirent_proto = NULL;
+}
+
+static ScrDyn *scr_dirent_prototype(void) {
+  if (scr_dirent_proto) return scr_dirent_proto;
+  static const struct {
+    const char *name;
+    double kind;
+  } tests[] = {
+    { "isFile", 1 },
+    { "isDirectory", 2 },
+    { "isSymbolicLink", 3 },
+    { "isFIFO", 4 },
+    { "isSocket", 5 },
+    { "isCharacterDevice", 6 },
+    { "isBlockDevice", 7 },
+  };
+  ScrDyn *proto = scr_dyn_new_obj();
+  proto->v.obj.class_name = "Dirent";
+  for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++)
+    scr_dyn_obj_set(proto, tests[i].name, strlen(tests[i].name),
+                    scr_dirent_method(scr_dirent_type_test, 0, NULL, tests[i].kind));
+  scr_dirent_proto = proto;
+  scr_atexit(scr_dirent_proto_teardown);
+  return proto;
+}
+
+/* One Dirent value: borrows the name and parent strings, +1 result. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind) {
+  ScrDyn *object = scr_dyn_new_obj();
+  object->prototype = scr_dyn_retain(scr_dirent_prototype());
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain(name)));
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(scr_str_retain(parent)));
+  scr_stats_define(object, "%dtype", scr_dyn_new_num(kind), NULL, NULL, false);
+  return object;
+}
+
 /* ── checked-dynamic Stats values back to the snapshot ─────────────── */
 
 /* One integer member of a dynamic Stats object: a number member (Stats) and

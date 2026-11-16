@@ -660,6 +660,11 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    /* node:async_hooks: the resource dies with the promise. The side table
+     * keys entries by address and is probed from the hash home, so an entry
+     * left behind here is both a leak and — once the address is handed to a
+     * new promise — an entry that find() answers for the wrong promise. */
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_dropped(p);
     SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);

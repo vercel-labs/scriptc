@@ -148,6 +148,35 @@ process.nextTick(() => {
         setImmediate(() => {
           queueHook.disable();
           console.log('immediate from init:', immediateOrder.join(','));
+
+          // A promise resource dies with its promise: across a long
+          // create/await churn no entry may survive to answer for a later
+          // promise at a recycled address. Two identical churns leave the
+          // same set of unfinished ids behind; a third round of dropped
+          // resolutions means the table kept entries for dead promises. The
+          // absolute count is the host's own pending internals, so only the
+          // growth between the rounds is pinned.
+          const churnLive = new Set();
+          const churnHook = ah.createHook({
+            init(id, type) {
+              if (type === 'PROMISE') churnLive.add(id);
+            },
+            promiseResolve(id) {
+              churnLive.delete(id);
+            },
+          });
+          churnHook.enable();
+          (async () => {
+            const churn = async () => {
+              for (let i = 0; i < 2000; i++) await Promise.resolve(i);
+            };
+            await churn();
+            const first = churnLive.size;
+            await churn();
+            const second = churnLive.size;
+            churnHook.disable();
+            console.log('promise churn growth:', second - first);
+          })();
         });
       });
     });

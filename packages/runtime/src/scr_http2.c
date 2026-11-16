@@ -2105,6 +2105,11 @@ static void scr_h2_on_closed(void *ctx) {
 static void scr_h2_on_closed_in(void *ctx) {
   ScrH2Session *s = ctx;
   s->destroyed = true;
+  /* The transport is gone: its idle deadline must not outlive it. The
+   * armed timer owns the session's +1, so a peer that connects, sends a
+   * partial frame and disconnects would otherwise keep the session and
+   * its receive buffers alive until a long server deadline expired. */
+  scr_h2_session_disarm_timeout(s);
   scr_h2_session_abort_streams(s, 8 /* NGHTTP2_CANCEL */);
   scr_h2_session_queue_close(s);
   if (s->sock) {

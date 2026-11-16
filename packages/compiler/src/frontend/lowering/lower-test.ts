@@ -1261,23 +1261,31 @@ function lowerTestCtxValue(
     case "tags":
       return after({ kind: "arrayLit", elems: [], type: declared, loc });
     case "signal":
-    case "error":
+    case "error": {
       /* t.signal is the test's AbortSignal (a checked-dynamic handle the
        * abort unit supplies), t.error Node's ERR_TEST_FAILURE wrapper over
        * the failure or null; both arrive as checked-dynamic values and are
-       * coerced to the declared member type. */
-      return after(
-        lowerer.coerceToExpected(
+       * coerced to the declared member type. The receiver is evaluated once
+       * into a hidden local: a side-effectful expression must not run twice,
+       * and both reads must name the same context. */
+      const ctxLocal = lowerer.declareHiddenLocal("%testCtx", receiver.type);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: ctxLocal.id, init: receiver, loc }],
+        result: lowerer.coerceToExpected(
           {
             kind: "libCall",
             fn: member === "signal" ? "test.ctxSignal" : "test.ctxError",
-            args: [receiver],
+            args: [varRef(ctxLocal.id, receiver.type, loc)],
             type: DYN,
             loc,
           },
           declared,
         ),
-      );
+        type: declared,
+        loc,
+      };
+    }
     case "passed":
       return lowerer.coerceToExpected(
         { kind: "libCall", fn: "test.ctxPassed", args: [receiver], type: BOOL, loc },

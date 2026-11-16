@@ -110,6 +110,10 @@ struct ScrTestCtx {
   double dur_ms;
   ScrCaught *err;      /* owned; the own-body failure payload */
   ScrDyn *abort_controller; /* owned; t.signal's controller, made on first read */
+  /* The test finished, timed out or was cancelled: a t.signal read after
+   * that must answer an aborted signal, even though the controller is made
+   * on the first read. */
+  bool signal_aborted;
   ScrStr **diags;      /* owned t.diagnostic strings, printed after the line */
   size_t ndiags, dcap;
   struct ScrTestCtx *parent; /* borrowed back-edge */
@@ -155,7 +159,9 @@ extern void scr_test_abort_controller_abort(ScrDyn *controller) __attribute__((w
  * unaborted). A suite's signal is left unaborted, as Node leaves it. A test
  * that never read t.signal made no controller. */
 static void scr_test_abort_now(ScrTestCtx *t) {
-  if (t && t->abort_controller && scr_test_abort_controller_abort)
+  if (!t) return;
+  t->signal_aborted = true;
+  if (t->abort_controller && scr_test_abort_controller_abort)
     scr_test_abort_controller_abort(t->abort_controller);
 }
 
@@ -2824,7 +2830,13 @@ double scr_test_worker_id(void) {
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t) {
   if (!scr_test_abort_controller_new || !scr_test_abort_controller_signal)
     return scr_dyn_undefined();
-  if (!t->abort_controller) t->abort_controller = scr_test_abort_controller_new();
+  if (!t->abort_controller) {
+    t->abort_controller = scr_test_abort_controller_new();
+    /* The test may have finished before anything read its signal: the
+     * controller made now starts aborted then. */
+    if (t->signal_aborted && scr_test_abort_controller_abort)
+      scr_test_abort_controller_abort(t->abort_controller);
+  }
   return scr_test_abort_controller_signal(t->abort_controller);
 }
 

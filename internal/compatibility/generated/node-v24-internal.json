@@ -2725,7 +2725,9 @@
           "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/1661-buffer-encodings-full.ts",
           "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts",
           "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/2751-buffer-concat-sparse-list.ts",
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
           "tests/corpus/3021-buffer-union-narrow-callback.ts",
@@ -2740,6 +2742,7 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/buffer-copy-bytes-from.ts",
           "tests/corpus/buffer-deprecated-members.ts",
           "tests/corpus/buffer-numeric-accessors.ts",
           "tests/corpus/buffer-optional-arguments.ts",
@@ -2869,7 +2872,8 @@
         "status": "partial",
         "evidence": "compiler-feature:buffer.node:buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3188,13 +3192,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.buffer.kMaxLength",
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.kMaxLength",
         "tests": [
           "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts",
-          "tests/corpus/2902-bigint-bytes.ts",
-          "tests/corpus/2904-bigint-errors.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -3243,10 +3245,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer.from",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/buffer-copy-bytes-from.ts",
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/2751-buffer-concat-sparse-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3598,10 +3605,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/buffer-copy-bytes-from.ts",
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/1402-buffer-encodings.ts",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/5530-buffer-pool.ts",
+          "tests/corpus/2751-buffer-concat-sparse-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87334,8 +87346,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.decode",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.decode",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87362,8 +87374,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.encode",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.encode",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87390,8 +87402,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.toASCII",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.toASCII",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87418,8 +87430,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.toUnicode",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.toUnicode",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87469,8 +87481,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.ucs2.decode",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.ucs2.decode",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87497,8 +87509,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.ucs2.encode",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.punycode.ucs2.encode",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87525,8 +87537,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.punycode.version",
+        "status": "supported",
+        "evidence": "compiler-feature:punycode.version",
         "tests": [
           "tests/corpus/6122-punycode-conversions.ts",
           "tests/corpus/6124-punycode-require-warnings.cjs",
@@ -87553,11 +87565,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "chapter"
@@ -87580,11 +87594,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.decode",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.decode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -87607,11 +87623,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.encode",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.encode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -87634,11 +87652,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.escape",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.escape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -87661,11 +87681,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.parse",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.parse",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -87688,11 +87710,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.stringify",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.stringify",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -87715,11 +87739,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.unescape",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.unescape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/querystring-codec-matrix.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -97064,13 +97090,14 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
           "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
-          "tests/corpus/node24-string-decoder.ts"
+          "tests/corpus/node24-string-decoder.ts",
+          "tests/corpus/string-decoder-split-sequences.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -97093,9 +97120,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:StringDecoder",
         "tests": [
+          "tests/corpus/string-decoder-split-sequences.ts",
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
@@ -97122,9 +97150,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:stringDecoder.end",
         "tests": [
+          "tests/corpus/string-decoder-split-sequences.ts",
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
@@ -97151,9 +97180,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:stringDecoder.write",
         "tests": [
+          "tests/corpus/string-decoder-split-sequences.ts",
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
@@ -107924,6 +107954,7 @@
           "tests/corpus/util-deep-equal-errors.ts",
           "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-class-to-string.ts",
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/util-format-json-error.ts",
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
@@ -108906,12 +108937,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.callbackify",
+        "status": "supported",
+        "evidence": "compiler-feature:util.util.callbackify",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/5190-util-callbackify.cjs",
-          "tests/corpus/5191-util-callbackify.ts",
-          "tests/fixtures/node-types/util-callables.ts"
+          "tests/corpus/5191-util-callbackify.ts"
         ]
       },
       "anchorSource": "exact"
@@ -109156,9 +109187,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.format",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
@@ -109196,9 +109228,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.formatWithOptions",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/2440-console-inspect-args.ts",
@@ -109376,12 +109409,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.inherits",
+        "status": "supported",
+        "evidence": "compiler-feature:util.util.inherits",
         "tests": [
           "tests/corpus/5185-util-inherits.cjs",
-          "tests/corpus/5186-util-inherits.ts",
-          "tests/fixtures/node-types/util-callables.ts"
+          "tests/corpus/5186-util-inherits.ts"
         ]
       },
       "anchorSource": "exact"
@@ -109490,9 +109522,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.custom",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/7524-inspect-custom.ts",
           "tests/corpus/7525-inspect-custom.cjs",
           "tests/corpus/util-inspect-options.ts",
@@ -109669,9 +109702,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.isDeepStrictEqual",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/node24-deep-equality.ts",
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality-properties.js",
@@ -109816,9 +109850,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.promisify",
         "tests": [
+          "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/1473-promisify-execfile.ts",
           "tests/corpus/1573-promisify-execfile-env-spread.ts",
           "tests/corpus/2912-promisify-fs-readfile.ts",

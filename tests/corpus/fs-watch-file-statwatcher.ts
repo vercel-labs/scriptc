@@ -1,9 +1,11 @@
 // fs.watchFile answers the StatWatcher for its resolved path: one handle,
 // shared by every call on that path, whose loop liveness follows Node's ref
 // count — each registration adds a ref, each unwatchFile gives one back, and
-// ref()/unref() only move the handle when the count reaches its bounds. With
-// nothing reffed the process ends by itself, which is the observable half;
-// event counts stay unobserved, as elsewhere.
+// ref()/unref() only move the handle when the count reaches its bounds, and
+// an unwatchFile whose listener the path never registered removes nothing
+// (so it must not give a ref back either). With nothing reffed the process
+// ends by itself, which is the observable half; event counts stay
+// unobserved, as elsewhere.
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -62,5 +64,19 @@ await delay(150);
 clearInterval(ticker);
 console.log("reffed delivered", events > 0);
 fs.unwatchFile(file, listener);
-console.log("done");
-fs.rmSync(dir, { recursive: true, force: true });
+
+// 5. An unwatchFile naming a listener this path never registered removes
+// nothing and gives no ref back, so the registration still holds the loop:
+// the unref'd timer below only runs because of it, and it is the timer that
+// ends the watch.
+const fourth = join(dir, "four.txt");
+fs.writeFileSync(fourth, "d");
+const held = fs.watchFile(fourth, { interval: 20 }, shared);
+const never = (current: fs.Stats, previous: fs.Stats): void => {};
+fs.unwatchFile(fourth, never);
+setTimeout(() => {
+  console.log("bogus unwatch keeps the loop", Boolean(held));
+  fs.unwatchFile(fourth);
+  console.log("done");
+  fs.rmSync(dir, { recursive: true, force: true });
+}, 60).unref();

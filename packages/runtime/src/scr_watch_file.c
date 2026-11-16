@@ -21,9 +21,11 @@
  * - watchFile on a path that already has a poller ADDS the listener and
  *   ignores its options; the first call's interval and persistent stand.
  * - unwatchFile(path, listener) removes the LAST listener registered with
- *   that closure (pointer identity, Node's rule); unwatchFile(path)
- *   removes every listener. The last removal stops the poller (its timer
- *   clears), which is what lets the process exit.
+ *   that closure (pointer identity, Node's rule), and gives the handle's
+ *   ref count one back only if such a listener was there; a listener the
+ *   path never registered removes nothing. unwatchFile(path) removes every
+ *   listener and clears the count. The last removal stops the poller (its
+ *   timer clears), which is what lets the process exit.
  * - An emit works on a snapshot of the listeners with retained closures,
  *   so a listener may unwatch itself or others mid-emit — the corpus's
  *   own shape.
@@ -404,17 +406,24 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
   if (p == NULL) return;
   if (cb != NULL) {
     /* The LAST listener registered with this closure goes (Node's rule),
-     * and the StatWatcher gives up one ref with it. */
+     * and the StatWatcher gives up one ref with it — but only when that
+     * listener was there: Node's unwatchFile compares the listener count
+     * around removeListener and cleans a ref only if it dropped, so
+     * unwatchFile with a listener nobody registered is a no-op. */
+    bool removed = false;
     for (size_t i = p->n; i-- > 0;) {
       if (p->ls[i].cb == cb) {
         scr_closure_release(p->ls[i].cb);
         memmove(&p->ls[i], &p->ls[i + 1], (p->n - i - 1) * sizeof *p->ls);
         p->n--;
+        removed = true;
         break;
       }
     }
-    if (p->ref_max > 0) p->ref_max--;
-    if (p->refs > 0 && --p->refs == 0) p->handle_reffed = false;
+    if (removed) {
+      if (p->ref_max > 0) p->ref_max--;
+      if (p->refs > 0 && --p->refs == 0) p->handle_reffed = false;
+    }
   } else {
     for (size_t i = 0; i < p->n; i++) scr_closure_release(p->ls[i].cb);
     p->n = 0;

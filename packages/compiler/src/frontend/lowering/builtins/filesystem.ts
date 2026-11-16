@@ -1432,9 +1432,11 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
  * follows the options-record stance: interval, persistent: true/false and
  * bigint: false are accepted; bigint: true fences (BigIntStats); other
  * documented keys fence by name; undocumented keys drop like Node.
- * Statement position only — Node returns a StatWatcher, which has no
- * lowering. Returns null for any untyped shape so the checked-dynamic
- * ladder (fs.watchFileChk) keeps its current IR. */
+ * watchFile answers the path's StatWatcher (ref/unref lower as
+ * statWatcher.ref/statWatcher.unref); unwatchFile with a listener that is
+ * not registered on the path removes nothing, as in Node. Returns null for
+ * any untyped shape so the checked-dynamic ladder (fs.watchFileChk) keeps
+ * its current IR. */
 export function lowerFsWatchFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,

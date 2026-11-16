@@ -35,8 +35,10 @@ console.log("toString", shape(() => bytes.toString("utf8", present, absent)));
 console.log("toString", shape(() => bytes.toString("utf8", undefined, undefined)));
 console.log("toString", shape(() => bytes.toString("utf8", 1, undefined)));
 
-// write(offset, length): an undefined offset writes from 0 and an undefined
-// length writes to the end.
+// write(offset, length): a missing or undefined offset is Node's
+// whole-buffer utf8 form — the string goes in from 0 to the end and the
+// length and encoding arguments are evaluated but ignored — while a
+// present offset honors them, and an undefined length writes to the end.
 for (const offset of [absent, present, undefined] as (number | undefined)[]) {
   console.log("write", shape(() => {
     const target = Buffer.alloc(8, 0x2e);
@@ -47,6 +49,45 @@ for (const offset of [absent, present, undefined] as (number | undefined)[]) {
     return [target.write("xy", 1, offset), target.toString()];
   }));
 }
+
+// The whole-buffer form: the ignored length and encoding change nothing,
+// and their expressions still evaluate.
+let evaluated = 0;
+const tick = (value: number): number => {
+  evaluated += 1;
+  return value;
+};
+for (const offset of [absent, undefined] as (number | undefined)[]) {
+  console.log("write absent", shape(() => {
+    const target = Buffer.alloc(6, 0x2e);
+    return [target.write("XY", offset, 1), target.toString()];
+  }));
+  console.log("write absent", shape(() => {
+    const target = Buffer.alloc(6, 0x2e);
+    return [target.write("5859", offset, tick(1), "hex"), target.toString(), evaluated];
+  }));
+  console.log("write absent", shape(() => {
+    const target = Buffer.alloc(6, 0x2e);
+    return [target.write("5859", offset, "hex"), target.toString()];
+  }));
+  console.log("write absent", shape(() => {
+    const target = Buffer.alloc(6, 0x2e);
+    return [target.write("5859", offset, undefined, "hex"), target.toString()];
+  }));
+}
+console.log("write absent short buffer", shape(() => {
+  const target = Buffer.alloc(4, 0x2e);
+  return [target.write("abcdef", undefined, 2), target.toString()];
+}));
+// write(string, encoding) reads its encoding from the offset position: the
+// offset is 0 there and the encoding IS honored (unlike the absent form).
+console.log("write encoding overload", shape(() => {
+  const target = Buffer.alloc(6, 0x2e);
+  return [target.write("6162", "hex"), target.toString()];
+}), shape(() => {
+  const target = Buffer.alloc(6, 0x2e);
+  return [target.write("ab", "latin1"), target.toString(), target.write("cd", undefined, "latin1")];
+}));
 
 // fill(offset, end) for a byte, a string and a Buffer pattern.
 for (const offset of [absent, present] as (number | undefined)[]) {

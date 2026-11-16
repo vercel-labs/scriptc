@@ -2616,26 +2616,64 @@ function lowerBufferInstanceMethod(
       idxNodes = idxNodes.slice(0, -1);
     }
     if (idxNodes.length > 2) lowerer.noLowering(`.write with ${nArgs} arguments`, call);
-    // write reads an empty encoding as utf8 and throws on any other name
-    // Node does not know, after the offset and length validate.
-    const enc = encNode
-      ? bufEncodingArgument(lowerer, "Buffer.write", encNode, "emptyUtf8", loc)
-      : { literal: "utf8" };
     const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-    // An undefined offset writes from 0, Node's default.
-    const offset: IrExpr = idxNodes[0]
-      ? lowerOptionalArgument(lowerer, idxNodes[0], F64, {
-          kind: "numLit",
-          value: 0,
+    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+    // A missing or undefined offset is Node's whole-buffer utf8 form:
+    // utf8Write(string, 0, this.length), so the length and encoding
+    // arguments are evaluated but IGNORED (write(s, undefined, 1) writes
+    // all of s). An offset whose value is only known at run time may hold
+    // undefined, so it runs the checked-dynamic method, whose ladder
+    // implements the same rule.
+    // write(string, encoding) reads its encoding from the offset position,
+    // so an encoding promoted to `encNode` with no offset node left is that
+    // overload — offset 0, the rest of the buffer — and NOT the absent-offset
+    // form below.
+    const offsetNode = idxNodes[0];
+    const offsetUndefined = offsetNode
+      ? lowerStaticallyUndefinedArgument(lowerer, offsetNode)
+      : null;
+    if (offsetUndefined || (!offsetNode && encNode === undefined)) {
+      const recvLocal = lowerer.declareHiddenLocal("%bufferReceiver", BYTES_U8);
+      const strLocal = lowerer.declareHiddenLocal("%bufferString", STRING);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: strLocal.id, init: s, loc },
+      ];
+      // The ignored arguments still evaluate, left to right, after the
+      // string; a bare unit literal carries nothing and is dropped.
+      const keepEffects = (expr: IrExpr): void => {
+        if (!isSafeToDiscard(expr)) stmts.push({ kind: "exprStmt", expr, loc });
+      };
+      if (offsetUndefined) keepEffects(offsetUndefined);
+      if (idxNodes[1]) keepEffects(lowerer.lowerExpr(idxNodes[1]));
+      if (encNode) keepEffects(lowerer.lowerExpr(encNode));
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: {
+          kind: "bytesIntrinsic",
+          method: "writeStr",
+          receiver: varRef(recvLocal.id, BYTES_U8, loc),
+          args: [
+            varRef(strLocal.id, STRING, loc),
+            { kind: "strLit", value: "utf8", type: STRING, loc },
+            numLit(0, loc),
+          ],
           type: F64,
           loc,
-        })
-      : { kind: "numLit", value: 0, type: F64, loc };
-    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
-    // An undefined length writes to the end of the buffer (the length reads
-    // this.length - offset at runtime), so a length that is not statically
-    // a number runs as the checked-dynamic method, which defaults it.
-    if (idxNodes[1] && !staticallyNumberArgument(lowerer, idxNodes[1])) {
+        },
+        type: F64,
+        loc,
+      };
+    }
+    // Otherwise the offset validates and the length defaults to the rest of
+    // the buffer, so a length that is not statically a number (a union that
+    // may hold undefined) runs as the checked-dynamic method, which
+    // defaults it.
+    if (
+      (offsetNode && !staticallyNumberArgument(lowerer, offsetNode)) ||
+      (idxNodes[1] && !staticallyNumberArgument(lowerer, idxNodes[1]))
+    ) {
       return {
         kind: "dynCheck",
         value: {
@@ -2651,7 +2689,15 @@ function lowerBufferInstanceMethod(
         loc,
       };
     }
+    const offset: IrExpr = offsetNode
+      ? lowerer.lowerExprExpecting(offsetNode, F64)
+      : { kind: "numLit", value: 0, type: F64, loc };
     const length = idxNodes[1] ? lowerer.lowerExprExpecting(idxNodes[1], F64) : undefined;
+    // write reads an empty encoding as utf8 and throws on any other name
+    // Node does not know, after the offset and length validate.
+    const enc = encNode
+      ? bufEncodingArgument(lowerer, "Buffer.write", encNode, "emptyUtf8", loc)
+      : { literal: "utf8" };
     // A run-time name stays raw: Node reports a bad offset or length before
     // it looks the name up, so the runtime entry normalizes it afterwards.
     return withBufEncoding(

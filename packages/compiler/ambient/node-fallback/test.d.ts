@@ -173,9 +173,20 @@ declare module "node:test" {
   }[keyof T];
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
+    /* The { times } option: the implementation serves that many calls and
+     * the next one runs the original. */
+    fn<F extends Function = (...args: any[]) => undefined>(
+      original: F | undefined,
+      options: MockFunctionOptions,
+    ): Mock<F>;
     fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
       original?: F,
       implementation?: Implementation,
+    ): Mock<F | Implementation>;
+    fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
+      original: F | undefined,
+      implementation: Implementation | undefined,
+      options: MockFunctionOptions,
     ): Mock<F | Implementation>;
     method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
@@ -219,7 +230,14 @@ declare module "node:test" {
    * `const { assert } = require('node:test')`), not TestContext.assert. */
   const assert: { register(name: string, fn: (...args: unknown[]) => unknown): void };
   function run(options?: unknown): unknown;
-  function snapshot(...args: unknown[]): unknown;
+  /* The module-level snapshot registry: setDefaultSnapshotSerializers
+   * covers the list every snapshot assertion without its own serializers
+   * uses, as Node's serializer chain does. setResolveSnapshotPath has no
+   * lowering yet. */
+  const snapshot: {
+    setDefaultSnapshotSerializers(serializers: ReadonlyArray<(value: any) => any>): void;
+    setResolveSnapshotPath(fn: (path: string) => string): void;
+  };
   export {
     test,
     it,

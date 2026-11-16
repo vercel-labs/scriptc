@@ -50,8 +50,14 @@ void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
  * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
 ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
+/* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
+ * snapshot assertion without its own serializers runs through. */
+void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 void scr_test_ctx_plan(ScrTestCtx *t, double count);
+/* mock.fn's and mock.method's { times }: Node's non-negative-integer check,
+ * which throws ERR_OUT_OF_RANGE; answers the count. */
+double scr_test_mock_times_checked(double times);
 /* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on
  * are dropped unless marked { only }. */
 void scr_test_ctx_run_only(ScrTestCtx *t, bool value);

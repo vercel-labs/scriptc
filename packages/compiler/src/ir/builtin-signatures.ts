@@ -2570,6 +2570,9 @@ function buildLibFnSignatures() {
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
+    // mock.fn's and mock.method's { times }: Node's non-negative-integer
+    // validation, which throws ERR_OUT_OF_RANGE and answers the count.
+    "test.mockTimes": { argTypes: [F64], result: F64 },
     "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "test.mockRestoreAll": { argTypes: [], result: VOID },
     "test.mockReset": { argTypes: [], result: VOID },
@@ -2595,6 +2598,9 @@ function buildLibFnSignatures() {
     // the default JSON.stringify(value, null, 2)); a throw becomes Node's
     // "The provided serializers did not generate a string." ERR_INVALID_STATE.
     "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+    // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
+    // checked-dynamic array of serializer functions.
+    "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },

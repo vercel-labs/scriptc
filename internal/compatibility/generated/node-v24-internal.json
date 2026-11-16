@@ -97193,7 +97193,7 @@
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
-          "tests/diagnostics/compat-absent-node-values.ts",
+          "tests/diagnostics/compat-absent-test-snapshot.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
@@ -97203,12 +97203,16 @@
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-tracker.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -97960,10 +97964,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -97986,10 +97991,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot.setDefaultSnapshotSerializers",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98015,7 +98021,7 @@
         "status": "not-implemented",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/diagnostics/compat-absent-test-snapshot.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98199,9 +98205,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98227,9 +98234,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98255,9 +98263,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98283,9 +98292,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98311,9 +98321,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98339,9 +98350,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.calls",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98676,7 +98688,6 @@
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/corpus/5810-mock-method-records.ts",
-          "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -98746,11 +98757,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.reset",
         "tests": [
-          "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-tracker.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -98775,11 +98785,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.restoreAll",
         "tests": [
-          "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-tracker.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -98853,10 +98862,9 @@
         "status": "partial",
         "evidence": "compiler-feature:test.timers.enable",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
-          "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
-          "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -98880,12 +98888,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.reset",
         "tests": [
-          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -98940,10 +98947,9 @@
         "status": "partial",
         "evidence": "compiler-feature:test.timers.tick",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
-          "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
-          "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99016,10 +99022,9 @@
         "status": "partial",
         "evidence": "compiler-feature:test.timers.runAll",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
-          "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
-          "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99043,12 +99048,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.setTime",
         "tests": [
-          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]

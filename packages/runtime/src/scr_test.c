@@ -1112,6 +1112,9 @@ typedef struct ScrSnapFile {
 } ScrSnapFile;
 
 static SCR_TL ScrSnapFile *scr_snap_files = NULL;
+/* snapshot.setDefaultSnapshotSerializers: the list every serialization that
+ * has no serializers of its own runs through (+1). */
+static SCR_TL ScrDyn *scr_snap_default_serializers = NULL;
 /* Node's --test-update-snapshots: a runtime argument of the binary,
  * which scr_test_init takes out of process.argv. */
 static SCR_TL bool scr_test_update_snapshots = false;
@@ -1207,6 +1210,10 @@ static void scr_snap_put_escaped(ScrJsonBuf *b, const char *s, size_t n) {
  * Node's ERR_INVALID_STATE. Returns +1, or NULL after a throw. */
 ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
   ScrDyn *v;
+  /* A snapshot with no serializers of its own uses the module's default
+   * list when one is set (snapshot.setDefaultSnapshotSerializers). */
+  if (serializers->kind != SCR_DYN_ARR && scr_snap_default_serializers)
+    serializers = scr_snap_default_serializers;
   if (serializers->kind != SCR_DYN_ARR) {
     ScrDyn *undef = scr_dyn_undefined();
     ScrDyn *space = scr_dyn_new_num(2);
@@ -1227,6 +1234,29 @@ ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
   static const char msg[] = "The provided serializers did not generate a string.";
   scr_snap_throw_state(msg, sizeof msg - 1);
   return NULL;
+}
+
+/* snapshot.setDefaultSnapshotSerializers(serializers): Node validates an
+ * array of functions, naming the first entry that is not one, and every
+ * later serialization without its own list runs through it. */
+void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/) {
+  if (serializers == NULL || serializers->kind != SCR_DYN_ARR) {
+    ScrDyn *undef = scr_dyn_undefined();
+    scr_dyn_arg_type_fail("serializers", "an instance of Array",
+                          serializers ? serializers : undef);
+    return;
+  }
+  for (size_t i = 0; i < serializers->v.arr.len; i++) {
+    ScrDyn *item = serializers->v.arr.items[i];
+    if (item && item->kind == SCR_DYN_FUNC) continue;
+    char name[32];
+    snprintf(name, sizeof name, "serializers[%zu]", i);
+    ScrDyn *undef = scr_dyn_undefined();
+    scr_dyn_arg_type_fail(name, "of type function", item ? item : undef);
+    return;
+  }
+  scr_dyn_release(scr_snap_default_serializers);
+  scr_snap_default_serializers = scr_dyn_retain(serializers);
 }
 
 ScrStr *scr_test_snapshot_value(ScrStr *serialized) {
@@ -1684,6 +1714,8 @@ static void scr_snap_write_all(void) {
 }
 
 static void scr_snap_free_all(void) {
+  scr_dyn_release(scr_snap_default_serializers);
+  scr_snap_default_serializers = NULL;
   while (scr_snap_files) {
     ScrSnapFile *f = scr_snap_files;
     scr_snap_files = f->next;
@@ -2622,6 +2654,33 @@ void scr_test_ctx_count(ScrTestCtx *t) { t->plan_count++; }
  * are dropped unless marked { only }; false turns the filter off again.
  * Subtests already registered keep the decision made for them. */
 void scr_test_ctx_run_only(ScrTestCtx *t, bool value) { t->run_only = value; }
+
+/* mock.fn's and mock.method's { times }: Node's validateInteger(times,
+ * "options.times", 1, Number.MAX_SAFE_INTEGER), whose messages it prints
+ * with the value it received. Answers the count for the mock's context. */
+double scr_test_mock_times_checked(double times) {
+  char recv[48];
+  char msg[192];
+  if (isnan(times) || times != floor(times)) {
+    size_t n = scr_num_received(times, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options.times\" is out of range. It must be an integer. "
+                       "Received %.*s",
+                       (int)n, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  if (!(times >= 1 && times <= 9007199254740991.0)) {
+    size_t n = scr_num_received(times, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options.times\" is out of range. It must be >= 1 && "
+                       "<= 9007199254740991. Received %.*s",
+                       (int)n, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  return times;
+}
 
 /* ── t.waitFor(condition[, { interval, timeout }]) ──────────────────────
  * Node polls the condition on a timer until it stops throwing or rejecting,

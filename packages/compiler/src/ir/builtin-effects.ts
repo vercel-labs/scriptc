@@ -68,11 +68,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.checkPrimeCb",
   "crypto.generatePrimeSync",
   "crypto.generatePrimeCb",
-  // node:test's { timeout } and { concurrency } range checks.
+  // node:test's { timeout } and { concurrency } range checks, and the
+  // mock { times } integer check.
   "test.register",
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
@@ -81,6 +83,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",
   "test.fileSnapshot",
+  // snapshot.setDefaultSnapshotSerializers validates its list (Node's
+  // ERR_INVALID_ARG_TYPE).
+  "test.snapshotSetDefaultSerializers",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",

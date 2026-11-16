@@ -52,6 +52,8 @@ interface MockContextFields {
   unmock: IrType;
   result: IrType;
   args: IrType;
+  /** The { times } counter: -1 when the mock has none. */
+  times: IrType;
 }
 
 const RESTORE_FN: IrType = { kind: "func", params: [], ret: VOID };
@@ -66,11 +68,13 @@ function mockContextFields(lowerer: Lowerer, type: IrType): MockContextFields | 
   const once = field("%once");
   const calls = field("calls");
   const unmock = field("%unmock");
+  const times = field("%times");
   if (
     impl?.kind !== "func" ||
     once?.kind !== "array" ||
     calls?.kind !== "array" ||
     unmock?.kind !== "array" ||
+    times?.kind !== "f64" ||
     field("%original") === undefined
   )
     return null;
@@ -79,7 +83,7 @@ function mockContextFields(lowerer: Lowerer, type: IrType): MockContextFields | 
   const result = callShape?.fields.find((f) => f.name === "result")?.type;
   const args = callShape?.fields.find((f) => f.name === "arguments")?.type;
   if (!result || !args) return null;
-  return { fn: impl, call, calls, once, onceEntry: once.elem, unmock, result, args };
+  return { fn: impl, call, calls, once, onceEntry: once.elem, unmock, result, args, times };
 }
 
 export function isMockContextType(lowerer: Lowerer, type: IrType): boolean {
@@ -302,6 +306,46 @@ function mockWrapperFactory(
         loc,
       },
     ]);
+    // { times }: the mock's implementation serves this many calls; the call
+    // whose index is one before the count restores the original, as Node's
+    // nextImpl does (before the implementation runs).
+    const timesField = () => recordGet(ctx(), "%times", F64, loc);
+    const restoreOnTimes: IrStmt = {
+      kind: "if",
+      cond: {
+        kind: "bin",
+        op: "!==",
+        left: timesField(),
+        right: numLit(-1, loc),
+        type: BOOL,
+        loc,
+      },
+      then: [
+        {
+          kind: "if",
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: {
+              kind: "bin",
+              op: "+",
+              left: varRef("n.0", F64, loc),
+              right: numLit(1, loc),
+              type: F64,
+              loc,
+            },
+            right: timesField(),
+            type: BOOL,
+            loc,
+          },
+          then: mockRestoreStmts(lowerer, ctxType, ctx, loc),
+          else_: null,
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    };
     lowerer.liftedFns.push({
       name: impl,
       params,
@@ -329,6 +373,7 @@ function mockWrapperFactory(
         },
         { kind: "varDecl", localId: "f.0", init: recordGet(ctx(), "%impl", fn, loc), loc },
         pickOnce,
+        restoreOnTimes,
         { kind: "tryCatch", tryBody, catchBody, catchLocalId: "e.0", finallyBody: null, loc },
       ],
       loc,
@@ -365,50 +410,55 @@ function mockWrapperFactory(
 /** `%mock.restore.N(ctx)`: fn.mock.restore(). A method mock writes the
  * original back to its object and keeps its implementation; a mock.fn mock
  * goes back to its original implementation. */
-function mockRestoreHelper(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
+/** The statements a mock's restore runs: a method mock writes its original
+ * back to the object, and a mock.fn mock goes back to its original
+ * implementation. */
+function mockRestoreStmts(lowerer: Lowerer, ctxType: IrType, ctx: () => IrExpr, loc: SrcLoc) {
   const { fn, unmock } = mockContextFields(lowerer, ctxType)!;
+  const unmockArray = () => recordGet(ctx(), "%unmock", unmock, loc);
+  return [
+    {
+      kind: "if",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: length(unmockArray(), loc),
+        right: numLit(0, loc),
+        type: BOOL,
+        loc,
+      },
+      then: [recordSet(ctx(), "%impl", recordGet(ctx(), "%original", fn, loc), loc)],
+      else_: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "callValue",
+            callee: {
+              kind: "arrayGet",
+              arr: unmockArray(),
+              index: numLit(0, loc),
+              type: RESTORE_FN,
+              loc,
+            },
+            args: [],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ] satisfies IrStmt[];
+}
+
+function mockRestoreHelper(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
   return mockHelper(
     lowerer,
     ctxType,
     "restore",
     [],
-    (ctx) => {
-      const unmockArray = () => recordGet(ctx(), "%unmock", unmock, loc);
-      return [
-        {
-          kind: "if",
-          cond: {
-            kind: "bin",
-            op: "===",
-            left: length(unmockArray(), loc),
-            right: numLit(0, loc),
-            type: BOOL,
-            loc,
-          },
-          then: [recordSet(ctx(), "%impl", recordGet(ctx(), "%original", fn, loc), loc)],
-          else_: [
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "callValue",
-                callee: {
-                  kind: "arrayGet",
-                  arr: unmockArray(),
-                  index: numLit(0, loc),
-                  type: RESTORE_FN,
-                  loc,
-                },
-                args: [],
-                type: VOID,
-                loc,
-              },
-              loc,
-            },
-          ],
-          loc,
-        },
-      ];
-    },
+    (ctx) => mockRestoreStmts(lowerer, ctxType, ctx, loc),
     loc,
   );
 }
@@ -584,6 +634,7 @@ function mockContextLiteral(
   implementation: IrExpr,
   original: IrExpr,
   unmock: IrExpr[],
+  times: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
   return {
@@ -593,6 +644,7 @@ function mockContextLiteral(
       { name: "%once", value: { kind: "arrayLit", elems: [], type: fields.once, loc } },
       { name: "%original", value: original },
       { name: "%unmock", value: { kind: "arrayLit", elems: unmock, type: fields.unmock, loc } },
+      { name: "%times", value: times },
       { name: "calls", value: { kind: "arrayLit", elems: [], type: fields.calls, loc } },
     ],
     type: ctxType,
@@ -711,6 +763,70 @@ function mockNoopOriginal(
 /** mock.fn(original?, implementation?) and t.mock.fn(...). Without an
  * original, the mock's original and implementation are a function that
  * returns undefined, as in Node. */
+/** The mock options object's { times }: the number of calls the mock's
+ * implementation serves before the original comes back, -1 without the
+ * option (Node's Infinity). A numeric literal is checked against Node's
+ * non-negative-integer rule here; an expression is passed through. Other
+ * options (getter and setter) fence. */
+function mockTimesOption(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  what: string,
+  loc: SrcLoc,
+  stmts: IrStmt[],
+): IrExpr {
+  if (node === undefined) return numLit(-1, loc);
+  if (!ts.isObjectLiteralExpression(node)) {
+    lowerer.noLowering(
+      `${what} options that are not an object literal`,
+      node,
+      "pass the options as an object literal: { times?: number }",
+    );
+  }
+  let times: IrExpr | null = null;
+  for (const prop of node.properties.nodes) {
+    if (
+      !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
+      !ts.isShorthandPropertyAssignment(prop)
+    ) {
+      lowerer.noLowering(
+        `${what} options with computed keys or spreads`,
+        prop,
+        "each option must be a `name: value` or shorthand entry with a literal key",
+      );
+    }
+    const name = (prop.name as ts.Identifier).text;
+    if (name !== "times") {
+      lowerer.noLowering(`${what} option '${name}'`, prop, "times is the supported mock option");
+    }
+    const init: ts.Expression = ts.isPropertyAssignment(prop)
+      ? prop.initializer
+      : (prop.name as ts.Identifier);
+    if (ts.isNumericLiteral(init)) {
+      times = numLit(Number(init.text), loc);
+    } else if (lowerer.mapTypeOf(lowerer.typeOf(init))?.kind === "f64") {
+      times = lowerer.lowerExprExpecting(init, F64);
+    } else {
+      lowerer.noLowering(
+        `${what} with a non-number times value`,
+        init,
+        "times takes a non-negative number",
+      );
+    }
+  }
+  if (!times) return numLit(-1, loc);
+  /* Node validates the count when the mock is created, so a bad one throws
+   * there (ERR_OUT_OF_RANGE) instead of at the first call. */
+  const slot = lowerer.declareHiddenLocal("%mockTimes", F64);
+  stmts.push({
+    kind: "varDecl",
+    localId: slot.id,
+    init: { kind: "libCall", fn: "test.mockTimes", args: [times], type: F64, loc },
+    loc,
+  });
+  return varRef(slot.id, F64, loc);
+}
+
 export function lowerMockFn(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -732,22 +848,30 @@ export function lowerMockFn(
   const fields = mockContextFields(lowerer, ctxType!)!;
   requireUndefinedResultArm(lowerer, fields, call, what);
   const args = call.arguments.nodes;
-  if (args.length > 2 || args.some(ts.isSpreadElement)) {
+  const isOptions = (arg: ts.Expression | undefined): boolean =>
+    arg !== undefined &&
+    ts.isObjectLiteralExpression(arg) &&
+    lowerer.checker.getCallSignatures(lowerer.typeOf(arg)).length === 0;
+  const hasOptions = args.length > 1 && isOptions(args.at(-1));
+  const optionCount = hasOptions ? 1 : 0;
+  if (args.length - optionCount > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       call,
-      "the supported forms are mock.fn(), mock.fn(original) and mock.fn(original, implementation); mock options have no lowering",
+      "the supported forms are mock.fn(), mock.fn(original), mock.fn(original, implementation), each with a trailing { times } options object",
     );
   }
-  const noop = args.length === 0 ? mockNoopOriginal(lowerer, ctxType!, fn, loc) : null;
-  if (args.length === 0 && !noop) {
+  const stmts: IrStmt[] = [];
+  const times = mockTimesOption(lowerer, hasOptions ? args.at(-1) : undefined, what, loc, stmts);
+  const valueArgs = args.length - optionCount;
+  const noop = valueArgs === 0 ? mockNoopOriginal(lowerer, ctxType!, fn, loc) : null;
+  if (valueArgs === 0 && !noop) {
     lowerer.noLowering(
       `${what}() of a function returning '${lowerer.fmt(fn.ret)}'`,
       call,
       "mock.fn() without an original returns undefined: pass an original, or use a function type whose return type includes undefined",
     );
   }
-  const stmts: IrStmt[] = [];
   const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn);
   stmts.push({
     kind: "varDecl",
@@ -756,9 +880,7 @@ export function lowerMockFn(
     loc,
   });
   const implementation =
-    args.length === 2
-      ? lowerer.lowerExprExpecting(args[1]!, fn)
-      : varRef(originalLocal.id, fn, loc);
+    valueArgs === 2 ? lowerer.lowerExprExpecting(args[1]!, fn) : varRef(originalLocal.id, fn, loc);
   const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
   const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
   stmts.push(
@@ -771,6 +893,7 @@ export function lowerMockFn(
         implementation,
         varRef(originalLocal.id, fn, loc),
         [],
+        times,
         loc,
       ),
       loc,
@@ -809,11 +932,11 @@ export function lowerMockMethod(
 ): IrExpr {
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
+  if (args.length < 2 || args.length > 4 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       call,
-      "the supported forms are mock.method(object, methodName) and mock.method(object, methodName, implementation); mock options have no lowering",
+      "the supported forms are mock.method(object, methodName), mock.method(object, methodName, implementation) and the same with a trailing { times } options object",
     );
   }
   const nameArg = args[1]!;
@@ -821,16 +944,29 @@ export function lowerMockMethod(
     lowerer.noLowering(`${what} with a computed method name`, nameArg, METHOD_HINT);
   }
   const field = (nameArg as ts.StringLiteralLike).text;
-  if (
-    args.length === 3 &&
-    lowerer.checker.getCallSignatures(lowerer.typeOf(args[2]!)).length === 0
-  ) {
+  const isOptions = (arg: ts.Expression | undefined): boolean =>
+    arg !== undefined &&
+    ts.isObjectLiteralExpression(arg) &&
+    lowerer.checker.getCallSignatures(lowerer.typeOf(arg)).length === 0;
+  const trailing = args[2];
+  const implementationNode = trailing === undefined || isOptions(trailing) ? undefined : trailing;
+  const optionsNode = args.length === 4 ? args[3] : isOptions(trailing) ? trailing : undefined;
+  if (args.length === 4 && trailing !== undefined && isOptions(trailing)) {
     lowerer.noLowering(
-      `${what} with an options object`,
-      args[2]!,
-      "mock options (times, getter and setter) have no lowering",
+      `${what} with an options object before its implementation`,
+      trailing,
+      "pass the implementation, then the { times } options object",
     );
   }
+  if (optionsNode !== undefined && !isOptions(optionsNode)) {
+    lowerer.noLowering(
+      `${what} options that are not an object literal`,
+      optionsNode,
+      "pass the options as an object literal: { times?: number }",
+    );
+  }
+  const stmts: IrStmt[] = [];
+  const times = mockTimesOption(lowerer, optionsNode, what, loc, stmts);
   const objType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
   const objShape = objType?.kind === "record" ? lowerer.shapes.get(objType.shapeId) : undefined;
   const fn = objShape?.fields.find((f) => f.name === field)?.type;
@@ -857,14 +993,13 @@ export function lowerMockMethod(
     if (!resultType || typeKey(resultType) !== typeKey(fn)) {
       lowerer.noLowering(
         `${what} with an implementation of another type`,
-        args[2] ?? call,
+        implementationNode ?? call,
         "give the implementation the method's parameter and return types, or discard the result",
       );
     }
   }
   const fields = mockContextFields(lowerer, ctxType!)!;
   requireUndefinedResultArm(lowerer, fields, call, what);
-  const stmts: IrStmt[] = [];
   const objLocal = lowerer.declareHiddenLocal("%mockObject", objType!);
   const obj = () => varRef(objLocal.id, objType!, loc);
   stmts.push({ kind: "varDecl", localId: objLocal.id, init: lowerer.lowerExpr(args[0]!), loc });
@@ -876,7 +1011,10 @@ export function lowerMockMethod(
     init: recordGet(obj(), field, fn!, loc),
     loc,
   });
-  const implementation = args.length === 3 ? lowerer.lowerExprExpecting(args[2]!, fn!) : original();
+  const implementation =
+    implementationNode !== undefined
+      ? lowerer.lowerExprExpecting(implementationNode, fn!)
+      : original();
   const unmock: IrExpr = {
     kind: "call",
     callee: mockUnmockFactory(
@@ -896,7 +1034,7 @@ export function lowerMockMethod(
     {
       kind: "varDecl",
       localId: ctxLocal.id,
-      init: mockContextLiteral(ctxType!, fields, implementation, original(), [unmock], loc),
+      init: mockContextLiteral(ctxType!, fields, implementation, original(), [unmock], times, loc),
       loc,
     },
     trackMock(lowerer, tracker, ctxType!, ctx(), loc),

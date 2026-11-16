@@ -662,6 +662,45 @@ export function lowerNodeTestModuleCall(
         "the programmatic runner has no lowering — run tests by executing the compiled binary",
       );
       break;
+    case "snapshot.setDefaultSnapshotSerializers": {
+      requireStatementPosition(lowerer, expr, "snapshot.setDefaultSnapshotSerializers(...)");
+      const first = expr.arguments.nodes[0];
+      if (
+        expr.arguments.nodes.length !== 1 ||
+        first === undefined ||
+        !ts.isArrayLiteralExpression(first)
+      ) {
+        lowerer.noLowering(
+          "snapshot.setDefaultSnapshotSerializers with these arguments",
+          expr,
+          "the supported form is snapshot.setDefaultSnapshotSerializers([(value) => ...])",
+        );
+      }
+      const list = first as ts.ArrayLiteralExpression;
+      const fns = list.elements.nodes.map((element) => {
+        if (ts.isSpreadElement(element))
+          lowerer.noLowering(
+            "snapshot.setDefaultSnapshotSerializers with a spread serializer",
+            element,
+            "list each serializer explicitly",
+          );
+        return lowerer.lowerExprExpecting(element, DYN);
+      });
+      return {
+        kind: "libCall",
+        fn: "test.snapshotSetDefaultSerializers",
+        args: [{ kind: "dynArrLit", elems: fns, type: DYN, loc }],
+        type: VOID,
+        loc,
+      };
+    }
+    case "snapshot.setResolveSnapshotPath":
+      lowerer.noLowering(
+        "snapshot.setResolveSnapshotPath",
+        expr,
+        "snapshot.setDefaultSnapshotSerializers is the supported snapshot module function",
+      );
+      break;
     case "snapshot":
       lowerer.noLowering(
         "test.snapshot",

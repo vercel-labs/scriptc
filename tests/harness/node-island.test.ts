@@ -1556,6 +1556,55 @@ export function patchAndBump(): number {
       code: 0,
     });
   }, 300_000);
+
+  // A use that answers for every JavaScript value hands an island's member on
+  // unconverted, but not an imported name: Node links the program's imports
+  // when it loads and fails for a name the module does not export, whatever
+  // the use does with the value (the conditions split of
+  // `esm-missing-export`: the types name one file and Node runs another).
+  test("a missing island export still fails a total use", async () => {
+    const dir = join(outDir, "missing-export-total-use");
+    rmSync(dir, { recursive: true, force: true });
+    const pkg = join(dir, "node_modules", "condsplit");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(
+      join(pkg, "package.json"),
+      JSON.stringify({
+        name: "condsplit",
+        version: "1.0.0",
+        type: "module",
+        exports: {
+          ".": {
+            types: "./index.web.d.ts",
+            node: "./index.node.js",
+            default: "./index.web.js",
+          },
+        },
+      }),
+    );
+    writeFileSync(join(pkg, "index.web.d.ts"), "export declare const webOnly: number;\n");
+    writeFileSync(join(pkg, "index.node.js"), "export const nodeOnly = 0;\n");
+    writeFileSync(join(pkg, "index.web.js"), "export const webOnly = 0;\n");
+    writeFileSync(
+      join(dir, "main.ts"),
+      'import { webOnly } from "condsplit";\nconsole.log(`<${webOnly}>`);\n',
+    );
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(dir, "program"),
+      outDir: dir,
+      sanitize,
+      libnode: pack!,
+      nodeIslands: { islands: ["condsplit"] },
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ran = await run(result.binaryPath, []);
+    // The read converts as every other typed use does, and the conversion
+    // names the declaration that types it.
+    expect(ran.stdout).toBe("");
+    expect(ran.code).toBe(1);
+    expect(ran.stderr).toContain("expected number at $, got undefined");
+  }, 300_000);
 });
 
 /** A CommonJS program whose entry requires a sloppy-mode module that writes

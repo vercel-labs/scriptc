@@ -1153,6 +1153,22 @@ function noteIslandClaim(
   lowerer.islandClaimOrigins.set(key, islandOriginOf(lowerer, declaredBy, typed, argument) ?? "");
 }
 
+/** Whether `node` is an import binding of an island module: a named, default
+ * or namespace import, which Node links when the program loads. A
+ * `require` binding is not link-checked (a member module.exports lacks reads
+ * undefined), so it keeps the total-use handling. */
+function importedIslandBinding(lowerer: Lowerer, node: ts.Expression): boolean {
+  const inner = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(inner) || islandBindingOf(lowerer, inner) === null) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(inner)?.declarations ?? [];
+  return declarations.some(
+    (declaration) =>
+      ts.isImportSpecifier(declaration) ||
+      ts.isNamespaceImport(declaration) ||
+      ts.isImportClause(declaration),
+  );
+}
+
 function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr {
   const tsType = lowerer.typeOf(node);
   const islands = lowerer.nodeIslands!;
@@ -1170,9 +1186,16 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
   // result has to become the typed value this read would have been, which
   // only the conversions of convertedIslandValue can do after the fact;
   // every other type is converted, or refused, here as before.
+  //
+  // An imported name is no member an island may leave absent: Node links the
+  // program's imports when it loads and throws for a name the module does not
+  // export, whatever the use does with the value (`esm-missing-export`: the
+  // conditions split types one file and runs another). So a use of an import
+  // binding is not total, and the read converts, and fails, as it did before.
   const mapped = lowerer.mapTypeOf(tsType);
   if (
     totalUse(lowerer, node) &&
+    !importedIslandBinding(lowerer, node) &&
     (!defaultedOnward(lowerer, node) || (mapped !== null && deferredConversion(lowerer, mapped)))
   )
     return guardedReceiver(lowerer, raw, node, mapped) ?? raw;

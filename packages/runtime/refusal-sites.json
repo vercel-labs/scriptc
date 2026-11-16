@@ -1638,12 +1638,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_sqlite.c",
-  "function": "scr_sqlite_not_supported",
-  "message": "'%s.prototype.%s' on a dynamic value is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream.c",
   "function": "scr_stream_next_str_fence",
   "message": "for-await over a stream with an encoding set is not supported yet in typed code (chunks are Buffers here)",

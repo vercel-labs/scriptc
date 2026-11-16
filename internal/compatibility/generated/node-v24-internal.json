@@ -34504,6 +34504,7 @@
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-value-types.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -39238,8 +39239,11 @@
       "anchor": "err_load_sqlite_extension",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_LOAD_SQLITE_EXTENSION"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_LOAD_SQLITE_EXTENSION",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90689,6 +90693,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
@@ -90696,7 +90701,11 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-limits.ts",
           "tests/corpus/sqlite-named-parameters.ts",
-          "tests/corpus/sqlite-return-arrays.ts"
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-serialize.ts",
+          "tests/corpus/sqlite-sessions.ts",
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-user-functions.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -90770,8 +90779,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.aggregate",
+        "tests": [
+          "tests/corpus/sqlite-user-functions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90821,8 +90833,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.loadExtension",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90844,8 +90859,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.enableLoadExtension",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90951,8 +90969,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.function",
+        "tests": [
+          "tests/corpus/sqlite-user-functions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90974,8 +90995,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.setAuthorizer",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91025,8 +91049,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.serialize",
+        "tests": [
+          "tests/corpus/sqlite-serialize.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91048,8 +91075,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.deserialize",
+        "tests": [
+          "tests/corpus/sqlite-serialize.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91099,8 +91129,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.createTagStore",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91122,8 +91155,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.createSession",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91145,8 +91181,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.applyChangeset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91278,8 +91317,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:Session",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91301,8 +91343,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.changeset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91324,8 +91369,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.patchset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91347,8 +91395,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.close",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91370,8 +91421,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91836,8 +91890,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:SQLTagStore",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91859,8 +91916,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.all",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91882,8 +91942,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.get",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91905,8 +91968,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.iterate",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91928,8 +91994,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.run",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91951,8 +92020,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.clear",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91974,8 +92046,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:size",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91997,8 +92072,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:capacity",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -92020,8 +92098,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:db",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

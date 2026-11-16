@@ -17490,7 +17490,10 @@ function requireReboundValue(
           ),
         });
       }
-      if (fields.length > 0) return { kind: "dynObjLit", fields, type: DYN, loc };
+      // One object per module is Node's identity and mutations; building
+      // it per binding miscompiles, so keep the named refusal until a
+      // module-owned exports slot exists.
+      if (fields.length > 0) return null;
     }
   }
   return null;

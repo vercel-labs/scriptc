@@ -26,6 +26,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_console_inst_clear writes the terminal sequences to the instance's
   // descriptor; a non-terminal target writes nothing.
   "console.instClear",
+  // The OutgoingMessage write-buffer readers compare and sum stored byte
+  // counts (the corked buffer's length, the held head's, the socket's
+  // pending bytes) and a boolean flag; registering a 'drain' listener
+  // appends to a list. None of them runs program code.
+  "http.resWritableLength",
+  "http.resWritableNeedDrain",
+  "http.clientWritableLength",
+  "http.clientWritableNeedDrain",
+  "http.resOnDrain",
+  "http.clientOnDrain",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.

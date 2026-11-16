@@ -1,6 +1,6 @@
 // node:sqlite's backup(): copies the source database into a new file, reports
 // page progress, and answers the page count; the option checks are Node's.
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { DatabaseSync, backup } from "node:sqlite";
 
 const tail = (path: string): string => {
@@ -55,6 +55,29 @@ async function main(): Promise<void> {
   } catch (error) {
     const e = error as { message: string; code: string };
     console.log("target:", e.message, e.code);
+  }
+  // Surplus arguments exist only for their effects: they evaluate in source
+  // order before the copy, and a throwing one keeps the copy from starting.
+  const order: string[] = [];
+  const note = (label: string): string => {
+    order.push(label);
+    return label;
+  };
+  const fail = (): string => {
+    throw new RangeError("extra");
+  };
+  const extra = path + ".extra";
+  rmSync(extra, { force: true });
+  // @ts-expect-error: backup reads three arguments and ignores the rest
+  const extraPages = await backup(db, extra, { rate: 1 }, note("fourth"), note("fifth"));
+  console.log("extra:", extraPages, order.join(","), existsSync(extra));
+  rmSync(extra, { force: true });
+  try {
+    // @ts-expect-error: backup reads three arguments and ignores the rest
+    await backup(db, extra, { rate: 1 }, fail());
+  } catch (error) {
+    const e = error as { name: string; message: string };
+    console.log("extra throw:", e.name, e.message, existsSync(extra));
   }
   rmSync(path, { force: true });
   db.close();

@@ -1,0 +1,11 @@
+{
+  "name": "@probe/ai",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./utils/*": {
+      "types": "./src/utils/*.ts",
+      "import": "./src/utils/*.ts"
+    }
+  }
+}

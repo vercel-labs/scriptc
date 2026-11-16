@@ -8578,6 +8578,83 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
   return object;
 }
 
+/* ── checked-dynamic Dirent values (fs.readdir's callback form) ──────
+ * The Dirent rows the promise form answers as interned records cross a
+ * callback boundary as dynamic objects: an enumerable name and parentPath,
+ * and a non-enumerable %dtype the prototype's is*() probes read (the same
+ * libuv UV_DIRENT encoding the scandir snapshot uses). */
+static ScrDyn *scr_dirent_proto = NULL;
+
+static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], kind);
+  return scr_dyn_new_func(closure, thunk, arity, "native:fs.Dirent", name);
+}
+
+static ScrDyn *scr_dirent_type_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  if (self->kind == SCR_DYN_UNDEF || self->kind == SCR_DYN_NULL) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'isFile')",
+                     self->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_dyn_release(self);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  ScrDyn *kind = scr_dyn_obj_read(self, "%dtype", 6);
+  scr_dyn_release(self);
+  if (!kind) return NULL;
+  double entry = scr_dyn_number_constructor(kind);
+  scr_dyn_release(kind);
+  return scr_dyn_new_bool(!scr_exc_pending() && entry == scr_box_get_f64(closure->caps[0]));
+}
+
+static void scr_dirent_proto_teardown(void) {
+  if (!scr_dirent_proto) return;
+  scr_dirent_proto->v.obj.class_name = NULL;
+  scr_dyn_release(scr_dirent_proto);
+  scr_dirent_proto = NULL;
+}
+
+static ScrDyn *scr_dirent_prototype(void) {
+  if (scr_dirent_proto) return scr_dirent_proto;
+  static const struct {
+    const char *name;
+    double kind;
+  } tests[] = {
+    { "isFile", 1 },
+    { "isDirectory", 2 },
+    { "isSymbolicLink", 3 },
+    { "isFIFO", 4 },
+    { "isSocket", 5 },
+    { "isCharacterDevice", 6 },
+    { "isBlockDevice", 7 },
+  };
+  ScrDyn *proto = scr_dyn_new_obj();
+  proto->v.obj.class_name = "Dirent";
+  for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++)
+    scr_dyn_obj_set(proto, tests[i].name, strlen(tests[i].name),
+                    scr_dirent_method(scr_dirent_type_test, 0, NULL, tests[i].kind));
+  scr_dirent_proto = proto;
+  scr_atexit(scr_dirent_proto_teardown);
+  return proto;
+}
+
+/* One Dirent value: borrows the name and parent strings, +1 result. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind) {
+  ScrDyn *object = scr_dyn_new_obj();
+  object->prototype = scr_dyn_retain(scr_dirent_prototype());
+  /* scr_dyn_new_str keeps its own reference, so the entry's strings are
+   * retained once: the caller's reference stays the caller's. */
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(name));
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(parent));
+  scr_stats_define(object, "%dtype", scr_dyn_new_num(kind), NULL, NULL, false);
+  return object;
+}
+
 /* ── checked-dynamic Stats values back to the snapshot ─────────────── */
 
 /* One integer member of a dynamic Stats object: a number member (Stats) and
@@ -8676,6 +8753,48 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   return arr;
 }
 
+/* fs.readdirSync(path, { encoding }): the directory's names decoded with
+ * that encoding, in the same order scr_fs_readdir lists them. utf8 (and the
+ * absent default) is scr_fs_readdir itself; every other name decodes the
+ * entry's raw bytes, as Buffer#toString does. */
+ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) return scr_fs_readdir(path);
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+    ScrBytes *raw = scr_fs_scandir_bytes(scan, i);
+    ScrStr *text = scr_bytes_to_str_checked(raw, encoding);
+    scr_bytes_release(raw);
+    if (!text) break; /* an invalid encoding throws before any name */
+    scr_arr_push_ref(arr, text);
+  }
+  scr_fs_scandir_free(scan);
+  if (scr_exc_pending()) {
+    scr_arr_release(arr);
+    return NULL;
+  }
+  return arr;
+}
+
+/* fs.readdirSync(path, { encoding: 'buffer' }): the directory's names as
+ * Buffers, in the same order scr_fs_readdir lists them. */
+ScrArr *scr_fs_readdir_bytes(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_BYTES, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+    /* Node answers Buffers, not bare Uint8Arrays. */
+    ScrBytes *raw = scr_fs_scandir_bytes(scan, i);
+    scr_arr_push_ref(arr, scr_bytes_as_buffer(raw));
+    scr_bytes_release(raw);
+  }
+  scr_fs_scandir_free(scan);
+  return arr;
+}
+
 /* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
  * Directories are listed in queue order: the base, then each directory in
  * the order its entry was listed. Each entry's path is path.join of its
@@ -8737,6 +8856,8 @@ ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
 struct ScrScandir {
   size_t len, cap;
   ScrStr **names;
+  ScrBytes **raws; /* the entry name's bytes: readdir(path, { encoding: 'buffer' }) */
+  ScrStr **parents; /* the recursive Dirent form's relative parent directory, or NULL */
   unsigned char *kinds;
 };
 
@@ -8764,12 +8885,19 @@ static ScrScandir *scr_fs_scandir_from_rows(ScrScandirEntry *rows, size_t len) {
   s->len = len;
   s->cap = len;
   s->names = len ? malloc(len * sizeof *s->names) : NULL;
+  s->raws = len ? malloc(len * sizeof *s->raws) : NULL;
+  s->parents = NULL; /* only the recursive walk fills these */
   s->kinds = len ? malloc(len) : NULL;
-  if (len && (!s->names || !s->kinds)) scr_trap("scriptc: out of memory\n");
+  if (len && (!s->names || !s->raws || !s->kinds)) scr_trap("scriptc: out of memory\n");
   qsort(rows, len, sizeof *rows, scr_fs_scandir_cmp);
   for (size_t i = 0; i < len; i++) {
-    /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does. */
-    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, strlen(rows[i].raw));
+    size_t raw_len = strlen(rows[i].raw);
+    /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does; the
+     * raw bytes stay for the `encoding: 'buffer'` form, which answers them
+     * untouched. */
+    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, raw_len);
+    s->raws[i] = scr_bytes_new(SCR_BYTES_U8, (double)raw_len);
+    if (raw_len) memcpy(s->raws[i]->data, rows[i].raw, raw_len);
     s->kinds[i] = rows[i].kind;
     free(rows[i].raw);
   }
@@ -8834,10 +8962,20 @@ static ScrScandir *scr_fs_scandir_windows(ScrStr *path) {
     if (scan->len == scan->cap) {
       scan->cap = scan->cap ? scan->cap * 2 : 8;
       scan->names = realloc(scan->names, scan->cap * sizeof *scan->names);
+      scan->raws = realloc(scan->raws, scan->cap * sizeof *scan->raws);
       scan->kinds = realloc(scan->kinds, scan->cap);
-      if (!scan->names || !scan->kinds) scr_trap("scriptc: out of memory\n");
+      if (!scan->names || !scan->raws || !scan->kinds) scr_trap("scriptc: out of memory\n");
     }
     scan->names[scan->len] = name;
+    /* The name's UTF-8 bytes are the raw bytes on this platform. */
+    {
+      char *owned = NULL;
+      const char *utf8 = scr_str_utf8(name, &owned);
+      size_t utf8_len = strlen(utf8);
+      scan->raws[scan->len] = scr_bytes_new(SCR_BYTES_U8, (double)utf8_len);
+      if (utf8_len) memcpy(scan->raws[scan->len]->data, utf8, utf8_len);
+      scr_str_utf8_end(owned);
+    }
     scan->kinds[scan->len++] = (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
         scr_stats_is_link_tag(entry.dwReserved0) ? 3 :
         (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
@@ -8929,12 +9067,316 @@ ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i) {
   return scr_str_retain(s->names[i]);
 }
 
+/* The raw bytes of entry i (`readdir(path, { encoding: 'buffer' })`): +1. */
+ScrBytes *scr_fs_scandir_bytes(const ScrScandir *s, size_t i) {
+  if (!s || i >= s->len) return NULL;
+  return scr_bytes_retain(s->raws[i]);
+}
+
 double scr_fs_scandir_type(const ScrScandir *s, size_t i) { return (double)s->kinds[i]; }
+
+/* The recursive Dirent form's parent directory (`readdir` with recursive
+ * and withFileTypes): the entry's parent relative to the base, or the base
+ * itself for the top level. +1. */
+ScrStr *scr_fs_scandir_parent(const ScrScandir *s, size_t i) {
+  if (!s || !s->parents || i >= s->len) return NULL;
+  return scr_str_retain(s->parents[i]);
+}
+
+/* The same walk as the Dirent form wants: every entry below `base` in
+ * Node's queue order (each directory's entries in the order their listing
+ * produced them), each with its basename, the directory holding it (the
+ * base as given for the top level, base-relative below it) and its kind.
+ * A symlink is followed to decide whether it is a directory, like the
+ * names-only walk above. */
+static ScrStr *scr_fs_join2(ScrStr *left, ScrStr *right) {
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+  scr_arr_push_ref(parts, scr_str_retain(left));
+  scr_arr_push_ref(parts, scr_str_retain(right));
+  ScrStr *joined = scr_path_join(parts);
+  scr_arr_release(parts);
+  return joined;
+}
+
+ScrScandir *scr_fs_scandir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrScandir *out = calloc(1, sizeof *out);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t qlen = 1, qcap = 8;
+  ScrStr **queue = malloc(qcap * sizeof *queue);
+  ScrStr **rel = malloc(qcap * sizeof *rel);
+  if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  rel[0] = NULL;
+  bool failed = false;
+  for (size_t at = 0; at < qlen && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    ScrStr *parent = rel[at] == NULL ? scr_str_retain(base) : scr_fs_join2(base, rel[at]);
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      if (out->len == out->cap) {
+        out->cap = out->cap ? out->cap * 2 : 8;
+        out->names = realloc(out->names, out->cap * sizeof *out->names);
+        out->raws = realloc(out->raws, out->cap * sizeof *out->raws);
+        out->parents = realloc(out->parents, out->cap * sizeof *out->parents);
+        out->kinds = realloc(out->kinds, out->cap);
+        if (!out->names || !out->raws || !out->parents || !out->kinds)
+          scr_trap("scriptc: out of memory\n");
+      }
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      out->names[out->len] = name;
+      out->raws[out->len] = scr_fs_scandir_bytes(scan, i);
+      out->parents[out->len] = scr_str_retain(parent);
+      out->kinds[out->len] = (unsigned char)scr_fs_scandir_type(scan, i);
+      out->len++;
+      int kind = (int)out->kinds[out->len - 1];
+      bool is_dir = kind == 2;
+      if (!is_dir && (kind == 0 || kind == 3)) {
+        /* DT_UNKNOWN and symlinks need stat(2); a failed stat leaves the
+         * entry out of the queue, like the names-only walk. */
+        ScrStr *full = scr_fs_join2(queue[at], name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        if (!is_dir) scr_str_release(full);
+        else {
+          if (qlen == qcap) {
+            qcap *= 2;
+            queue = realloc(queue, qcap * sizeof *queue);
+            rel = realloc(rel, qcap * sizeof *rel);
+            if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+          }
+          queue[qlen] = full;
+          rel[qlen++] = rel[at] == NULL ? scr_str_retain(name) : scr_fs_join2(rel[at], name);
+        }
+      } else if (is_dir) {
+        if (qlen == qcap) {
+          qcap *= 2;
+          queue = realloc(queue, qcap * sizeof *queue);
+          rel = realloc(rel, qcap * sizeof *rel);
+          if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+        }
+        queue[qlen] = scr_fs_join2(queue[at], name);
+        rel[qlen++] = rel[at] == NULL ? scr_str_retain(name) : scr_fs_join2(rel[at], name);
+      }
+    }
+    scr_str_release(parent);
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < qlen; i++) {
+    scr_str_release(queue[i]);
+    if (rel[i] != NULL) scr_str_release(rel[i]);
+  }
+  free(queue);
+  free(rel);
+  if (failed) {
+    scr_fs_scandir_free(out);
+    return NULL;
+  }
+  return out;
+}
+
+
+/* The fs/promises recursive walk: Node's async readdir keeps a STACK of
+ * pending directories (the last one listed is walked first), where the
+ * synchronous walk uses a queue — the two orders differ as soon as a
+ * directory has more than one subdirectory. `follow_links` descends into a
+ * symlinked directory: the names-only promise form does, the withFileTypes
+ * promise form does not (Node's own asymmetry, which the entries' kinds
+ * decide here). */
+typedef struct {
+  ScrStr *dir; /* the directory's path */
+  ScrStr *rel; /* ...relative to the base, NULL at the top level */
+} ScrWalkStack;
+
+ScrScandir *scr_fs_scandir_recursive_async(ScrStr *base, bool follow_links) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrScandir *out = calloc(1, sizeof *out);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t len = 1, cap = 8;
+  ScrWalkStack *stack = malloc(cap * sizeof *stack);
+  if (!stack) scr_trap("scriptc: out of memory\n");
+  stack[0].dir = scr_str_retain(base);
+  stack[0].rel = NULL;
+  bool failed = false;
+  while (len > 0 && !failed) {
+    ScrWalkStack top = stack[--len];
+    ScrScandir *scan = scr_fs_scandir(top.dir);
+    if (!scan) {
+      scr_str_release(top.dir);
+      if (top.rel) scr_str_release(top.rel);
+      failed = true;
+      break;
+    }
+    ScrStr *parent = top.rel == NULL ? scr_str_retain(base) : scr_fs_join2(base, top.rel);
+    /* The subdirectories this listing turns up, pushed in listing order so
+     * the last one is walked first. */
+    size_t sub_len = 0, sub_cap = 8;
+    ScrWalkStack *subs = malloc(sub_cap * sizeof *subs);
+    if (!subs) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      if (out->len == out->cap) {
+        out->cap = out->cap ? out->cap * 2 : 8;
+        out->names = realloc(out->names, out->cap * sizeof *out->names);
+        out->raws = realloc(out->raws, out->cap * sizeof *out->raws);
+        out->parents = realloc(out->parents, out->cap * sizeof *out->parents);
+        out->kinds = realloc(out->kinds, out->cap);
+        if (!out->names || !out->raws || !out->parents || !out->kinds)
+          scr_trap("scriptc: out of memory\n");
+      }
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      out->names[out->len] = name;
+      out->raws[out->len] = scr_fs_scandir_bytes(scan, i);
+      out->parents[out->len] = scr_str_retain(parent);
+      out->kinds[out->len] = (unsigned char)scr_fs_scandir_type(scan, i);
+      out->len++;
+      int kind = (int)out->kinds[out->len - 1];
+      bool is_dir = kind == 2;
+      if (!is_dir && kind == 0) {
+        /* DT_UNKNOWN still needs stat(2) to know what the entry is. */
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      } else if (!is_dir && kind == 3) {
+        /* A symlink is a directory only when the walk follows links. */
+        if (follow_links) {
+          ScrStr *full = scr_fs_join2(top.dir, name);
+          struct stat st;
+          is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+          scr_str_release(full);
+        }
+      }
+      if (!is_dir) continue;
+      if (sub_len == sub_cap) {
+        sub_cap *= 2;
+        subs = realloc(subs, sub_cap * sizeof *subs);
+        if (!subs) scr_trap("scriptc: out of memory\n");
+      }
+      subs[sub_len].dir = scr_fs_join2(top.dir, name);
+      subs[sub_len].rel = top.rel == NULL ? scr_str_retain(name) : scr_fs_join2(top.rel, name);
+      sub_len++;
+    }
+    scr_str_release(parent);
+    scr_fs_scandir_free(scan);
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+    /* Push them so the LAST listing entry is on top of the stack. */
+    for (size_t i = 0; i < sub_len; i++) {
+      if (len == cap) {
+        cap *= 2;
+        stack = realloc(stack, cap * sizeof *stack);
+        if (!stack) scr_trap("scriptc: out of memory\n");
+      }
+      stack[len++] = subs[i];
+    }
+    free(subs);
+  }
+  while (len > 0) {
+    ScrWalkStack top = stack[--len];
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+  }
+  free(stack);
+  if (failed) {
+    scr_fs_scandir_free(out);
+    return NULL;
+  }
+  return out;
+}
+
+/* fs.promises.readdir(path, { recursive: true }): the same depth-first
+ * order as the Dirent form, answering the path of every entry relative to
+ * the base. */
+ScrArr *scr_fs_readdir_recursive_async(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrWalkStack *stack = malloc(cap * sizeof *stack);
+  if (!stack) scr_trap("scriptc: out of memory\n");
+  stack[0].dir = scr_str_retain(base);
+  stack[0].rel = NULL;
+  bool failed = false;
+  while (len > 0 && !failed) {
+    ScrWalkStack top = stack[--len];
+    ScrScandir *scan = scr_fs_scandir(top.dir);
+    if (!scan) {
+      scr_str_release(top.dir);
+      if (top.rel) scr_str_release(top.rel);
+      failed = true;
+      break;
+    }
+    size_t sub_len = 0, sub_cap = 8;
+    ScrWalkStack *subs = malloc(sub_cap * sizeof *subs);
+    if (!subs) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      ScrStr *rel = top.rel == NULL ? scr_str_retain(name) : scr_fs_join2(top.rel, name);
+      scr_arr_push_ref(out, rel);
+      int kind = (int)scr_fs_scandir_type(scan, i);
+      bool is_dir = kind == 2;
+      if (!is_dir && kind == 0) {
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      } else if (!is_dir && kind == 3) {
+        /* The names-only form follows a symlinked directory. */
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      }
+      if (is_dir) {
+        if (sub_len == sub_cap) {
+          sub_cap *= 2;
+          subs = realloc(subs, sub_cap * sizeof *subs);
+          if (!subs) scr_trap("scriptc: out of memory\n");
+        }
+        subs[sub_len].dir = scr_fs_join2(top.dir, name);
+        subs[sub_len].rel = scr_str_retain(rel);
+        sub_len++;
+      }
+      scr_str_release(name);
+    }
+    scr_fs_scandir_free(scan);
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+    for (size_t i = 0; i < sub_len; i++) {
+      if (len == cap) {
+        cap *= 2;
+        stack = realloc(stack, cap * sizeof *stack);
+        if (!stack) scr_trap("scriptc: out of memory\n");
+      }
+      stack[len++] = subs[i];
+    }
+    free(subs);
+  }
+  while (len > 0) {
+    ScrWalkStack top = stack[--len];
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+  }
+  free(stack);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
+}
 
 void scr_fs_scandir_free(ScrScandir *s) {
   if (!s) return;
-  for (size_t i = 0; i < s->len; i++) scr_str_release(s->names[i]);
+  for (size_t i = 0; i < s->len; i++) {
+    scr_str_release(s->names[i]);
+    scr_bytes_release(s->raws[i]);
+    if (s->parents) scr_str_release(s->parents[i]);
+  }
   free(s->names);
+  free(s->raws);
+  free(s->parents);
   free(s->kinds);
   free(s);
 }
@@ -13207,6 +13649,10 @@ static ScrDyn *scr_key_object_new(const unsigned char *data, size_t len) {
   return box;
 }
 
+ScrDyn *scr_crypto_secret_key_object_from_bytes(const unsigned char *data, size_t len) {
+  return scr_key_object_new(data, len);
+}
+
 /* The key bytes of a KeyObject value, or NULL for any other value. */
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_KEY_OBJECT) return NULL;
@@ -13216,6 +13662,12 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 }
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* KeyObject.toCryptoKey and KeyObject.from; scr_webcrypto.c installs both
+ * when WebCrypto is linked. */
+ScrDyn *(*scr_crypto_to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args, size_t argc) =
+    NULL;
+ScrDyn *(*scr_crypto_key_object_from)(const ScrDyn *crypto_key) = NULL;
 
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
@@ -13316,9 +13768,13 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     return scr_dyn_new_bool(equal && diff == 0);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    static const char message[] = "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      static const char message[] =
+          "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_lib_throw_not_a_function(what);
   return NULL;

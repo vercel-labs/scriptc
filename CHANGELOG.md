@@ -4,7 +4,43 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Highlights
+
+- **Node.js parity:**
+  - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
+  - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+- **TypeScript parity:**
+  - A relative JavaScript import resolves to its sibling declaration for types, as tsc resolves it: `./lib.js` is typed by `lib.d.ts`, `./lib.mjs` by `lib.d.mts` and `./lib.cjs` by `lib.d.cts` when the file sits beside the JavaScript, while the compiled module is the JavaScript Node loads. A call is checked against the declaration (an optional declared parameter stays optional although the JavaScript's inferred parameter type requires it), so a vendored dependency keeps its published types instead of losing them to the JavaScript's inferred shape. A declaration a project's tsconfig `include` loads beside its implementation also stays in the program, where a JSX project previously reported it as a missing file.
+
 <!-- release:start -->
+
+### Fixes
+
+- An operator in an unchecked JavaScript file reads the value a binding actually holds, not the shape one assignment gave it: shipped JavaScript reuses one `var` for a property descriptor, an array of stack lines and a count, so `1 <= namePropDescriptor`, `RunInRootFrame++`, `hostSiblings += 1` and `getTargetInstFunc && …` compile to the dynamic conversion Node applies instead of failing with SC0001 or SC1090. A `var` read before its first assignment answers `undefined`, as the hoisted declaration does in Node. A `// @ts-check` file keeps the checker's diagnostics, and an operator whose operand is a static object keeps its refusal.
+- A module namespace object read through a value the checker cannot resolve, such as `(ns as any).log`, answers `undefined` for a name the module does not export and the export for one it does, as Node does, instead of failing with SC1090.
+- A function declaration's binding can be replaced (`value = () => 2`), as Node's mutable binding allows, and a named function expression's own inner binding keeps its refusal, where strict code throws. A truthiness test of a `void`-typed call through a plain object's member reads the value the call answered, because the function the program stores in that member keeps its own result. `value instanceof AbortSignal` tests the runtime's signal handle, answering `true` for a signal and `false` for every other value, and `new AbortSignal()` throws Node's `ERR_ILLEGAL_CONSTRUCTOR`.
+- A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
+- A property descriptor read from a class's prototype through an untyped value, such as a UI SDK's `Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")`, builds and answers Node's descriptor — the accessor pair the class declares, with its attributes — instead of failing the build with an empty SC3004: a class value's static table reflects a static method whose parameters complete as the checked-dynamic function Node holds, and a member the table cannot hold leaves the class's statics fenced rather than aborting lowering. Building the prototype view itself no longer reports the retry's diagnostic for a member whose body cannot run over a dynamic receiver (a typed field used as a `Map` key, say); that statement fences at run time. A native build that fails inside the compiler now names the failure, and no SC3002–SC3004 diagnostic is empty.
+- A class method read from a prototype view — an untyped value's `Object.getPrototypeOf`, or a descriptor taken from it — runs its class's compiled method instead of throwing at run time: a member whose body reads a generic method through `this` (a DOM node's `insertBefore` calling `this.appendChild`) has no checked-dynamic form to hand out, so the view answers that member's compiled, receiver-checked value and the body keeps the class's own `this`, where the generic call lowers as its typed call site does.
+
+## 0.4.15
+
+### Highlights
+
+- **TypeScript parity:**
+  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
+
+<!-- release:end -->
+
+## 0.4.14
+
+### Highlights
+
+- **TypeScript parity:**
+  - `concat` whose arguments hold elements the receiver's array cannot take as they are, such as a row of strings and numbers concatenated onto a string array or a `var` that may still be undefined, runs as the checked-dynamic `concat`: it builds the mixed array JavaScript builds and appends a non-array argument as one element, instead of failing with SC1090 or SC2009.
+  - A call resolved to an overload that names a subclass of the class its implementation returns, such as a DOM factory's `createElement("canvas")` returning the canvas element class over an element implementation, checks the value against the subclass as an assertion does instead of refusing to build; a value of another class throws the assertion's `TypeError`.
+- **Fixes:**
+  - A class with static fields whose getter names a subclass declared later in the same module, used as a value from another module, no longer throws `ReferenceError: Cannot access 'Element' before initialization` at startup and prints what Node prints. The compiler-generated class helpers no longer receive the checks that guard a reference to a class made before its definition ran; the program's own references keep their checks.
 
 ## 0.4.13
 
@@ -82,8 +118,6 @@ All notable changes to scriptc will be documented in this file.
   - The abort-signal check that net's connect path uses is linked with the net unit, so a program that links http, http2 and net without event targets builds again.
   - The sequence scope of a stabilized checked read opens with the emitter's scope pair instead of a closure: through that closure the compiler's own build had lowered `emitReadReceiver` dynamically (4,933 stack slots, 108,940 LLVM lines and 4,815 tag checks, against 409 slots and 14,196 lines), and the bootstrapped second generation overran the shard's 8 MiB stack. The emitted module of every program is unchanged.
   - A compiled program suspends when its launcher blocked SIGTSTP, restores the terminal mode at exit and on `process.exit` the way Node's `uv_tty_reset_mode` does, and clears an inherited signal mask at startup.
-
-<!-- release:end -->
 
 ## 0.4.12
 

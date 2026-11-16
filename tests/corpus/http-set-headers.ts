@@ -1,115 +1,82 @@
-// OutgoingMessage.setHeaders(): a Headers or Map sets every entry through
-// setHeader, keeping every Set-Cookie value as its own line and applying
-// them last, so an earlier entry cannot overwrite them.
+// OutgoingMessage.setHeaders(headers): a Map of names to values applied in
+// order, set-cookie's values kept as one array, and Node's state and header
+// checks. The ERR_INVALID_ARG_TYPE for a value that is not a Map or Headers
+// needs an untyped source, where the call reaches the runtime with the value
+// as it is: the JavaScript twin (http-set-headers.mjs) pins it.
 import * as http from "node:http";
 
-const server = http.createServer((request, response) => {
-  const path = request.url;
-  if (path === "/map") {
-    const map = new Map<string, string | readonly string[]>();
-    map.set("x-a", "one");
-    map.set("Set-Cookie", "case=kept");
-    map.set("set-cookie", ["a=1", "b=2"]);
-    map.set("x-b", "two");
-    response.setHeaders(map);
-    console.log(
-      "map",
-      response.getHeader("x-a"),
-      response.getHeader("set-cookie"),
-      response.getHeader("Set-Cookie"),
-    );
-    console.log("map names", response.getHeaderNames().join(","));
-    response.end("map");
+const server = http.createServer((req, res) => {
+  if (req.url === "/map") {
+    res.setHeaders(new Map<string, string | string[]>([
+      ["X-A", "1"],
+      ["x-b", "2"],
+      ["Set-Cookie", ["a=1", "b=2"] as string[]],
+    ]));
+    console.log("names", JSON.stringify(res.getHeaderNames()));
+    console.log("a", res.getHeader("x-a"), "b", res.getHeader("x-b"));
+    console.log("cookie", String(res.getHeader("set-cookie")));
+    console.log("raw", JSON.stringify(res.getRawHeaderNames()));
+    res.end("ok");
     return;
   }
-  if (path === "/headers") {
-    const headers = new Headers();
-    headers.append("x-b", "2");
-    headers.append("X-A", "1");
-    headers.append("set-cookie", "c=3");
-    headers.append("set-cookie", "d=4");
-    response.setHeaders(headers);
-    console.log(
-      "headers",
-      response.getHeader("x-a"),
-      response.getHeader("x-b"),
-      response.getHeader("set-cookie"),
-    );
-    response.end("headers");
+  if (req.url === "/map-array") {
+    // A Map<string, string[]> whose set-cookie values stay ONE array: the
+    // wire carries one Set-Cookie line per cookie.
+    res.setHeaders(new Map<string, string[]>([["set-cookie", ["a=1", "b=2"]]]));
+    const value = res.getHeader("set-cookie") as string[];
+    console.log("map-array", value.length, value[0], value[1]);
+    res.end("ok");
     return;
   }
-  if (path === "/sent") {
-    response.writeHead(200);
+  if (req.url === "/numbers") {
+    res.setHeaders(new Map<string, string | string[]>([["x-n", "5" as string]]));
+    console.log("number", res.getHeader("x-n"));
+    res.end();
+    return;
+  }
+  if (req.url === "/after") {
+    res.write("x");
     try {
-      response.setHeaders(new Map([["x-late", "1"]]));
-    } catch (error) {
-      const e = error as Error;
-      console.log("sent", e.name, (e as { code?: string }).code, e.message);
+      res.setHeaders(new Map([["x-a", "1"]]));
+      console.log("after accepted");
+    } catch (err) {
+      console.log("after", (err as { code?: string }).code);
     }
-    response.end("sent");
+    res.end();
     return;
   }
-  if (path === "/number") {
-    const map = new Map<string, number | string>();
-    map.set("x-n", 5);
-    map.set("x-s", "s");
-    response.setHeaders(map);
-    console.log("number", response.getHeader("x-n"), response.getHeader("x-s"));
-    response.end("number");
+  if (req.url === "/badname") {
+    try {
+      res.setHeaders(new Map([["bad name", "1"]]));
+      console.log("bad name accepted");
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      console.log("badname", e.code, e.message);
+    }
+    res.end();
     return;
   }
-  // The client set the headers of its own request: echo what arrived.
-  console.log(
-    "echo",
-    request.headers["x-c"],
-    request.headers["x-d"],
-    request.headersDistinct["set-cookie"],
-  );
-  response.end("echo");
+  res.end("other");
 });
 
-const port = await new Promise<number>((resolve) => {
-  server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port));
-});
-
-function get(path: string): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const request = http.get({ host: "127.0.0.1", port, path }, (response) => {
-      console.log(
-        "client",
-        path,
-        response.statusCode,
-        response.headers["x-a"],
-        response.headers["x-b"],
-        response.headers["x-n"],
-      );
-      response.resume();
-      response.on("end", () => resolve());
-    });
-    request.on("error", (error) => {
-      console.log("client error", error.message);
-      resolve();
-    });
+const paths = ["/map", "/map-array", "/numbers", "/after", "/badname"];
+const pathAt = (i: number): string => paths[i] ?? "/other";
+const next = (i: number): void => {
+  if (i >= paths.length) {
+    server.close();
+    return;
+  }
+  http.get({ host: "127.0.0.1", port: server.address().port, path: pathAt(i) }, (res) => {
+    if (pathAt(i) === "/map-array") {
+      const seen = res.headersDistinct["set-cookie"] as string[];
+      console.log("wire", seen.length, seen[0], seen[1]);
+    }
+    if (pathAt(i) === "/map") {
+      console.log("response header", res.headers["x-a"], res.headers["x-b"], String(res.headersDistinct["set-cookie"]));
+    }
+    res.on("data", () => {});
+    res.on("end", () => next(i + 1));
   });
-}
+};
 
-for (const path of ["/map", "/headers", "/sent", "/number"]) await get(path);
-
-// The ClientRequest is an OutgoingMessage too.
-await new Promise<void>((resolve) => {
-  const request = http.request({ host: "127.0.0.1", port, path: "/echo" });
-  request.setHeaders(new Map([["x-c", "3"]]));
-  request.setHeaders(new Map([["x-d", "4"]]));
-  console.log("request headers", request.getHeader("x-c"), request.getHeader("x-d"));
-  request.end();
-  request.on("response", (response) => {
-    response.resume();
-    response.on("end", () => resolve());
-  });
-  request.on("error", (error) => {
-    console.log("request error", error.message);
-    resolve();
-  });
-});
-
-server.close(() => console.log("closed"));
+server.listen(0, "127.0.0.1", () => next(0));

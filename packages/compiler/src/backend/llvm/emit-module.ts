@@ -632,11 +632,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // A program that can register an 'error' listener on a child installs
   // the builder of a failed spawn's error object (runtime-features.ts).
   const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
-  const usesFsWatch = runtimeFeatures.fsWatch;
+  // fsPromises.watch iterates over the watcher unit, so it installs the
+  // same loop hooks.
+  const usesFsWatch = runtimeFeatures.fsWatch || runtimeFeatures.fsWatchEvents;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
   // the same predicate).
   const usesFsWatchFile = runtimeFeatures.fsWatchFile;
+  // fsPromises.watch programs register the iterator unit's exit cleanup —
+  // the same one-line gating (native/executable.ts links scr_watch_async.c
+  // on the same predicate).
+  const usesFsWatchEvents = runtimeFeatures.fsWatchEvents;
   // Programs that call into Node record the libnode pack and its Node
   // version before %main (scr_node_island.c).
   const usesNodeIsland = runtimeFeatures.nodeIsland;
@@ -661,12 +667,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
-  // IncomingMessage.signal installs the abort-signal unit before main: its
-  // hooks are what scr_http.c creates a message's signal through. The fetch
-  // unit installs them itself, so only a program that links scr_abort.c
-  // (abortSignal and no fetch — native/executable.ts's predicate) needs the
-  // line.
-  const usesAbortSignalUnit = runtimeFeatures.abortSignal === true && !usesFetch;
   // URL programs give the host parser the IDNA unit's ToASCII.
   const usesUrlIdna = runtimeFeatures.urlIdna;
   // Programs whose checked-dynamic reads answer Buffer.prototype methods by
@@ -730,6 +730,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (usesFsWatchFile) emitter.declare(`declare void @scr_watch_file_install()`);
+  if (usesFsWatchEvents) emitter.declare(`declare void @scr_watch_events_install()`);
   if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
   // Interned now: the C-string constants flush before main assembles.
   const nodeIslandConfig = usesNodeIsland
@@ -755,7 +756,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
-  if (usesAbortSignalUnit) emitter.declare(`declare void @scr_abort_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
@@ -1543,6 +1543,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watchFile programs register the poller unit's atexit cleanup the
     // same way — scr_watch_file.c links only when this line is emitted.
     ...(usesFsWatchFile ? [`  call void @scr_watch_file_install()`] : []),
+    ...(usesFsWatchEvents ? [`  call void @scr_watch_events_install()`] : []),
     ...(nodeIslandConfig
       ? [
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
@@ -1552,7 +1553,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
-    ...(usesAbortSignalUnit ? [`  call void @scr_abort_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),

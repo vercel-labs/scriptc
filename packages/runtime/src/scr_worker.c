@@ -66,6 +66,12 @@ struct ScrWorkerThread {
   ScrContextEnv *environment;
   ScrStr *name; /* threadName: immortal copy shared by both threads */
   unsigned capture; /* 1 stdout, 2 stderr: writes go to the parent as events */
+  /* worker.performance: the loop snapshot this thread publishes for its
+   * creator (scr_worker_publish_loop_metrics), behind a seqlock; the values
+   * travel as their bit patterns so every access is atomic */
+  _Atomic uint64_t metrics_seq;
+  _Atomic uint64_t metrics_loop_start_bits;
+  _Atomic uint64_t metrics_idle_bits;
   int argc;
   char **argv;
   bool joined;
@@ -257,6 +263,40 @@ bool scr_worker_post_parent(ScrMessage *message) {
     scr_worker_event(SCR_WORKER_MESSAGE, scr_worker_current->id, 0, message));
 }
 
+/* worker.performance: the perf_hooks loop metrics publish a worker thread's
+ * snapshot on each turn (scr_context_publish_loop_metrics), and the thread
+ * that created the worker reads the last one. */
+static void scr_worker_publish_loop_metrics(double loop_start_ms, double idle_ms) {
+  ScrWorkerThread *worker = scr_worker_current;
+  if (!worker) return;
+  uint64_t start_bits;
+  uint64_t idle_bits;
+  memcpy(&start_bits, &loop_start_ms, sizeof start_bits);
+  memcpy(&idle_bits, &idle_ms, sizeof idle_bits);
+  uint64_t seq = atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_seq, seq + 1, memory_order_release);
+  atomic_store_explicit(&worker->metrics_loop_start_bits, start_bits, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_idle_bits, idle_bits, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_seq, seq + 2, memory_order_release);
+}
+
+bool scr_worker_thread_metrics(ScrWorkerThread *worker, double *loop_start_ms, double *idle_ms) {
+  for (;;) {
+    uint64_t before = atomic_load_explicit(&worker->metrics_seq, memory_order_acquire);
+    if (before & 1) continue; /* the thread is writing; it never waits on us */
+    if (before == 0) return false; /* its loop has not turned yet */
+    uint64_t start_bits =
+        atomic_load_explicit(&worker->metrics_loop_start_bits, memory_order_relaxed);
+    uint64_t idle_bits = atomic_load_explicit(&worker->metrics_idle_bits, memory_order_relaxed);
+    atomic_thread_fence(memory_order_acquire);
+    if (atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed) == before) {
+      memcpy(loop_start_ms, &start_bits, sizeof start_bits);
+      memcpy(idle_ms, &idle_bits, sizeof idle_bits);
+      return true;
+    }
+  }
+}
+
 /* The stdout and stderr options: a captured write reaches the parent's
  * worker.stdout or worker.stderr in order with the worker's other events. */
 static bool scr_worker_capture(int fd, const void *data, size_t len) {
@@ -319,6 +359,8 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_env_enter(worker->environment);
   worker->environment = NULL;
   scr_worker_current = worker;
+  /* worker.performance reads this thread's loop metrics from its creator. */
+  scr_context_publish_loop_metrics = scr_worker_publish_loop_metrics;
   scr_context_report_error = scr_worker_report_error;
   if (worker->capture & 3) scr_stdio_capture = scr_worker_capture;
   if (worker->capture & 4) {

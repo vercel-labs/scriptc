@@ -239,6 +239,8 @@ import {
   isNodeUndefinedGlobalRoot,
 } from "./lower-namespaces.js";
 import { refusingFunctionNameOf } from "./builtin-function-fences.js";
+import { isGlobalMember } from "./global-values.js";
+import { isConstructibleGlobalClass } from "./node-value-reads.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import {
@@ -1068,6 +1070,10 @@ export interface ClassInfo {
     type: IrType;
     /** Indexed sources can be absent despite the declared static type. */
     runtimeOptional?: true;
+    /** The field's JSDoc annotation does not describe every value the
+     * program writes to it (analyzeJsWidenedFields), so a read answers the
+     * stored value as it is. */
+    widened?: true;
     initializer: ts.Expression;
     globalId: string;
     readonly: boolean;
@@ -3245,7 +3251,13 @@ export function collectClassShapeInner(
             !lowerer.enumObjects.has(initializerSymbol)
           )
             continue;
-          const type = lowerer.irTypeOf(member.name);
+          let type = lowerer.irTypeOf(member.name);
+          // A JSDoc-typed static field the program writes values outside
+          // the annotation to holds them (analyzeJsWidenedFields), like an
+          // instance field of the same class.
+          const widened =
+            ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text);
+          if (widened) type = DYN;
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
@@ -3263,6 +3275,7 @@ export function collectClassShapeInner(
           staticFields.push({
             name: member.name.text,
             type,
+            ...(widened ? { widened: true as const } : {}),
             initializer: member.initializer,
             globalId: `%g.s.${lowerer.classNamer(decl)}.${member.name.text}`,
             readonly: modifiers.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword),
@@ -3825,6 +3838,11 @@ export function collectClassShapeInner(
           type = inheritedJsFieldType(lowerer, decl, member.name.text, type);
           if (base?.fields.get(member.name.text)?.kind === "dyn") type = DYN;
           if (base && !fields.has(member.name.text) && lowerer.dynConvertible(type)) type = DYN;
+          // A JSDoc-typed field the program writes values outside the
+          // annotation to holds them (analyzeJsWidenedFields), exactly like
+          // an unannotated one.
+          if (ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text))
+            type = DYN;
         }
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
@@ -5318,6 +5336,11 @@ export function collectClassShapeInner(
               }
             }
             type = inheritedJsFieldType(lowerer, decl, name, type);
+            // A JSDoc-typed field the program writes values outside the
+            // annotation to holds them (analyzeJsWidenedFields). The scan
+            // keys fields by their name, so ask for the property symbol the
+            // same way.
+            if (lowerer.jsFieldWidened(decl, name)) type = DYN;
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
             if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
@@ -7330,7 +7353,12 @@ export function lowerClassStaticRead(
       type: found.field.type,
       loc,
     };
-    return found.field.runtimeOptional || !ts.isPropertyAccessExpression(site)
+    // A widened field holds the value the program wrote, which the
+    // annotation does not describe; narrowing to the annotation would
+    // convert it back.
+    return found.field.runtimeOptional ||
+      found.field.widened ||
+      !ts.isPropertyAccessExpression(site)
       ? value
       : lowerer.maybeNarrow(value, site);
   }
@@ -12698,6 +12726,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
   }
+  // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
+  // members are the global classes of the same name in Node
+  // (global-values.ts GLOBAL_MEMBERS), so they take the global
+  // construction's lowering.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const member = lowerer.builtinMemberOf(expr.expression);
+    if (
+      member !== null &&
+      isGlobalMember(member) &&
+      (member.member === "TextEncoder" || member.member === "TextDecoder")
+    )
+      return lowerTextCodecNew(lowerer, expr, member.member);
+  }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;
   const abstractIterator = lowerIteratorNew(lowerer, expr);
@@ -14050,7 +14091,16 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       symbol != null &&
       BIGINT_BYTES_NAMES.has(ts.symbolName(symbol)) &&
       isJsSourceFile(ts.getSourceFileOfNode(expr));
-    if (!bigintBytesCtor && lowerer.isStdlibSymbol(symbol ?? undefined)) {
+    // A global class whose value constructs in a JavaScript source
+    // (MessageChannel; node-value-reads.ts) is not fenced here: the callee
+    // reads as that constructor and the checked-dynamic construction below
+    // runs it.
+    const constructibleGlobal =
+      ts.isIdentifier(identifier) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      isConstructibleGlobalClass(identifier.text) &&
+      lowerer.isStdlibGlobal(identifier, identifier.text);
+    if (!bigintBytesCtor && !constructibleGlobal && lowerer.isStdlibSymbol(symbol ?? undefined)) {
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:

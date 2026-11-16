@@ -205,3 +205,75 @@ console.log(first(new Countdown()), second(new Countdown()));
     expect(callees(source!, "%dyn.class.call.")).toEqual([helpers[0]!.name]);
   }
 });
+
+test("a subclass shares a large base's key table, a small hierarchy keeps its own", async () => {
+  const fields = Array.from({ length: 40 }, (_, i) => `  f${i} = ${i};`).join("\n");
+  const module = await lower(
+    "main.ts",
+    `
+class Base {
+${fields}
+  get value(): number {
+    return 1;
+  }
+}
+class Left extends Base {
+  left = 1;
+}
+Object.defineProperty(Left.prototype, "value", {
+  get() {
+    return 24;
+  },
+  configurable: true,
+});
+class Right extends Base {
+  right = 1;
+}
+class Leaf extends Left {
+  leaf = 1;
+}
+const values: any[] = [new Base(), new Left(), new Right(), new Leaf()];
+function read(value: any, key: string): unknown {
+  return value[key];
+}
+let total = 0;
+for (let i = 0; i < values.length; i++) total += Number(read(values[i], "f0"));
+console.log(total);
+`,
+  );
+  const tables = tablesOf(module, "read");
+  expect(tables).toHaveLength(4);
+  // Left and Right would each repeat Base's forty names: they call Base's
+  // table for them instead. Leaf's base declares too few names to share.
+  const delegates = tables
+    .map((name) => {
+      const fn = module.functions.find((table) => table.name === name);
+      expect(fn, name).toBeDefined();
+      return { table: name, delegate: callees(fn!, "%dyn.class.keys."), body: fn!.body };
+    })
+    .filter((entry) => entry.delegate.length > 0);
+  expect(delegates).toHaveLength(2);
+  expect(delegates[0]!.delegate).toEqual(delegates[1]!.delegate);
+  expect(delegates[0]!.delegate).toHaveLength(1);
+  // A name the program reflects on a prototype must stay in each subclass's
+  // table: its replacement answers through the receiver's own class view.
+  for (const { body } of delegates) expect(JSON.stringify(body)).toContain('"value":"value"');
+  // The small hierarchy of the test above repeats its names instead.
+  const small = await lower(
+    "small.ts",
+    `${CLASSES}
+function readSmall(value: any, key: string): unknown {
+  return value[key];
+}
+const smallValues: any[] = [new Point(), new Row()];
+for (const value of smallValues) console.log(readSmall(value, "x"));
+`,
+  );
+  for (const name of tablesOf(small, "readSmall"))
+    expect(
+      callees(
+        small.functions.find((fn) => fn.name === name)!,
+        "%dyn.class.keys.",
+      ),
+    ).toEqual([]);
+});

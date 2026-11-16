@@ -41,6 +41,9 @@ import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsAbsentMemberValue,
+  cjsDestructuredModuleBindingOf,
+  cjsModuleLacksExport,
   cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
@@ -260,15 +263,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "SC1090",
         expr,
         `a promisified builtin as a value (call '${expr.text}' directly)`,
-      );
-    }
-    if (projection?.kind === "process-listener") {
-      // The bound listener's lowering works per call site (the event name
-      // picks the registry); there is no function object to read.
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `a bound process listener as an escaping value (call '${expr.text}' directly)`,
       );
     }
     if (projection?.kind === "client-function") {
@@ -807,7 +801,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "module" && bi.member === "constants") {
         return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
       }
-      if (bi.module === "fs" && bi.member === "constants")
+      if ((bi.module === "fs" || bi.module === "fs/promises") && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
       // `import { constants } from "node:zlib"`: the module's singleton
       // record (zlibConstantsValue), the same object the property form
@@ -1428,6 +1422,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
+  // `const { name } = require("./m")` over a member the module's exports
+  // object does not carry: Node copies undefined into the binding.
+  {
+    const destructured = cjsDestructuredModuleBindingOf(lowerer, expr);
+    if (destructured !== null && cjsModuleLacksExport(lowerer, destructured.dep, destructured.key))
+      return cjsAbsentMemberValue(lowerer, expr);
+  }
   // In a `.js` source the read is the global object's own property of that
   // name when the program created one (`globalThis.X = class X {}`, in this
   // module or another), as in Node, and the ReferenceError otherwise.

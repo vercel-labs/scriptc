@@ -36,7 +36,6 @@ declare module "https" {
     /* The options-record stance (see http.RequestOptions). */
     [option: string]: unknown;
   }
-  export function createServer(options: ServerOptions): Server;
   export function createServer(
     options: ServerOptions,
     requestListener: (req: IncomingMessage, res: ServerResponse) => void,

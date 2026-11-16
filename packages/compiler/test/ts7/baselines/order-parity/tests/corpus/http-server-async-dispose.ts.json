@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/http-server-async-dispose.ts"
- ],
- "diags": []
-}

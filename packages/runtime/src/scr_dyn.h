@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STAT_WATCHER, 103) /* fs.watchFile's StatWatcher (scr_watch_file.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -270,6 +271,13 @@ typedef enum {
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
+  Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
+  Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
+  Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
+  Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
+  Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
@@ -1392,6 +1400,9 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Whether key is Symbol.iterator (false before the symbol unit registered
+ * it). Handle symbol_get ops outside that unit use it for their iterators. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
@@ -2868,20 +2879,6 @@ typedef struct ScrDynHandleTransfer {
   void (*drop)(void *payload);
 } ScrDynHandleTransfer;
 ScrDyn *scr_dyn_native_handle_iterator(ScrDyn *source, unsigned selection);
-
-/* ── IncomingMessage.signal (scr_http.c / the abort-signal unit) ─────────
- * The signal is a real AbortSignal handle, so creating and aborting it is
- * the abort-signal unit's work (scr_abort.c when the program links no
- * fetch, the fetch unit otherwise). That unit fills these at its install;
- * a program that reads the member links it (the http.reqSignal runtime
- * fact), and every other http program keeps its exact link line because
- * scr_http.o never names the unit's symbols. */
-extern ScrDyn *(*scr_dyn_signal_new_fn)(void);
-extern void (*scr_dyn_signal_abort_fn)(ScrDyn *signal);
-/* Drops the signal's listeners once its owning message settles; the
- * signal keeps its identity, state and reason. NULL until the unit
- * installs. */
-extern void (*scr_dyn_signal_sever_fn)(ScrDyn *signal);
 
 /* ── promises in the checked-dynamic tree (SCR_DYN_PROMISE) ────────────────────────────
  * Boxes by REFERENCE (+1 box; retains p). The boundary contract: p

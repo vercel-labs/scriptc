@@ -425,12 +425,11 @@ const char *scr_error_message_code(const ScrStr *msg) {
   static const struct { const char *prefix; bool whole; const char *code; } known[] = {
     { "socket hang up", true, "ECONNRESET" },
     { "aborted", true, "ECONNRESET" },
-    { "write after end", true, "ERR_STREAM_WRITE_AFTER_END" },
-    { "Cannot call write after a stream was destroyed", true, "ERR_STREAM_DESTROYED" },
     { "Client network socket disconnected before secure TLS connection was established", true,
       "ECONNRESET" },
     { "Parse Error: Header overflow", true, "HPE_HEADER_OVERFLOW" },
     { "certificate has expired", true, "CERT_HAS_EXPIRED" },
+    { "certificate revoked", true, "CERT_REVOKED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
     { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },

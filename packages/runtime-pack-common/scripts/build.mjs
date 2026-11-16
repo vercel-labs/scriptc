@@ -23,6 +23,7 @@ import { parallelMap } from "./parallel-map.mjs";
 import { profileMatchSummary } from "./profile-match.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
+import { sqliteInputs } from "./sqlite-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
 import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
@@ -123,6 +124,7 @@ async function build() {
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
+  const sqlite = join(vendorRoot, "sqlite");
   // ICU is fetched from its pinned release, not vendored (see icu-inputs.mjs),
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
@@ -130,6 +132,7 @@ async function build() {
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
   const zstdBuild = zstdInputs(config.target.llvm_triple);
+  const sqliteBuild = sqliteInputs(config.target.llvm_triple);
   const sha256 = async (path) =>
     createHash("sha256")
       .update(await readFile(path))
@@ -479,6 +482,7 @@ async function build() {
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
               ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
+              ...(unit.source === "scr_sqlite.c" ? ["-I", sqlite] : []),
               // scr_intl.c includes ICU's C API headers straight from the
               // fetched release: the core ones in source/common/unicode/*.h,
               // and the format ones (udat.h, unumberformatter.h) in
@@ -669,6 +673,21 @@ async function build() {
                   ]),
                 ]
               : []),
+            ...(requestedArchives.has("sqlite")
+              ? [
+                  await archive("sqlite", sqliteBuild.sources, sqlite, [
+                    ...vendorTarget,
+                    "-std=c11",
+                    // Node builds the amalgamation at -O2.
+                    "-O2",
+                    ...sqliteBuild.defines.map((define) => `-D${define}`),
+                    ...sqliteBuild.compileFlags,
+                    ...vendorHardening,
+                    "-I",
+                    sqlite,
+                  ]),
+                ]
+              : []),
             ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
             ...(requestedArchives.has("mbedtls")
               ? [
@@ -769,6 +788,7 @@ async function build() {
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
+      [join(sqlite, "NOTICE"), "artifacts/licenses/sqlite.txt", "Public-Domain"],
       // ICU's terms cover both the sources and the data file it ships; only a
       // pack that ships them carries its license.
       ...(requestedArchives.has("icu")
@@ -794,7 +814,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+      runtime_abi: { version: 49, marker: "scr_runtime_abi_v49" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

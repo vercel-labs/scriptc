@@ -1,6 +1,7 @@
 
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_stream.h"
 #include "scr_system_errors.h"
 
 #include <errno.h>
@@ -507,14 +508,6 @@ struct ScrNetServer {
   bool unrefd;        /* server.unref(): does not keep the loop alive */
   bool closing;       /* close() called; 'close' fires when conns drain */
   bool close_emitted; /* settled: off the registry, listeners dropped */
-  /* close() calls after the server settled: Node emits 'close' again for
-   * each one (its _emitCloseIfDrained schedules emitCloseNT whenever no
-   * handle remains), so the repeat emissions wait for the sweep. */
-  size_t reclose_pending;
-  /* Every live server, registry or not (BORROWED links): a settled server
-   * keeps its 'close' listeners so a later close() re-emits into them, and
-   * the exit teardown must still free those closures. */
-  ScrNetServer *all_prev, *all_next;
   bool emit_listening;
   /* The writable http.Server timeout property values. Kept on the shared
    * server handle because http/https servers retain that handle identity;
@@ -532,12 +525,9 @@ struct ScrNetServer {
                         * '::' when bound_v6, else '0.0.0.0' — Node's own
                         * address().address answers) */
   ScrStr *pending_err; /* deferred listen failure */
-  ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close
-                        * (kept after it, like Node's _pipeName: address()
-                        * with no handle answers the last pipe name) */
-  bool bound_unix;     /* the CURRENT bind is that Unix socket, not a port */
+  ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close */
   size_t nconns;
-  ScrNetLs conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
+  ScrNetLs conn_ls, secure_conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
   /* 'newListener' (event): Node's meta event, fired before every add */
   ScrNetLs new_listener_ls;
   /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
@@ -602,6 +592,12 @@ struct ScrNetSocket {
    * shutdown request). */
   ScrAlsCtx *als, *end_ctx;
   int fd; /* -1 once closed */
+  /* read/write highWaterMark: stream.getDefaultHighWaterMark(false) as it
+   * was when the socket was created (Node's getHighWaterMark at
+   * construction), and the read-ahead cap that follows it (Node reads ahead
+   * by the readable high-water mark). */
+  double hwm;
+  size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
@@ -775,6 +771,9 @@ struct ScrNetSocket {
    * TLS defer target (+1; the socket's own `server` backref stays the
    * ACCEPTING server, which may be the demux wrapper) */
   ScrNetServer *conn_pending;
+  /* conn_pending names the handshake's secure list (TLS accept), not the
+   * plain 'connection' list of a demux emission. */
+  bool conn_pending_secure;
   /* the idle timer (setTimeout): a one-shot poller timer keyed by this
    * socket's pointer, re-armed on every read/write/connect activity —
    * 'timeout' fires once per idle period and never destroys the socket,
@@ -865,12 +864,6 @@ long scr_net_live_count(void) { return scr_net_live; }
 #endif
 
 static SCR_TL ScrNetServer *scr_net_servers = NULL; /* registry: +1 each, tail-appended */
-/* every server that is alive (borrowed), for the exit teardown's listener
- * drop; settled servers leave the registry but keep their close listeners */
-static SCR_TL ScrNetServer *scr_net_all_servers = NULL;
-/* A settled server's persistent 'close' listeners live only until the sweep
- * that emits its 'close' finishes (see scr_net_close_listeners_age). */
-static SCR_TL bool scr_net_close_aging = false;
 /* the socket registry: +1 each, tail-appended; prev/next and the last
  * pointer make registering and unregistering constant-time */
 static SCR_TL ScrNetSocket *scr_net_socks = NULL;
@@ -896,12 +889,9 @@ ScrNetServer *scr_net_server_retain(ScrNetServer *s) {
 void scr_net_server_release(ScrNetServer *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
-    if (s->all_prev != NULL) s->all_prev->all_next = s->all_next;
-    else if (scr_net_all_servers == s) scr_net_all_servers = s->all_next;
-    if (s->all_next != NULL) s->all_next->all_prev = s->all_prev;
-    s->all_prev = s->all_next = NULL;
     if (s->native_ctx_free) s->native_ctx_free(s->native_ctx);
     scr_net_ls_drop(&s->conn_ls);
+    scr_net_ls_drop(&s->secure_conn_ls);
     scr_net_ls_drop(&s->err_ls);
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
@@ -1363,6 +1353,8 @@ static ScrNetSocket *scr_net_sock_new(void) {
   s->kind = SCR_NET_K_SOCKET;
   s->rc = 1;
   s->fd = -1;
+  s->hwm = scr_stream_get_default_hwm(false);
+  s->read_ahead = s->hwm >= (double)SIZE_MAX ? SIZE_MAX : (size_t)s->hwm;
   s->adopt_fd = -1;
   s->autosel = scr_net_get_default_autosel();
   s->attempt_ms = scr_net_get_autosel_timeout();
@@ -1379,8 +1371,8 @@ static ScrNetSocket *scr_net_sock_new(void) {
 /* Consumer-driven read arming (the stdin discipline: never read a byte
  * nobody consumes — the socket buffer is the backpressure). */
 /* Node's readableHighWaterMark for sockets: with no consumer the stream
- * still reads ahead this far, so a peer's close is seen. */
-#define SCR_NET_READ_AHEAD 65536u
+ * still reads ahead that far, so a peer's close is seen (the socket's
+ * captured read_ahead). */
 
 static void scr_net_sock_update_read(ScrNetSocket *s) {
   /* every consumer and flow change re-arms here: buffered bytes may now
@@ -1401,7 +1393,7 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
                s->wr_done /* FIN sent: drain to EOF so the peer's close is
                            * seen even with no consumer — Node resumes a
                            * finished socket the same way */ ||
-               (!s->eof_pending && s->rlen - s->rhead < SCR_NET_READ_AHEAD)
+               (!s->eof_pending && s->rlen - s->rhead < s->read_ahead)
                /* no consumer yet: read ahead into the buffer, as Node's
                 * stream does up to its high-water mark */) &&
               !(s->tunnel != NULL && s->tunnel->send_only);
@@ -1520,10 +1512,6 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len, s
   s->wpending += counted;
 }
 
-/* Node's net.Socket writableHighWaterMark (the Writable default,
- * getDefaultHighWaterMark()). */
-#define SCR_NET_WRITE_HWM 65536
-
 /* 'drain' once a false write's bytes are all out: Node's afterWrite emits
  * it when needDrain is set and nothing is pending, unless the stream is
  * ending or destroyed. */
@@ -1590,7 +1578,7 @@ static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t le
   }
   scr_net_sock_write_raw(s, data, len);
   if (!scr_net_sock_write_open(w)) return false;
-  bool ok = w->wpending < SCR_NET_WRITE_HWM;
+  bool ok = w->wpending < w->hwm;
   if (!ok) w->need_drain = true;
   return ok;
 }
@@ -1598,7 +1586,7 @@ static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t le
 /* The write path shared by write()/end(data)/pipe delivery. Ignored on a
  * dead or ended write half (Node fires 'error' there; this slice drops —
  * SEMANTICS.md documents the bound). */
-static void scr_net_sock_write_raw_inner(ScrNetSocket *s, const char *data, size_t len) {
+static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len) {
   if (s->adopted_by != NULL) {
     /* Node writes these bytes to the wire as they are, between the TLS
      * records of the socket that took over (the peer then fails the
@@ -1652,16 +1640,6 @@ static void scr_net_sock_write_raw_inner(ScrNetSocket *s, const char *data, size
   }
 }
 
-/* Every socket write tracks Node's backpressure, the http layer's internal
- * (native) writes included: a write that leaves the high-water mark or more
- * buffered sets needDrain, and 'drain' follows once the buffer empties. The
- * message above the socket computes its own answer from writableLength, but
- * the socket it writes through is the stream Node's own 'drain' describes. */
-static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len) {
-  scr_net_sock_write_raw_inner(s, data, len);
-  if (s->wpending >= SCR_NET_WRITE_HWM) s->need_drain = true;
-}
-
 /* Ordered slices as ONE write (an HTTP head with its body, a chunk with
  * its framing): when the bytes would go out immediately on a plain socket
  * — the state where scr_net_sock_write_raw attempts its syscall — one
@@ -1671,22 +1649,9 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
  * drops identically to consecutive writes. The peer sees the same bytes
  * in the same order; only the segmenting differs (Node writes these
  * pieces with one writev as well). */
-/* The native write's answer, as Node's socket.write computes it once the
- * bytes entered the writable state: false (and need_drain, so the
- * socket's own 'drain' follows) when the unsent bytes reach the
- * high-water mark. */
-static bool scr_net_sock_write_answer(ScrNetSocket *s) {
-  ScrNetSocket *w = s->adopted_by != NULL ? s->adopted_by : s;
-  if (w->wr_ending || w->close_emitted || w->fd < 0) return false;
-  bool ok = w->wpending < SCR_NET_WRITE_HWM;
-  if (!ok) w->need_drain = true;
-  return ok;
-}
-
-bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n) {
+void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n) {
 #if defined(_WIN32)
   for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
-  return scr_net_sock_write_answer(s);
 #else
   struct iovec iov[8];
   int cnt = 0;
@@ -1703,7 +1668,7 @@ bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
   }
   if (!immediate || cnt < 2) {
     for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
-    return scr_net_sock_write_answer(s);
+    return;
   }
   s->bytes_written += total; /* accepted bytes, as write_raw counts them */
   struct msghdr msg;
@@ -1724,7 +1689,7 @@ bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
       if (!s->pending_err) s->pending_err = scr_str_new(msg_text, strlen(msg_text));
       s->had_error = true;
       scr_net_sock_close_fd(s);
-      return false;
+      return;
     }
   }
   if ((size_t)sent < total) {
@@ -1740,9 +1705,7 @@ bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
     }
     scr_net_sock_update_write(s);
   }
-  return scr_net_sock_write_answer(s);
 #endif
-  if (s->wpending >= SCR_NET_WRITE_HWM) s->need_drain = true;
 }
 
 /* Flush on write-readiness; drives the FIN when ENDING. */
@@ -1929,7 +1892,7 @@ static void scr_net_sock_read(ScrNetSocket *s) {
     bool read_ahead = !flowing && s->readable_ls.n == 0 && !s->wr_done &&
                       !(s->tops != NULL && s->t_est);
     if (read_ahead && (s->tops != NULL || s->eof_pending ||
-                       s->rlen - s->rhead >= SCR_NET_READ_AHEAD)) {
+                       s->rlen - s->rhead >= s->read_ahead)) {
       scr_net_sock_update_read(s);
       return;
     }
@@ -2253,10 +2216,13 @@ static void scr_net_sock_transport_pump(ScrNetSocket *s) {
      * for a plain TLS accept, the emit('connection') target after a
      * demux */
     ScrNetServer *target = s->conn_pending;
+    bool secure_list = s->conn_pending_secure;
     s->conn_pending = NULL;
+    s->conn_pending_secure = false;
     if (!target->close_emitted) {
+      ScrNetLs *list = secure_list ? &target->secure_conn_ls : &target->conn_ls;
       ScrNetL *snap;
-      size_t n = scr_net_ls_snapshot(&target->conn_ls, &snap);
+      size_t n = scr_net_ls_snapshot(list, &snap);
       scr_dyn_this_push(target, SCR_DYNH_NET_SERVER);
       for (size_t i = 0; i < n; i++) {
         if (!scr_exc_pending()) ((ScrNetConnFn)snap[i].fn)(snap[i].cb, scr_net_sock_retain(s));
@@ -2299,10 +2265,6 @@ static ScrNetServer *scr_net_server_new(void) {
   s->http_timeouts[2] = 60000;  /* headersTimeout */
   s->http_timeouts[3] = 300000; /* requestTimeout */
   s->http_timeouts[4] = 1000;   /* keepAliveTimeoutBuffer */
-  s->all_prev = NULL;
-  s->all_next = scr_net_all_servers;
-  if (scr_net_all_servers != NULL) scr_net_all_servers->all_prev = s;
-  scr_net_all_servers = s;
 #ifdef SCR_RC_AUDIT
   scr_net_live++;
 #endif
@@ -2430,7 +2392,6 @@ void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullab
 static void scr_net_listen_opts_impl(ScrNetServer *s, double port, ScrStr *host /*borrowed*/,
                                      bool ipv6_only, bool reuse_port, int backlog,
                                      ScrClosure *cb /*moves, nullable*/) {
-  s->bound_unix = false; /* a port bind replaces any pipe bind */
   if (host == NULL || host->len == 0) {
     scr_net_listen_any(s, port, reuse_port, ipv6_only, backlog, cb);
     return;
@@ -2648,14 +2609,11 @@ ScrStr *scr_net_server_addr_family(ScrNetServer *s) {
  * recurse). */
 void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/) {
   if (s->close_emitted) {
-    /* A closed server: Node emits 'close' again and runs the callback at
-     * that emission, with ERR_SERVER_NOT_RUNNING (the callback's adapter
-     * builds it: scr_net_server_close_dyn). The 'close' listeners stay on
-     * the settled server for exactly this, so the emission joins the
-     * sweep like a first close's. */
-    if (cb) scr_net_ls_add(&s->close_ls, cb, NULL, true);
-    s->reclose_pending++;
-    scr_net_server_register(s);
+    /* A closed server: Node runs the callback at the 'close' it emits
+     * again, with ERR_SERVER_NOT_RUNNING (the callback's adapter builds
+     * it: scr_net_server_close_dyn). The settled server has dropped its
+     * listeners, so only the callback runs. */
+    if (cb) scr_next_tick(cb);
     return;
   }
   scr_als_ctx_release(s->close_ctx);
@@ -2717,28 +2675,9 @@ static void scr_net_server_dispose_done(ScrClosure *cb) {
   scr_promise_release(p);
 }
 
-static void scr_http_server_dispose_fulfill(ScrClosure *cb);
-static void scr_http_server_dispose_reject(ScrClosure *cb);
-
 ScrPromise *scr_net_server_async_dispose(ScrNetServer *s) {
-  /* http.Server overrides net.Server's disposal with a plain
-   * `await promisify(this.close)()`: it closes even without a handle, and
-   * a server that is not running rejects with ERR_SERVER_NOT_RUNNING
-   * after emitting 'close' (Node's close() reports both). */
-  if (s->http_ctx != NULL) {
-    ScrPromise *p = scr_promise_new();
-    bool running = s->listening && !s->close_emitted;
-    ScrClosure *cb = scr_closure_new(
-        running ? (void *)&scr_http_server_dispose_fulfill : (void *)&scr_http_server_dispose_reject,
-        1);
-    cb->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
-    scr_box_set_ref(cb->caps[0], scr_promise_retain(p));
-    scr_net_server_close(s, cb); /* takes the closure */
-    return p;
-  }
-  /* net.Server: Node's `if (!this._handle) return;`: close() nulls the
-   * handle at once, so a server already closing resolves without waiting
-   * for 'close'. */
+  /* Node's `if (!this._handle) return;`: close() nulls the handle at once,
+   * so a server already closing resolves without waiting for 'close'. */
   if (s->fd < 0 || s->close_emitted) return scr_promise_settled_void();
   ScrPromise *p = scr_promise_new();
   ScrClosure *cb = scr_closure_new((void *)&scr_net_server_dispose_done, 1);
@@ -2746,30 +2685,6 @@ ScrPromise *scr_net_server_async_dispose(ScrNetServer *s) {
   scr_box_set_ref(cb->caps[0], scr_promise_retain(p));
   scr_net_server_close(s, cb); /* ownership moves in */
   return p;
-}
-
-/* http.Server[Symbol.asyncDispose](): Node's `await promisify(this.close)()`
- * (http overrides net.Server's, which resolves without a handle). The
- * promise settles through the close callback: a running server fulfills at
- * 'close', and one that was not running (never listened, or already
- * closed) registers the close, rejects with ERR_SERVER_NOT_RUNNING, and
- * still emits 'close' — Node's close() does both. */
-static void scr_http_server_dispose_fulfill(ScrClosure *cb) {
-  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
-  scr_promise_fulfill_void(p);
-  scr_promise_release(p);
-}
-
-static void scr_http_server_dispose_reject(ScrClosure *cb) {
-  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
-  static const char msg[] = "Server is not running.";
-  ScrStr *text = scr_str_new(msg, sizeof msg - 1);
-  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
-  scr_str_release(text);
-  scr_error_set_code(e, "ERR_SERVER_NOT_RUNNING");
-  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-  scr_promise_reject_pending(p);
-  scr_promise_release(p);
 }
 
 static void scr_net_server_close_http_connections(ScrNetServer *s, bool idle_only) {
@@ -3006,6 +2921,7 @@ static ScrNetLs *scr_net_server_event_list(ScrNetServer *s, double kind) {
   case SCR_NET_OFF_DROP: return &s->drop_ls;
   case SCR_NET_OFF_NEW_LISTENER: return &s->new_listener_ls;
   case SCR_NET_OFF_CLIENT_ERROR: return &s->client_error_ls;
+  case SCR_NET_OFF_SECURE_CONNECTION: return &s->secure_conn_ls;
   default: return NULL;
   }
 }
@@ -3033,10 +2949,10 @@ void scr_net_server_on_listening(ScrNetServer *s, ScrClosure *cb /*moves*/, bool
   scr_net_ls_add(&s->listening_cbs, cb, NULL, once);
 }
 
-/* 'secureConnection': a TLS server's 'connection' list already fires at
- * handshake completion (defer_conn) — Node's secureConnection timing; on
- * a plain server the event never fires in Node, so the registration is
- * released unread. */
+/* 'secureConnection': a TLS server's handshake-complete event, its own
+ * list fired at establishment (Node's secureConnection timing) beside the
+ * route's handler; on a plain server the event never fires in Node, so
+ * the registration is released unread. */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                           ScrNetConnFn fn, bool once) {
   if (s->close_emitted || scr_net_server_add_blocked(s, "secureConnection")) {
@@ -3047,7 +2963,7 @@ void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves
     scr_closure_release(cb);
     return;
   }
-  scr_net_ls_add(&s->conn_ls, cb, (void *)fn, once);
+  scr_net_ls_add(&s->secure_conn_ls, cb, (void *)fn, once);
 }
 
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn,
@@ -3150,10 +3066,13 @@ static void scr_net_server_accept(ScrNetServer *srv) {
       if (scr_exc_pending()) return;
     }
     if (srv->defer_conn) {
-      /* 'connection' waits for the handshake (secureConnection timing) */
+      /* the handshake's 'secureConnection'/handler wait for establishment */
       sock->conn_pending = scr_net_server_retain(srv);
+      sock->conn_pending_secure = true;
     }
-    if (!srv->defer_conn) {
+    /* Node's 'connection' fires when the TCP connection is accepted, with
+     * the raw socket, before the transport's handshake starts. */
+    {
       ScrNetL *snap;
       size_t n = scr_net_ls_snapshot(&srv->conn_ls, &snap);
       scr_dyn_this_push(srv, SCR_DYNH_NET_SERVER);
@@ -4581,69 +4500,6 @@ double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence) {
   return port;
 }
 
-/* options.port in server.listen({ port ... }): Node's TCP branch reads a
- * number or a string as the port (an options.port string is never a pipe
- * path) and validates it with validatePort; undefined and null were
- * normalized to 0 before. Any other kind falls through to the options
- * object's generic ERR_INVALID_ARG_VALUE, whose `received` text carries
- * the whole object. */
-double scr_net_listen_port_validate(const ScrDyn *v, ScrStr *received) {
-  if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return 0;
-  double n = 0;
-  bool ok = false;
-  if (v->kind == SCR_DYN_NUM) {
-    n = v->v.num;
-    ok = n == n && trunc(n) == n && n >= 0 && n <= 65535;
-  } else if (v->kind == SCR_DYN_STR) {
-    ScrStr *trimmed = scr_str_trim(v->v.str);
-    ok = trimmed->len > 0;
-    scr_str_release(trimmed);
-    n = scr_string_to_number(v->v.str);
-    ok = ok && n == n && trunc(n) == n && n >= 0 && n <= 65535;
-  }
-  if (v->kind != SCR_DYN_NUM && v->kind != SCR_DYN_STR) {
-    ScrJsonBuf msg;
-    scr_jb_init(&msg);
-    scr_jb_puts(&msg, "The argument 'options' is invalid. Received ");
-    scr_jb_put_str(&msg, received);
-    ScrStr *text = scr_jb_finish(&msg);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
-    scr_str_release(text);
-    return 0;
-  }
-  if (!ok) {
-    char detail[64], msg[160];
-    const char *d = scr_dyn_specific_type(v, detail, sizeof detail);
-    int len =
-        snprintf(msg, sizeof msg, "options.port should be >= 0 and < 65536. Received %s.", d);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, len < 0 ? 0 : (size_t)len, "ERR_SOCKET_BAD_PORT");
-  }
-  return n;
-}
-
-/* options.host of a TCP listen: a number or a boolean is not a hostname,
- * and Node's hostname check rejects it with ERR_INVALID_ARG_TYPE before
- * the bind. Always throws. */
-ScrStr *scr_net_listen_host_number(double v) {
-  char text[32], msg[160];
-  size_t tn = scr_f64_to_str(v, text);
-  int len = snprintf(msg, sizeof msg,
-                     "The \"hostname\" argument must be of type string. Received type number (%s)",
-                     text);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len < 0 ? 0 : (size_t)len, "ERR_INVALID_ARG_TYPE");
-  return scr_str_new(text, tn);
-}
-
-ScrStr *scr_net_listen_host_bool(bool v) {
-  char msg[160];
-  int len = snprintf(
-      msg, sizeof msg,
-      "The \"hostname\" argument must be of type string. Received type boolean (%s)",
-      v ? "true" : "false");
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len < 0 ? 0 : (size_t)len, "ERR_INVALID_ARG_TYPE");
-  return scr_str_new("", 0);
-}
-
 /* listen({ signal }): Node's addServerAbortSignalOption — the signal is
  * validated first ('options.signal'), an aborted one closes the server at
  * the next tick, a live one registers a close listener through
@@ -5184,20 +5040,12 @@ ScrNetSocket *scr_net_connect_path(ScrStr *path, bool deferred) {
  * these only there): the Unix-socket path a listening server answers in
  * place of the AddressInfo record (+1, "" for a TCP server), and the check
  * a record-typed address() read makes first. */
-static bool scr_net_server_pipe_address(const ScrNetServer *s) {
-  if (s->unix_path == NULL) return false;
-  /* Node keeps the pipe name after close() and answers it once the
-   * handles are gone (address() falls back to _pipeName), but a later
-   * successful port bind answers its own record. */
-  return s->listening ? s->bound_unix : true;
-}
-
 ScrStr *scr_net_server_unix_path(ScrNetServer *s) {
-  return scr_net_server_pipe_address(s) ? scr_str_retain(s->unix_path) : scr_str_new("", 0);
+  return s->listening && s->unix_path != NULL ? scr_str_retain(s->unix_path) : scr_str_new("", 0);
 }
 
 void scr_net_server_address_check(ScrNetServer *s) {
-  if (!scr_net_server_pipe_address(s)) return;
+  if (!s->listening || s->unix_path == NULL) return;
   static const char msg[] =
       "server.address() of a server listening on a Unix socket is the socket path string; "
       "type the result as string | AddressInfo | null (Node's declaration) to read it";
@@ -5242,7 +5090,6 @@ static void scr_net_listen_path_impl(ScrNetServer *s, ScrStr *path /*borrowed*/,
       s->emit_listening = true;
       scr_str_release(s->unix_path);
       s->unix_path = scr_str_retain(path);
-      s->bound_unix = true;
       scr_net_watch_read(fd, s, true);
       scr_net_server_register(s);
       return;
@@ -5266,45 +5113,6 @@ static void scr_net_listen_path_impl(ScrNetServer *s, ScrStr *path /*borrowed*/,
   if (!s->pending_err) s->pending_err = scr_jb_finish(&b);
   else scr_str_release(scr_jb_finish(&b));
   scr_net_server_register(s); /* the sweep delivers the failure */
-}
-
-/* The inspect text of one listen option value for ERR_INVALID_ARG_VALUE's
- * "Received" tail: strings quote as util.inspect renders them and the
- * scalars print plain (the options are scalars). Answers a new string. */
-ScrStr *scr_net_option_value_text(const ScrDyn *v) {
-  switch (v->kind) {
-  case SCR_DYN_STR: return scr_str_inspect_quoted(v->v.str, false);
-  case SCR_DYN_UNDEF: return scr_str_new("undefined", 9);
-  case SCR_DYN_NULL: return scr_str_new("null", 4);
-  case SCR_DYN_BOOL: return v->v.b ? scr_str_new("true", 4) : scr_str_new("false", 5);
-  case SCR_DYN_NUM: {
-    char buf[32];
-    size_t n = scr_f64_to_str(v->v.num, buf);
-    return scr_str_new(buf, n);
-  }
-  default: return scr_str_new("[object]", 8);
-  }
-}
-
-/* listen({ path }[, cb]) for a path the compiler could not decide: Node's
- * isPipeName over it (a string whose Number() is not a non-negative
- * number binds the Unix socket), and ERR_INVALID_ARG_VALUE otherwise,
- * with the compiler-rendered options object in the "Received" tail. */
-void scr_net_listen_path_opts(ScrNetServer *s, ScrStr *path /*borrowed*/,
-                              ScrStr *received /*borrowed*/,
-                              ScrClosure *cb /*moves, nullable*/) {
-  if (!(scr_string_to_number(path) >= 0)) {
-    scr_net_listen_path(s, path, cb);
-    return;
-  }
-  ScrJsonBuf msg;
-  scr_jb_init(&msg);
-  scr_jb_puts(&msg, "The argument 'options' is invalid. Received ");
-  scr_jb_put_str(&msg, received);
-  ScrStr *text = scr_jb_finish(&msg);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
-  scr_str_release(text);
-  if (cb) scr_closure_release(cb);
 }
 
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
@@ -5784,11 +5592,6 @@ void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
     return;
   }
   scr_net_ls_add(&s->drain_ls, cb, NULL, once);
-}
-
-void scr_net_sock_off_drain(ScrNetSocket *s, ScrClosure *cb /*borrowed*/) {
-  if (s == NULL || cb == NULL) return;
-  scr_net_ls_remove_last(&s->drain_ls, cb);
 }
 
 void scr_net_sock_end(ScrNetSocket *s) {
@@ -7778,13 +7581,9 @@ static void scr_net_server_listen_bound_adopt(ScrNetServer *s, ScrNetBoundSocket
   if (b->is_pipe) {
     scr_str_release(s->unix_path);
     s->unix_path = scr_str_retain(b->path);
-    /* address() reports the adopted socket's path while listening, like a
-     * listen(path) bind (the adopted socket may never have been a port). */
-    s->bound_unix = true;
   } else {
     s->port = (int)b->port;
     s->bound_v6 = b->family == 6;
-    s->bound_unix = false; /* a port adopt replaces any pipe name */
     scr_str_release(s->bound_host);
     s->bound_host = scr_str_retain(b->ip);
   }
@@ -8263,10 +8062,8 @@ void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*b
 
 /* socket.setTimeout(ms[, callback]) as the program calls it: Node's
  * msecs check (a non-negative finite number), then the timer; a callback
- * becomes a once('timeout') listener, and with 0 it is removed. Also the
- * check a `timeout` option goes through before a dial (net.connect's
- * wrapper). */
-bool scr_net_timeout_msecs_valid(double ms) {
+ * becomes a once('timeout') listener, and with 0 it is removed. */
+static bool scr_net_timeout_msecs_valid(double ms) {
   if (isfinite(ms) && ms >= 0) return true;
   char recv[48], msg[160];
   scr_num_received(ms, recv);
@@ -8479,10 +8276,15 @@ void scr_net_server_emit_connection(ScrNetServer *srv, ScrNetSocket *sock) {
     if (scr_exc_pending()) return;
   }
   if (srv->defer_conn) {
+    /* the handshake's 'secureConnection' listeners and the createServer
+     * handler wait for establishment */
     if (sock->conn_pending) scr_net_server_release(sock->conn_pending);
     sock->conn_pending = scr_net_server_retain(srv);
-    return;
+    sock->conn_pending_secure = true;
   }
+  /* Node dispatches the 'connection' event itself: the listeners see the
+   * raw socket before the transport's handshake starts, on a plain and a
+   * TLS server alike. */
   ScrNetL *snap;
   size_t n = scr_net_ls_snapshot(&srv->conn_ls, &snap);
   scr_dyn_this_push(srv, SCR_DYNH_NET_SERVER);
@@ -8728,9 +8530,8 @@ void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn
 }
 
 /* Raw bytes from the protocol layer (head/framing text). */
-bool scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
+void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
   scr_net_sock_write_raw(s, buf, n);
-  return scr_net_sock_write_answer(s);
 }
 
 /* ── the transport hooks (scr_tls.c) ─────────────────────────────────── */
@@ -9015,108 +8816,22 @@ static bool scr_net_flags_pending(void) {
   for (ScrNetServer *s = scr_net_servers; s; s = s->next) {
     if (s->pending_err || s->emit_listening) return true;
     if (s->closing && s->nconns == 0 && !s->close_emitted) return true;
-    /* A close() on the settled server owes its own 'close' emission. */
-    if (s->reclose_pending > 0) return true;
   }
   return false;
 }
 
-/* Whether a 'close' listener's captures can reach the server `s`. A settled
- * server keeps its persistent 'close' listeners for the repeat emission a
- * later close() causes; a listener that can reach the server closes an
- * ownership cycle (server → closure → server) the reference count cannot
- * break and the cycle collector cannot see (native handles stay outside it),
- * so the settle drops those listeners instead of pinning the server.
- *
- * A capture is safe when it cannot hold the server: a number, a boolean or a
- * string, or a function whose own captures are safe. A handle, an object, an
- * array or a dynamic value may hold it through a field — including a handle
- * boxed with scr_net_server_retain_v / scr_net_server_release_v, the entry
- * points the compiler emits — so those are never safe, and neither is a
- * function value's own-property table. `depth` bounds the chain of captured
- * functions the walk follows. */
-static bool scr_net_listener_captures_safe(const ScrClosure *cb, const ScrNetServer *s, int depth) {
-  if (depth <= 0) return false;
-  if (cb->props != NULL) return false;
-  for (size_t i = 0; i < cb->ncaps; i++) {
-    const ScrBox *b = cb->caps[i];
-    if (b == NULL || b->kind == SCR_BOX_F64 || b->kind == SCR_BOX_BOOL || b->kind == SCR_BOX_STR)
-      continue;
-    void *p;
-    memcpy(&p, &b->slot, sizeof p);
-    if (p == NULL) continue;
-    if (b->kind == SCR_BOX_FUNC) {
-      if (!scr_net_listener_captures_safe((const ScrClosure *)p, s, depth - 1)) return false;
-      continue;
-    }
-    if (b->kind == SCR_BOX_OBJ && (const void *)b->obj_release == (const void *)scr_dyn_release) {
-      const ScrDyn *d = p;
-      if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_NET_SERVER &&
-          d->v.handle.ptr == (const void *)s)
-        return false;
-      if (d->kind == SCR_DYN_FUNC && !scr_net_listener_captures_safe(d->v.fn.clo, s, depth - 1))
-        return false;
-      continue;
-    }
-    return false; /* a handle, an object, an array, or a dynamic non-function */
-  }
-  const ScrClosureValues *values = scr_closure_values(cb);
-  if (values != NULL) {
-    void **slots = scr_closure_value_slots((ScrClosure *)cb);
-    for (size_t i = 0; i < values->count; i++) {
-      if (slots[i] == NULL) continue;
-      if ((const void *)values->refs[i].release != (const void *)scr_str_release_v) return false;
-    }
-  }
-  return true;
-}
-
-/* Drops the entries of `l` whose listener's captures can reach the server
- * `s`; the others stay in order. */
-static void scr_net_ls_drop_holding(ScrNetLs *l, const ScrNetServer *s) {
-  size_t w = 0;
-  for (size_t i = 0; i < l->n; i++) {
-    /* A once entry fires and leaves on its own, and a close(cb) on the
-     * settled server adds one for the repeat emission that callback belongs
-     * to, so only persistent listeners are filtered. The function the entry
-     * stands for: a dyn listener wraps the real closure in a box, and an
-     * adapter names its identity. */
-    if (!l->ls[i].once) {
-      ScrClosure *entry = l->ls[i].cb;
-      ScrClosure *root = scr_net_listener_root(&l->ls[i]);
-      if (!scr_net_listener_captures_safe(root, s, 8) ||
-          !scr_net_listener_captures_safe(entry, s, 8)) {
-        scr_closure_release(l->ls[i].cb);
-        scr_net_once_release(l->ls[i].shared_once);
-        continue;
-      }
-    }
-    l->ls[w++] = l->ls[i];
-  }
-  l->n = w;
-}
-
 /* Settles a server whose 'close' is due: fires the close callbacks and
- * listeners, drops the listener lists it no longer needs (the cycle
- * story) — close_ls stays for a later close()'s repeat emission — and
- * leaves the registry. Shared by the server sweep and the socket settle
- * below — Node emits a DRAINED server's 'close' before the dying socket's
- * own 'close', so the socket settle calls this mid-flight. */
+ * listeners, drops every listener list (the cycle story), and leaves the
+ * registry. Shared by the server sweep and the socket settle below —
+ * Node emits a DRAINED server's 'close' before the dying socket's own
+ * 'close', so the socket settle calls this mid-flight. */
 static void scr_net_server_settle(ScrNetServer *srv) {
   srv->close_emitted = true;
   scr_net_fire0_this(&srv->close_ls, srv, SCR_DYNH_NET_SERVER);
   scr_net_ls_drop(&srv->conn_ls);
+  scr_net_ls_drop(&srv->secure_conn_ls);
   scr_net_ls_drop(&srv->err_ls);
-  /* close_ls stays: the persistent 'close' listeners (the once entries left
-   * it as they fired) receive the 'close' each later close() call emits, as
-   * Node's do. It keeps only listeners whose captures cannot reach this
-   * server: a captured object, array, handle, closure or dynamic value could
-   * hold it through a field, and native handles stay outside the cycle
-   * collector, so that pair would pin the server and everything it captured
-   * until process exit. The once entries a 'close' listener added here belong
-   * to the repeat emission they asked for and are left alone. */
-  scr_net_ls_drop_holding(&srv->close_ls, srv);
-  if (srv->close_ls.n > 0) scr_net_close_aging = true;
+  scr_net_ls_drop(&srv->close_ls);
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
@@ -9133,9 +8848,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
     scr_dyn_release(dispose);
   }
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
-  /* A close() a 'close' listener issued during this emission registered
-   * the server again for its own repeat emission: stay registered. */
-  if (srv->reclose_pending == 0) scr_net_server_unregister(srv);
+  scr_net_server_unregister(srv);
 }
 
 /* Fires a closed socket's 'close' and settles it: its server's count
@@ -9332,34 +9045,6 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
 /* Sockets first (a dying connection may drain its server), servers after.
  * Every fire checks for a pending exception and bails — the loop surfaces
  * it as an uncaught throw. */
-/* A settled server keeps its persistent 'close' listeners only until the
- * sweep that emits the 'close' (and any repeat emission a listener's close()
- * schedules) finishes. Releasing them there is what keeps a native handle
- * from outliving its close through a listener that captured it: nothing is
- * left to capture once the sweep ends, so repeated temporary servers cannot
- * accumulate. A close() issued in a later turn still reaches its callback —
- * scr_net_server_close_direct adds it for that emission — but no longer finds
- * the persistent listeners Node keeps; that bounded window is the price of
- * the guarantee, and the corpus programs that close from a 'close' listener
- * (the synchronous shape) keep their emissions. */
-static void scr_net_close_listeners_age(void) {
-  size_t n = 0;
-  for (ScrNetServer *it = scr_net_all_servers; it != NULL; it = it->all_next)
-    if (it->close_emitted && it->reclose_pending == 0 && it->close_ls.n > 0) n++;
-  if (n == 0) return;
-  ScrNetServer **aged = malloc(n * sizeof *aged);
-  if (aged == NULL) scr_net_oom();
-  size_t i = 0;
-  for (ScrNetServer *it = scr_net_all_servers; it != NULL && i < n; it = it->all_next)
-    if (it->close_emitted && it->reclose_pending == 0 && it->close_ls.n > 0)
-      aged[i++] = scr_net_server_retain(it);
-  for (size_t k = 0; k < i; k++) {
-    scr_net_ls_drop(&aged[k]->close_ls);
-    scr_net_server_release(aged[k]);
-  }
-  free(aged);
-}
-
 static void scr_net_sweep(void) {
   scr_net_proto_sweep();
   if (scr_exc_pending()) return;
@@ -9418,6 +9103,7 @@ static void scr_net_sweep(void) {
        * where Node's would survive (SEMANTICS.md divergence 48). */
       if (!srv->listening && !srv->closing) {
         scr_net_ls_drop(&srv->conn_ls);
+        scr_net_ls_drop(&srv->secure_conn_ls);
         scr_net_ls_drop(&srv->err_ls);
         scr_net_ls_drop(&srv->close_ls);
         scr_net_ls_drop(&srv->listening_cbs);
@@ -9438,41 +9124,16 @@ static void scr_net_sweep(void) {
    * called when several drain in one turn. */
   for (;;) {
     ScrNetServer *due = NULL;
-    bool repeat = false;
     for (ScrNetServer *it = scr_net_servers; it; it = it->next) {
-      bool settle = it->closing && it->nconns == 0 && !it->close_emitted;
-      bool again = it->close_emitted && it->reclose_pending > 0;
-      if (!settle && !again) continue;
-      if (due == NULL || it->close_seq < due->close_seq) {
+      if (it->closing && it->nconns == 0 && !it->close_emitted &&
+          (due == NULL || it->close_seq < due->close_seq)) {
         due = it;
-        repeat = again;
       }
     }
-    if (due == NULL) {
-      /* Every emission this sweep owed has run: the listeners a settled
-       * server kept for it go now, so a listener that captured the server
-       * cannot keep it alive past its close. */
-      if (scr_net_close_aging) {
-        scr_net_close_aging = false;
-        scr_net_close_listeners_age();
-      }
-      return;
-    }
+    if (due == NULL) return;
     scr_net_server_retain(due);
     ScrAlsCtx *prev = scr_als_dispatch_enter(due->close_ctx);
-    if (repeat) {
-      /* A close() on the settled server emits 'close' once more; the
-       * callbacks added for it fire here (Node's nextTick emission). */
-      due->reclose_pending--;
-      scr_net_fire0_this(&due->close_ls, due, SCR_DYNH_NET_SERVER);
-      /* A persistent listener that joined after the settle would form the
-       * cycle the collector cannot see: it leaves with this emission. */
-      scr_net_ls_drop_holding(&due->close_ls, due);
-      if (due->close_ls.n > 0) scr_net_close_aging = true;
-      if (due->reclose_pending == 0) scr_net_server_unregister(due);
-    } else {
-      scr_net_server_settle(due);
-    }
+    scr_net_server_settle(due);
     scr_als_dispatch_leave(prev);
     scr_net_server_release(due);
     if (scr_exc_pending()) return;
@@ -9717,6 +9378,7 @@ static void scr_net_cleanup_atexit(void) {
   while (scr_net_servers) {
     ScrNetServer *s = scr_net_servers;
     scr_net_ls_drop(&s->conn_ls);
+    scr_net_ls_drop(&s->secure_conn_ls);
     scr_net_ls_drop(&s->err_ls);
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
@@ -9724,26 +9386,6 @@ static void scr_net_cleanup_atexit(void) {
     scr_closure_release(s->close_override);
     s->close_override = NULL;
     scr_net_server_unregister(s);
-  }
-  /* Settled servers left the registry but still hold their 'close'
-   * listeners (the repeat emission's targets); at exit those closures must
-   * not outlive the check. Retain first: dropping a list can free a server
-   * through a captured listener. */
-  {
-    size_t n = 0;
-    for (ScrNetServer *it = scr_net_all_servers; it != NULL; it = it->all_next) n++;
-    if (n > 0) {
-      ScrNetServer **live = malloc(n * sizeof *live);
-      if (live == NULL) scr_net_oom();
-      size_t i = 0;
-      for (ScrNetServer *it = scr_net_all_servers; it != NULL; it = it->all_next)
-        live[i++] = scr_net_server_retain(it);
-      for (i = 0; i < n; i++) {
-        scr_net_ls_drop(&live[i]->close_ls);
-        scr_net_server_release(live[i]);
-      }
-      free(live);
-    }
   }
   free(scr_net_work);
   free(scr_net_work_later);
@@ -10137,8 +9779,8 @@ static ScrDyn *scr_net_dynh_sock_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_net_sock_writable_need_drain(s));
   if (strcmp(key, "writableHighWaterMark") == 0 || strcmp(key, "readableHighWaterMark") == 0) {
-    /* Node's default stream highWaterMark (getDefaultHighWaterMark()) */
-    return scr_dyn_new_num(SCR_NET_WRITE_HWM);
+    /* The stream default the socket took at construction. */
+    return scr_dyn_new_num(s->hwm);
   }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;
@@ -10254,11 +9896,12 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
       /* a connection past maxConnections: the local/remote address object */
       scr_net_server_on_drop(s, cb, once);
     } else if (scr_net_dynh_name_is(name, "secureConnection") && s->defer_conn) {
-      /* a TLS server's 'connection' list IS post-handshake (deferred) —
-       * exactly Node's secureConnection timing; on a plain server the
-       * name falls through to the fence below */
-      scr_net_server_on_connection(s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
-                                   (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
+      /* a TLS server's handshake-complete list, which fires at
+       * establishment — exactly Node's secureConnection timing; on a plain
+       * server the name falls through to the fence below */
+      scr_net_server_on_secure_connection(
+        s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
+        (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
     } else if (name->kind == SCR_DYN_STR && scr_net_dynh_http_on &&
                scr_net_dynh_http_on(s, name->v.str->data, cb, once)) {
       /* the http layer accepted the event ('request') */

@@ -217,7 +217,7 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     source: "types",
     scope: "program",
     setBy:
-      "a `.listen(path)` call with a string argument or a `.listen({ path })` options object with a string-typed path, and a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
+      "a `.listen(path)` call with a string argument, or a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
     gates: "every `server.address()` checks for a socket path",
     narrower: "the server",
     tracked: null,
@@ -570,6 +570,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked:
       "pi-decisions DECISIONS island-timers-iteration 2026-11-07; the integrity flag's two open edges 2026-11-09",
     lowererFields: ["importsNodeApi"],
+  },
+  {
+    name: "js-widened-fields",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "jsWidenedFields",
+    source: "types",
+    scope: "shape",
+    setBy:
+      "a write of a value the checker cannot show fits the JSDoc type of a class field, in an unchecked JavaScript source",
+    gates:
+      "the field's storage is checked-dynamic for every instance of the class and every reader of its layout",
+    narrower:
+      "the write sites, where the receiver's class is known; a write the scan cannot type as a field of one class keeps the declared storage",
+    tracked: null,
+    lowererFields: ["jsWidenedFields"],
   },
   {
     name: "global-object-writes",
@@ -974,6 +989,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots of the entry package",
+  ),
+  scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
+  ),
+  scan(
+    "frontend/program.ts#cjsStarReexportSources",
+    2,
+    "discovery",
+    "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(

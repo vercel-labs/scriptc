@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/http-request-write-after-end-uncaught.ts"
- ],
- "diags": []
-}

@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/http-message-dynamic-chunk-encoding.ts"
- ],
- "diags": []
-}

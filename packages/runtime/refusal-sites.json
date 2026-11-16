@@ -145,6 +145,18 @@
  },
  {
   "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with withFileTypes and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with recursive and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.glob stored as a value has no native lowering; call fs.glob directly",
   "code": "SC2020"
@@ -153,12 +165,6 @@
   "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.copyFile clone flags have no native lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_invoke",
-  "message": "Recursive readdir and Dirent results have no native lowering",
   "code": "SC2020"
  },
  {
@@ -283,6 +289,12 @@
  },
  {
   "file": "scr_console_native.c",
+  "function": "scr_console_clear",
+  "message": "Calling %s on this value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
   "function": "scr_console_dir_dyn",
   "message": "console.dir of a Buffer has no lowering",
   "code": "SC2020"
@@ -301,25 +313,25 @@
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table of this value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table of an Error value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table with a properties argument other than an array of strings has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table rows of this kind have no lowering",
   "code": "SC2020"
  },
@@ -369,12 +381,6 @@
   "file": "scr_dh.c",
   "function": "sd_set",
   "message": "Writing DiffieHellman properties has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dns_promises.c",
-  "function": "scr_dnsp_options",
-  "message": "dns.lookup hints are not supported yet",
   "code": "SC2020"
  },
  {
@@ -775,12 +781,6 @@
  },
  {
   "file": "scr_http.c",
-  "function": "scr_http_dynh_client_invoke",
-  "message": "this argument shape is not modeled",
-  "code": "SC2020"
- },
- {
-  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"
@@ -835,12 +835,6 @@
  },
  {
   "file": "scr_inspect.c",
-  "function": "insp_inspect_member_call",
-  "message": "util.inspect.%s through the inspect function is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
   "function": "insp_custom",
   "message": "util.inspect of this class instance's [util.inspect.custom] method has no lowering",
   "code": "SC2020"
@@ -867,18 +861,6 @@
   "file": "scr_inspect.c",
   "function": "scr_insp_dyn",
   "message": "util.inspect of a promise value is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_fmt_s",
-  "message": "%s of a class instance whose class defines toString has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_fmt_s",
-  "message": "%s of objects with symbol-keyed members has no lowering",
   "code": "SC2020"
  },
  {
@@ -1249,12 +1231,6 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_function_constructor_call",
-  "message": "constructing functions from source text is not supported in static code",
-  "code": "SC2010"
- },
- {
-  "file": "scr_json.c",
   "function": "scr_fn_inherited_receiver",
   "message": " on a callable that is not a function value is not supported",
   "code": "SC2020"
@@ -1500,12 +1476,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_mime.c",
-  "function": "scr_mime_member_get",
-  "message": "'%s.prototype.%s' as a value is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_net.c",
   "function": "scr_net_dynh_unsupported",
   "message": "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
@@ -1527,6 +1497,12 @@
   "file": "scr_net.c",
   "function": "scr_net_dynh_srv_invoke",
   "message": "' on a dynamic Server is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_srv_invoke",
+  "message": "the options-object form on a dynamic value is not modeled (use listen(port[, host][, cb]))",
   "code": "SC2020"
  },
  {
@@ -1621,12 +1597,6 @@
  },
  {
   "file": "scr_readline.c",
-  "function": "scr_rl_prompt_text",
-  "message": "a terminal readline prompt that is an object or a symbol has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_readline.c",
   "function": "scr_rl_get_prompt",
   "message": "rl.getPrompt() of a prompt that is not a string has no lowering",
   "code": "SC2020"
@@ -1635,12 +1605,6 @@
   "file": "scr_readline.c",
   "function": "scr_rl_cursor",
   "message": "rl.cursor of an interface that is not a terminal has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_readline_tty.c",
-  "function": "scr_rl_cursor_pos",
-  "message": "rl.getCursorPos() with a prompt that is an object or a symbol has no lowering",
   "code": "SC2020"
  },
  {
@@ -2066,18 +2030,6 @@
  {
   "file": "scr_worker_events.c",
   "function": "scr_worker_view_get",
-  "message": "worker.stderr without the stderr option is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
-  "message": "worker.stdout without the stdout option is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
   "message": "worker.resourceLimits is not supported yet",
   "code": "SC2020"
  },
@@ -2289,12 +2241,6 @@
   "file": "scr_grapheme.c",
   "function": "scr_refusing_segmenter_invoke",
   "message": "segment",
-  "code": "SC2020"
- },
- {
-  "file": "scr_http.c",
-  "function": "scr_http_req_aborted_flag",
-  "message": "AbortSignal support is not linked",
   "code": "SC2020"
  },
  {

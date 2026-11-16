@@ -65,6 +65,10 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
+  // sqlite.backup is the only function of the unit that mints a promise
+  // (scr_dyn_new_promise). Its section is dropped from every program that
+  // does not call backup, and a program that does selects dynAsync with it.
+  "scr_sqlite.c -> scr_async_dyn.c": ["scr_dyn_new_promise"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [
     "scr_dyn_define_props",
     "scr_dyn_define_props_pending",

@@ -269,6 +269,12 @@ console.log(widget.read());`,
     ts: "compares objects by reference",
   },
   {
+    name: "TS2810",
+    source: `new Promise((resolve) => resolve()).then((value) => console.log(value));`,
+    checkJs: "Expected 1 argument, but got 0",
+    ts: "Expected 1 arguments, but got 0",
+  },
+  {
     name: "TS2845",
     source: `console.log(0n === Infinity);`,
     // tsc's checkJs does not compare a bigint with a number in JavaScript; the
@@ -361,14 +367,12 @@ test.for([
   "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = !cb();",
   // A parameter typed `() => void` receives whatever function the caller passes.
   "/** @param {() => void} f */\nfunction run(f) { return f() ? 'yes' : 'no'; }\nexport const ok = run(() => 'x');",
-  // A binding or property a write can replace holds the replacement.
+  // A binding a write can replace holds the replacement.
   "let g = function () {};\ng = () => 's';\nexport const ok = g() ? 'yes' : 'no';",
-  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
-  // A reassignable alias or a property holds whatever was stored last, even
-  // when it first held a function that answers undefined.
+  // A reassignable alias holds whatever was stored last, even when it first
+  // held a function that answers undefined.
   "function noop() {}\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
   "const noop = () => {};\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
-  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
   "class A { m() {} }\nlet f = new A().m;\nf = () => 1;\nexport const ok = f() ? 'yes' : 'no';",
   // A write, by name, by string key or by reflection, can replace a class
   // method on an instance or on the prototype.
@@ -383,6 +387,17 @@ test.for([
 ])("a void-typed operand that can hold a value keeps the truthiness refusal: %s", (library) => {
   const result = diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);');
   expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+test.for([
+  // A member of a plain object the program builds: the object takes
+  // checked-dynamic storage, the function the program stored keeps its own
+  // return, and the call reads that value as Node does.
+  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
+  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
+  "function noop() {}\nconst o = { d: { f: noop } };\no.d.f = () => 3;\nexport const ok = o.d.f() ? 'yes' : 'no';",
+])("a void-typed call through a plain object's member reads the value: %s", (library) => {
+  expect(diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);')).toEqual([]);
 });
 
 test("JavaScript drops the diagnostic where the void-typed operand is undefined", () => {
@@ -443,11 +458,16 @@ test("a named class expression's inner binding names the immutable inner binding
   expect(kept.hint).toContain("named class expression's inner binding");
 });
 
-test("a function declaration assignment names the mutable binding", () => {
-  const kept = refusal("function value() { return 1; }\nvalue = () => 2;\nexport { value };");
-  expect(kept.message).toContain("assigning to a function binding");
-  expect(kept.hint).toContain("binding is mutable");
-  expect(kept.hint).not.toContain("in strict mode and modules");
+test("a function declaration assignment compiles: the binding is mutable", () => {
+  // Node's function declaration is a mutable binding, and the declaration
+  // lowers to a checked-dynamic binding the write replaces
+  // (rebindable-functions.ts).
+  expect(
+    diagnostics(
+      "function value() { return 1; }\nvalue = () => 2;\nexport { value };",
+      'import * as library from "./library.js"; console.log(library);',
+    ),
+  ).toEqual([]);
 });
 
 test("a named function expression's inner binding names the immutable binding", () => {
@@ -490,4 +510,91 @@ test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
 test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
   const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
   expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
+});
+
+test("a JavaScript descriptor's get and set are callable with an explicit receiver", () => {
+  // `base.get`/`base.set` are possibly undefined functions to the checker, so
+  // `.call` rejects the this type (TS2684); JavaScript still binds whatever
+  // receiver the call names, and the descriptor's functions run on it.
+  expect(
+    diagnostics(
+      `export class Field {
+        #value = "";
+        get value() { return this.#value; }
+        set value(next) { this.#value = next; }
+      }
+      export function wrap(el) {
+        const base = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
+        return {
+          read() { return base.get.call(el); },
+          write(next) { base.set.call(el, next); },
+        };
+      }`,
+      'import { Field, wrap } from "./library.js";\nconst field = new Field();\nwrap(field).write("value");\nconsole.log(field.value);',
+    ),
+  ).toEqual([]);
+});
+
+/* A JavaScript binding an operator reads holds whatever the program last
+ * stored, not the shape one assignment gave it: shipped JavaScript reuses one
+ * `var` for a record, an array of lines and a count. Node converts the stored
+ * value in every operator, so the binding takes checked-dynamic storage and
+ * the ordinary arithmetic and comparison lowering applies the conversion. */
+const RETYPED_OPERATOR = `var line = { name: "frame" };
+var index = { step: 0 };
+for (index = 0; index < 3; index++) {}
+line = index;
+export const answer = [1 <= line, line < 4, line, line--];`;
+
+test("an unchecked JavaScript operator reads the value the binding holds", () => {
+  expect(
+    diagnostics(
+      RETYPED_OPERATOR,
+      'import { answer } from "./library.js"; console.log(answer.join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript operator keeps the checker's operand types", () => {
+  const kept = diagnostics(
+    `// @ts-check\n${RETYPED_OPERATOR}`,
+    'import { answer } from "./library.js"; console.log(answer.join());',
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("Operator '<='"))).toBe(true);
+  expect(kept.some((message) => message.includes("arithmetic on an operand"))).toBe(true);
+});
+
+test("an operator over a static record operand keeps the refusal", () => {
+  // Both operands are values the widening prepass cannot reach: a literal and
+  // an object read at the operator itself. Their conversion has no lowering.
+  const kept = diagnostics(
+    `export const answer = 1 <= { k: 1 };`,
+    'import { answer } from "./library.js"; console.log(String(answer));',
+  );
+  expect(kept.some((diagnostic) => diagnostic.message.includes("Operator '<='"))).toBe(true);
+});
+
+test("a hoisted JavaScript var read before its assignment answers undefined", () => {
+  expect(
+    diagnostics(
+      `export function install(flag) {
+  var callback;
+  if (flag) callback = function () { return "called"; };
+  return [callback && callback(), typeof callback];
+}`,
+      'import { install } from "./library.js"; console.log(install(true).join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a let read above its declaration keeps the temporal-dead-zone refusal", () => {
+  const kept = diagnostics(
+    `export function read() {
+  const first = later;
+  let later = 1;
+  return first + later;
+}`,
+    'import { read } from "./library.js"; console.log(read());',
+  );
+  expect(kept.some((diagnostic) => diagnostic.code === "SC1090")).toBe(true);
 });

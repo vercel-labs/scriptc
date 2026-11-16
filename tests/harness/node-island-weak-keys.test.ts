@@ -108,8 +108,11 @@ describe.skipIf(skip)("Node island objects as native weak keys", () => {
     expect(large.totals["held handles"]).toBeLessThan(200);
     // Peak memory does not grow with the keys dropped: twice the keys, and
     // 50 bytes leaked per key would be 40 MB (ASan's quarantine makes the
-    // sanitized lane's resident set meaningless).
-    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.05 + 8 * 1024);
+    // sanitized lane's resident set meaningless). The peak is the allocator's
+    // high-water mark, which moves by several MB between runs of the same
+    // program, so the fixed allowance covers that spread and still stays well
+    // under the 40 MB a 50-byte leak would add.
+    if (!sanitize) expect(large.rss).toBeLessThan(small.rss * 1.05 + 16 * 1024);
   }, 900_000);
 
   test("forced collections end no entry whose key either side still reaches", async () => {

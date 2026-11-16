@@ -50,10 +50,17 @@ console.log(
 
 let relations = true;
 const types = new Set();
+// Promise resources are counted while the growth section below creates its
+// batch, so only those promises' settlements are tallied.
+const track = { collect: false, ids: new Set(), resolved: new Set() };
 const hook = ah.createHook({
   init(id, type, trigger) {
     types.add(type);
+    if (track.collect && type === 'PROMISE') track.ids.add(id);
     if (typeof id !== 'number' || typeof trigger !== 'number') relations = false;
+  },
+  promiseResolve(id) {
+    if (track.ids.has(id)) track.resolved.add(id);
   },
   before(id) {
     if (id !== ah.executionAsyncId()) relations = false;
@@ -68,6 +75,29 @@ const hook = ah.createHook({
 const enabled = hook.enable();
 console.log('enable answers the hook:', enabled === hook);
 
+// An inline literal's members are evaluated in SOURCE order (the literal is
+// built before createHook reads it), not in the order of the five slots.
+// Members that are not callbacks still run, for their side effects.
+const literalOrder = [];
+const noop = () => {};
+ah.createHook({
+  promiseResolve: (literalOrder.push('promiseResolve'), noop),
+  destroy: (literalOrder.push('destroy'), noop),
+  tail: literalOrder.push('tail'),
+  after: (literalOrder.push('after'), noop),
+  before: (literalOrder.push('before'), noop),
+  init: (literalOrder.push('init'), noop),
+});
+console.log('literal members evaluated:', literalOrder.join(','));
+
+// Quoted keys and spreads still name the same callbacks.
+const spreadOrder = [];
+ah.createHook({
+  ...{ promiseResolve: (spreadOrder.push('spread'), noop) },
+  'init': (spreadOrder.push('quoted init'), noop),
+});
+console.log('spread and quoted keys:', spreadOrder.join(','));
+
 // Each phase schedules the next, so the output order is causal rather than
 // timed.
 process.nextTick(() => {
@@ -76,11 +106,30 @@ process.nextTick(() => {
     console.log('timer above root:', ah.executionAsyncId() > 1);
     console.log('timer trigger is an id:', typeof ah.triggerAsyncId() === 'number');
     setImmediate(() => {
-      hook.disable();
-      const seen = ['Timeout', 'Immediate', 'TickObject'].every((type) => types.has(type));
-      console.log('modelled types seen:', seen);
-      console.log('hook id relations:', relations);
-      console.log('disable answers the hook:', hook.disable() === hook);
+      // The promise-resource table grows past its initial capacity while
+      // hundreds of promises stay live: every one of them must still find
+      // its entry when it settles, or its promiseResolve event disappears.
+      const resolvers = [];
+      const batch = [];
+      track.collect = true;
+      for (let i = 0; i < 200; i++) batch.push(new Promise((resolve) => resolvers.push(resolve)));
+      track.collect = false;
+      const total = track.ids.size;
+      for (const resolve of resolvers) resolve(total);
+      Promise.all(batch).then(() => {
+        console.log('promise table growth:', total, track.resolved.size === total);
+        hook.disable();
+        const seen = ['Timeout', 'Immediate', 'TickObject'].every((type) => types.has(type));
+        console.log('modelled types seen:', seen);
+        console.log('hook id relations:', relations);
+        console.log('disable answers the hook:', hook.disable() === hook);
+
+        // A computed member name is a callback like any other.
+        const key = 'promiseResolve';
+        const computedOrder = [];
+        ah.createHook({ [key]: (computedOrder.push('computed'), noop) });
+        console.log('computed key:', computedOrder.join(','));
+      });
     });
   }, 1);
 });

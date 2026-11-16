@@ -7,6 +7,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrStmt,
   type SrcLoc,
   canBoxFuncIntoDyn,
   canConvertToDyn,
@@ -28,30 +29,50 @@ function lowerHookCallbacks(lowerer: Lowerer, node: ts.Expression): IrExpr {
 
 const HOOK_CALLBACK_NAMES = ["init", "before", "after", "destroy", "promiseResolve"] as const;
 
-/** The five callbacks of an inline literal as dyn values, member by member
- * (a method spelling lowers through the lambda path, a property assignment
- * through its initializer, a missing member is undefined); null when the
- * literal holds a spread or accessor, which takes the object form. */
-function literalHookCallbacks(lowerer: Lowerer, e: ts.ObjectLiteralExpression): IrExpr[] | null {
+/** The five callbacks of an inline literal, evaluated in SOURCE order and
+ * passed in slot order. Null when the literal holds anything the member-by-
+ * member form cannot evaluate faithfully — a spread, a computed or quoted
+ * key, an accessor, or a duplicate name (Node's destructuring reads the last
+ * one) — which takes the object form instead.
+ *
+ * Node evaluates the literal's members in source order before createHook
+ * reads them, so every member's initializer is lowered into its own hidden
+ * local in that order (members the hook does not use included, for their
+ * side effects); the five slots then read the locals. */
+function literalHookCallbacks(
+  lowerer: Lowerer,
+  e: ts.ObjectLiteralExpression,
+): { stmts: IrStmt[]; args: IrExpr[] } | null {
   const loc = locOf(e);
-  const out: IrExpr[] = [];
-  for (const name of HOOK_CALLBACK_NAMES) {
-    const prop = e.properties.nodes.find((p) => ts.isIdentifier(p.name) && p.name.text === name);
-    if (prop === undefined) {
-      out.push(dynUndefinedExpr(loc));
-      continue;
-    }
+  const slots = new Map<string, string>(); /* callback name → hidden local */
+  const named = new Set<string>();
+  const stmts: IrStmt[] = [];
+  for (const prop of e.properties.nodes) {
+    if (!ts.isIdentifier(prop.name)) return null; /* spread, computed, quoted, accessor */
+    const name = prop.name.text;
+    if (named.has(name)) return null; /* a later duplicate would win in Node */
+    named.add(name);
+    let value: IrExpr;
     if (ts.isMethodDeclaration(prop)) {
-      out.push(boxHookCallback(lowerer, prop, lowerer.lowerLambda(prop, true)));
+      value = boxHookCallback(lowerer, prop, lowerer.lowerLambda(prop, true));
     } else if (ts.isShorthandPropertyAssignment(prop)) {
-      out.push(lowerer.lowerExprExpecting(prop.name as unknown as ts.Expression, DYN));
+      value = lowerer.lowerExprExpecting(prop.name as unknown as ts.Expression, DYN);
     } else if (ts.isPropertyAssignment(prop)) {
-      out.push(lowerer.lowerExprExpecting(prop.initializer, DYN));
+      value = lowerer.lowerExprExpecting(prop.initializer, DYN);
     } else {
       return null;
     }
+    const local = lowerer.declareHiddenLocal(`%hook_${name}`, DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(prop) });
+    if ((HOOK_CALLBACK_NAMES as readonly string[]).includes(name)) slots.set(name, local.id);
   }
-  return out;
+  const args: IrExpr[] = HOOK_CALLBACK_NAMES.map((name) => {
+    const localId = slots.get(name);
+    return localId === undefined
+      ? dynUndefinedExpr(loc)
+      : { kind: "varRef", localId, type: DYN, loc };
+  });
+  return { stmts, args };
 }
 
 /** A lowered method value as a checked-dynamic function. */
@@ -106,8 +127,17 @@ export function lowerAsyncHooksCall(
       while (ts.isParenthesizedExpression(e)) e = e.expression;
       if (ts.isObjectLiteralExpression(e)) {
         const parts = literalHookCallbacks(lowerer, e);
-        if (parts !== null)
-          return { kind: "libCall", fn: "ah.createHookParts", args: parts, type: F64, loc };
+        if (parts !== null) {
+          const call: IrExpr = {
+            kind: "libCall",
+            fn: "ah.createHookParts",
+            args: parts.args,
+            type: F64,
+            loc,
+          };
+          if (parts.stmts.length === 0) return call;
+          return { kind: "seqExpr", stmts: parts.stmts, result: call, type: F64, loc };
+        }
       }
     }
     const callbacks =

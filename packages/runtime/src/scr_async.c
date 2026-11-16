@@ -1030,9 +1030,13 @@ typedef struct {
 static SCR_TL ScrAsyncPromEntry *scr_async_proms = NULL;
 static SCR_TL size_t scr_async_proms_cap = 0, scr_async_proms_len = 0;
 
-static size_t scr_async_prom_home(const ScrPromise *p) {
+static size_t scr_async_prom_home_cap(const ScrPromise *p, size_t cap) {
   uint64_t h = (uint64_t)(uintptr_t)p * UINT64_C(0x9E3779B97F4A7C15);
-  return (size_t)(h >> 32) & (scr_async_proms_cap - 1);
+  return (size_t)(h >> 32) & (cap - 1);
+}
+
+static size_t scr_async_prom_home(const ScrPromise *p) {
+  return scr_async_prom_home_cap(p, scr_async_proms_cap);
 }
 
 static void scr_async_prom_teardown(void) {
@@ -1058,7 +1062,9 @@ static void scr_async_prom_insert(ScrPromise *p, double id, double trigger) {
     for (size_t i = 0; i < scr_async_proms_cap; i++) {
       ScrAsyncPromEntry *old = &scr_async_proms[i];
       if (old->key == NULL || old->key == SCR_PROM_TOMBSTONE) continue;
-      size_t at = scr_async_prom_home(old->key);
+      /* The table is being rehashed INTO the new capacity: hashing with the
+       * old one would place entries where the new mask cannot find them. */
+      size_t at = scr_async_prom_home_cap(old->key, cap);
       while (grown[at].key != NULL) at = (at + 1) & (cap - 1);
       grown[at] = *old;
     }

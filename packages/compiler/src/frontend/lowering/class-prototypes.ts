@@ -956,6 +956,10 @@ function readOnlyPrototypeUse(lowerer: Lowerer, node: ts.Expression, depth: numb
       (objectMethod !== null ? READING_OBJECT_FUNCTIONS.get(objectMethod) : undefined) ??
       (reflectMethod !== null ? READING_REFLECT_FUNCTIONS.get(reflectMethod) : undefined);
     if (position !== undefined) return args[position] === child;
+    // `mock.method(C.prototype, "name", …)`: the mock installs its wrapper
+    // through the prototype object, the representation a named prototype
+    // write reaches.
+    if (args[0] === child && parent.expression.name.text === "method") return true;
   }
   if (ts.isTypeOfExpression(parent)) return true;
   if (

@@ -36,6 +36,8 @@ import {
 import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mockContextType } from "../mock-shapes.js";
+import { findMethodOn, type ClassInfo } from "./lower-classes.js";
+import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { callableBox } from "./callable-properties.js";
 import { locOf } from "../program.js";
 import { resultIsDiscarded } from "./call-position.js";
@@ -144,15 +146,20 @@ function liftOnce(
   return name;
 }
 
-/** `%mock.wrap.N(ctx)`: the closure that records each call into ctx, with
- * `this` undefined. `%mock.wrapMethod.N(ctx, this)` records `this`. */
+/** `%mock.wrap.N(ctx)`: the closure that records each call into ctx and
+ * runs the implementation with the receiver the call bound, which is
+ * `undefined` for a bare call, exactly as Node's mock function does.
+ * `%mock.wrapMethod.N(ctx, this)` is the wrapper a mock.method stores in
+ * the object's property: a call that passes no receiver at all falls back
+ * to the object the mock was made on, so a typed call of a member no
+ * function in the program reads still records the object as Node does. */
 function mockWrapperFactory(
   lowerer: Lowerer,
   ctxType: IrType,
   loc: SrcLoc,
-  withThis = false,
+  fieldReceiver = false,
 ): string {
-  return liftOnce(lowerer, ctxType, withThis ? "wrapMethod" : "wrap", (name) => {
+  return liftOnce(lowerer, ctxType, fieldReceiver ? "wrapMethod" : "wrap", (name) => {
     const { fn, call, calls, once, onceEntry, result, args } = mockContextFields(lowerer, ctxType)!;
     const impl = `${name}.impl`;
     const ctx = () => varRef("ctx.0", ctxType, loc);
@@ -174,6 +181,12 @@ function mockWrapperFactory(
               type: args,
               loc,
             };
+    // The receiver this call bound: `o.m()` passes the object, `.call` and
+    // `.apply` pass the one they name, and a bare call of the value passes
+    // none, which Node records as undefined. A mock.method wrapper installed
+    // in the object's property falls back to that object, because a typed
+    // call of a member no function in the program reads passes no receiver.
+    const callThis = (): IrExpr => varRef("rcv.0", DYN, loc);
     const record = (resultValue: IrExpr, error: IrExpr): IrStmt => ({
       kind: "exprStmt",
       expr: {
@@ -189,7 +202,7 @@ function mockWrapperFactory(
               { name: "result", value: resultValue },
               {
                 name: "this",
-                value: withThis ? varRef("this.0", DYN, loc) : dynUndefinedExpr(loc),
+                value: callThis(),
               },
             ],
             type: call,
@@ -226,11 +239,15 @@ function mockWrapperFactory(
         loc,
       };
     };
+    // The wrapped method's implementation runs with the object as `this`,
+    // exactly as Node's wrapper does: the method read off the object, or an
+    // implementation the caller passed, sees the receiver the call bound.
     const invoke: IrExpr = dynRest
       ? {
           kind: "dynCall",
           callee: { kind: "dynFrom", value: varRef("f.0", fn, loc), type: DYN, loc },
           calleeName: "implementation",
+          receiver: callThis(),
           args: paramRefs(),
           spreads: [{ arg: 0, what: "args" }],
           type: DYN,
@@ -239,6 +256,7 @@ function mockWrapperFactory(
       : {
           kind: "callValue",
           callee: varRef("f.0", fn, loc),
+          receiver: callThis(),
           args: paramRefs(),
           type: fn.ret,
           loc,
@@ -308,12 +326,13 @@ function mockWrapperFactory(
       returnType: fn.ret,
       captures: [
         { localId: "ctx.0", name: "ctx", type: ctxType },
-        ...(withThis ? [{ localId: "this.0", name: "this", type: DYN }] : []),
+        ...(fieldReceiver ? [{ localId: "this.0", name: "this", type: DYN }] : []),
       ],
       locals: [
         ...params.map((p) => local(p.localId, p.name, p.type)),
         boxedLocal("ctx.0", "ctx", ctxType),
-        ...(withThis ? [boxedLocal("this.0", "this", DYN)] : []),
+        ...(fieldReceiver ? [boxedLocal("this.0", "this", DYN)] : []),
+        local("rcv.0", "callThis", DYN),
         local("n.0", "index", F64),
         local("f.0", "implementation", fn, true),
         local("i.0", "entry", F64, true),
@@ -321,6 +340,20 @@ function mockWrapperFactory(
         local("e.0", "error", CAUGHT),
       ],
       body: [
+        {
+          kind: "varDecl",
+          localId: "rcv.0",
+          init: fieldReceiver
+            ? {
+                kind: "nullish",
+                left: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+                right: varRef("this.0", DYN, loc),
+                type: DYN,
+                loc,
+              }
+            : { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+          loc,
+        },
         {
           kind: "varDecl",
           localId: "n.0",
@@ -337,12 +370,12 @@ function mockWrapperFactory(
       name,
       params: [
         { localId: "ctx.0", name: "ctx", type: ctxType },
-        ...(withThis ? [{ localId: "this.0", name: "this", type: DYN }] : []),
+        ...(fieldReceiver ? [{ localId: "this.0", name: "this", type: DYN }] : []),
       ],
       returnType: fn,
       locals: [
         boxedLocal("ctx.0", "ctx", ctxType),
-        ...(withThis ? [boxedLocal("this.0", "this", DYN)] : []),
+        ...(fieldReceiver ? [boxedLocal("this.0", "this", DYN)] : []),
       ],
       body: [
         {
@@ -350,7 +383,7 @@ function mockWrapperFactory(
           value: {
             kind: "closure",
             fnName: impl,
-            captures: withThis ? ["ctx.0", "this.0"] : ["ctx.0"],
+            captures: fieldReceiver ? ["ctx.0", "this.0"] : ["ctx.0"],
             type: fn,
             loc,
           },
@@ -514,6 +547,65 @@ function mockUnmockFactory(
     },
     `${objType.shapeId}.${JSON.stringify(field)}`,
   );
+}
+
+/** `%mock.unmockDyn.N(receiver, original)`: the closure that writes the
+ * original method value back to a class instance's or prototype object's
+ * property, the way the assignment Node's restore performs would. */
+function mockDynUnmockFactory(
+  lowerer: Lowerer,
+  ctxType: IrType,
+  field: string,
+  loc: SrcLoc,
+): string {
+  return liftOnce(lowerer, ctxType, `unmockDyn:${JSON.stringify(field)}`, (name) => {
+    const impl = `${name}.impl`;
+    const captures = [
+      { localId: "recv.0", name: "receiver", type: DYN },
+      { localId: "orig.0", name: "original", type: DYN },
+    ];
+    const boxedLocals = captures.map((c) => boxedLocal(c.localId, c.name, c.type));
+    const write: IrStmt = {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [varRef("recv.0", DYN, loc), strLit(field, loc), varRef("orig.0", DYN, loc)],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+    lowerer.liftedFns.push({
+      name: impl,
+      params: [],
+      returnType: VOID,
+      captures,
+      locals: boxedLocals,
+      body: [write, { kind: "return", value: null, loc }],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: captures,
+      returnType: RESTORE_FN,
+      locals: boxedLocals,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "closure",
+            fnName: impl,
+            captures: ["recv.0", "orig.0"],
+            type: RESTORE_FN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  });
 }
 
 /** A VOID helper over the context: `%mock.<role>.N(ctx, ...extra)`. */
@@ -795,8 +887,40 @@ export function lowerMockFn(
   return { kind: "seqExpr", stmts, result: wrapper, type: fn, loc };
 }
 
+/** The class a mock.method receiver names: an instance's class, or the
+ * class a `C.prototype` object belongs to. Null for every other value. */
+function mockClassReceiver(lowerer: Lowerer, receiver: ts.Expression): ClassInfo | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  if (mapped?.kind === "object") return lowerer.classes.get(mapped.className) ?? null;
+  let base: ts.Expression = receiver;
+  while (ts.isParenthesizedExpression(base)) base = base.expression;
+  if (
+    ts.isPropertyAccessExpression(base) &&
+    base.name.text === "prototype" &&
+    ts.isIdentifier(base.expression)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(base.expression);
+    return symbol ? (lowerer.classBySymbol.get(symbol) ?? null) : null;
+  }
+  return null;
+}
+
+/** The declared type of method `method` of the class `receiver` names. */
+function mockClassMethodType(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  method: string,
+): FuncType | null {
+  const info = mockClassReceiver(lowerer, receiver);
+  if (info === null) return null;
+  const found = findMethodOn(lowerer, info, method);
+  if (!found || found.sig.abstract) return null;
+  const type = funcTypeFromParamShapes(found.sig.params, found.sig.ret);
+  return type.kind === "func" ? type : null;
+}
+
 const METHOD_HINT =
-  "mock.method lowers for objects whose type maps to a record (object literals and interface-typed objects) and a function-valued field named by a string literal";
+  "mock.method lowers for an object literal or interface-typed object (a record), a class instance, or a class's prototype object, with a method named by a string literal";
 
 /** mock.method(object, methodName, implementation?) and t.mock.method. The
  * field's function type F is the mock's type; an implementation must have
@@ -833,8 +957,16 @@ export function lowerMockMethod(
   }
   const objType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
   const objShape = objType?.kind === "record" ? lowerer.shapes.get(objType.shapeId) : undefined;
-  const fn = objShape?.fields.find((f) => f.name === field)?.type;
-  if (!objType || !objShape || fn?.kind !== "func") {
+  const recordField = objShape?.fields.find((f) => f.name === field)?.type;
+  // A class instance and a class's prototype object keep their methods in
+  // the class's property machinery, where an own property shadows the
+  // declared method. Their method's type is the declaration's, and the
+  // property is read and written through the checked-dynamic receiver so
+  // the write reaches every call site of the class.
+  const classFn =
+    recordField?.kind === "func" ? null : mockClassMethodType(lowerer, args[0]!, field);
+  const fn = recordField?.kind === "func" ? recordField : classFn;
+  if (!objType || fn === null) {
     const typeName = ts.symbolNameOf(lowerer.typeOf(args[0]!).getSymbol());
     lowerer.noLowering(
       typeName && !typeName.startsWith("__")
@@ -844,6 +976,7 @@ export function lowerMockMethod(
       METHOD_HINT,
     );
   }
+  const dynamicObject = recordField?.kind !== "func";
   const ctxType = mockContextType(fn as FuncType, lowerer.typeCtx);
   if (!ctxType || !isMockContextType(lowerer, ctxType)) {
     lowerer.noLowering(
@@ -865,28 +998,55 @@ export function lowerMockMethod(
   const fields = mockContextFields(lowerer, ctxType!)!;
   requireUndefinedResultArm(lowerer, fields, call, what);
   const stmts: IrStmt[] = [];
-  const objLocal = lowerer.declareHiddenLocal("%mockObject", objType!);
-  const obj = () => varRef(objLocal.id, objType!, loc);
-  stmts.push({ kind: "varDecl", localId: objLocal.id, init: lowerer.lowerExpr(args[0]!), loc });
-  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn!);
-  const original = () => varRef(originalLocal.id, fn!, loc);
+  // A class instance or a prototype object is held as the checked-dynamic
+  // value whose property write shadows the method for every compiled call
+  // site; a record is held at its own type.
+  const objLocal = lowerer.declareHiddenLocal("%mockObject", dynamicObject ? DYN : objType!);
+  const obj = () => varRef(objLocal.id, objLocal.type!, loc);
   stmts.push({
     kind: "varDecl",
-    localId: originalLocal.id,
-    init: recordGet(obj(), field, fn!, loc),
+    localId: objLocal.id,
+    init: dynamicObject
+      ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
+      : lowerer.lowerExpr(args[0]!),
     loc,
   });
+  const key = (): IrExpr => strLit(field, loc);
+  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn!);
+  const original = () => varRef(originalLocal.id, fn!, loc);
+  const originalDynLocal = dynamicObject
+    ? lowerer.declareHiddenLocal("%mockOriginalDyn", DYN)
+    : null;
+  const originalDyn = (): IrExpr => varRef(originalDynLocal!.id, DYN, loc);
+  if (originalDynLocal) {
+    // The method the property answers now, as the value Node restores.
+    stmts.push({
+      kind: "varDecl",
+      localId: originalDynLocal.id,
+      init: { kind: "dynKeyGet", value: obj(), key: key(), type: DYN, loc },
+      loc,
+    });
+    stmts.push({
+      kind: "varDecl",
+      localId: originalLocal.id,
+      init: lowerer.coerceInto(call, originalDyn(), fn!),
+      loc,
+    });
+  } else {
+    stmts.push({
+      kind: "varDecl",
+      localId: originalLocal.id,
+      init: recordGet(obj(), field, fn!, loc),
+      loc,
+    });
+  }
   const implementation = args.length === 3 ? lowerer.lowerExprExpecting(args[2]!, fn!) : original();
   const unmock: IrExpr = {
     kind: "call",
-    callee: mockUnmockFactory(
-      lowerer,
-      ctxType!,
-      objType as IrType & { kind: "record" },
-      field,
-      loc,
-    ),
-    args: [obj(), original()],
+    callee: dynamicObject
+      ? mockDynUnmockFactory(lowerer, ctxType!, field, loc)
+      : mockUnmockFactory(lowerer, ctxType!, objType as IrType & { kind: "record" }, field, loc),
+    args: dynamicObject ? [obj(), originalDyn()] : [obj(), original()],
     type: RESTORE_FN,
     loc,
   };
@@ -909,14 +1069,28 @@ export function lowerMockMethod(
     init: {
       kind: "call",
       callee: mockWrapperFactory(lowerer, ctxType!, loc, true),
-      args: [ctx(), lowerer.coerceToExpected(obj(), DYN)],
+      args: [ctx(), dynamicObject ? obj() : lowerer.coerceToExpected(obj(), DYN)],
       type: fn!,
       loc,
     },
     loc,
   });
   const fieldWrapper = varRef(fieldWrapperLocal.id, fn!, loc);
-  stmts.push(recordSet(obj(), field, fieldWrapper, loc));
+  stmts.push(
+    dynamicObject
+      ? {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [obj(), key(), lowerer.coerceToExpected(fieldWrapper, DYN)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        }
+      : recordSet(obj(), field, fieldWrapper, loc),
+  );
   defineMockProps(lowerer, stmts, call, fieldWrapper, ctx(), loc);
   // The returned mock: a wrapper that records `this` as undefined, the way
   // Node's bare call of the returned function does (the field's wrapper

@@ -25,6 +25,27 @@ const FUNCTION_MEMBER_NAMES = new Set([
   "valueOf",
 ]);
 
+/** `mock.method(object, "name", …)` and its `t.mock` twin: the property
+ * name the call replaces on the object it names. Node's mock writes a
+ * wrapper over the method, so the name is replaced exactly like an
+ * assignment to it. */
+function mockMethodTarget(
+  call: ts.CallExpression,
+): { name: string; receiver: ts.Expression } | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "method") return null;
+  const owner = callee.expression;
+  const isMock =
+    (ts.isIdentifier(owner) && owner.text === "mock") ||
+    (ts.isPropertyAccessExpression(owner) && owner.name.text === "mock");
+  if (!isMock) return null;
+  const receiver = call.arguments.nodes[0];
+  const nameArg = call.arguments.nodes[1];
+  if (receiver === undefined || nameArg === undefined) return null;
+  if (ts.isSpreadElement(receiver) || !ts.isStringLiteralLike(nameArg)) return null;
+  return { name: nameArg.text, receiver };
+}
+
 /** Whether a setPrototypeOf call the census found may give an instance of
  * `info` another prototype (Lowerer.reprototypedClasses). */
 export function mayReplacePrototype(
@@ -53,6 +74,10 @@ export function collectClassMethodMutations(
     site: ts.Node;
   }[] = [];
   const propertyWrites: { target: ts.PropertyAccessExpression; site: ts.Node }[] = [];
+  /** `mock.method(object, "name", …)` calls: the mock stores a wrapper in
+   * the object's property, so the name is replaced like an assignment to
+   * it. */
+  const mockWrites: { name: string; receiver: ts.Expression; site: ts.Node }[] = [];
   /** Writes and deletes of a method name through an element access with a
    * known key (`o["m"] = f`, `o[k] = f` with `k: "m" | "n"`), judged like
    * the named writes in propertyWrites. */
@@ -419,6 +444,10 @@ export function collectClassMethodMutations(
       ) {
         receiverFields.add(node.name.text);
       }
+      if (ts.isCallExpression(node)) {
+        const mock = mockMethodTarget(node);
+        if (mock) mockWrites.push({ ...mock, site: node });
+      }
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -778,6 +807,16 @@ export function collectClassMethodMutations(
       (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(receiver, name))
     )
       continue;
+    if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
+    else lowerer.noteMethodAccess(name, site);
+  }
+  // A mock on a class instance or on a class's prototype object replaces
+  // that method for the class's compiled calls: the call sites must be able
+  // to observe the property the mock writes.
+  for (const { name, receiver, site } of mockWrites) {
+    const base = withoutParenthesesAssertionsNonNull(receiver);
+    const prototype = ts.isPropertyAccessExpression(base) && base.name.text === "prototype";
+    if (!prototype && !methodOwnerCanInhabit(receiver, name)) continue;
     if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
     else lowerer.noteMethodAccess(name, site);
   }

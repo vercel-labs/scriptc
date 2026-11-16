@@ -97370,6 +97370,9 @@
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
@@ -98854,6 +98857,9 @@
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -98929,6 +98935,9 @@
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -98958,6 +98967,9 @@
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },

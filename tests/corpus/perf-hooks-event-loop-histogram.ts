@@ -30,8 +30,15 @@ attempt("percentile 101", () => histogram.percentile(101));
 attempt("percentile NaN", () => histogram.percentile(Number.NaN));
 console.log("percentile 100", typeof histogram.percentile(100));
 
+// Node records nothing on the first tick after enable and this timer wheel
+// can place a boundary tick differently from libuv's, so the sampling
+// window waits for a recorded sample instead of assuming how many ticks a
+// fixed delay holds. The assertions below then read a histogram that has
+// data on both sides whatever the runner's load.
 histogram.enable();
-await new Promise((resolve) => setTimeout(resolve, 40));
+for (let turn = 0; turn < 100 && histogram.count === 0; turn++) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
 histogram.disable();
 console.log("sampled", histogram.count > 0, histogram.exceeds >= 0, histogram.min > 0, histogram.max >= histogram.min);
 console.log("sampled stats", typeof histogram.mean, typeof histogram.stddev, histogram.percentile(50) > 0, histogram.percentile(99.9) >= histogram.percentile(50));
@@ -40,6 +47,8 @@ console.log("reset", histogram.count, histogram.exceeds, histogram.percentile(50
 
 const fine = monitorEventLoopDelay({ resolution: 1 });
 fine.enable();
-await new Promise((resolve) => setTimeout(resolve, 20));
+for (let turn = 0; turn < 100 && fine.count === 0; turn++) {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
 fine.disable();
 console.log("fine sampled", fine.count > 0);

@@ -1,3 +1,4 @@
+// @normalize-pid
 // fsPromises.watch bounds its queue the way Node does. options.maxQueue caps
 // the pending entries (2048 by default), so a writer that outruns the
 // consumer cannot grow the iterator's memory without limit; past the cap
@@ -10,6 +11,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 
 const dir = fs.mkdtempSync("/tmp/scr-fsp-watch-queue-");
+process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true }));
 const file = dir + "/a.txt";
 fs.writeFileSync(file, "x");
 
@@ -43,9 +45,48 @@ async function badMaxQueue(value) {
   }
 }
 
+// A burst that fills the queue while the loop body awaits other work: the
+// overflow error must surface on the next wait even though no event arrives
+// afterwards to wake it. The writer fires once, inside the body's delay.
+async function burstWhileBusy() {
+  // The entry the body takes, then a finite burst lands inside the body's
+  // delay: one entry fills the single slot, the next overflows it.
+  setTimeout(() => fs.appendFileSync(file, "b0"), 5);
+  try {
+    for await (const info of fsp.watch(file, { maxQueue: 1, overflow: "error" })) {
+      let written = 0;
+      const burst = setInterval(() => {
+        fs.appendFileSync(file, "b");
+        if (++written === 6) clearInterval(burst);
+      }, 3);
+      await delay(40);
+    }
+    console.log("burst", "no error");
+  } catch (err) {
+    console.log("burst", err.code, err.message);
+  }
+}
+
+// A zero bound with overflow: "ignore" drops every event, and a dropped
+// event must not wake the loop as though it had queued one: nothing is
+// reffed here (persistent: false), so a parked iteration ends the process
+// where a spurious wake would take an empty queue as an entry.
+function droppedEvent() {
+  setTimeout(() => fs.appendFileSync(file, "d"), 10);
+  setTimeout(() => console.log("dropped stayed parked", true), 40);
+  dropped();
+}
+
+async function dropped() {
+  for await (const info of fsp.watch(file, { maxQueue: 0, persistent: false, overflow: "ignore" })) {
+    console.log("dropped woke", info.eventType);
+  }
+}
+
 (async () => {
   await overflowError();
   await badMaxQueue(1.5);
+  await burstWhileBusy();
   // The overflow error ends that iteration; a later watch on the same path
   // still iterates (the queue is per iterator).
   const ticker = setInterval(() => fs.appendFileSync(file, "z"), 10);
@@ -54,5 +95,5 @@ async function badMaxQueue(value) {
     break;
   }
   clearInterval(ticker);
-  fs.rmSync(dir, { recursive: true, force: true });
+  droppedEvent();
 })();

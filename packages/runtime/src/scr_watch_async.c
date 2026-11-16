@@ -106,18 +106,25 @@ static void scr_watch_events_settle(ScrWatchEvents *st, bool ready) {
   scr_closure_release(resolver);
 }
 
-static void scr_watch_events_push(ScrWatchEvents *st, const char *event, const char *filename) {
+static bool scr_watch_events_push(ScrWatchEvents *st, const char *event, const char *filename) {
   /* The bound comes before the growth: a consumer that falls behind cannot
-   * make the queue grow without limit, whatever the writer does. */
+   * make the queue grow without limit, whatever the writer does. False when
+   * the entry was dropped, so the caller does not wake a waiting loop for
+   * an entry it will not find. */
   if ((long)st->n >= st->max_queue) {
     if (st->overflow_error) {
       scr_watch_events_drop_queue(st);
       st->failed = true;
       scr_watch_events_settle(st, true);
     } else {
-      scr_emit_warning("Warning", NULL, scr_str_new("fs.watch maxQueue exceeded", 26));
+      /* Node's process warning for a dropped event; the report borrows the
+       * message, so this unit releases it. */
+      static const char text[] = "fs.watch maxQueue exceeded";
+      ScrStr *message = scr_str_new(text, sizeof text - 1);
+      scr_emit_warning("Warning", NULL, message);
+      scr_str_release(message);
     }
-    return;
+    return false;
   }
   if (st->head + st->n == st->cap) {
     size_t cap = st->cap != 0 ? st->cap * 2 : 8;
@@ -142,6 +149,7 @@ static void scr_watch_events_push(ScrWatchEvents *st, const char *event, const c
   st->names[st->head + st->n] =
       name != NULL ? scr_str_new(name, strlen(name)) : scr_str_retain(st->fallback);
   st->n++;
+  return true;
 }
 
 /* The watcher's change listener (scr_watch.c's ScrWatchFn adapter): queues
@@ -149,8 +157,7 @@ static void scr_watch_events_push(ScrWatchEvents *st, const char *event, const c
 static void scr_watch_events_event(ScrClosure *cb, const char *event, const char *filename) {
   ScrWatchEvents *st = scr_box_get_ref(cb->caps[0]); /* +1 */
   if (st == NULL) return;
-  if (!st->closed) {
-    scr_watch_events_push(st, event, filename);
+  if (!st->closed && scr_watch_events_push(st, event, filename)) {
     scr_watch_events_settle(st, true);
   }
   scr_watch_events_release(st);
@@ -212,8 +219,11 @@ ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent, double max_q
 ScrPromise *scr_watch_events_wait(ScrWatchEvents *st) {
   ScrPromise *p = scr_promise_new();
   ScrClosure *resolver = scr_make_resolve(p, 1 /* bool */);
-  if (st->n > 0 || st->closed) {
-    ((void (*)(ScrClosure *, bool))resolver->fn)(resolver, st->n > 0);
+  /* Ready means there is an entry to take or an overflow error the loop
+   * must see: the burst that filled the queue may have arrived while the
+   * body was awaiting other work, with no waiter to wake then. */
+  if (st->n > 0 || st->closed || st->failed) {
+    ((void (*)(ScrClosure *, bool))resolver->fn)(resolver, st->n > 0 || st->failed);
     scr_closure_release(resolver);
     return p;
   }

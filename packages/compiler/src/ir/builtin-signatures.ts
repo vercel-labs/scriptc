@@ -2680,6 +2680,15 @@ function buildLibFnSignatures() {
     "net.serverMaxRequestsPerSocketGet": { argTypes: [NETSERVER_T], result: DYN },
     "net.serverMaxRequestsPerSocketSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
+    /** headersTimeout's constructor default (min(60000, requestTimeout))
+     * and Node's headersTimeout <= requestTimeout check. MAY THROW. */
+    "http.serverHeadersTimeoutDefault": { argTypes: [NETSERVER_T, BOOL], result: VOID },
+    /** createServer({ connectionsCheckingInterval }): Node's validateInteger
+     * and the stored check interval. MAY THROW. */
+    "http.serverConnectionsCheckingInterval": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    /** createServer({ rejectNonStandardBodyWrites }): body writes on HEAD,
+     * 204 and 304 responses throw ERR_HTTP_BODY_NOT_ALLOWED. */
+    "http.serverRejectNonStandardBodyWrites": { argTypes: [NETSERVER_T, DYN], result: VOID },
     /** server.on("listening", cb) — the deferred listen-callback list. */
     "net.serverOnListening": {
       argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }, BOOL],

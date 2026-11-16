@@ -205,11 +205,25 @@ void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool onc
  * false has its bytes out. */
 void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+/* response.writeInformation(statusCode[, headers][, callback]) — an
+ * arbitrary 1xx response (100..199, 101 refused). */
+void scr_http_res_write_information(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                    const ScrDyn *headers /*borrowed*/,
+                                    ScrClosure *cb /*moves, nullable*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);
 /* createServer({ requireHostHeader: false }): allow HTTP/1.1 without Host. */
 void scr_http_server_allow_missing_host_header(ScrNetServer *s);
+/* createServer({ requestTimeout?, headersTimeout? }): the headersTimeout
+ * default (min(60000, requestTimeout)) and Node's headersTimeout <=
+ * requestTimeout check. MAY THROW. */
+void scr_http_server_headers_timeout_default(ScrNetServer *s, bool headers_given);
+/* createServer({ connectionsCheckingInterval }): Node's validateInteger
+ * ladder over the connection checker's period. MAY THROW. */
+void scr_http_server_connections_checking_interval(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+/* createServer({ rejectNonStandardBodyWrites: true }). */
+void scr_http_server_reject_non_standard_body_writes(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
 void scr_http_handler_thunk0(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk1(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk2(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);

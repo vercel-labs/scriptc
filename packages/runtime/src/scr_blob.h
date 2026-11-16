@@ -18,6 +18,9 @@
 ScrDyn *scr_blob_new(ScrDyn *args);
 ScrDyn *scr_file_new(ScrDyn *args);
 ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
+/* A new Blob handle over an existing handle's bytes and type (each call
+ * answers a distinct object); interned undefined for a non-Blob. */
+ScrDyn *scr_blob_fresh_copy(const ScrDyn *blob); /* +1, or undefined */
 ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);

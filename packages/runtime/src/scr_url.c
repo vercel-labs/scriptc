@@ -2051,6 +2051,48 @@ ScrDyn *scr_url_lookup_object_url(const ScrStr *id) {
   return NULL;
 }
 
+/* buffer.resolveObjectURL(id): Node parses the id as a URL and reads the
+ * registration out of the pathname, which must be exactly "nodedata:<uuid>"
+ * (one colon); the registered Blob comes back as a fresh handle sharing its
+ * bytes and type, and an id that names nothing answers undefined. */
+ScrDyn *scr_buffer_resolve_object_url(ScrStr *id) {
+  ScrUrl *u = url_try_parse(id, NULL);
+  if (!u) return scr_dyn_undefined();
+  const ScrStr *path = u->path;
+  size_t first = SIZE_MAX;
+  for (size_t i = 0; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      first = i;
+      break;
+    }
+  }
+  const size_t base_len = sizeof "nodedata" - 1;
+  if (first != base_len || memcmp(path->data, "nodedata", base_len) != 0) {
+    scr_url_release(u);
+    return scr_dyn_undefined();
+  }
+  for (size_t i = first + 1; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      scr_url_release(u);
+      return scr_dyn_undefined();
+    }
+  }
+  const char *key = path->data + first + 1;
+  size_t key_len = path->len - first - 1;
+  size_t prefix = sizeof "blob:nodedata:" - 1;
+  const ScrDyn *found = NULL;
+  for (const ScrUrlObjectUrl *entry = scr_url_object_urls; entry; entry = entry->next) {
+    if (entry->id->len - prefix == key_len &&
+        memcmp(entry->id->data + prefix, key, key_len) == 0) {
+      found = entry->blob;
+      break;
+    }
+  }
+  scr_url_release(u);
+  if (found == NULL) return scr_dyn_undefined();
+  return scr_blob_fresh_copy(found);
+}
+
 /* URL.revokeObjectURL(id) past the coercion. Node parses the string as a
  * URL and does nothing when that fails, then reads the registration's id
  * out of the pathname: everything after its FIRST colon and before a

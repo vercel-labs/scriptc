@@ -176,6 +176,16 @@ export function lowerBuiltinCall(
   if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
     return lowerBase64Call(lowerer, expr, bi.member, loc);
   }
+  if (bi.module === "buffer" && bi.member === "resolveObjectURL") {
+    // buffer.resolveObjectURL(id): the Blob registered under an object URL's
+    // id, or undefined when nothing is registered under it.
+    const args = expr.arguments.nodes;
+    if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("buffer.resolveObjectURL with this argument shape", expr);
+    }
+    const id = lowerer.lowerExprExpecting(args[0]!, STRING);
+    return { kind: "libCall", fn: "buffer.resolveObjectURL", args: [id], type: DYN, loc };
+  }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
   }

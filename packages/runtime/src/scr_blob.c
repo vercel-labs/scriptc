@@ -456,6 +456,21 @@ static ScrBlob *scr_blob_slice_of(ScrBlob *b, ScrDyn *const *args, size_t argc) 
   return out;
 }
 
+/* A fresh Blob handle over the same bytes and type, as
+ * buffer.resolveObjectURL rebuilds one from its registration: each call
+ * answers a new object, not the registered handle itself. */
+ScrDyn *scr_blob_fresh_copy(const ScrDyn *blob) {
+  ScrBlob *b = scr_blob_of(blob);
+  if (b == NULL) return scr_dyn_undefined();
+  ScrStr *type = scr_str_retain(b->type);
+  ScrDyn *type_value = scr_dyn_new_str(type);
+  scr_str_release(type);
+  ScrDyn *args[3] = { scr_dyn_undefined(), scr_dyn_undefined(), type_value };
+  ScrBlob *out = scr_blob_slice_of(b, args, 3);
+  scr_dyn_release(type_value);
+  return out ? scr_blob_box(out) : NULL;
+}
+
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
   if (b->len) memcpy(bytes->data, b->store->data + b->off, b->len);

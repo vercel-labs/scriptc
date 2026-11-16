@@ -2743,7 +2743,9 @@
           "tests/corpus/buffer-deprecated-members.ts",
           "tests/corpus/buffer-numeric-accessors.ts",
           "tests/corpus/buffer-optional-arguments.ts",
+          "tests/corpus/buffer-resolve-object-url.ts",
           "tests/corpus/buffer-search-offsets.ts",
+          "tests/corpus/buffer-slowbuffer.cjs",
           "tests/corpus/buffer-to-json.ts",
           "tests/corpus/buffer-transcode-ascii-utf8.ts",
           "tests/corpus/compat-buffer-instance-methods.ts",
@@ -2967,13 +2969,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.buffer.SlowBuffer",
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.SlowBuffer",
         "tests": [
-          "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts",
-          "tests/corpus/2902-bigint-bytes.ts",
-          "tests/corpus/2904-bigint-errors.ts"
+          "tests/corpus/buffer-slowbuffer.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -3110,8 +3109,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.buffer.resolveObjectURL",
+        "tests": [
+          "tests/corpus/buffer-resolve-object-url.ts"
+        ]
       },
       "anchorSource": "exact"
     },

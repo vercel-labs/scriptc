@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3763,
+    "matrixRows": 3761,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 126,
+      "not-applicable": 128,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 396,
-      "apiEntries": 396
+      "entries": 394,
+      "apiEntries": 394
     },
     {
       "slug": "events",
@@ -19804,9 +19804,9 @@
       "anchor": "err_http2_invalid_packed_settings_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19840,9 +19840,9 @@
       "anchor": "err_http2_invalid_session",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19858,9 +19858,9 @@
       "anchor": "err_http2_invalid_setting_value",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19910,24 +19910,6 @@
       "depth": 1,
       "scope": "api",
       "anchor": "err_http2_nested_push",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:18c92c1db453",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_no_mem`",
-      "signature": "`ERR_HTTP2_NO_MEM`",
-      "label": "ERR_HTTP2_NO_MEM",
-      "apiSymbol": "ERR_HTTP2_NO_MEM",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_no_mem",
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
@@ -20020,9 +20002,9 @@
       "anchor": "err_http2_ping_cancel",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20038,9 +20020,9 @@
       "anchor": "err_http2_ping_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20288,24 +20270,6 @@
       "depth": 1,
       "scope": "api",
       "anchor": "err_http2_too_many_custom_settings",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:f94974790b37",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_http2_too_many_invalid_frames`",
-      "signature": "`ERR_HTTP2_TOO_MANY_INVALID_FRAMES`",
-      "label": "ERR_HTTP2_TOO_MANY_INVALID_FRAMES",
-      "apiSymbol": "ERR_HTTP2_TOO_MANY_INVALID_FRAMES",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_http2_too_many_invalid_frames",
       "nodeStability": null,
       "static": {
         "status": "not-implemented",

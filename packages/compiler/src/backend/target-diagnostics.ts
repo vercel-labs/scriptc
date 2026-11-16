@@ -281,7 +281,7 @@ export function moduleWasiUnavailableSurface(
   if (moduleUsesWebCryptoAsymmetric(mod)) {
     return {
       surface:
-        "WebCrypto ECDSA and RSA (the wasm32-wasi runtime does not include the mbedTLS library)",
+        "WebCrypto's asymmetric algorithms (the wasm32-wasi runtime does not include the mbedTLS library)",
       loc: entryLoc,
     };
   }

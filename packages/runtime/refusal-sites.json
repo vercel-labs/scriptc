@@ -1243,12 +1243,6 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_function_constructor_call",
-  "message": "constructing functions from source text is not supported in static code",
-  "code": "SC2010"
- },
- {
-  "file": "scr_json.c",
   "function": "scr_fn_inherited_receiver",
   "message": " on a callable that is not a function value is not supported",
   "code": "SC2020"

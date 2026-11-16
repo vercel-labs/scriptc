@@ -109,6 +109,11 @@ struct ScrTestCtx {
   bool started_line; /* the "▶ name" header printed */
   double dur_ms;
   ScrCaught *err;      /* owned; the own-body failure payload */
+  ScrDyn *abort_controller; /* owned; t.signal's controller, made on first read */
+  /* The test finished, timed out or was cancelled: a t.signal read after
+   * that must answer an aborted signal, even though the controller is made
+   * on the first read. */
+  bool signal_aborted;
   ScrStr **diags;      /* owned t.diagnostic strings, printed after the line */
   size_t ndiags, dcap;
   struct ScrTestCtx *parent; /* borrowed back-edge */
@@ -140,6 +145,25 @@ struct ScrTestCtx {
   double start_ms; /* when the test started running; NaN before */
   size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
 };
+
+/* t.signal's abort unit face (scr_abort.c). The compiler links that unit
+ * only for a program that reads a test's signal (the abortSignal runtime
+ * feature), so these declarations are weak: a program without it leaves
+ * them null, and nothing else in the runner touches them. */
+extern ScrDyn *scr_test_abort_controller_new(void) __attribute__((weak));
+extern ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) __attribute__((weak));
+extern void scr_test_abort_controller_abort(ScrDyn *controller) __attribute__((weak));
+
+/* Aborts a test's t.signal when it finished, timed out or was cancelled, as
+ * Node's Test#run does for every non-root test (its hooks see the signal
+ * unaborted). A suite's signal is left unaborted, as Node leaves it. A test
+ * that never read t.signal made no controller. */
+static void scr_test_abort_now(ScrTestCtx *t) {
+  if (!t) return;
+  t->signal_aborted = true;
+  if (t->abort_controller && scr_test_abort_controller_abort)
+    scr_test_abort_controller_abort(t->abort_controller);
+}
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
 /* Where registrations attach: the suite body being collected or the test
@@ -222,6 +246,7 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_caught_release(t->before_err);
   scr_promise_release(t->done);
   scr_promise_release(t->slot);
+  scr_dyn_release(t->abort_controller);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
@@ -448,6 +473,7 @@ static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
     char buf[80];
     int len = snprintf(buf, sizeof buf, "test timed out after %.*sms", (int)n, num);
     t->timed_out = true;
+    scr_test_abort_now(t);
     scr_throw_str(scr_str_new(buf, (size_t)len));
   }
 }
@@ -661,6 +687,7 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
   c->listed = true;
   c->dur_ms = NAN;
   c->state = SCR_TS_CANCELLED;
+  scr_test_abort_now(c);
   scr_test_report_result(c);
 }
 
@@ -732,6 +759,7 @@ static void scr_test_cancel_running(ScrTestCtx *t) {
     c->err = scr_exc_take();
     c->dur_ms = scr_now_ms() - c->start_ms;
     c->state = SCR_TS_CANCELLED;
+    scr_test_abort_now(c);
     scr_test_report_result(c);
     scr_test_mocks_restore(&c->mocks, true);
     scr_mt_reset(c->mock_timers);
@@ -791,6 +819,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_SKIPPED;
     t->passed = true;
+    scr_test_abort_now(t);
     scr_test_report_result(t);
     return;
   }
@@ -822,7 +851,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
                                               : SCR_TS_PASS;
     }
-    /* Node's suite pass() comes after its after hooks. */
+    /* Node's suite pass() comes after its after hooks. A suite's signal is
+     * not aborted when the suite finishes (Node aborts a test's in its
+     * run's finally; a suite's context signal stays unaborted). */
     t->passed = t->state == SCR_TS_PASS || t->state == SCR_TS_TODO_PASS;
     scr_test_report_result(t);
     return;
@@ -911,6 +942,8 @@ static void scr_test_run_node(ScrTestCtx *t) {
    * nothing runs them again: dropping them releases closures that capture
    * the context, which would otherwise keep it alive in a cycle. */
   for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
+  /* Node aborts the test's signal at the end of its run, after its hooks. */
+  scr_test_abort_now(t);
   scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -2787,6 +2820,60 @@ double scr_test_worker_id(void) {
 
 /* t.fullName: the names from the outermost suite or test down to this one,
  * joined with " > "; the root's own name for the root. */
+/* t.signal: the test's AbortSignal, made on the first read and aborted
+ * when the test times out, is cancelled, or finishes (Node's Test#run
+ * aborts its controller in the finally, so hooks see it unaborted). The
+ * abort unit is linked only for a program that reads this member; each
+ * read boxes the same native signal, which is JavaScript identity under
+ * the checked-dynamic handle rule (tag + pointer). +1, or undefined when
+ * the unit is absent. */
+ScrDyn *scr_test_ctx_signal(ScrTestCtx *t) {
+  if (!scr_test_abort_controller_new || !scr_test_abort_controller_signal)
+    return scr_dyn_undefined();
+  if (!t->abort_controller) {
+    t->abort_controller = scr_test_abort_controller_new();
+    /* The test may have finished before anything read its signal: the
+     * controller made now starts aborted then. */
+    if (t->signal_aborted && scr_test_abort_controller_abort)
+      scr_test_abort_controller_abort(t->abort_controller);
+  }
+  return scr_test_abort_controller_signal(t->abort_controller);
+}
+
+/* Node's ERR_TEST_FAILURE message rule: an error's own message, a thrown
+ * string as itself, and any other payload inspected. +1. */
+static ScrStr *scr_test_caught_message(const ScrCaught *err) {
+  if (err->kind == SCR_EXC_STR) return scr_str_retain(err->payload);
+  ScrDyn *value = scr_caught_to_dyn(err);
+  ScrStr *out = NULL;
+  if (value && value->kind == SCR_DYN_OBJ) {
+    const ScrDyn *message = scr_dyn_obj_get(value, "message", 7);
+    if (message && message->kind == SCR_DYN_STR) out = scr_str_retain(message->v.str);
+  }
+  if (!out) out = scr_insp_dyn(value, 0, 2);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* t.error: Node's ERR_TEST_FAILURE wrapper over the test's failure, or
+ * null. Its `cause` is the value the test threw (an Error, a string, or
+ * whatever else), which is how the documented surface reads the original
+ * failure. Node also stamps failureType on the wrapper, which needs the
+ * failure kind the runtime does not keep. +1. */
+ScrDyn *scr_test_ctx_error(ScrTestCtx *t) {
+  if (!t->err) return scr_dyn_new_null();
+  ScrStr *message = scr_test_caught_message(t->err);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(e, "ERR_TEST_FAILURE");
+  ScrDyn *cause = scr_caught_to_dyn(t->err);
+  if (cause) scr_error_set_cause(e, cause);
+  scr_dyn_release(cause);
+  ScrDyn *out = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return out;
+}
+
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
   if (!t->parent) return scr_test_ctx_name(t);
   const ScrTestCtx *chain[64];

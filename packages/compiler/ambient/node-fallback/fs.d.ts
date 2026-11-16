@@ -736,6 +736,11 @@ declare module "node:fs" {
   export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    /* The loop-liveness toggles: a reffed open watcher keeps the process
+     * alive (the default), an unref'd one lets it exit. Node returns the
+     * watcher; the bundle's handles answer void, like dgram's. */
+    ref(): void;
+    unref(): void;
     on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
     on(event: "error", listener: (error: Error) => void): this;
     on(event: "close", listener: () => void): this;
@@ -751,10 +756,11 @@ declare module "node:fs" {
     off(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
     removeListener(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
   }
-  /* The options-record stance (see http.RequestOptions): persistent: true,
-   * recursive: false, and encoding: "utf8" state the lowered behavior and
-   * are accepted; persistent: false, recursive: true, and signal fence by
-   * name at the call site; undocumented keys drop like Node. */
+  /* The options-record stance (see http.RequestOptions): persistent (a
+   * boolean; true is Node's default) is the watcher's initial loop
+   * liveness, recursive: false and encoding: "utf8" state the lowered
+   * behavior and are accepted; recursive: true and signal fence by name at
+   * the call site; undocumented keys drop like Node. */
   export interface WatchOptions {
     persistent?: boolean;
     recursive?: boolean;

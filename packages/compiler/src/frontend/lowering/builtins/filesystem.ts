@@ -1299,12 +1299,11 @@ function watchListenerArity(lowerer: Lowerer, cb: IrExpr): 0 | 1 | 2 | null {
  * null) — the filename is the entry name on a directory watch and the
  * watched file's basename otherwise (Linux inotify names both; a macOS
  * directory watch has no name source until F3). The options record follows the options-record
- * stance: persistent: true, recursive: false, and encoding: "utf8"
- * state the lowered behavior and are accepted; persistent: false
- * (a watcher that does NOT hold the loop), recursive: true (kqueue
- * watches one inode), signal, and non-utf8 encodings fence by name;
- * undocumented keys drop like Node. An open watcher keeps the loop
- * alive until watcher.close(). */
+ * stance: persistent (default true) is the watcher's loop liveness and is
+ * passed through, recursive: false and encoding: "utf8" state the lowered
+ * behavior and are accepted; recursive: true (kqueue watches one inode),
+ * signal, and non-utf8 encodings fence by name; undocumented keys drop
+ * like Node. A reffed watcher keeps the loop alive until watcher.close(). */
 export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
     expr.arguments.nodes.length < 1 ||
@@ -1326,6 +1325,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       "pass the options as an object literal: watch(path, { recursive?, persistent?, encoding? }, listener)",
     );
   }
+  let persistent: IrExpr = boolLit(true, loc);
   if (hasOptions) {
     for (const prop of (expr.arguments.nodes[1] as ts.ObjectLiteralExpression).properties.nodes) {
       if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
@@ -1345,15 +1345,14 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       const key = prop.name.text;
       const init = ts.isPropertyAssignment(prop) ? prop.initializer : null;
       if (key === "persistent") {
-        // true IS the lowering (an open watcher holds the loop) —
-        // stating the default is a no-op; false has no lowering.
-        if (init !== null && init.kind === ts.SyntaxKind.TrueKeyword) continue;
-        lowerer.noLowering(
-          "fs.watch with persistent disabled",
-          prop,
-          "an open watcher keeps the loop alive until close() — that IS the lowering; " +
-            "persistent: false (a watcher the process does not wait for) has no lowering",
-        );
+        // The watcher's initial loop liveness: Node reads the option's
+        // truthiness (an absent one is true), so any expression lowers.
+        const value = init ?? (ts.isShorthandPropertyAssignment(prop) ? prop.name : null);
+        if (value === null) {
+          lowerer.noLowering("fs.watch with this persistent member", prop);
+        }
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
       }
       if (key === "recursive") {
         if (init !== null && init.kind === ts.SyntaxKind.FalseKeyword) continue;
@@ -1385,7 +1384,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
         key,
         "fs.watch",
         FS_WATCH_DOCUMENTED_OPTIONS,
-        'persistent: true, recursive: false, and encoding: "utf8" are the accepted options',
+        'persistent, recursive: false, and encoding: "utf8" are the accepted options',
       );
       // An undocumented key, dropped like Node drops it.
     }
@@ -1410,9 +1409,11 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
     }
     args.push(cb);
   }
+  const hasListener = args.length === 2;
+  args.push(persistent); // fs.watch: [path, persistent]; fs.watchCb: [path, cb, persistent]
   return {
     kind: "libCall",
-    fn: args.length === 2 ? "fs.watchCb" : "fs.watch",
+    fn: hasListener ? "fs.watchCb" : "fs.watch",
     args,
     type: FSWATCHER_T,
     loc,
@@ -1542,11 +1543,12 @@ export function lowerFsWatchFileCall(
 }
 
 /** Method calls on FSWatcher receivers: close() (idempotent, statement
- * position — Node returns void there too) and the EventEmitter surface for
- * 'change', 'error' and 'close' (on/once/addListener/prependListener/
- * prependOnceListener/off/removeListener, registered as their own
- * statement). Everything else @types/node declares (ref/unref, other
- * events) fences member-qualified. Null for non-watcher receivers. */
+ * position — Node returns void there too), ref()/unref() (the loop-liveness
+ * toggle, a statement like the bundle's other handles) and the EventEmitter
+ * surface for 'change', 'error' and 'close' (on/once/addListener/
+ * prependListener/prependOnceListener/off/removeListener, registered as
+ * their own statement). Everything else @types/node declares (other events)
+ * fences member-qualified. Null for non-watcher receivers. */
 export function lowerWatcherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1560,6 +1562,16 @@ export function lowerWatcherMethodCall(
   if (name === "close" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };
+  }
+  if ((name === "ref" || name === "unref") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "watcher.ref" : "watcher.unref",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
   }
   // The EventEmitter surface for the three events the watcher emits:
   // "change" (the listener shapes fs.watch takes), "error", and "close".
@@ -1636,7 +1648,7 @@ export function lowerWatcherMethodCall(
   lowerer.noLowering(
     `FSWatcher.${name}`,
     call,
-    'close(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
+    'close(), ref(), unref(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

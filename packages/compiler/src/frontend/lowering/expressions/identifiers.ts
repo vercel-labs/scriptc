@@ -41,6 +41,9 @@ import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsAbsentMemberValue,
+  cjsDestructuredModuleBindingOf,
+  cjsModuleLacksExport,
   cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
@@ -1419,6 +1422,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
+  // `const { name } = require("./m")` over a member the module's exports
+  // object does not carry: Node copies undefined into the binding.
+  {
+    const destructured = cjsDestructuredModuleBindingOf(lowerer, expr);
+    if (destructured !== null && cjsModuleLacksExport(lowerer, destructured.dep, destructured.key))
+      return cjsAbsentMemberValue(lowerer, expr);
+  }
   // In a `.js` source the read is the global object's own property of that
   // name when the program created one (`globalThis.X = class X {}`, in this
   // module or another), as in Node, and the ReferenceError otherwise.

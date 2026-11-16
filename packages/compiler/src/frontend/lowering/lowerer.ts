@@ -23057,8 +23057,9 @@ export class Lowerer {
       | ts.GetAccessorDeclaration
       | ts.SetAccessorDeclaration,
     checkedReceiver = false,
+    intoDynamicValue = false,
   ): IrExpr {
-    return lowerLambda(this, node, checkedReceiver);
+    return lowerLambda(this, node, checkedReceiver, intoDynamicValue);
   }
 
   lowerArrayMethodCall(

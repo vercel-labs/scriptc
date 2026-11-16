@@ -34,6 +34,52 @@ async function main(): Promise<void> {
   log.push(`aborted destroyed ${destroying.destroyed}`);
   // The reason reaches the writable's 'error' event on the next tick.
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+  // The same abort with no listener on the writable: the adapter consumes the
+  // lifecycle 'error' (Node's eos watcher does) instead of crashing.
+  const silent = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const web3 = Writable.toWeb(silent);
+  await web3.getWriter().abort(new Error("halt")).then(
+    () => log.push("silent abort resolved"),
+    (error: Error) => log.push(`silent abort rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  log.push(`silent destroyed ${silent.destroyed} errored ${silent.errored?.message}`);
+
+  // A failing native write errors the writable; the error is consumed too.
+  const failing = new Writable({
+    write(chunk, encoding, done): void {
+      done(new Error("sink fail"));
+    },
+  });
+  const web4 = Writable.toWeb(failing);
+  await web4.getWriter().write(encoder.encode("x")).then(
+    () => log.push("failed write resolved"),
+    (error: Error) => log.push(`failed write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  log.push(`failed destroyed ${failing.destroyed} errored ${failing.errored?.message}`);
+
+  // A writable with autoDestroy: false finishes without emitting 'close'; the
+  // writer's close still settles at the finish.
+  const lasting = new Writable({
+    autoDestroy: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const web5 = Writable.toWeb(lasting);
+  const writer5 = web5.getWriter();
+  await writer5.write(encoder.encode("q"));
+  await writer5.close().then(
+    () => log.push("no-autodestroy close resolved"),
+    (error: Error) => log.push(`no-autodestroy close rejected ${error.message}`),
+  );
+  log.push(`no-autodestroy finished ${lasting.writableFinished} destroyed ${lasting.destroyed}`);
 }
 
 main().then(() => {

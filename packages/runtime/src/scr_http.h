@@ -89,6 +89,7 @@ ScrDyn *scr_http_req_signal(ScrHttpReq *r);
 /* scr_abort.c installs its AbortController factory when a program links the
  * signal unit (the emitted main calls it). */
 void scr_http_set_abort_factory(ScrDyn *(*fn)(void));
+void scr_http_set_signal_clear(void (*fn)(ScrDyn *));
 bool scr_http_req_complete(ScrHttpReq *r);
 
 /* Registers the httpReq/httpRes handle-dispatch ops (SCR_DYNH_HTTP_REQ /

@@ -759,7 +759,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // http code. A dyn read of `signal` on some other object selects the
     // signal unit alone, with no http to wire.
     emitter.declare(`declare void @scr_http_set_abort_factory(ptr)`);
+    emitter.declare(`declare void @scr_http_set_signal_clear(ptr)`);
     emitter.declare(`declare ptr @scr_fetch_abort_controller_new()`);
+    emitter.declare(`declare void @scr_fetch_abort_controller_clear_listeners(ptr)`);
   }
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
@@ -1566,7 +1568,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesHttpSignal && usesHttp
-      ? [`  call void @scr_http_set_abort_factory(ptr @scr_fetch_abort_controller_new)`]
+      ? [
+          `  call void @scr_http_set_abort_factory(ptr @scr_fetch_abort_controller_new)`,
+          `  call void @scr_http_set_signal_clear(ptr @scr_fetch_abort_controller_clear_listeners)`,
+        ]
       : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),

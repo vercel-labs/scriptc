@@ -287,6 +287,7 @@ long scr_http_live_count(void) { return scr_http_live; }
 #endif
 
 static void scr_http_req_signal_abort(ScrHttpReq *r);
+static void scr_http_req_signal_settle(ScrHttpReq *r);
 
 ScrHttpReq *scr_http_req_retain(ScrHttpReq *r) {
   if (r->rc != SIZE_MAX) r->rc++;
@@ -2963,6 +2964,9 @@ static void scr_http_proto_sweep(void) {
         req->close_emitted = true;
         req->destroyed = true; /* Node: destroyed reads true inside 'close' */
         if (!req->ended) scr_http_req_signal_abort(req);
+        /* the message is settled: it cannot abort again, so an abort
+         * listener that captured it no longer holds it */
+        scr_http_req_signal_settle(req);
         scr_net_fire0_this(&req->close_ls, req, SCR_DYNH_HTTP_REQ);
         scr_net_ls_drop(&req->err_ls);
         scr_net_ls_drop(&req->close_ls);
@@ -5060,7 +5064,23 @@ const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
 typedef ScrDyn *(*ScrHttpAbortFactory)(void);
 static SCR_TL ScrHttpAbortFactory scr_http_abort_factory;
 
+/* The signal unit's listener sweep, wired from %main beside the factory:
+ * scr_http.c names no signal-unit symbol, so http alone links no signal
+ * code. */
+typedef void (*ScrHttpSignalClear)(ScrDyn *controller);
+static SCR_TL ScrHttpSignalClear scr_http_signal_clear;
+
 void scr_http_set_abort_factory(ScrHttpAbortFactory fn) { scr_http_abort_factory = fn; }
+void scr_http_set_signal_clear(ScrHttpSignalClear fn) { scr_http_signal_clear = fn; }
+
+/* A settled message's abort listeners hold the message through whatever
+ * they capture; the message holds the signal. Node's collector reclaims
+ * that cycle, this runtime's cannot see it, so the listeners go when the
+ * message settles — it can never abort after that. */
+static void scr_http_req_signal_settle(ScrHttpReq *r) {
+  if (r->signal == NULL || scr_http_signal_clear == NULL) return;
+  scr_http_signal_clear(r->signal);
+}
 
 static void scr_http_req_signal_abort(ScrHttpReq *r) {
   if (r->signal == NULL) return;
@@ -5069,6 +5089,9 @@ static void scr_http_req_signal_abort(ScrHttpReq *r) {
   ScrDyn *args[1] = {(ScrDyn *)scr_dyn_undefined()};
   ScrDyn *answer = ops->invoke(r->signal->v.handle.ptr, r->signal, "abort", args, 0, "abort");
   if (answer != NULL) scr_dyn_release(answer);
+  /* the abort's dispatch is over: its listeners go with the settled
+   * message (a later addEventListener on the aborted signal never runs) */
+  scr_http_req_signal_settle(r);
 }
 
 ScrDyn *scr_http_req_signal(ScrHttpReq *r) {

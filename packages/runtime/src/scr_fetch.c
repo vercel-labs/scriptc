@@ -700,6 +700,18 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* A settled message's abort listeners go: a listener that captures the
+ * message holds it - and the signal it hangs off - alive forever, a cycle
+ * the collector cannot see. Node reclaims it through its collector; a
+ * message that already settled never aborts, so nothing is lost. */
+void scr_fetch_abort_controller_clear_listeners(ScrDyn *controller) {
+  if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
+      controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)
+    return;
+  SfSignal *s = controller->v.handle.ptr;
+  scr_et_core_drop(&s->core);
+}
+
 /* ── the test runner's t.signal ────────────────────────────────────────
  * The same native signal, exposed to scr_test.c, which reaches these through
  * weak declarations. They live in the fetch unit's shared part so the

@@ -1,4 +1,7 @@
 #include "scr_worker.h"
+/* scr_thread_cpu_user/system: the calling thread's own CPU clock, which
+ * worker.cpuUsage() reports (scr_lib.c). */
+#include "scr_lib.h"
 
 #ifdef SCR_WORKERS
 #include <stdatomic.h>
@@ -66,6 +69,9 @@ struct ScrWorkerThread {
   ScrContextEnv *environment;
   ScrStr *name; /* threadName: immortal copy shared by both threads */
   unsigned capture; /* 1 stdout, 2 stderr: writes go to the parent as events */
+  /* the constructor's resourceLimits (young, old, codeRange, stack), read
+   * back by this thread's own resourceLimits */
+  double limits[4];
   int argc;
   char **argv;
   bool joined;
@@ -240,6 +246,12 @@ void scr_worker_set_stdin_attach(void (*attach)(void)) {
   atomic_store_explicit(&scr_worker_stdin_attach, attach, memory_order_relaxed);
 }
 
+static _Atomic(void (*)(void)) scr_worker_events_attach;
+
+void scr_worker_set_events_attach(void (*attach)(void)) {
+  atomic_store_explicit(&scr_worker_events_attach, attach, memory_order_relaxed);
+}
+
 bool scr_worker_thread_post_stdin(ScrWorkerThread *worker, const void *data, size_t len, bool end) {
   ScrMailEvent *event = scr_worker_event(SCR_WORKER_STDIN, 0, 0, NULL);
   if (!end) {
@@ -255,6 +267,39 @@ bool scr_worker_post_parent(ScrMessage *message) {
   if (!scr_worker_current) { scr_message_free(message); return false; }
   return scr_mailbox_post(scr_worker_current->parent,
     scr_worker_event(SCR_WORKER_MESSAGE, scr_worker_current->id, 0, message));
+}
+
+/* worker.cpuUsage(): the parent asks the worker's thread, which measures
+ * itself and answers. The measure is the thread's own CPU clock, so it
+ * works while another thread's code is running and while the worker blocks:
+ * only a worker that never returns to its event loop leaves the request
+ * queued. */
+bool scr_worker_thread_post_cputime(ScrWorkerThread *worker, int seq) {
+  return scr_mailbox_post(worker->inbox, scr_worker_event(SCR_WORKER_CPUTIME, 0, seq, NULL));
+}
+
+bool scr_worker_post_parent_cputime(int seq, uint64_t user_us, uint64_t system_us) {
+  if (!scr_worker_current) return false;
+  ScrMailEvent *event = scr_worker_event(SCR_WORKER_CPUTIME_RESULT, scr_worker_current->id, seq, NULL);
+  uint64_t values[2] = {user_us, system_us};
+  event->data = malloc(sizeof values);
+  if (!event->data) scr_trap("scriptc: out of memory\n");
+  memcpy(event->data, values, sizeof values);
+  event->length = sizeof values;
+  return scr_mailbox_post(scr_worker_current->parent, event);
+}
+
+bool scr_worker_thread_current_limits(double out[4]) {
+  if (!scr_worker_current) return false;
+  for (int i = 0; i < 4; i++) out[i] = scr_worker_current->limits[i];
+  return true;
+}
+
+void scr_worker_thread_cpu_usage(uint64_t *user_us, uint64_t *system_us) {
+  double user = scr_thread_cpu_user();
+  double system = scr_thread_cpu_system();
+  *user_us = user > 0 ? (uint64_t)user : 0;
+  *system_us = system > 0 ? (uint64_t)system : 0;
 }
 
 /* The stdout and stderr options: a captured write reaches the parent's
@@ -319,6 +364,11 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_env_enter(worker->environment);
   worker->environment = NULL;
   scr_worker_current = worker;
+  /* The inbox is watched from the first loop pass: worker.cpuUsage() is
+   * answered by this thread even when its script never names
+   * worker_threads. */
+  void (*events_attach)(void) = atomic_load_explicit(&scr_worker_events_attach, memory_order_relaxed);
+  if (events_attach) events_attach();
   scr_context_report_error = scr_worker_report_error;
   if (worker->capture & 3) scr_stdio_capture = scr_worker_capture;
   if (worker->capture & 4) {
@@ -377,9 +427,9 @@ static void *scr_worker_thread_main(void *data) {
 ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
-                                        size_t stack_size, const ScrStr *name,
-                                        unsigned capture, ScrContextEnv *environment,
-                                        bool share_environment) {
+                                        size_t stack_size, const double limits[4],
+                                        const ScrStr *name, unsigned capture,
+                                        ScrContextEnv *environment, bool share_environment) {
   ScrWorkerThread *worker = calloc(1, sizeof(*worker));
   if (!worker) scr_trap("scriptc: out of memory\n");
   atomic_init(&worker->references, 2); /* owner and native thread */
@@ -397,6 +447,7 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   worker->data = data;
   worker->environment_data = environment_data;
   worker->capture = capture;
+  for (int i = 0; i < 4; i++) worker->limits[i] = limits ? limits[i] : 0;
   /* SHARE_ENV shares the environment of the thread that creates the worker,
    * not the process environment: a worker with its own env option shares
    * that one with its children (and is NULL, the process environment, only

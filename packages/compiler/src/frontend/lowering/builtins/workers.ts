@@ -71,13 +71,12 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
 }
 
 /** The checks every Worker construction shares: an island a worker thread
- * may not reach (SC8012), the targets that cannot host a thread, foreign
- * native callbacks, and the V8 heap fields the runtime refuses. */
+ * may not reach (SC8012), the targets that cannot host a thread, and foreign
+ * native callbacks. */
 function refuseWorkerShape(
   lowerer: Lowerer,
   expression: ts.NewExpression,
   entryPaths: readonly string[],
-  args: readonly ts.Expression[],
 ): void {
   if (lowerer.nodeIslands !== null) {
     for (const path of entryPaths)
@@ -104,7 +103,6 @@ function refuseWorkerShape(
       "native callbacks in worker executables must run on their owning script thread",
     );
   }
-  refuseHeapLimits(lowerer, args[1]);
 }
 
 /** The worker root a compiled entry path names, or undefined when the path
@@ -152,7 +150,7 @@ function lowerStaticWorkerNew(
       "the worker entry must resolve to a statically compiled source file",
     );
   }
-  refuseWorkerShape(lowerer, expression, [path], args);
+  refuseWorkerShape(lowerer, expression, [path]);
   lowerer.usesWorkers = true;
   const loc = locOf(expression);
   const options = args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : workerUndefinedOptions(loc);
@@ -200,7 +198,6 @@ function lowerBoundedWorkerNew(
     lowerer,
     expression,
     arms.map((arm) => arm.path),
-    args,
   );
   lowerer.usesWorkers = true;
   const loc = locOf(expression);
@@ -335,35 +332,6 @@ function capturesStdio(options: ts.Expression | undefined): boolean {
       ts.isPropertyAssignment(option) && option.initializer.kind === ts.SyntaxKind.FalseKeyword
     );
   });
-}
-
-const HEAP_LIMITS = new Set([
-  "maxOldGenerationSizeMb",
-  "maxYoungGenerationSizeMb",
-  "codeRangeSizeMb",
-]);
-
-/** resourceLimits' V8 heap fields, when an options literal spells them
- * with numbers (Node ignores other values; the runtime refuses the rest). */
-function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
-  if (!options || !ts.isObjectLiteralExpression(options)) return;
-  for (const option of options.properties.nodes) {
-    if (!ts.isPropertyAssignment(option) || propertyNameText(option.name) !== "resourceLimits")
-      continue;
-    if (!ts.isObjectLiteralExpression(option.initializer)) continue;
-    for (const limit of option.initializer.properties.nodes) {
-      if (!ts.isPropertyAssignment(limit)) continue;
-      const name = propertyNameText(limit.name);
-      if (name === undefined || !HEAP_LIMITS.has(name)) continue;
-      const type = lowerer.checker.getTypeAtLocation(limit.initializer);
-      if (!(type.flags & ts.TypeFlags.NumberLike)) continue;
-      lowerer.noLowering(
-        `Worker resourceLimits.${name}`,
-        limit,
-        "worker threads have no separate V8 heap; resourceLimits supports stackSizeMb",
-      );
-    }
-  }
 }
 
 function propertyNameText(name: ts.PropertyName): string | undefined {

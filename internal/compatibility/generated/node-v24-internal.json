@@ -121139,7 +121139,10 @@
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-cpu-usage-quiet/main.ts",
+          "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-resource-limits-echo.ts",
           "tests/corpus/worker-share-env.ts"
         ]
       },
@@ -121793,8 +121796,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.worker.cpuUsage",
+        "tests": [
+          "tests/corpus/worker-cpu-usage.ts",
+          "tests/corpus/worker-cpu-usage-quiet/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -122090,10 +122097,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:worker_threads.resourceLimits",
         "tests": [
-          "tests/corpus/5806-worker-resource-limits.ts"
+          "tests/corpus/5806-worker-resource-limits.ts",
+          "tests/corpus/worker-resource-limits-echo.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122689,10 +122697,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:worker_threads.resourceLimits",
         "tests": [
-          "tests/corpus/5806-worker-resource-limits.ts"
+          "tests/corpus/5806-worker-resource-limits.ts",
+          "tests/corpus/worker-resource-limits-echo.ts"
         ]
       },
       "anchorSource": "chapter"

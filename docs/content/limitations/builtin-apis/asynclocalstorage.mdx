@@ -10,3 +10,5 @@
   A client `http2` session's events see the context of its `http2.connect()` call, and a client stream's events the context of its `request()` call.
   An `http2` server's `'session'` and `'stream'` events and the compatibility API's request handler see the context of its `listen()` call; a server stream's own events, and its compatibility request's and response's, run with no store, as in Node.
   `AsyncResource` has no lowering yet.
+  `async_hooks.createHook` reports init, before, after, destroy and promiseResolve for timers, immediates, next ticks and promises, and `executionAsyncId`/`triggerAsyncId` answer those executions' ids.
+  A hook's `resource` is a plain object, an await of a non-promise value still reports the enclosing execution's ids, and `executionAsyncResource` has no value to answer.

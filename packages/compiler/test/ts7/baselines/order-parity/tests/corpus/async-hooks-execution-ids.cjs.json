@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/async-hooks-execution-ids.cjs"
+ ],
+ "diags": []
+}

@@ -1,6 +1,7 @@
 import { lowerFileUrlCall, lowerLegacyUrlCall } from "./url.js";
 import { lowerReadlineCreateCall } from "./readline.js";
 import { lowerDiagnosticsChannelCall } from "./async-context.js";
+import { lowerAsyncHooksCall } from "./async-hooks.js";
 import { lowerTimersPromisesCall } from "./timers.js";
 import {
   lowerFsCallbackCall,
@@ -295,6 +296,10 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "diagnostics_channel") {
     const lowered = lowerDiagnosticsChannelCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  if (bi.module === "async_hooks") {
+    const lowered = lowerAsyncHooksCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
   if (

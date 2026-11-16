@@ -66,6 +66,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The AsyncHook flips and the execution-id reads touch the core's own
+  // thread-local state; no program code runs and nothing raises.
+  "ah.disable",
+  "ah.enable",
+  "ah.providers",
+  "ah.executionId",
+  "ah.triggerId",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
   // counter; neither runs program code.
   "perf.loopExit",

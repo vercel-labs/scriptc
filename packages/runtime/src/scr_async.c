@@ -441,8 +441,14 @@ static void scr_promise_trace(void *o, ScrTraceVisit visit, void *ctx) {
 /* Teardown for the collector: release the payload only when the trace does
  * NOT visit it (the complement — see the contract in scr_runtime.h). The
  * cb destinations are always visited, so only the array frees here. */
+/* node:async_hooks PROMISE resources (defined with the hook core below). */
+static void scr_async_prom_init(ScrPromise *p);
+static void scr_async_prom_settled(ScrPromise *p);
+static void scr_async_prom_dropped(ScrPromise *p);
+
 static void scr_promise_gcfree(void *o) {
   ScrPromise *p = (ScrPromise *)o;
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_dropped(p);
   if (p->payload_kind == SCR_EXC_STR) {
     scr_str_release((ScrStr *)p->payload);
   } else if ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
@@ -472,6 +478,7 @@ ScrPromise *scr_promise_new(void) {
 #ifdef SCR_RC_AUDIT
   scr_live_promises++;
 #endif
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_init(p);
   return p;
 }
 
@@ -918,6 +925,218 @@ struct ScrFiber {
 #endif
 };
 
+/* ── node:async_hooks execution ids and hooks (scr_async.h) ──────────
+ * One execution-id pair and one NULL hook table, kept in the always-linked
+ * core. Nothing here allocates while the table is NULL; the gated dyn-async
+ * unit installs it (and the createHook callbacks) when the IR uses
+ * async_hooks, which is what starts id allocation too. */
+SCR_TL const ScrAsyncHookOps *scr_async_hook_ops = NULL;
+typedef struct {
+  double id;
+  double trigger;
+} ScrAsyncExecState;
+typedef struct {
+  double id;
+  double trigger;
+} ScrAsyncIds;
+static SCR_TL double scr_async_id_counter = 1;
+static SCR_TL double scr_async_exec_id_value = 1;
+static SCR_TL double scr_async_exec_trigger_value = 0;
+
+static double scr_async_next_id(void) { return ++scr_async_id_counter; }
+
+double scr_async_execution_id(void) { return scr_async_exec_id_value; }
+
+double scr_async_execution_trigger(void) { return scr_async_exec_trigger_value; }
+
+static ScrAsyncExecState scr_async_exec_enter(double id, double trigger) {
+  ScrAsyncExecState prev;
+  prev.id = scr_async_exec_id_value;
+  prev.trigger = scr_async_exec_trigger_value;
+  scr_async_exec_id_value = id;
+  scr_async_exec_trigger_value = trigger;
+  return prev;
+}
+
+static void scr_async_exec_leave(ScrAsyncExecState prev) {
+  scr_async_exec_id_value = prev.id;
+  scr_async_exec_trigger_value = prev.trigger;
+}
+
+static ScrAsyncIds *scr_async_track(const char *type, size_t type_len) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return NULL;
+  ScrAsyncIds *ids = malloc(sizeof *ids);
+  if (ids == NULL) {
+    fputs("scriptc: out of memory\n", stderr);
+    abort();
+  }
+  ids->id = scr_async_next_id();
+  ids->trigger = scr_async_exec_id_value;
+  if (ops->init != NULL) {
+    ScrDyn *resource = scr_dyn_new_obj(); /* the runtime's kinds carry no object */
+    ops->init(ids->id, type, type_len, ids->trigger, resource);
+    scr_dyn_release(resource);
+  }
+  return ids;
+}
+
+static ScrAsyncExecState scr_async_fire_begin(ScrAsyncIds *ids) {
+  ScrAsyncExecState prev = {0, 0};
+  if (ids == NULL) return prev;
+  prev = scr_async_exec_enter(ids->id, ids->trigger);
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->before != NULL) ops->before(ids->id);
+  return prev;
+}
+
+static void scr_async_fire_end(ScrAsyncIds *ids, ScrAsyncExecState prev, bool destroy) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+  if (destroy && ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
+static void scr_async_fire_end_keep(ScrAsyncIds *ids, ScrAsyncExecState prev) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+}
+
+static void scr_async_fire_cancel(ScrAsyncIds *ids) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
+/* ── PROMISE resources of node:async_hooks ────────────────────────────
+ * Promises are the most numerous async resource, so their ids live in a
+ * side table keyed by the promise pointer: a program that does not use
+ * async_hooks pays one NULL test at creation, settlement and release, and
+ * allocates nothing. The table opens only when the hook table is
+ * installed, and ids are reported as Node's: init at creation with the
+ * creating execution as the trigger, promiseResolve once at settlement. */
+typedef struct {
+  ScrPromise *key; /* NULL empty, SCR_PROM_TOMBSTONE deleted */
+  double id;
+  double trigger;
+  bool resolved;
+} ScrAsyncPromEntry;
+#define SCR_PROM_TOMBSTONE ((ScrPromise *)(uintptr_t)1)
+static SCR_TL ScrAsyncPromEntry *scr_async_proms = NULL;
+static SCR_TL size_t scr_async_proms_cap = 0, scr_async_proms_len = 0;
+
+static size_t scr_async_prom_home(const ScrPromise *p) {
+  uint64_t h = (uint64_t)(uintptr_t)p * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(h >> 32) & (scr_async_proms_cap - 1);
+}
+
+static void scr_async_prom_teardown(void) {
+  free(scr_async_proms);
+  scr_async_proms = NULL;
+  scr_async_proms_cap = scr_async_proms_len = 0;
+}
+
+static ScrAsyncPromEntry *scr_async_prom_find(const ScrPromise *p) {
+  if (scr_async_proms_cap == 0) return NULL;
+  for (size_t i = scr_async_prom_home(p);; i = (i + 1) & (scr_async_proms_cap - 1)) {
+    ScrAsyncPromEntry *e = &scr_async_proms[i];
+    if (e->key == p) return e;
+    if (e->key == NULL) return NULL;
+  }
+}
+
+static void scr_async_prom_insert(ScrPromise *p, double id, double trigger) {
+  if ((scr_async_proms_len + 1) * 4 >= scr_async_proms_cap * 3) {
+    size_t cap = scr_async_proms_cap ? scr_async_proms_cap * 2 : 64;
+    ScrAsyncPromEntry *grown = calloc(cap, sizeof *grown);
+    if (!grown) scr_oom();
+    for (size_t i = 0; i < scr_async_proms_cap; i++) {
+      ScrAsyncPromEntry *old = &scr_async_proms[i];
+      if (old->key == NULL || old->key == SCR_PROM_TOMBSTONE) continue;
+      size_t at = scr_async_prom_home(old->key);
+      while (grown[at].key != NULL) at = (at + 1) & (cap - 1);
+      grown[at] = *old;
+    }
+    free(scr_async_proms);
+    scr_async_proms = grown;
+    scr_async_proms_cap = cap;
+    if (scr_async_proms_len == 0 && scr_async_proms_cap != 0) scr_atexit(scr_async_prom_teardown);
+  }
+  size_t at = scr_async_prom_home(p);
+  while (scr_async_proms[at].key != NULL && scr_async_proms[at].key != SCR_PROM_TOMBSTONE)
+    at = (at + 1) & (scr_async_proms_cap - 1);
+  scr_async_proms[at].key = p;
+  scr_async_proms[at].id = id;
+  scr_async_proms[at].trigger = trigger;
+  scr_async_proms[at].resolved = false;
+  scr_async_proms_len++;
+}
+
+static void scr_async_prom_init(ScrPromise *p) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return;
+  double id = scr_async_next_id();
+  double trigger = scr_async_exec_id_value;
+  scr_async_prom_insert(p, id, trigger);
+  if (ops->init != NULL) {
+    ScrDyn *resource = scr_dyn_new_obj();
+    ops->init(id, "PROMISE", 7, trigger, resource);
+    scr_dyn_release(resource);
+  }
+}
+
+static void scr_async_prom_settled(ScrPromise *p) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL || e->resolved) return;
+  e->resolved = true;
+  if (ops->promise_resolve != NULL) ops->promise_resolve(e->id);
+}
+
+/* The execution pair a promise resource's callbacks run under: entered
+ * around the reaction job or the fiber resume a settlement wakes, so
+ * executionAsyncId() inside an awaited continuation is the promise's id,
+ * as in Node. */
+typedef struct {
+  ScrAsyncExecState prev;
+  double id;
+  bool tracked;
+} ScrAsyncPromScope;
+
+static ScrAsyncPromScope scr_async_prom_scope_enter(ScrPromise *p) {
+  ScrAsyncPromScope scope = {{0, 0}, 0, false};
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return scope;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL) return scope;
+  scope.prev = scr_async_exec_enter(e->id, e->trigger);
+  scope.id = e->id;
+  scope.tracked = true;
+  if (ops->before != NULL) ops->before(e->id);
+  return scope;
+}
+
+static void scr_async_prom_scope_leave(ScrAsyncPromScope scope) {
+  if (!scope.tracked) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(scope.id);
+  scr_async_exec_leave(scope.prev);
+}
+
+static void scr_async_prom_dropped(ScrPromise *p) {
+  if (scr_async_hook_ops == NULL) return;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL) return;
+  e->key = SCR_PROM_TOMBSTONE;
+  if (scr_async_proms_len > 0) scr_async_proms_len--;
+}
+
 /* ── AsyncLocalStorage (node:async_hooks) ─────────────────────────────
  * Stores are process-lived ids; the CONTEXT is an immutable refcounted
  * snapshot of (store id → dyn value) entries. One ACTIVE SLOT pointer
@@ -1257,6 +1476,7 @@ typedef struct {
   unsigned long id;
   bool reffed;     /* keeps the loop alive; unref() clears it (Node semantics) */
   double delay_ms; /* the original delay — refresh() re-arms to now + this */
+  ScrAsyncIds *async_ids; /* NULL unless async_hooks tracks; intervals keep it */
 } ScrTimer;
 
 static SCR_TL ScrTimer *scr_timers = NULL;
@@ -1536,7 +1756,8 @@ double scr_timer_user_delay(double after, double kind) {
 
 void scr_set_timeout(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, 0, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, 0, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
 }
 
@@ -1615,7 +1836,8 @@ static void scr_timer_remove_at(size_t i) {
 double scr_set_interval(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms); /* Node's clamp-and-trunc, like setTimeout */
   unsigned long id = scr_interval_next_id++;
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, ms, id, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, ms, id, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
   return (double)id;
 }
@@ -1626,7 +1848,8 @@ SCR_TL int scr_mt_wait_state = 0;
 double scr_set_timeout_handle(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
   unsigned long id = scr_interval_next_id++;
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, id, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, id, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
   return (double)id;
 }
@@ -1766,6 +1989,7 @@ typedef struct ScrNtick {
   ScrClosure *cb;             /* owned; NULL for a raw C-hook entry */
   ScrFsRenameFn error_cb;     /* process-write success adapter, or NULL */
   void (*raw)(void);          /* hook when cb == NULL (stream markers) */
+  ScrAsyncIds *async_ids;     /* NULL unless async_hooks tracks */
   struct ScrNtick *next;
 } ScrNtick;
 
@@ -1788,6 +2012,7 @@ void scr_next_tick(ScrClosure *cb /*moves*/) {
   ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = scr_als_bind(cb);
+  t->async_ids = scr_async_track("TickObject", 10);
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) {
     scr_hosted_tick(t);
@@ -1861,6 +2086,7 @@ void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
     ScrNtick *t = scr_nt_head;
     scr_nt_head = t->next;
+    scr_async_fire_cancel(t->async_ids);
     if (t->cb) scr_closure_release(t->cb);
     scr_mem_free(t);
   }
@@ -1897,6 +2123,7 @@ void scr_clear_interval(double handle) {
 #endif
   ScrTimer *found = scr_timer_find(id);
   if (found) {
+    scr_async_fire_cancel(found->async_ids);
     scr_closure_release(found->cb);
     scr_timer_remove_at((size_t)(found - scr_timers));
   }
@@ -1916,6 +2143,7 @@ typedef struct {
   unsigned long id;
   ScrClosure *cb; /* owned; NULL once fired or cleared */
   bool reffed;    /* keeps the loop alive; unref() clears it (Node semantics) */
+  ScrAsyncIds *async_ids; /* NULL unless async_hooks tracks */
 } ScrImmediate;
 
 static SCR_TL ScrImmediate *scr_immediates = NULL;
@@ -1938,6 +2166,7 @@ double scr_set_immediate(ScrClosure *cb) {
   scr_immediates[scr_nimmediates].id = id;
   scr_immediates[scr_nimmediates].cb = cb; /* ownership moves in */
   scr_immediates[scr_nimmediates].reffed = true;
+  scr_immediates[scr_nimmediates].async_ids = scr_async_track("Immediate", 9);
   scr_nimmediates++;
   scr_pending_immediates++;
   scr_reffed_immediates++;
@@ -1966,6 +2195,8 @@ void scr_clear_immediate(double handle) {
 #endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im == NULL) return; /* already fired/cleared: no-op, like Node */
+  scr_async_fire_cancel(im->async_ids);
+  im->async_ids = NULL;
   scr_closure_release(im->cb);
   im->cb = NULL;
   if (scr_pending_immediates > 0) scr_pending_immediates--;
@@ -2294,6 +2525,9 @@ static inline void scr_promise_wake_one(ScrFiber *f) {
 /* Runs one callback waiter against its settled source and drops the
  * waiter's references (its destination and countdown state). */
 static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  bool async_tracked = __builtin_expect(scr_async_hook_ops != NULL, 0);
+  ScrAsyncPromScope async_scope;
+  if (async_tracked) async_scope = scr_async_prom_scope_enter(src);
   if (SCR_PROMISE_IS_REACTION(cb)) {
     scr_promise_reaction_run(cb, src);
     return;
@@ -2311,6 +2545,7 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
     scr_promise_settle_from(cb->dst, src);
   }
   scr_promise_release(cb->dst);
+  if (async_tracked) scr_async_prom_scope_leave(async_scope);
 }
 
 /* Queues a combinator's reaction job for a settled entry. The waiter's
@@ -2412,10 +2647,26 @@ static void scr_promise_settle_wake_cbs(ScrPromise *p) {
   for (size_t i = 0; i < ncbs; i++) {
     const struct ScrPromiseCbWaiter *cb = &cbs[i];
     if (cb->job_at == SCR_CB_SYNC) continue;
-    for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+      for (; w < cb->job_at && w < p->nwaiters; w++) {
+        ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+        scr_promise_wake_one(p->waiters[w]);
+        scr_async_prom_scope_leave(async_scope);
+      }
+    } else {
+      for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+    }
     scr_promise_cb_queue(cb, p);
   }
-  for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+    for (; w < p->nwaiters; w++) {
+      ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+      scr_promise_wake_one(p->waiters[w]);
+      scr_async_prom_scope_leave(async_scope);
+    }
+  } else {
+    for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+  }
   p->nwaiters = 0;
   for (size_t i = 0; i < ncbs; i++) {
     if (cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&cbs[i], p);
@@ -2426,10 +2677,19 @@ static void scr_promise_settle_wake_cbs(ScrPromise *p) {
 /* Settle helpers wake waiters into the microtask queue and dispatch the
  * callback waiters. */
 static void scr_promise_settle_wake(ScrPromise *p) {
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_settled(p);
   if (p->ncbs != 0) {
     scr_promise_settle_wake_cbs(p);
   } else {
-    for (size_t i = 0; i < p->nwaiters; i++) scr_promise_wake_one(p->waiters[i]);
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+      for (size_t i = 0; i < p->nwaiters; i++) {
+        ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+        scr_promise_wake_one(p->waiters[i]);
+        scr_async_prom_scope_leave(async_scope);
+      }
+    } else {
+      for (size_t i = 0; i < p->nwaiters; i++) scr_promise_wake_one(p->waiters[i]);
+    }
     p->nwaiters = 0;
   }
   if (p->state == SCR_PROM_REJECTED) scr_track_rejection(p);
@@ -3388,7 +3648,14 @@ static void scr_direct_finish(ScrFiber *self) {
   if (p->state == SCR_PROM_PENDING)
     scr_trap("scriptc: internal error: directly awaited body finished unsettled\n");
   self->done = true;
-  if (self->direct_awaiter != NULL) scr_promise_wake_one(self->direct_awaiter);
+  if (self->direct_awaiter != NULL) {
+    ScrAsyncPromScope async_scope;
+    bool async_tracked =
+        __builtin_expect(scr_async_hook_ops != NULL, 0) && self->promise != NULL;
+    if (async_tracked) async_scope = scr_async_prom_scope_enter(self->promise);
+    scr_promise_wake_one(self->direct_awaiter);
+    if (async_tracked) scr_async_prom_scope_leave(async_scope);
+  }
 }
 
 void scr_coro_async_finish(ScrFiber *self) {
@@ -6547,10 +6814,13 @@ static bool scr_loop_run_ticks(void) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
+    ScrAsyncIds *async_ids = t->async_ids;
     scr_mem_free(t);
     if (cb) {
+      ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);
+      scr_async_fire_end(async_ids, async_prev, true);
       scr_closure_release(cb);
     } else {
       raw(); /* one stream tick, FIFO with the user ticks around it */
@@ -7109,7 +7379,15 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_firing_refresh = false;
       }
       double started = t.id != 0 && t.repeat_ms > 0 ? scr_now_ms() : 0;
+      ScrAsyncExecState async_prev = scr_async_fire_begin(t.async_ids);
       ((void (*)(ScrClosure *))t.cb->fn)(t.cb);
+      if ((t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) ||
+          (t.id != 0 && scr_firing_refresh && !scr_firing_cleared)) {
+        /* The entry re-arms and keeps its resource. */
+        scr_async_fire_end_keep(t.async_ids, async_prev);
+      } else {
+        scr_async_fire_end(t.async_ids, async_prev, true);
+      }
       if (t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) {
         /* Re-arm relative to the time the callback started, as Node's
          * listOnTimeout does (getLibuvNow() before _onTimeout): a slow
@@ -7117,13 +7395,15 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
          * One slower than the interval makes the next tick due on the next
          * turn, without catch-up bursts. The ref state carries across
          * ticks (a self-unref'd interval stays unref'd). */
-        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
+        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id,
+                          scr_firing_reffed, t.delay_ms, t.async_ids};
         scr_timer_push(again);
       } else if (t.id != 0 && scr_firing_refresh && !scr_firing_cleared) {
         /* refresh() from inside the one-shot's own callback: re-arm to
          * now + the original delay, ref state carried (Node's
          * Timeout.refresh — the timer fires again). */
-        ScrTimer again = {scr_now_ms() + t.delay_ms, scr_timer_seq++, t.cb, 0, t.id, scr_firing_reffed, t.delay_ms};
+        ScrTimer again = {scr_now_ms() + t.delay_ms, scr_timer_seq++, t.cb, 0, t.id,
+                          scr_firing_reffed, t.delay_ms, t.async_ids};
         scr_timer_push(again);
       } else {
         scr_closure_release(t.cb);
@@ -7176,7 +7456,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           if (scr_reffed_immediates > 0) scr_reffed_immediates--;
         }
         scr_immediate_firing = scr_immediates[i].id;
+        ScrAsyncIds *async_ids = scr_immediates[i].async_ids; /* one-shot */
+        scr_immediates[i].async_ids = NULL;
+        ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
         ((void (*)(ScrClosure *))cb->fn)(cb);
+        scr_async_fire_end(async_ids, async_prev, true);
         scr_immediate_firing = 0;
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */

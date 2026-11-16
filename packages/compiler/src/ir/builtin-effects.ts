@@ -353,6 +353,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
   // non-function subscribers.
+  // async_hooks.createHook validates its callbacks (ERR_ASYNC_CALLBACK).
+  "ah.createHook",
+  "ah.createHookParts",
   "dc.publish",
   "dc.subscribe",
   "dc.unsubscribe",

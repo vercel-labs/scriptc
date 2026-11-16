@@ -2051,7 +2051,7 @@
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -2212,8 +2212,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.AsyncHook",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2258,8 +2261,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.init",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2281,8 +2287,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.type",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2304,8 +2313,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.triggerAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2327,8 +2339,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.resource",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2374,9 +2389,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:before",
+        "evidence": "compiler-feature:async_hooks.before",
         "tests": [
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2400,9 +2415,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:after",
+        "evidence": "compiler-feature:async_hooks.after",
         "tests": [
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2425,8 +2440,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.destroy",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2448,8 +2466,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.promiseResolve",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2471,8 +2492,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.asyncHook.enable",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2494,8 +2518,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.asyncHook.disable",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2540,8 +2567,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.executionAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2563,8 +2593,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.triggerAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2586,8 +2619,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:async_hooks.asyncWrapProviders",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -2649,8 +2685,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.createHook",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34497,6 +34536,7 @@
           "tests/corpus/8167-encrypted-private-keys.cjs",
           "tests/corpus/8179-tls-reject-unauthorized-values.mjs",
           "tests/corpus/8210-require-computed-missing/main.ts",
+          "tests/corpus/async-hooks-execution-ids.cjs",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-capture-stack-trace.mjs",
           "tests/corpus/compat-error-classes.cjs",
@@ -35323,8 +35363,11 @@
       "anchor": "err_async_callback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_ASYNC_CALLBACK"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_ASYNC_CALLBACK",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

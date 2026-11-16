@@ -512,6 +512,16 @@ function dynamicPrototypeMemberValue(
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
   const before = lowerer.diags.length;
+  // The member is lowered a second time, over a dynamic receiver. A statement
+  // in its body that refuses that receiver (a typed field read used where the
+  // checker requires its static type, a collection key) fences at run time
+  // like any other statement of the attempt, and its diagnostic is not the
+  // program's: the member's own lowering at its declaration reports what that
+  // source refuses. Recording it would fail a build over a view the source
+  // never asked for (getPrototypeOf over an untyped value builds one for every
+  // class).
+  const held = lowerer.diagSink;
+  lowerer.diagSink = [];
   try {
     return lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
   } catch (error) {
@@ -519,9 +529,10 @@ function dynamicPrototypeMemberValue(
     // for one) falls back to the compiled receiver-checked wrapper; the
     // attempt's own diagnostic must not fail the build.
     if (!(error instanceof PoisonError)) throw error;
-    lowerer.diags.splice(before);
     return null;
   } finally {
+    lowerer.diagSink = held;
+    lowerer.diags.splice(before);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }

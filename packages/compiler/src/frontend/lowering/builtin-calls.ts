@@ -176,6 +176,20 @@ export function lowerBuiltinCall(
   if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
     return lowerBase64Call(lowerer, expr, bi.member, loc);
   }
+  if (bi.module === "buffer" && bi.member === "resolveObjectURL") {
+    // buffer.resolveObjectURL(id): the Blob registered under an object URL's
+    // id, or undefined when nothing is registered under it. Node coerces the
+    // argument with the template-literal ToString, so any value is boxed and
+    // the runtime converts it — a symbol throws there, as Node's does.
+    const args = expr.arguments.nodes;
+    if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("buffer.resolveObjectURL with this argument shape", expr);
+    }
+    const value = lowerer.lowerExpr(args[0]!);
+    const id: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    return { kind: "libCall", fn: "buffer.resolveObjectURL", args: [id], type: DYN, loc };
+  }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
   }

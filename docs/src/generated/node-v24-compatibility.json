@@ -2020,8 +2020,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -2135,9 +2135,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38201,9 +38201,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38270,9 +38270,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38340,7 +38340,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -38501,7 +38501,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -38523,9 +38523,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38547,7 +38547,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -38569,9 +38569,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38616,7 +38616,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74651,8 +74651,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74674,8 +74674,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74881,8 +74881,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74904,8 +74904,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74927,8 +74927,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74950,8 +74950,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74973,8 +74973,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -74996,8 +74996,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75019,8 +75019,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75042,8 +75042,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75065,8 +75065,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75088,8 +75088,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75111,8 +75111,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75134,8 +75134,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -75157,8 +75157,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76054,8 +76054,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76100,8 +76100,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76123,8 +76123,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76146,8 +76146,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76169,8 +76169,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76215,8 +76215,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76238,8 +76238,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76261,8 +76261,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76307,8 +76307,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76330,8 +76330,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76353,8 +76353,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76399,8 +76399,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76422,8 +76422,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76445,8 +76445,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76468,8 +76468,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76882,8 +76882,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76928,8 +76928,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76951,8 +76951,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -76974,8 +76974,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77066,8 +77066,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77112,8 +77112,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77135,8 +77135,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77158,8 +77158,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77365,8 +77365,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77388,8 +77388,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -77411,8 +77411,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -78055,9 +78055,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

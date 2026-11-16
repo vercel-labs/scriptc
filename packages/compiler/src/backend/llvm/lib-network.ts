@@ -421,6 +421,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
     e.fn === "http.resOnPrefinish" ||
+    e.fn === "http.resOnDrain" ||
+    e.fn === "http.clientOnDrain" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
@@ -443,6 +445,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
       "http.resOnPrefinish": "scr_http_res_on_prefinish",
+      "http.resOnDrain": "scr_http_res_on_drain",
+      "http.clientOnDrain": "scr_http_client_on_drain",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",

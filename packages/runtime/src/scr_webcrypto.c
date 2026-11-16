@@ -75,6 +75,9 @@ static const struct {
     {"SHA-256", "sha256"},
     {"SHA-384", "sha384"},
     {"SHA-512", "sha512"},
+    {"SHA3-256", "sha3-256"},
+    {"SHA3-384", "sha3-384"},
+    {"SHA3-512", "sha3-512"},
 };
 
 static bool scr_wc_ascii_ieq(const ScrStr *s, const char *name) {
@@ -323,6 +326,57 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
   return out;
 }
 
+/* The SHA-3 digests Node reports as experimental the first time a program
+ * uses each one. The warning is delivered on the next tick, as Node's
+ * process warning is: to the 'warning' listeners when the process-warning
+ * unit is linked, and otherwise to the default report. It does not go
+ * through scr_emit_warning, which would make every WebCrypto program link
+ * that unit. */
+static SCR_TL bool scr_wc_sha3_warned[3];
+
+static void scr_wc_warning_tick(ScrClosure *self) {
+  ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[1]);
+  if (scr_warning_emit_hook) {
+    char name[32];
+    snprintf(name, sizeof name, "%.*s", (int)type->len, type->data);
+    scr_warning_emit_hook(name, NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)type->len, type->data,
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(type);
+  scr_str_release(message);
+}
+
+static void scr_wc_warn_sha3(const char *canonical) {
+  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512"};
+  for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
+    if (strcmp(canonical, names[i]) != 0) continue;
+    if (scr_wc_sha3_warned[i]) return;
+    scr_wc_sha3_warned[i] = true;
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "The ");
+    scr_jb_puts(&b, names[i]);
+    scr_jb_puts(&b, " Web Crypto API algorithm is an experimental feature and might change at any time");
+    ScrStr *message = scr_jb_finish(&b);
+    ScrClosure *tick = scr_closure_new((void *)&scr_wc_warning_tick, 2);
+    tick->caps[0] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(tick->caps[0], scr_str_new("ExperimentalWarning", 19));
+    tick->caps[1] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(tick->caps[1], message);
+    scr_next_tick(tick);
+    return;
+  }
+}
+
 /* The digest a HashAlgorithmIdentifier names: canonical name, or NULL
  * with NotSupportedError / the SC2020 refusal pending. */
 const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
@@ -334,6 +388,7 @@ const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return NULL;
   }
+  scr_wc_warn_sha3(canonical);
   if (!scr_wc_native_hash(canonical)) {
     scr_wc_unsupported_algorithm(method, canonical);
     return NULL;
@@ -1212,6 +1267,12 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
     scr_throw_domex("SyntaxError", "Usages cannot be empty when creating a key.");
     goto done;
   }
+  /* Node derives an HMAC key length from the hash only for SHA-1 and
+   * SHA-2; a SHA-3 hash needs an explicit length. */
+  if (hmac && !algorithm.has_length && strncmp(algorithm.hash, "SHA3-", 5) == 0) {
+    scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
+    goto done;
+  }
   double length = algorithm.has_length ? algorithm.length
                   : strcmp(algorithm.hash, "SHA-384") == 0 || strcmp(algorithm.hash, "SHA-512") == 0
                       ? 1024
@@ -1443,6 +1504,60 @@ ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
   scr_crypto_defer_dyn(scr_dyn_new_bool(equal), NULL, scr_crypto_promise_callback(p),
                        scr_wc_settle_verified);
   return p;
+}
+
+/* ── getPublicKey ──────────────────────────────────────────────────────
+ * Node reports the method as experimental the first time a program calls
+ * it, before its arguments are checked, and delivers the warning on the
+ * next tick: to the 'warning' listeners when the process-warning unit is
+ * linked, and otherwise to the default report. */
+static SCR_TL bool scr_wc_warned_get_public_key = false;
+
+static void scr_wc_warn_experimental(const char *text) {
+  ScrClosure *tick = scr_closure_new((void *)&scr_wc_warning_tick, 2);
+  tick->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[0], scr_str_new("ExperimentalWarning", 19));
+  tick->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(tick->caps[1], scr_str_new(text, strlen(text)));
+  scr_next_tick(tick);
+}
+
+/* getPublicKey(key, keyUsages): the public CryptoKey of a private
+ * asymmetric one. A secret key answers NotSupportedError and a public key
+ * InvalidAccessError, both as "key must be a private key". */
+ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args) {
+  static const char prefix[] = "Failed to execute 'getPublicKey' on 'SubtleCrypto'";
+  if (!scr_wc_warned_get_public_key) {
+    scr_wc_warned_get_public_key = true;
+    scr_wc_warn_experimental(
+        "The getPublicKey Web Crypto API method is an experimental feature and might change at any time");
+  }
+  if (!scr_wc_required(prefix, args, 2)) return scr_wc_rejected();
+  ScrWcArgs a;
+  scr_wc_args_take(&a, args, 2);
+  ScrDyn *key = NULL;
+  ScrPromise *result = NULL;
+  if (!scr_webcrypto_is_crypto_key(a.v[0])) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "%s: 1st argument is not of type CryptoKey.", prefix);
+    goto done;
+  }
+  long usages = scr_wc_key_usages(prefix, 1, a.v[1]);
+  if (usages < 0) goto done;
+  if (scr_crypto_key_of(a.v[0])) {
+    scr_throw_domex("NotSupportedError", "key must be a private key");
+    goto done;
+  }
+  if (!scr_wc_asymmetric || !scr_wc_asymmetric->get_public_key) {
+    scr_wc_unsupported("getPublicKey", "an asymmetric CryptoKey from a computed algorithm");
+    goto done;
+  }
+  key = scr_wc_asymmetric->get_public_key(a.v[0], usages);
+  /* Node answers an already-fulfilled promise, like importKey and
+   * exportKey, so a reaction runs in the current microtask batch. */
+  if (key) result = scr_wc_resolved(key);
+done:
+  scr_wc_args_drop(&a, 2);
+  return result ? result : scr_wc_rejected();
 }
 
 /* digest(algorithm, data). */
@@ -2216,6 +2331,12 @@ static bool scr_wc_derived_length(ScrDyn *identifier, const ScrWcAlgorithm *impo
     return true;
   }
   if (strcmp(canonical, "HMAC") == 0 && imported->hash) {
+    /* Node's HMAC key length comes from the hash only for SHA-1 and SHA-2;
+     * a SHA-3 hash needs an explicit length to derive a key. */
+    if (!imported->has_length && strncmp(imported->hash, "SHA3-", 5) == 0) {
+      scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
+      return false;
+    }
     *length = imported->has_length ? imported->length
               : strcmp(imported->hash, "SHA-384") == 0 || strcmp(imported->hash, "SHA-512") == 0
                   ? 1024

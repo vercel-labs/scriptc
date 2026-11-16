@@ -145,6 +145,7 @@ import {
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
+import { isRebindableRequireDecl } from "./rebindable-requires.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -3420,6 +3421,11 @@ export class Lowerer {
   /** JavaScript function declarations their own module reassigns
    * (rebindable-functions.ts). */
   readonly rebindableFunctions = new Set<ts.FunctionDeclaration>();
+  /** Top-level JavaScript `var`/`let` declarations initialized from a
+   * `require()` call whose binding an assignment in the same file writes
+   * (rebindable-requires.ts): the binding owns a checked-dynamic module
+   * global instead of aliasing the import. */
+  readonly rebindableRequireDecls = new Set<ts.VariableDeclaration>();
   /** TRAP bindings: declarations whose initializer provably throws before
    * producing a value (its chain roots at an ambient-undefined name —
    * ambientUndefVarRootOf). Module init unwinds at the declaration, so no
@@ -6108,6 +6114,7 @@ export class Lowerer {
       checkedTable("neverReassignedCache", () => this.neverReassignedCache.size),
       checkedTable("jsBindingWritesByOwner", () => this.jsBindingWritesByOwner.size),
       checkedTable("rebindableFunctions", () => this.rebindableFunctions.size),
+      checkedTable("rebindableRequireDecls", () => this.rebindableRequireDecls.size),
       checkedTable("trapBindings", () => this.trapBindings.size),
       checkedTable("deadBindings", () => this.deadBindings.size),
       // A write to a built-in member, and a feature test decided from the
@@ -9279,6 +9286,10 @@ export class Lowerer {
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
     if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+    // A require binding the file reassigns owns checked-dynamic storage
+    // (rebindable-requires.ts): its reads read that storage, never the
+    // required module's static exports.
+    if (isRebindableRequireDecl(this, decl)) return null;
     if (decl.initializer === undefined) return splitRequireBindingOf(this, decl)?.dep ?? null;
     {
       const interop = tscInteropModuleOf(this, expr);

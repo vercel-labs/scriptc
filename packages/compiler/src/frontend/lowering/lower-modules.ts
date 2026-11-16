@@ -20,6 +20,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
+import { collectRebindableRequireDecls, isRebindableRequireDecl } from "./rebindable-requires.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -421,6 +422,9 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
     const rebindable = collectRebindableFunctions(lowerer, sf);
+    // A require binding the file reassigns owns a module global
+    // (rebindable-requires.ts); collectGlobals registers it.
+    collectRebindableRequireDecls(lowerer, sf);
     for (const stmt of sf.statements.nodes) {
       // A reassigned JavaScript declaration lives in a module global that
       // the init body assigns first (rebindable-functions.ts).
@@ -2505,6 +2509,29 @@ export function collectGlobals(
       lowerer.globalsByDeclNode.set(stmt, g);
       lowerer.globalsList.push(g);
       continue;
+    }
+    if (ts.isVariableStatement(stmt)) {
+      // A require binding the file reassigns owns a checked-dynamic module
+      // global (rebindable-requires.ts): the declaration stores the module's
+      // value there, and reads and writes of the binding alias it. Every
+      // other statement continues into the registration below.
+      let rebound = false;
+      for (const decl of stmt.declarationList.declarations.nodes) {
+        if (!ts.isIdentifier(decl.name) || !isRebindableRequireDecl(lowerer, decl)) continue;
+        rebound = true;
+        const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+        if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+          const g: IrGlobal = {
+            id: `%g.${tag}${decl.name.text}`,
+            name: decl.name.text,
+            type: DYN,
+            mutable: true,
+          };
+          lowerer.globalsBySymbol.set(symbol, g);
+          lowerer.globalsList.push(g);
+        }
+      }
+      if (rebound) continue;
     }
     if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);

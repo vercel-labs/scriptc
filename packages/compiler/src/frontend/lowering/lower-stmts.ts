@@ -112,6 +112,7 @@ import {
   programReadsExitCode,
 } from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
+import { isRebindableRequireDecl } from "./rebindable-requires.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
@@ -146,6 +147,7 @@ import {
   splitRequireEarlyReadOf,
   unresolvedRequireThrow,
   wholeExportSymbolOfModule,
+  wholeExportValue,
   wholeExportValueOfModuleBinding,
 } from "./cjs-inline-require.js";
 import {
@@ -2925,6 +2927,29 @@ function lowerVarDeclarator(
       if (island !== null) return [island];
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
+      // A require binding the file reassigns: the module's value is stored
+      // in the checked-dynamic global collectGlobals registered, and the
+      // assignment replaces it (rebindable-requires.ts).
+      if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) {
+        const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+        const global = symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol);
+        const stored =
+          global === undefined ? null : requireReboundValue(lowerer, decl, decl.name, spec);
+        if (global === undefined || stored === null) {
+          lowerer.unsupported(
+            "SC1090",
+            decl,
+            `reassigning '${decl.name.text}', a require() binding whose module value has no static representation`,
+          );
+        }
+        out.push({
+          kind: "assign",
+          localId: global!.id,
+          value: stored!,
+          loc: locOf(decl),
+        });
+        return out;
+      }
       // Snapshot bindings and nested patterns evaluate in pattern order,
       // immediately after the required module has initialized.
       const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
@@ -17394,4 +17419,39 @@ function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration
     decl,
     `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
   );
+}
+
+/** The value `require(<spec>)` answers for a binding the file reassigns: its
+ * module's whole export when that value has a static representation, else the
+ * module's namespace object (a compiled or builtin module's exports), boxed
+ * for the checked-dynamic global that holds it. Null when neither exists. */
+function requireReboundValue(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  name: ts.Identifier,
+  spec: string,
+): IrExpr | null {
+  const sf = ts.getSourceFileOfNode(decl);
+  const inline =
+    decl.initializer === undefined ? null : inlineProgramRequireOf(lowerer, decl.initializer);
+  const dep =
+    inline?.dep ??
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require");
+  if (dep !== null) {
+    const whole = wholeExportValue(lowerer, dep, decl);
+    if (whole !== null) return lowerer.coerceInto(decl, whole, DYN);
+  }
+  const nsType = lowerer.mapTypeOf(lowerer.typeOf(name));
+  if (nsType?.kind === "moduleNs") {
+    const ns = {
+      kind: "moduleNsRef" as const,
+      moduleId: nsType.moduleId,
+      type: nsType,
+      loc: locOf(decl),
+    };
+    const boxed = lowerer.moduleNamespaceDyn(ns);
+    if (boxed !== null) return boxed;
+  }
+  return null;
 }

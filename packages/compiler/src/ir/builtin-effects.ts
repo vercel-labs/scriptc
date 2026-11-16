@@ -904,8 +904,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "mime.typeNew",
   "mime.typeParse",
   // node:sqlite opens (or validates) a connection; every option it reads
-  // can refuse the call.
+  // can refuse the call, as can sqlite.backup's arguments.
   "sqlite.dbNew",
+  "sqlite.backup",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws

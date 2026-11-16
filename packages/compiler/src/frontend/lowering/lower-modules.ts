@@ -2273,6 +2273,36 @@ export function collectGlobals(
   // register their module globals first — reads inside function bodies
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
+  // A split require binding (`var m; m = require("./x")`) of a partial
+  // cycle module keeps the exports object its require answered, like the
+  // const form.
+  for (const stmt of topStmts) {
+    if (!ts.isExpressionStatement(stmt)) continue;
+    const e = stmt.expression;
+    if (
+      !ts.isBinaryExpression(e) ||
+      e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isIdentifier(e.left)
+    )
+      continue;
+    const split = splitRequireBindingOfIdent(lowerer, e.left);
+    if (split === null || split.assign !== e) continue;
+    if (!lowerer.program.analysis.partialCjsCycleMembers.has(split.dep)) continue;
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(e.left) ??
+      lowerer.resolveValueSymbol(e.left) ??
+      undefined;
+    if (symbol === undefined) continue;
+    const id = `%g.${tag}%splitRequiredObject.${e.left.text}.${positionTag(lowerer, stmt)}`;
+    const object: IrGlobal = {
+      id,
+      name: `%splitRequiredObject.${e.left.text}`,
+      type: DYN,
+      mutable: true,
+    };
+    if (!lowerer.globalsList.some((g) => g.id === id)) lowerer.globalsList.push(object);
+    lowerer.cjsPartialRequireObjects.set(symbol, { object, dep: split.dep });
+  }
   for (const stmt of topStmts) {
     if (ts.isEnumDeclaration(stmt)) {
       registerEnumObjectGlobals(lowerer, stmt, tag);

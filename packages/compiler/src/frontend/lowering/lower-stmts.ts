@@ -155,6 +155,7 @@ import {
   isCjsExportsIdentifier,
   isCjsModuleExports,
   isFreshExportsReset,
+  isPartialCjsCycleModule,
 } from "./cjs-exports-object.js";
 import { isDeadTscHelperDecl, tscInteropBindingOfDecl } from "./cjs-tsc-interop.js";
 import {
@@ -10343,19 +10344,39 @@ function lowerCjsExportStatement(
     const lowered = lowerer.lowerExprExpecting(value, g.type);
     if (root?.type.kind !== "dyn" || !ts.isIdentifier(nameNode)) {
       const assign: IrStmt = { kind: "assign", localId: g.id, value: lowered, loc: locOf(value) };
-      const mirror = ts.isIdentifier(nameNode)
-        ? cjsPartialExportMirror(
-            lowerer,
-            ts.getSourceFileOfNode(cjs.expr),
-            nameNode.text,
-            lowered,
-            value,
-            locOf(value),
-          )
-        : [];
-      return mirror.length === 0
-        ? assign
-        : { kind: "block", body: [assign, ...mirror], loc: locOf(value) };
+      const mirrored =
+        ts.isIdentifier(nameNode) &&
+        isPartialCjsCycleModule(lowerer, ts.getSourceFileOfNode(cjs.expr));
+      if (!mirrored) return assign;
+      const mirror = (source: IrExpr): IrStmt[] =>
+        cjsPartialExportMirror(
+          lowerer,
+          ts.getSourceFileOfNode(cjs.expr),
+          nameNode.text,
+          source,
+          value,
+          locOf(value),
+        );
+      // The mirror consumes the value a second time: an effectful
+      // initializer runs once, into a hidden local both writes read.
+      if (isSafeToRepeat(lowered))
+        return { kind: "block", body: [assign, ...mirror(lowered)], loc: locOf(value) };
+      const saved = lowerer.declareHiddenLocal("%cjsExportValue", g.type);
+      const savedRef: IrExpr = {
+        kind: "varRef",
+        localId: saved.id,
+        type: g.type,
+        loc: locOf(value),
+      };
+      return {
+        kind: "block",
+        body: [
+          { kind: "varDecl", localId: saved.id, init: lowered, loc: locOf(value) },
+          { kind: "assign", localId: g.id, value: savedRef, loc: locOf(value) },
+          ...mirror(savedRef),
+        ],
+        loc: locOf(value),
+      };
     }
     // A factory whole export is represented by its checked-dynamic root.
     // A later `module.exports.name = value` mutates THAT same object in
@@ -10406,7 +10427,19 @@ function lowerCjsExportStatement(
       // An inline require still evaluates its module here.
       const req = inlineProgramRequireOf(lowerer, cjs.value);
       const init = req !== null ? lowerer.requireInitStmt(req.spec, req.call) : null;
-      return init ?? { kind: "block", body: [], loc };
+      // The class value itself is the export: a partial cycle's live
+      // exports object holds the constructor, so a later read through a
+      // module binding answers it instead of undefined.
+      const mirror = cjsPartialExportMirror(
+        lowerer,
+        ts.getSourceFileOfNode(cjs.expr),
+        cjs.name.text,
+        lowerer.lowerExpr(cjs.value),
+        cjs.value,
+        locOf(cjs.value),
+      );
+      if (mirror.length === 0) return init ?? { kind: "block", body: [], loc };
+      return { kind: "block", body: [...(init === null ? [] : [init]), ...mirror], loc: loc };
     }
     // The tsc VOID-INIT PREAMBLE (`exports.leaf = void 0;` with the real
     // `exports.leaf = leaf;` further down — every tsc-emitted dist file
@@ -10465,6 +10498,23 @@ function lowerCjsExportStatement(
               : lowerer.coerceInto(chain.value, read, g.type),
             loc,
           });
+        }
+        // Every member of the chain holds the one value; a partial cycle's
+        // live exports object takes each of them.
+        if (isPartialCjsCycleModule(lowerer, sf)) {
+          for (const nameNode of chain.names) {
+            const g = globalOfName(nameNode);
+            body.push(
+              ...cjsPartialExportMirror(
+                lowerer,
+                sf,
+                nameNode.text,
+                { kind: "varRef", localId: g.id, type: g.type, loc },
+                chain.value,
+                loc,
+              ),
+            );
+          }
         }
         return { kind: "block", body, loc };
       }
@@ -12145,15 +12195,32 @@ export function lowerExprStatement(
           const value = lowerer.lowerExprExpecting(expr.right, g.type);
           if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {
             const assign: IrStmt = { kind: "assign", localId: g.id, value, loc };
-            const mirror = cjsPartialExportMirror(
-              lowerer,
-              ts.getSourceFileOfNode(expr),
-              expr.left.name.text,
-              value,
-              expr.right,
+            const memberName = expr.left.name?.text ?? "";
+            const mirror = (source: IrExpr): IrStmt[] =>
+              cjsPartialExportMirror(
+                lowerer,
+                ts.getSourceFileOfNode(expr),
+                memberName,
+                source,
+                expr.right,
+                loc,
+              );
+            const pending = mirror(value);
+            if (pending.length === 0) return assign;
+            // One evaluation of the written value, both stores read the
+            // hidden local.
+            if (isSafeToRepeat(value)) return { kind: "block", body: [assign, ...pending], loc };
+            const tmp = lowerer.declareHiddenLocal("%exportValue", value.type);
+            const stored = varRef(tmp.id, value.type, loc);
+            return {
+              kind: "block",
+              body: [
+                { kind: "varDecl", localId: tmp.id, init: value, loc },
+                { kind: "assign", localId: g.id, value: stored, loc },
+                ...mirror(stored),
+              ],
               loc,
-            );
-            return mirror.length === 0 ? assign : { kind: "block", body: [assign, ...mirror], loc };
+            };
           }
           // A module that chose this table for its own `module.exports` while
           // it ran answers Node's shared exports object: the member keeps
@@ -12295,13 +12362,22 @@ export function lowerExprStatement(
       }
       const splitAssign = splitRequireAssignmentOf(lowerer, expr);
       if (splitAssign !== null) {
-        return (
-          lowerer.requireInitStmt(splitAssign.spec, splitAssign.call) ?? {
-            kind: "block",
-            body: [],
+        const init = lowerer.requireInitStmt(splitAssign.spec, splitAssign.call);
+        const body: IrStmt[] = init === null ? [] : [init];
+        // A split binding of a partial cycle module keeps the exports
+        // object this require answered, not the target's later one.
+        const capture = lowerer.checker.getSymbolAtLocation(expr.left);
+        const owned =
+          capture === undefined ? undefined : lowerer.cjsPartialRequireObjects.get(capture);
+        const exportsThis = owned === undefined ? undefined : lowerer.cjsExportsThis.get(owned.dep);
+        if (owned !== undefined && exportsThis !== undefined)
+          body.push({
+            kind: "assign",
+            localId: owned.object.id,
+            value: { kind: "varRef", localId: exportsThis.id, type: DYN, loc: locOf(expr) },
             loc: locOf(expr),
-          }
-        );
+          });
+        return { kind: "block", body, loc: locOf(expr) };
       }
       const target = lowerer.resolveWritable(expr.left);
       if (!target)

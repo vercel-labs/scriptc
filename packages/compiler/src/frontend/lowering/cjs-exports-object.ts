@@ -827,24 +827,40 @@ export function cjsPartialExportRead(
     else_: null,
     loc,
   };
+  // Node unsets the warning proxy when a module finishes loading with the
+  // object still installed as module.exports. A requirer that got the object
+  // mid-cycle keeps it when the module later REPLACES module.exports, and
+  // that stale object keeps warning for the rest of the process; identity
+  // against the module's current exports object decides that case.
+  let warn: IrExpr = { kind: "varRef", localId: evaluatingId, type: BOOL, loc };
+  const currentObj = captured === undefined ? null : lowerer.cjsExportsThis.get(dep);
+  if (captured !== undefined && currentObj !== null && currentObj !== undefined) {
+    warn = {
+      kind: "logical",
+      op: "||",
+      left: warn,
+      right: {
+        kind: "unary",
+        op: "!",
+        operand: {
+          kind: "libCall",
+          fn: "dyn.sameValue",
+          args: [partialObjectRef(obj, loc), partialObjectRef(currentObj, loc)],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
   return {
     kind: "seqExpr",
     stmts: [
       ...(tdz === null ? [] : [tdz]),
-      {
-        kind: "if",
-        cond: {
-          kind: "bin",
-          op: "===",
-          left: { kind: "varRef", localId: evaluatingId, type: BOOL, loc },
-          right: { kind: "boolLit", value: true, type: BOOL, loc },
-          type: BOOL,
-          loc,
-        },
-        then: [missing],
-        else_: null,
-        loc,
-      },
+      { kind: "if", cond: warn, then: [missing], else_: null, loc },
     ],
     result: read,
     type: DYN,

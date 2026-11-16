@@ -2684,8 +2684,12 @@ typedef struct {
   bool enabled;
 } ScrTraceEvents;
 
-static SCR_TL ScrDyn **scr_te_objects = NULL; /* retained handles */
-static SCR_TL size_t scr_te_count = 0, scr_te_cap = 0;
+/* Only ENABLED tracers are referenced here (Node's tracing agent holds the
+ * enabled ones the same way): getEnabledCategories walks this list, and a
+ * tracer the program discards while disabled is freed with its handle —
+ * creating and dropping tracers in a loop retains and slows nothing. */
+static SCR_TL ScrTraceEvents **scr_te_enabled = NULL;
+static SCR_TL size_t scr_te_enabled_count = 0, scr_te_enabled_cap = 0;
 
 static void *scr_te_retain(void *h) {
   ((ScrTraceEvents *)h)->rc++;
@@ -2700,10 +2704,33 @@ static void scr_te_release(void *h) {
 }
 
 static void scr_te_teardown(void) {
-  for (size_t i = 0; i < scr_te_count; i++) scr_dyn_release(scr_te_objects[i]);
-  free(scr_te_objects);
-  scr_te_objects = NULL;
-  scr_te_count = scr_te_cap = 0;
+  for (size_t i = 0; i < scr_te_enabled_count; i++) scr_te_release(scr_te_enabled[i]);
+  free(scr_te_enabled);
+  scr_te_enabled = NULL;
+  scr_te_enabled_count = scr_te_enabled_cap = 0;
+}
+
+static void scr_te_set_enabled(ScrTraceEvents *t, bool enabled) {
+  if (t->enabled == enabled) return;
+  t->enabled = enabled;
+  if (enabled) {
+    if (scr_te_enabled_count == scr_te_enabled_cap) {
+      scr_te_enabled_cap = scr_te_enabled_cap ? scr_te_enabled_cap * 2 : 4;
+      ScrTraceEvents **grown = realloc(scr_te_enabled, scr_te_enabled_cap * sizeof *grown);
+      if (!grown) scr_ad_oom();
+      scr_te_enabled = grown;
+      if (scr_te_enabled_count == 0) scr_atexit(scr_te_teardown);
+    }
+    scr_te_retain(t);
+    scr_te_enabled[scr_te_enabled_count++] = t;
+    return;
+  }
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    if (scr_te_enabled[i] != t) continue;
+    scr_te_enabled[i] = scr_te_enabled[--scr_te_enabled_count];
+    scr_te_release(t);
+    return;
+  }
 }
 
 static ScrDyn *scr_te_member(void *h, const char *key, size_t len);
@@ -2723,15 +2750,10 @@ static ScrDyn *scr_te_box(ScrTraceEvents *t) {
       .methods = scr_te_methods,
   };
   scr_dyn_handle_install(SCR_DYNH_TRACING, &ops);
+  /* The handle owns the resource; nothing else references a disabled
+   * tracer, so dropping the handle frees it. */
   ScrDyn *box = scr_dyn_new_handle(t, SCR_DYNH_TRACING);
-  scr_te_release(t); /* the handle owns the reference the caller created */
-  if (scr_te_count == scr_te_cap) {
-    scr_te_cap = scr_te_cap ? scr_te_cap * 2 : 4;
-    scr_te_objects = realloc(scr_te_objects, scr_te_cap * sizeof *scr_te_objects);
-    if (!scr_te_objects) scr_ad_oom();
-    if (scr_te_count == 0) scr_atexit(scr_te_teardown);
-  }
-  scr_te_objects[scr_te_count++] = scr_dyn_retain(box);
+  scr_te_release(t);
   return box;
 }
 
@@ -2755,11 +2777,11 @@ static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
   (void)what;
   ScrTraceEvents *t = h;
   if (strcmp(method, "enable") == 0) {
-    t->enabled = true;
+    scr_te_set_enabled(t, true);
     return scr_te_undefined();
   }
   if (strcmp(method, "disable") == 0) {
-    t->enabled = false;
+    scr_te_set_enabled(t, false);
     return scr_te_undefined();
   }
   static const char message[] = "Tracing member is not a function: ";
@@ -2858,9 +2880,8 @@ static int scr_te_name_cmp(const void *a, const void *b) {
 ScrDyn *scr_te_get_enabled_categories(void) {
   ScrStr **names = NULL;
   size_t n = 0, cap = 0;
-  for (size_t i = 0; i < scr_te_count; i++) {
-    ScrTraceEvents *t = scr_te_objects[i]->v.handle.ptr;
-    if (!t->enabled) continue;
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    ScrTraceEvents *t = scr_te_enabled[i];
     size_t start = 0;
     for (size_t at = 0; at <= t->categories->len; at++) {
       if (at < t->categories->len && t->categories->data[at] != ',') continue;

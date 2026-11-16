@@ -44,3 +44,21 @@ first.disable();
 console.log('after disable:', first.enabled, '| list:', String(te.getEnabledCategories()));
 
 console.log('inspect:', util.inspect(first));
+
+// A tracer the program drops while disabled is freed with its handle: a loop
+// of them keeps no state and does not slow the enabled-categories query,
+// which walks only the enabled tracers.
+for (let i = 0; i < 2000; i++) {
+  const discarded = te.createTracing({ categories: [`audit:discarded-${i}`] });
+  if (discarded.enabled) throw new Error('a new tracer starts disabled');
+}
+console.log('discarded tracers:', String(te.getEnabledCategories()));
+const churn = te.createTracing({ categories: ['audit:churn'] });
+churn.enable();
+console.log('churn enabled:', te.getEnabledCategories());
+churn.disable();
+console.log('churn disabled:', String(te.getEnabledCategories()));
+churn.enable();
+console.log('churn re-enabled:', te.getEnabledCategories());
+churn.disable();
+console.log('churn off again:', String(te.getEnabledCategories()));

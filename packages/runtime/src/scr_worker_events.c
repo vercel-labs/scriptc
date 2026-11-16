@@ -1232,6 +1232,13 @@ static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
 
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
+/* A worker thread's exit (scr_worker.c, before scr_context_cleanup): the
+ * thread's worker-event state goes before the reference-count audit, which
+ * the exit stack would otherwise run first. */
+static void scr_worker_events_detach(void) {
+  if (scr_worker_events) scr_worker_events_cleanup();
+}
+
 /* A worker thread installs its own machinery before its script runs
  * (scr_worker.c calls this through the attach hook). */
 static void scr_worker_events_attach(void) { (void)scr_worker_events_install(); }
@@ -1285,7 +1292,12 @@ static bool scr_worker_events_install(void) {
   scr_port_ops_install();
   scr_node_event_target_ops = &scr_node_event_target_ops_value;
   scr_worker_set_events_attach(scr_worker_events_attach);
-  if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
+  scr_worker_set_events_detach(scr_worker_events_detach);
+  /* A worker thread releases its worker-event state explicitly before the
+   * reference-count audit runs (the detach hook above); only the main
+   * thread's cleanup rides the context's exit stack. */
+  if (scr_context_is_main() && scr_context_atexit(scr_worker_events_cleanup) != 0)
+    scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);
   scr_loop_set_workers_more(scr_workers_more);

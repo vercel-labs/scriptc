@@ -86,6 +86,10 @@ bool scr_worker_thread_current_limits(double out[4]);
  * answers its creator's worker.cpuUsage() even when the script never names
  * worker_threads. NULL when that unit is not linked. */
 void scr_worker_set_events_attach(void (*attach)(void));
+/* The worker event unit's function that releases a worker thread's
+ * worker-event state at its exit, before the reference-count audit runs
+ * (scr_worker_events.c). NULL when that unit is not linked. */
+void scr_worker_set_events_detach(void (*detach)(void));
 /* The parent's environment data entries ([key, value, ...], +1) on the
  * first call in a worker; NULL afterwards, in the main thread, when the
  * parent had none, and after a throw. */

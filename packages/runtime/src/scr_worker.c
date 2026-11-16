@@ -247,9 +247,14 @@ void scr_worker_set_stdin_attach(void (*attach)(void)) {
 }
 
 static _Atomic(void (*)(void)) scr_worker_events_attach;
+static _Atomic(void (*)(void)) scr_worker_events_detach;
 
 void scr_worker_set_events_attach(void (*attach)(void)) {
   atomic_store_explicit(&scr_worker_events_attach, attach, memory_order_relaxed);
+}
+
+void scr_worker_set_events_detach(void (*detach)(void)) {
+  atomic_store_explicit(&scr_worker_events_detach, detach, memory_order_relaxed);
 }
 
 bool scr_worker_thread_post_stdin(ScrWorkerThread *worker, const void *data, size_t len, bool end) {
@@ -380,6 +385,10 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_note_script_end(); /* when the program frees nothing at exit */
   scr_mailbox_close(worker->inbox);
   scr_stdin_fed_clear(); /* chunks the worker never read */
+  /* Before the context's exit stack: that stack carries the reference-count
+   * audit, which must see nothing this thread's worker events still hold. */
+  void (*events_detach)(void) = atomic_load_explicit(&scr_worker_events_detach, memory_order_relaxed);
+  if (events_detach) events_detach();
   scr_context_cleanup();
   /* Frees the group arenas and chunks the thread kept for reuse before the
    * parent sees the exit. */

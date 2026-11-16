@@ -5534,6 +5534,7 @@ function buildLibFnSignatures() {
     "regex.new": { argTypes: [STRING, STRING], result: REGEX },
     "regex.resetLastIndex": { argTypes: [REGEX, F64], result: VOID },
     "regex.newChecked": { argTypes: [DYN, DYN], result: REGEX },
+    "regex.callChecked": { argTypes: [DYN, DYN], result: REGEX },
     "regex.replaceCallback": { argTypes: [STRING, REGEX, DYN, BOOL], result: STRING },
     // Reads of capture args[1] of an execSpans/matchGroups result:
     // `capture === args[2]`, Number(capture) and parseInt(capture,

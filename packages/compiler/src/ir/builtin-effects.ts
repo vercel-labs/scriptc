@@ -1001,6 +1001,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.new",
   "regex.resetLastIndex",
   "regex.newChecked",
+  "regex.callChecked",
   "regex.replaceCallback",
   "dyn.keySet",
   "dyn.fnOwnSet",

@@ -2218,6 +2218,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.new": "scr_regex_new",
   "regex.resetLastIndex": "scr_regex_reset_last_index",
   "regex.newChecked": "scr_regex_new_checked",
+  "regex.callChecked": "scr_regex_call_checked",
   "regex.replaceCallback": "scr_regex_replace_callback",
   "regex.groupEquals": "scr_regex_group_eq",
   "regex.groupNumber": "scr_regex_group_number",

@@ -12667,7 +12667,7 @@ export function lowerRegExpConstruction(
 /** The construction Node's RegExp builtin performs over already-lowered
  * pattern/flags values, in that order. `nodes` names the source each value
  * came from (a synthesized value leaves its slot undefined). */
-export function regExpFromValues(
+function regExpFromValues(
   lowerer: Lowerer,
   values: readonly (IrExpr | undefined)[],
   nodes: readonly (ts.Expression | undefined)[],

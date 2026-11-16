@@ -47,3 +47,19 @@ const produced = () => {
   return target;
 };
 console.log("order", RegExp(produced(), missingFlags) === target);
+
+// Flags from an effectful expression that answers undefined, and a pattern
+// the compiler cannot type: the run-time call form decides, so identity and
+// lastIndex survive either way.
+let asked = 0;
+const askFlags = () => {
+  asked += 1;
+  return undefined;
+};
+console.log("effectful", RegExp(target, askFlags()) === target, asked, RegExp(target, askFlags()).lastIndex);
+
+let untypedPattern = target;
+console.log("untyped pattern", RegExp(untypedPattern, missingFlags) === target);
+untypedPattern = "z+";
+console.log("untyped string", RegExp(untypedPattern, missingFlags).source);
+console.log("untyped with flags", RegExp(untypedPattern, "i").test("ZZ"));

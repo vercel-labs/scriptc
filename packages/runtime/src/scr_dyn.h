@@ -1197,6 +1197,7 @@ ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags);
 ScrDyn *scr_dyn_native_url(ScrUrl *value);
 bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);

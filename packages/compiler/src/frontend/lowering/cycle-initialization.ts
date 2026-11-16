@@ -313,21 +313,21 @@ function earlyHeritageReferences(
       for (const base of node.types.nodes) {
         if (found) break;
         if (!ts.isExpressionWithTypeArguments(base)) continue;
-        // The base EXPRESSION is evaluated when the class statement runs
-        // (its arguments and parentheses included); a reference a
-        // conditional expression or a short circuit may skip is not read
-        // at all, so it must not carry a check.
-        ts.walkPreorder(base.expression, (inner) => {
-          if (found) return "skip";
-          if (
-            ts.isIdentifier(inner) &&
-            names.has(inner.text) &&
-            resolvesTo(lowerer, inner, binding.symbol, true) &&
-            !conditionallyEvaluated(inner, base.expression)
-          )
-            found = true;
-          return undefined;
-        });
+        // The check runs BEFORE the statement's own expression, so it is
+        // exact only where the heritage expression IS the read: a bare
+        // identifier (parenthesized, asserted) or a namespace member. Any
+        // other expression — a conditional, a call, a factory argument —
+        // performs work first, which Node runs before it reaches the class;
+        // pre-empting it with the ReferenceError would be a lie, so those
+        // shapes keep their unchecked read. A type argument is erased and
+        // never read at all.
+        const reference = bareHeritageReference(base.expression);
+        if (
+          reference !== null &&
+          names.has(reference.text) &&
+          resolvesTo(lowerer, reference, binding.symbol, true)
+        )
+          found = true;
       }
       if (found) {
         const cls = enclosingClass7(node);
@@ -345,43 +345,27 @@ function earlyHeritageReferences(
   return out;
 }
 
-/** Whether a heritage expression may not evaluate `ref`: an arm of a
- * conditional expression, the short-circuited right side of `&&`, `||` or
- * `??`, or the receiver of an optional chain. Node reads the class only
- * when that position runs, so a check prepared for the class statement
- * would throw before the expression chooses. */
-function conditionallyEvaluated(ref: ts.Node, root: ts.Node): boolean {
-  for (
-    let node: ts.Node | undefined = ref;
-    node !== undefined && node !== root;
-    node = node.parent
-  ) {
-    const parent: ts.Node | undefined = node.parent;
-    if (parent === undefined) return false;
+/** The identifier a heritage expression reads AS ITS WHOLE VALUE: the base
+ * name, unwrapped from parentheses, assertions and non-null marks, or the
+ * member of a namespace access (`ns.Base`). Null when the expression does
+ * any work of its own first. */
+function bareHeritageReference(expression: ts.Expression): ts.Identifier | null {
+  let e: ts.Expression = expression;
+  for (;;) {
     if (
-      ts.isConditionalExpression(parent) &&
-      (parent.whenTrue === node || parent.whenFalse === node)
-    )
-      return true;
-    if (ts.isBinaryExpression(parent) && parent.right === node) {
-      const operator = parent.operatorToken.kind;
-      if (
-        operator === ts.SyntaxKind.AmpersandAmpersandToken ||
-        operator === ts.SyntaxKind.BarBarToken ||
-        operator === ts.SyntaxKind.QuestionQuestionToken
-      )
-        return true;
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isNonNullExpression(e) ||
+      ts.isSatisfiesExpression(e)
+    ) {
+      e = e.expression;
+      continue;
     }
-    const optional = parent as { questionDotToken?: ts.Node };
-    if (
-      (ts.isPropertyAccessExpression(parent) ||
-        ts.isElementAccessExpression(parent) ||
-        ts.isCallExpression(parent)) &&
-      optional.questionDotToken !== undefined
-    )
-      return true;
+    break;
   }
-  return false;
+  if (ts.isIdentifier(e)) return e;
+  if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) return e.name;
+  return null;
 }
 
 /** The class-like declaration a heritage clause belongs to. */

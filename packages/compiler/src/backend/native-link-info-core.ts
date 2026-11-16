@@ -309,6 +309,8 @@ export interface NativeLinkFeatures {
   /** crypto.createDiffieHellman, getDiffieHellman and
    * createDiffieHellmanGroup: scr_dh.c plus the mbedTLS archive. */
   dh: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
+  argon2: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -395,6 +397,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   cipher: false,
   ecdh: false,
   dh: false,
+  argon2: false,
   pki: false,
   ed25519: false,
   x509: false,

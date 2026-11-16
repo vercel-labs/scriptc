@@ -873,6 +873,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.ecdhNew": "scr_crypto_ecdh_new",
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
+  "crypto.argon2Sync": "scr_crypto_argon2_sync",
+  "crypto.argon2Cb": "scr_crypto_argon2_cb",
   "crypto.dhNew": "scr_crypto_dh_new",
   "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
   "crypto.getCipherInfo": "scr_crypto_get_cipher_info",
@@ -2307,6 +2309,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.scryptAnyCb",
   "crypto.randomBytesAnyCb",
   "crypto.randomIntAnyCb",
+  "crypto.argon2Cb",
   "process.emitWarning",
   // The finalization registration reports its ExperimentalWarnings through
   // the deferred tick queue, and its callbacks run from the exit listeners

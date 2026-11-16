@@ -2,8 +2,9 @@
 // prototype view of every class the program can box, which lowers each
 // member a second time over a dynamic receiver. A member whose body reads a
 // typed field where the checker requires that field's own type (a Map key
-// here) cannot run over that receiver: the statement stays a run-time fence,
-// and the view still answers the descriptors Node reports.
+// here) cannot run over that receiver: the view answers the member's
+// compiled receiver-checked form instead, so the whole body still runs, and
+// the descriptors are Node's.
 class Item {
   name = "it";
 }
@@ -32,6 +33,7 @@ const timer = new Timer(new Item());
 const descriptor = descriptorOf(timer)!;
 console.log(descriptor !== undefined, typeof descriptor.get, typeof descriptor.set);
 console.log(descriptor.get!.call(timer));
-timer.currentTime = 5;
+descriptor.set!.call(timer, 4);
 seen.set(timer.item, 7);
-timer.currentTime = 9;
+descriptor.set!.call(timer, 9);
+timer.currentTime = 11;

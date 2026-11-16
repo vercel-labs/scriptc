@@ -92530,6 +92530,7 @@
           "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-writable-from-web.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -93158,10 +93159,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-writable-from-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93853,10 +93854,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-writable-from-web.ts"
         ]
       },
       "anchorSource": "ancestor"

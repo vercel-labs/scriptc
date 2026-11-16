@@ -639,6 +639,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
   "stream.setDefaultHwm",
+  "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",

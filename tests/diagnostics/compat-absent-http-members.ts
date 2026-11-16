@@ -14,10 +14,10 @@ console.log(agent.maxTotalSockets);
 agent.destroy();
 
 // Server: the request and response members. `[Symbol.asyncDispose]` is
-// inherited from net.Server and implemented (net-server-dispose-http).
+// inherited from net.Server and implemented (net-server-dispose-http), and
+// IncomingMessage's abort signal has its own differential program
+// (http-incoming-signal).
 const server = http.createServer((request, response) => {
-  // IncomingMessage: the abort signal.
-  console.log(request.signal.aborted);
   // OutgoingMessage: an arbitrary 1xx response.
   response.writeInformation(103, { link: "</a.css>; rel=preload" });
   response.end();

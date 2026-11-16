@@ -103,7 +103,7 @@ export function executableLinkFeatures(
     // A Node island can hand its own AbortSignal to any native receiver of
     // one, and a native signal then stands for it (scr_node_island_abort.c):
     // a program with islands and a receiver links the signal unit too.
-    ...(features.abortSignal || (features.nodeIsland && features.eventTarget)
+    ...(features.abortSignal || features.httpSignal || (features.nodeIsland && features.eventTarget)
       ? { abortSignal: true }
       : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),

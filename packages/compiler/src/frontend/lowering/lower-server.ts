@@ -4851,6 +4851,12 @@ export function lowerServerProperty(
   }
   if (recvKind === "httpReq" && lowerer.isStdlibMember(expr)) {
     const name = expr.name.text;
+    if (name === "signal") {
+      // The message's AbortSignal, built on the first read: it aborts when
+      // the message is destroyed or closes unfinished.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return { kind: "libCall", fn: "http.reqSignal", args: [receiver], type: DYN, loc };
+    }
     if (name === "url" || name === "method") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       const fn: IrLibFn = name === "url" ? "http.reqUrl" : "http.reqMethod";

@@ -248,6 +248,10 @@ struct ScrHttpReq {
   char version[2]; /* the parsed version's digits ("09", "10", "11", "20") */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
   bool aborted;  /* the connection or h2 stream died with the response unfinished */
+  /* req.signal: an AbortController built on the first read (+1); it aborts
+   * when the message is destroyed or closes unfinished, and stays unaborted
+   * on a complete one (Node's IncomingMessage.signal). */
+  ScrDyn *signal;
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
   bool join_dup; /* joinDuplicateHeaders: repeated names read joined ", " */
@@ -281,6 +285,8 @@ struct ScrHttpReq {
 static SCR_TL long scr_http_live = 0;
 long scr_http_live_count(void) { return scr_http_live; }
 #endif
+
+static void scr_http_req_signal_abort(ScrHttpReq *r);
 
 ScrHttpReq *scr_http_req_retain(ScrHttpReq *r) {
   if (r->rc != SIZE_MAX) r->rc++;
@@ -338,6 +344,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     free(r->tnames_raw);
     free(r->tvalues);
     scr_str_release(r->status_msg);
+    if (r->signal != NULL) scr_dyn_release(r->signal);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
     scr_net_ls_drop(&r->data_ls);
     scr_net_ls_drop(&r->end_ls);
@@ -2945,6 +2952,7 @@ static void scr_http_proto_sweep(void) {
       if (!req->close_emitted) {
         req->close_emitted = true;
         req->destroyed = true; /* Node: destroyed reads true inside 'close' */
+        if (!req->ended) scr_http_req_signal_abort(req);
         scr_net_fire0_this(&req->close_ls, req, SCR_DYNH_HTTP_REQ);
         scr_net_ls_drop(&req->err_ls);
         scr_net_ls_drop(&req->close_ls);
@@ -2983,6 +2991,8 @@ static void scr_http_proto_sweep(void) {
         scr_net_fire_err_this(&req->err_ls, msg, req, SCR_DYNH_HTTP_REQ);
         scr_str_release(msg);
       }
+      /* the message's signal follows 'aborted', as Node's does */
+      scr_http_req_signal_abort(req);
       break;
     }
     case SCR_HTTP_EMIT_CLIENT_CLOSE:
@@ -5028,6 +5038,41 @@ double scr_http_req_http_version_minor(ScrHttpReq *r) {
   return text[2] - '0';
 }
 bool scr_http_req_aborted_flag(ScrHttpReq *r) { return r->aborted; }
+
+/* The AbortController behind req.signal: the same native signal state the
+ * fetch unit builds, boxed with the AbortSignal tag, so repeated reads keep
+ * one identity. The factory arrives from scr_abort.c, which installs it when
+ * a program links its signal unit (the http2 ops seam in the other
+ * direction): scr_http.c never references that unit, so a program that only
+ * uses http links no signal code at all. */
+const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
+
+typedef ScrDyn *(*ScrHttpAbortFactory)(void);
+static SCR_TL ScrHttpAbortFactory scr_http_abort_factory;
+
+void scr_http_set_abort_factory(ScrHttpAbortFactory fn) { scr_http_abort_factory = fn; }
+
+static void scr_http_req_signal_abort(ScrHttpReq *r) {
+  if (r->signal == NULL) return;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(r->signal);
+  if (ops == NULL || ops->invoke == NULL) return;
+  ScrDyn *args[1] = {(ScrDyn *)scr_dyn_undefined()};
+  ScrDyn *answer = ops->invoke(r->signal->v.handle.ptr, r->signal, "abort", args, 0, "abort");
+  if (answer != NULL) scr_dyn_release(answer);
+}
+
+ScrDyn *scr_http_req_signal(ScrHttpReq *r) {
+  if (r->signal == NULL) {
+    r->signal = scr_http_abort_factory != NULL ? scr_http_abort_factory() : NULL;
+    if (r->signal == NULL) return NULL;
+    /* Node aborts at once for a message that is already gone: destroyed
+     * (or aborted) before it completed. */
+    if (r->aborted || (r->destroyed && !r->ended)) scr_http_req_signal_abort(r);
+  }
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(r->signal);
+  if (ops == NULL || ops->get == NULL) return NULL;
+  return ops->get(r->signal->v.handle.ptr, "signal", 6);
+}
 /* An HTTP/1 message is complete once all of it arrived, aborted or not, as
  * Node's IncomingMessage.complete is. */
 bool scr_http_req_complete(ScrHttpReq *r) {
@@ -7978,6 +8023,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     scr_str_release(v);
     return d;
   }
+  if (strcmp(key, "signal") == 0) return scr_http_req_signal(r);
   if (strcmp(key, "httpVersionMajor") == 0) return scr_dyn_new_num(scr_http_req_http_version_major(r));
   if (strcmp(key, "httpVersionMinor") == 0) return scr_dyn_new_num(scr_http_req_http_version_minor(r));
   if (strcmp(key, "method") == 0) {
@@ -8054,7 +8100,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     /* Real instance properties without a modeled read throw "not supported
      * yet" instead of answering undefined where Node has a value. */
     static const char *const known[] = {
-      "trailers", "rawTrailers", "signal", NULL };
+      "trailers", "rawTrailers", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("IncomingMessage", key, NULL);
       return NULL;

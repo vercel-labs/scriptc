@@ -2146,6 +2146,10 @@ const RUNTIME_FEATURE_RULES = {
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
   }),
+  /** IncomingMessage.signal: the message's abort signal is an
+   * AbortController, so a program that reads it links the signal unit
+   * (scr_abort.c) without touching fetch. */
+  httpSignal: rule({ fns: ["http.reqSignal"] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
@@ -2731,6 +2735,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webBodies: false,
     webStreams: false,
     abortSignal: false,
+    httpSignal: false,
     utilTiming: false,
     utilMarkPromiseAsHandled: false,
     utilTraceSigInt: false,

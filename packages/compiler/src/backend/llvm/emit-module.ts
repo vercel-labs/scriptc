@@ -658,6 +658,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesDnsResolve = runtimeFeatures.dnsResolve;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
+  // IncomingMessage.signal builds its AbortController through a factory the
+  // signal unit installs (scr_abort.c): only a program that reads the signal
+  // links it, and scr_http.c holds no reference to it.
+  const usesHttpSignal = runtimeFeatures.httpSignal;
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
@@ -748,6 +752,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
+  if (usesHttpSignal) {
+    // The program wires the signal unit to http's message signal: neither
+    // unit references the other, so a program that never reads a message
+    // signal links no signal code and an AbortController program links no
+    // http code.
+    emitter.declare(`declare void @scr_http_set_abort_factory(ptr)`);
+    emitter.declare(`declare ptr @scr_fetch_abort_controller_new()`);
+  }
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
@@ -1552,6 +1564,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
+    ...(usesHttpSignal
+      ? [`  call void @scr_http_set_abort_factory(ptr @scr_fetch_abort_controller_new)`]
+      : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),

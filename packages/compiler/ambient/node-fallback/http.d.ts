@@ -85,6 +85,10 @@ declare module "http" {
     readonly trailers: { [name: string]: string | undefined };
     readonly trailersDistinct: { [name: string]: string[] | undefined };
     readonly rawTrailers: string[];
+    /* The message's abort signal: one AbortSignal for every read, aborted
+     * when the message is destroyed or the connection closes before it
+     * completed. */
+    readonly signal: AbortSignal;
     resume(): void;
     pause(): void;
     destroy(): void;

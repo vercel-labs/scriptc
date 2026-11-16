@@ -82,6 +82,13 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
+/* req.signal: the message's AbortSignal (+1) — an AbortController built on
+ * the first read that aborts when the message is destroyed or closes
+ * unfinished. */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r);
+/* scr_abort.c installs its AbortController factory when a program links the
+ * signal unit (the emitted main calls it). */
+void scr_http_set_abort_factory(ScrDyn *(*fn)(void));
 bool scr_http_req_complete(ScrHttpReq *r);
 
 /* Registers the httpReq/httpRes handle-dispatch ops (SCR_DYNH_HTTP_REQ /

@@ -26,13 +26,6 @@ compat-absent-http-members.ts:13:19 - error SC0001: Property 'maxTotalSockets' d
      |                   ^~~~~~~~~~~~~~~
   14 | agent.destroy();
 
-compat-absent-http-members.ts:20:23 - error SC0001: Property 'signal' does not exist on type 'IncomingMessage'.
-
-  19 |   // IncomingMessage: the abort signal.
-  20 |   console.log(request.signal.aborted);
-     |                       ^~~~~~
-  21 |   // OutgoingMessage: an arbitrary 1xx response.
-
 compat-absent-http-members.ts:22:12 - error SC0001: Property 'writeInformation' does not exist on type 'ServerResponse'.
 
   21 |   // OutgoingMessage: an arbitrary 1xx response.

@@ -41,20 +41,11 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'signal' does not exist on type 'IncomingMessage'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1007,
-    "end": 1013
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Property 'writeInformation' does not exist on type 'ServerResponse'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1084,
-    "end": 1100
+    "start": 1103,
+    "end": 1119
    }
   },
   {
@@ -62,8 +53,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1236,
-    "end": 1257
+    "start": 1255,
+    "end": 1276
    }
   }
  ]

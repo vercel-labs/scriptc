@@ -1013,6 +1013,7 @@ interface SubtleCrypto {
   ): Promise<ArrayBuffer>;
   exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
   exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
+  getPublicKey(key: CryptoKey, keyUsages: readonly KeyUsage[]): Promise<CryptoKey>;
   generateKey(
     algorithm:
       | EcKeyGenParams

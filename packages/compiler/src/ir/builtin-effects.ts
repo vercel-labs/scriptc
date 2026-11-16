@@ -1615,6 +1615,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // getPublicKey converts its keyUsages sequence (whose strings' conversions
+  // run program code) and reads the key's members through the handle.
+  "webcrypto.getPublicKey",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",

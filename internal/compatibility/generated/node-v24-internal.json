@@ -114545,6 +114545,8 @@
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
+          "tests/corpus/webcrypto-get-public-key.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
@@ -118878,6 +118880,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.decrypt",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -118922,6 +118926,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.deriveBits",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -118966,6 +118972,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.deriveKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119010,6 +119018,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.digest",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119100,6 +119110,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.encrypt",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119144,6 +119156,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.exportKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119185,8 +119199,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.subtle.getPublicKey",
+        "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
+          "tests/corpus/7081-webcrypto-ed25519.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -119211,6 +119231,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.generateKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119255,6 +119277,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.importKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119299,6 +119323,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.sign",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119343,6 +119369,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.unwrapKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119387,6 +119415,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.verify",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
@@ -119431,6 +119461,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.subtle.wrapKey",
         "tests": [
+          "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",

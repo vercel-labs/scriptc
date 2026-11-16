@@ -304,7 +304,10 @@ ScrStr *scr_library_cstr_in(const char *p, const char *trap_msg); /* +1 */
 const char *scr_library_cstr_out(ScrStr *s);
 const char *scr_library_cstr_arg(const ScrStr *s);
 
-#define scr_atexit(fn) scr_library_register_reset(fn)
+/* A library registers its reset callbacks where it can: the registration
+ * itself never fails there, and callers that test the result compare it
+ * with 0. */
+#define scr_atexit(fn) ((void)scr_library_register_reset(fn), 0)
 #elif defined(SCR_WORKERS)
 /* Executable workers drain their own cleanup stack before their TLS dies.
  * Registering their callbacks with libc would execute them on the process

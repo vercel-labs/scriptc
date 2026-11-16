@@ -65,13 +65,14 @@
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.
   `publicEncrypt`/`privateDecrypt` remain unsupported.
   The WebCrypto `crypto` global, which node:crypto also exports as `webcrypto`, supports `randomUUID()` and `getRandomValues()`, also read as values from untyped JavaScript.
-  Its `subtle` object, also node:crypto's `subtle` export, supports `generateKey()` and `exportKey()` for HMAC and AES keys, `importKey()` for HMAC, AES, PBKDF2, and HKDF keys, `encrypt()` and `decrypt()` with AES-GCM, AES-CBC, and AES-CTR and `wrapKey()` and `unwrapKey()` of secret keys with AES-KW or those ciphers on native targets, `deriveBits()` and `deriveKey()` with PBKDF2 and HKDF, HMAC `sign()` and `verify()`, and SHA-1 and SHA-2 `digest()`.
+  Its `subtle` object, also node:crypto's `subtle` export, supports `generateKey()` and `exportKey()` for HMAC and AES keys, `importKey()` for HMAC, AES, PBKDF2, and HKDF keys, `encrypt()` and `decrypt()` with AES-GCM, AES-CBC, and AES-CTR and `wrapKey()` and `unwrapKey()` of secret keys with AES-KW or those ciphers on native targets, `deriveBits()` and `deriveKey()` with PBKDF2 and HKDF, HMAC `sign()` and `verify()`, and SHA-1, SHA-2 and SHA-3 `digest()`; each SHA-3 digest reports Node's ExperimentalWarning once per process.
   Secret keys import and export in the `raw`, `raw-secret`, and `jwk` formats.
   `generateKey()`, `importKey()`, `exportKey()`, `sign()`, and `verify()` also support ECDSA (P-256, P-384, and P-521), Ed25519, RSASSA-PKCS1-v1_5, and RSA-PSS, with the `spki`, `pkcs8`, and `jwk` formats and `raw` for ECDSA and Ed25519 public keys.
   `generateKey()`, `importKey()`, and `exportKey()` also support ECDH and X25519, with `spki`, `pkcs8`, and `jwk` and `raw` for their public keys, and RSA-OAEP, whose `encrypt()` and `decrypt()` take the optional `label`.
   `deriveBits()` and `deriveKey()` derive an ECDH or X25519 shared secret, truncated to the requested bit length the way Node truncates it, and an AES or HMAC key from it.
   ECDSA, Ed25519, ECDH, X25519, and RSA are refused in wasm32-wasi builds.
   The asymmetric algorithms link when a string literal in the program names one; a name built only at run time throws a coded SC2020 error.
+  `getPublicKey()` derives the public CryptoKey of a private ECDSA, Ed25519, ECDH, X25519 or RSA key, reporting Node's ExperimentalWarning once per process.
   `wrapKey()` and `unwrapKey()` of ECDSA, Ed25519, ECDH, X25519, and RSA keys throw a coded SC2020 error.
   Other SubtleCrypto methods, algorithms, and key formats are refused or throw a coded SC2020 error.
   Native derivations finish before their deferred callbacks, so computation blocks the caller.

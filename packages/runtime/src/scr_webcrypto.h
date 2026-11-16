@@ -69,6 +69,9 @@ typedef struct {
   ScrPromise *(*decrypt)(const ScrDyn *args);
   ScrBytes *(*derive_bits)(ScrDyn *algorithm, ScrDyn *base_key, bool null_length, double length,
                            const char *method);
+  /* The public CryptoKey derived from a private one (getPublicKey), or NULL
+   * with the DOMException pending. */
+  ScrDyn *(*get_public_key)(ScrDyn *key, long usages);
   bool (*is_key)(const ScrDyn *value);
   /* An asymmetric key's private/public pair member: true for the private
    * key. node:crypto's key type error names the member. */

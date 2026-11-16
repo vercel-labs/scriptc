@@ -100,3 +100,60 @@ const pbkdf2Bits = await crypto.subtle.deriveBits(
   128,
 );
 console.log("pbkdf2 sha3", hex(pbkdf2Bits));
+
+// A SHA-3 hash needs an explicit length to derive an HMAC key, as it does
+// to generate one; SHA-256 still defaults to 512 bits.
+const hkdfDeriveBase = await crypto.subtle.importKey("raw", new Uint8Array(16), "HKDF", false, ["deriveKey"]);
+const derivedNoLength = await crypto.subtle
+  .deriveKey(
+    { name: "HKDF", hash: "SHA3-256", salt: new Uint8Array(0), info: new Uint8Array(0) },
+    hkdfDeriveBase,
+    { name: "HMAC", hash: "SHA3-256" },
+    true,
+    ["sign"],
+  )
+  .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
+console.log("derive hmac sha3", derivedNoLength);
+const derivedWithLength = await crypto.subtle.deriveKey(
+  { name: "HKDF", hash: "SHA3-256", salt: new Uint8Array(0), info: new Uint8Array(0) },
+  hkdfDeriveBase,
+  { name: "HMAC", hash: "SHA3-256", length: 128 },
+  true,
+  ["sign"],
+);
+console.log("derive hmac length", (derivedWithLength.algorithm as webcrypto.HmacKeyAlgorithm).length);
+const derivedSha256 = await crypto.subtle.deriveKey(
+  { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new Uint8Array(0) },
+  hkdfDeriveBase,
+  { name: "HMAC", hash: "SHA-256" },
+  true,
+  ["sign"],
+);
+console.log("derive hmac sha256", (derivedSha256.algorithm as webcrypto.HmacKeyAlgorithm).length);
+
+// A SHA-3 RSA key exports without a JWK "alg", and Node accepts any "alg"
+// when importing one; a SHA-256 key still checks the member.
+const pssPairSha3 = await crypto.subtle.generateKey(
+  { name: "RSA-PSS", hash: "SHA3-384", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]) },
+  true,
+  ["sign", "verify"],
+);
+const pssJwkSha3 = await crypto.subtle.exportKey("jwk", pssPairSha3.publicKey);
+console.log("pss sha3 jwk", pssJwkSha3.alg === undefined, Object.keys(pssJwkSha3).sort().join(","));
+for (const alg of ["PS384", "RS384", "nope"]) {
+  const imported = await crypto.subtle
+    .importKey("jwk", { ...pssJwkSha3, alg }, { name: "RSA-PSS", hash: "SHA3-384" }, true, ["verify"])
+    .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
+  console.log("import sha3 alg", alg, imported);
+}
+const pssPairSha256 = await crypto.subtle.generateKey(
+  { name: "RSA-PSS", hash: "SHA-256", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]) },
+  true,
+  ["sign", "verify"],
+);
+const pssJwkSha256 = await crypto.subtle.exportKey("jwk", pssPairSha256.publicKey);
+console.log("pss sha256 jwk alg", pssJwkSha256.alg);
+const alphaMismatch = await crypto.subtle
+  .importKey("jwk", { ...pssJwkSha256, alg: "RS256" }, { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"])
+  .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
+console.log("import sha256 mismatch", alphaMismatch);

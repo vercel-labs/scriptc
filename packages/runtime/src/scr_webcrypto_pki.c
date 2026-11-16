@@ -471,9 +471,17 @@ static bool sw_jwk_checks(const ScrDyn *jwk, unsigned usages, bool extractable) 
 }
 
 /* The JWK "alg" an RSA key with this hash carries ("RS256", "PS384"). */
-static void sw_rsa_jwk_alg(SwKind kind, const char *hash, char out[8]) {
+/* The JWK "alg" an RSA key with this hash carries ("RS256", "PS384"), or
+ * false for a SHA-3 hash, which Node's JWK form has no label for: such a
+ * key exports without "alg" and Node accepts any "alg" on import. */
+static bool sw_rsa_jwk_alg(SwKind kind, const char *hash, char out[8]) {
+  if (strncmp(hash, "SHA3-", 5) == 0) {
+    out[0] = '\0';
+    return false;
+  }
   const char *bits = strcmp(hash, "SHA-1") == 0 ? "1" : hash + 4;
   snprintf(out, 8, "%s%s", kind == SW_PSS ? "PS" : "RS", bits);
+  return true;
 }
 
 static ScrDyn *sw_import(const ScrDyn *args) {
@@ -579,8 +587,7 @@ static ScrDyn *sw_import(const ScrDyn *args) {
     }
     if (sw_is_rsa_kind(kind) && alg) {
       char expected[8];
-      sw_rsa_jwk_alg(kind, hash, expected);
-      if (!sw_jwk_is(alg, expected)) {
+      if (sw_rsa_jwk_alg(kind, hash, expected) && !sw_jwk_is(alg, expected)) {
         scr_throw_domex("DataError", "JWK \"alg\" does not match the requested algorithm");
         goto done;
       }
@@ -683,8 +690,8 @@ static ScrDyn *sw_export(const ScrDyn *args) {
     scr_dyn_obj_set(jwk, "ext", 3, scr_dyn_new_bool(k->extractable));
     if (sw_is_rsa_kind(k->kind)) {
       char alg[8];
-      sw_rsa_jwk_alg(k->kind, k->hash, alg);
-      scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr(alg));
+      if (sw_rsa_jwk_alg(k->kind, k->hash, alg))
+        scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr(alg));
     } else if (k->kind == SW_ED25519) {
       scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr("Ed25519"));
     }

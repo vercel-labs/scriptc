@@ -2245,6 +2245,12 @@ static bool scr_wc_derived_length(ScrDyn *identifier, const ScrWcAlgorithm *impo
     return true;
   }
   if (strcmp(canonical, "HMAC") == 0 && imported->hash) {
+    /* Node's HMAC key length comes from the hash only for SHA-1 and SHA-2;
+     * a SHA-3 hash needs an explicit length to derive a key. */
+    if (!imported->has_length && strncmp(imported->hash, "SHA3-", 5) == 0) {
+      scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
+      return false;
+    }
     *length = imported->has_length ? imported->length
               : strcmp(imported->hash, "SHA-384") == 0 || strcmp(imported->hash, "SHA-512") == 0
                   ? 1024

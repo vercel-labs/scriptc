@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assert-deep-dynamic-classes-and-arrays.ts"
+ ],
+ "diags": []
+}

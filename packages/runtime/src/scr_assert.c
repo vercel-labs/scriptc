@@ -657,6 +657,26 @@ static bool scr_assert_own_pair(const ScrDyn *a, ScrDynProp ea, const ScrDyn *b,
   return same;
 }
 
+static bool scr_assert_strict_handle(const ScrDyn *a, const ScrDyn *b);
+static bool scr_assert_deep_strict_gate(const ScrDyn *a, const ScrDyn *b);
+static bool scr_assert_strict_error(const ScrDyn *a, const ScrDyn *b);
+
+/* A capsule holding a class instance: the backend's type key names it
+ * "object:<class>". Node's constructor gate treats it as a class instance
+ * wherever it crosses the checked-dynamic boundary. */
+static bool scr_assert_class_capsule(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.type_key_len >= 7 &&
+         !memcmp(d->v.typed_ref.type_key, "object:", 7);
+}
+
+/* The backend keeps one type key per class, so the key answers Node's
+ * constructor comparison for two capsules of the same class. */
+static bool scr_assert_same_type_key(const ScrDyn *a, const ScrDyn *b) {
+  return a->v.typed_ref.type_key_len == b->v.typed_ref.type_key_len &&
+         !memcmp(a->v.typed_ref.type_key, b->v.typed_ref.type_key,
+                 a->v.typed_ref.type_key_len);
+}
+
 static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
   if (a == b) return true;
   if (a->kind == SCR_DYN_PROXY || b->kind == SCR_DYN_PROXY) {
@@ -664,6 +684,19 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
     return false;
   }
   if (a->kind == SCR_DYN_TYPED_REF || b->kind == SCR_DYN_TYPED_REF) {
+    bool class_a = scr_assert_class_capsule(a);
+    bool class_b = scr_assert_class_capsule(b);
+    /* Node's constructor gate runs before both values are compared, and a
+     * class instance never matches a builtin handle or a capsule of
+     * another shape (a record, an array): their constructors differ, and
+     * no field comparison could reunite them. */
+    if (!scr_assert_skip_prototype() && (class_a || class_b)) {
+      const ScrDyn *other = class_a ? b : a;
+      if (other->kind == SCR_DYN_HANDLE ||
+          (other->kind == SCR_DYN_TYPED_REF && !scr_assert_class_capsule(other)))
+        return false;
+      if (class_a && class_b && !scr_assert_same_type_key(a, b)) return false;
+    }
     ScrDyn *ma = a->kind == SCR_DYN_TYPED_REF
                      ? scr_dyn_typed_ref_materialize(a)
                      : scr_dyn_retain((ScrDyn *)a);
@@ -671,6 +704,10 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
                      ? scr_dyn_typed_ref_materialize(b)
                      : scr_dyn_retain((ScrDyn *)b);
     bool same = scr_assert_dyn_deep_eq(ma, mb);
+    /* One class view against a plain object: Node's gate compares the
+     * class's constructor with Object's, so the fields cannot reunite
+     * them. With the gate off (skipPrototype) only the fields take part. */
+    if (same && !scr_assert_skip_prototype() && class_a != class_b) same = false;
     scr_dyn_release(ma);
     scr_dyn_release(mb);
     return same;
@@ -698,10 +735,12 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_FUNC:
       return scr_dyn_strict_eq(a, b);
     case SCR_DYN_HANDLE:
-      /* Node's deepStrictEqual over two distinct live handles walks own
-       * enumerable props we do not model; same-handle is the only case a
-       * compiled test can honestly answer (documented). */
-      return a->v.handle.tag == b->v.handle.tag && a->v.handle.ptr == b->v.handle.ptr;
+      /* Same handle is reference equality, which the a == b check above
+       * already answered. Distinct handles compare by Node's built-in arm
+       * for the kind (Date by its time, RegExp by source/flags/lastIndex,
+       * Map and Set by their entries, URL by href); a kind without an arm
+       * answers false, as Node does for two distinct weak collections. */
+      return scr_assert_strict_handle(a, b);
     case SCR_DYN_PROMISE:
       /* Node compares promises structurally (no own props → equal); the
        * honest arm here is identity — two distinct promises with equal
@@ -710,14 +749,31 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       return scr_dyn_strict_eq(a, b);
     case SCR_DYN_BYTES: {
       /* The prototype gate, unless the Assert instance skips it. */
-      if (a->buffer != b->buffer && !scr_assert_skip_prototype()) return false;
+      if ((a->buffer != b->buffer || a->prototype != b->prototype) &&
+          !scr_assert_skip_prototype())
+        return false;
       const ScrBytes *x = a->v.bytes, *y = b->v.bytes;
+      /* Node's tag gate: a DataView never matches a numeric typed array of
+       * the same width even when their bytes agree. */
+      if (x->is_data_view != y->is_data_view) return false;
       if (x->elem != y->elem || x->len != y->len) return false;
       return scr_assert_bytes_content_eq(x, y);
     }
     case SCR_DYN_ARR: {
+      if (!scr_assert_skip_prototype() && !scr_assert_deep_strict_gate(a, b)) return false;
+#ifdef SCR_JS_OBJECT_MODEL
+      /* Node compares the array's length before any element: a far index
+       * leaves the dense prefix while the length grows. */
+      if (a->v.arr.length != b->v.arr.length) return false;
+#endif
       if (a->v.arr.len != b->v.arr.len) return false;
       for (size_t i = 0; i < a->v.arr.len; i++) {
+        /* A hole is not an own index property; undefined is. Node's key
+         * sets separate them, so an element must be present on both sides
+         * before its value takes part. */
+        bool present = scr_dyn_arr_has_index(a, i);
+        if (present != scr_dyn_arr_has_index(b, i)) return false;
+        if (!present) continue;
         if (!scr_assert_dyn_deep_eq(a->v.arr.items[i], b->v.arr.items[i])) return false;
       }
       if (a->v.arr.properties || b->v.arr.properties) {
@@ -729,20 +785,14 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       return true;
     }
     case SCR_DYN_OBJ: {
-      if (scr_assert_skip_prototype()) {
-        /* Node's error arm runs without the prototype check: both sides
-         * are errors with the same name and message. */
-        bool ea = scr_dyn_obj_get(a, "%error", 6) != NULL;
-        bool eb = scr_dyn_obj_get(b, "%error", 6) != NULL;
-        if (ea != eb) return false;
-        if (ea && (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "name", 4),
-                                           scr_assert_loose_error_prop(b, "name", 4)) ||
-                   !scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "message", 7),
-                                           scr_assert_loose_error_prop(b, "message", 7))))
-          return false;
-      } else if (a->null_proto != b->null_proto || a->prototype != b->prototype) {
-        return false;
-      }
+      bool ea = scr_dyn_obj_get(a, "%error", 6) != NULL;
+      bool eb = scr_dyn_obj_get(b, "%error", 6) != NULL;
+      /* Node's error arm requires an error on both sides. */
+      if (ea != eb) return false;
+      if (!scr_assert_skip_prototype() && !scr_assert_deep_strict_gate(a, b)) return false;
+      /* message, name, cause and errors compare even when they are not
+       * enumerable own properties, as Node's isEnumerableOrIdentical does. */
+      if (ea && !scr_assert_strict_error(a, b)) return false;
       /* Node compares the enumerable own properties: a non-enumerable one
        * (a class view's accessor-backed members among them) takes no part. */
       size_t na = 0, nb = 0;
@@ -1197,6 +1247,11 @@ static bool scr_assert_loose_handle(const ScrDyn *a, const ScrDyn *b) {
 
 static bool scr_assert_loose_array(const ScrDyn *a, const ScrDyn *b) {
   if (a->v.arr.len != b->v.arr.len) return false;
+  /* A hole is not an own index property and undefined is, so Node's key
+   * sets separate them in the loose mode too. */
+  for (size_t i = 0; i < a->v.arr.len; i++) {
+    if (scr_dyn_arr_has_index(a, i) != scr_dyn_arr_has_index(b, i)) return false;
+  }
   const ScrDyn *pa = a->v.arr.properties, *pb = b->v.arr.properties;
   if (pa || pb) {
     if (!pa || !pb) {
@@ -1552,6 +1607,27 @@ static void scr_assert_cf_collection(ScrAssertBuf *b, const ScrDyn *d, size_t in
   scr_assert_loose_list_free(&values);
 }
 
+/* The value of own index `i` of a checked-dynamic array, or false for a
+ * hole. The dense prefix answers from `items` (the presence bitmap says
+ * whether the index is an own property); an index past it — a far write,
+ * or the implicit hole run a length assignment creates — lives in the
+ * array's property table under its decimal spelling. */
+static bool scr_assert_cf_arr_index(const ScrDyn *d, size_t i, const ScrDyn **out) {
+  if (i < d->v.arr.len) {
+    if (!scr_dyn_arr_has_index(d, i)) return false;
+    *out = d->v.arr.items[i];
+    return true;
+  }
+  const ScrDyn *props = d->v.arr.properties;
+  if (!props) return false;
+  char text[12];
+  int n = snprintf(text, sizeof text, "%zu", i);
+  const ScrDyn *value = scr_dyn_obj_get(props, text, (size_t)n);
+  if (!value) return false;
+  *out = value;
+  return true;
+}
+
 static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
                                 size_t depth) {
   switch (d->kind) {
@@ -1630,6 +1706,39 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
         scr_dyn_release(flags);
         return;
       }
+      if (d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET) {
+        ab_cstr(b, d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap {\n  <items unknown>\n}"
+                                                        : "WeakSet {\n  <items unknown>\n}");
+        return;
+      }
+      if (d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
+          d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
+        /* Node's getBufferFormat: the bytes as lowercase hex pairs, the
+         * first 100 only, then the count it withheld, and byteLength. */
+        const ScrBytes *bs = d->v.handle.ptr;
+        const unsigned char *bytes = (const unsigned char *)bs->data;
+        size_t length = (size_t)scr_bytes_byte_len(bs);
+        SCR_BYTES_SNAPSHOT(bs);
+        bytes = (const unsigned char *)bs->data;
+        ab_cstr(b, d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ? "SharedArrayBuffer {"
+                                                                   : "ArrayBuffer {");
+        ab_cstr(b, "\n  [Uint8Contents]: <");
+        size_t shown = length > 100 ? 100 : length;
+        for (size_t i = 0; i < shown; i++) {
+          char pair[4];
+          snprintf(pair, sizeof pair, i + 1 < shown ? "%02x " : "%02x", bytes[i]);
+          ab_cstr(b, pair);
+        }
+        if (length > shown) {
+          char more[40];
+          int mn = snprintf(more, sizeof more, " ... %zu more bytes", length - shown);
+          ab_bytes(b, more, (size_t)mn);
+        }
+        char tail[48];
+        int tn = snprintf(tail, sizeof tail, ">,\n  [byteLength]: %zu\n}", length);
+        ab_bytes(b, tail, (size_t)tn);
+        return;
+      }
       ab_char(b, '[');
       ab_cstr(b, scr_dyn_handle_cls(d));
       ab_char(b, ']');
@@ -1675,7 +1784,26 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
       return;
     }
     case SCR_DYN_ARR: {
-      if (d->v.arr.len == 0) {
+      size_t dense = d->v.arr.len;
+#ifdef SCR_JS_OBJECT_MODEL
+      size_t total = d->v.arr.length > dense ? d->v.arr.length : dense;
+#else
+      size_t total = dense;
+#endif
+      const ScrDyn *props = d->v.arr.properties;
+      size_t named = 0;
+      if (props) {
+        for (size_t i = 0; i < scr_dyn_obj_count(props); i++) {
+          ScrDynProp ent = scr_dyn_obj_prop_at(props, i);
+          if (!ent.enumerable) continue;
+#ifdef SCR_JS_OBJECT_MODEL
+          size_t index = 0;
+          if (scr_dyn_arr_index_key(ent.key, ent.key_len, &index)) continue;
+#endif
+          named++;
+        }
+      }
+      if (total == 0 && named == 0) {
         ab_cstr(b, "[]");
         return;
       }
@@ -1683,13 +1811,72 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
         ab_cstr(b, "[Array]");
         return;
       }
+      /* Node's formatArray: the elements in index order (a run of holes is
+       * one `<N empty item>` line, and a named property follows the
+       * elements; sorted:true sorts the named entries by their rendered
+       * text). */
+      ScrCfEntry *ents = malloc((total + named + 1) * sizeof *ents);
+      if (!ents) scr_assert_oom();
+      size_t n = 0;
+      size_t i = 0;
+      while (i < total) {
+        const ScrDyn *item = NULL;
+        if (scr_assert_cf_arr_index(d, i, &item)) {
+          ScrAssertBuf eb = {0};
+          scr_assert_cf_value(&eb, item, indent + 2, depth - 1);
+          ents[n].text = eb.data ? eb.data : malloc(1);
+          if (!ents[n].text) scr_assert_oom();
+          ents[n++].len = eb.len;
+          i++;
+          continue;
+        }
+        size_t run = 1;
+        while (i + run < total) {
+          const ScrDyn *probe = NULL;
+          if (scr_assert_cf_arr_index(d, i + run, &probe)) break;
+          run++;
+        }
+        char hole[40];
+        int hn = run == 1 ? snprintf(hole, sizeof hole, "<1 empty item>")
+                          : snprintf(hole, sizeof hole, "<%zu empty items>", run);
+        ents[n].text = malloc((size_t)hn);
+        if (!ents[n].text) scr_assert_oom();
+        memcpy(ents[n].text, hole, (size_t)hn);
+        ents[n++].len = (size_t)hn;
+        i += run;
+      }
+      if (named != 0) {
+        ScrCfEntry *extra = malloc(named * sizeof *extra);
+        if (!extra) scr_assert_oom();
+        size_t m = 0;
+        for (size_t k = 0; k < scr_dyn_obj_count(props); k++) {
+          ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
+          if (!ent.enumerable) continue;
+#ifdef SCR_JS_OBJECT_MODEL
+          size_t index = 0;
+          if (scr_dyn_arr_index_key(ent.key, ent.key_len, &index)) continue;
+#endif
+          ScrAssertBuf eb = {0};
+          scr_assert_cf_key(&eb, ent.key, ent.key_len);
+          ab_cstr(&eb, ": ");
+          scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+          extra[m].text = eb.data ? eb.data : malloc(1);
+          if (!extra[m].text) scr_assert_oom();
+          extra[m++].len = eb.len;
+        }
+        qsort(extra, m, sizeof *extra, scr_assert_cf_entry_cmp);
+        for (size_t k = 0; k < m; k++) ents[n++] = extra[k];
+        free(extra);
+      }
       ab_char(b, '[');
-      for (size_t i = 0; i < d->v.arr.len; i++) {
+      for (size_t k = 0; k < n; k++) {
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
-        scr_assert_cf_value(b, d->v.arr.items[i], indent + 2, depth - 1);
-        if (i + 1 < d->v.arr.len) ab_char(b, ',');
+        ab_bytes(b, ents[k].text, ents[k].len);
+        if (k + 1 < n) ab_char(b, ',');
+        free(ents[k].text);
       }
+      free(ents);
       ab_char(b, '\n');
       scr_assert_cf_pad(b, indent);
       ab_char(b, ']');
@@ -2083,6 +2270,180 @@ static ScrStr *scr_assert_dyn_eq_message(ScrDyn *a, ScrDyn *b, bool deep,
   return scr_assert_dyn_diff_message(a, b, deep, NULL, msg, has_msg, full);
 }
 
+/* ── strict deep equality's built-in arms ──────────────────────────────
+ * comparisons.js in kStrict mode compares each built-in kind by its
+ * intrinsic value once the constructor and tag gates pass. The checked-
+ * dynamic tree keeps those values: Dates and RegExps as handles, Maps and
+ * Sets as their entry storage, typed arrays as bytes. */
+
+/* Node's constructor gate (objectComparisonStart, kStrict): an object whose
+ * `constructor` is inherited compares that value with the other side's; one
+ * that carries its own constructor (or has none) compares prototypes
+ * instead. Object.prototype is an identity token here, as in Node, where
+ * every plain object shares it. +1. */
+static ScrDyn *scr_assert_deep_constructor(const ScrDyn *value) {
+  for (const ScrDyn *p = value; p; p = p->prototype) {
+    const ScrDyn *table =
+        p->kind == SCR_DYN_OBJ ? p : p->kind == SCR_DYN_ARR ? p->v.arr.properties : NULL;
+    if (table) {
+      for (size_t i = 0; i < scr_dyn_obj_count(table); i++) {
+        ScrDynProp e = scr_dyn_obj_prop_at(table, i);
+        if (e.key_len == 11 && !memcmp(e.key, "constructor", 11)) {
+          if (e.accessor) return scr_dyn_retain(scr_dyn_undefined());
+          return scr_dyn_retain(e.value);
+        }
+      }
+    }
+    if (!p->prototype) {
+      if (p->null_proto) return scr_dyn_retain(scr_dyn_undefined());
+      return p->kind == SCR_DYN_ARR ? scr_dyn_array_constructor() : scr_dyn_object_prototype();
+    }
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static bool scr_assert_deep_strict_gate(const ScrDyn *a, const ScrDyn *b) {
+  ScrDyn *x = scr_assert_deep_constructor(a);
+  ScrDyn *y = !scr_exc_pending() ? scr_assert_deep_constructor(b) : NULL;
+  const ScrDyn *table = a->kind == SCR_DYN_OBJ ? a : a->kind == SCR_DYN_ARR ? a->v.arr.properties : NULL;
+  bool inherited = !table || !scr_dyn_obj_get(table, "constructor", 11);
+  bool compare_constructor = !scr_exc_pending() && x->kind != SCR_DYN_UNDEF && inherited;
+  bool same = compare_constructor && scr_dyn_same_value(x, y);
+  scr_dyn_release(x);
+  scr_dyn_release(y);
+  if (scr_exc_pending()) return false;
+  if (!compare_constructor) {
+    x = scr_dyn_get_prototype((ScrDyn *)a);
+    y = !scr_exc_pending() ? scr_dyn_get_prototype((ScrDyn *)b) : NULL;
+    same = !scr_exc_pending() && scr_dyn_same_value(x, y);
+    scr_dyn_release(x);
+    scr_dyn_release(y);
+  }
+  return same;
+}
+
+/* isError's arm: message, name, cause and errors compare unless the
+ * expected side carries them as enumerable own keys (they are compared as
+ * own properties there), and an own cause must be own on both sides. */
+static bool scr_assert_strict_error(const ScrDyn *a, const ScrDyn *b) {
+  static const char *const props[] = {"message", "name", "cause", "errors"};
+  for (size_t i = 0; i < 4; i++) {
+    size_t len = strlen(props[i]);
+    if (scr_assert_loose_entry(b, props[i], len)) continue;
+    if (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, props[i], len),
+                                scr_assert_loose_error_prop(b, props[i], len)))
+      return false;
+  }
+  if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL))
+    return false;
+  return true;
+}
+
+/* Sets and Maps match their entries member by member in any order: each
+ * entry of `b` pairs with a distinct deeply equal entry of `a`. */
+static bool scr_assert_strict_set(ScrMap *a, ScrMap *b) {
+  if (scr_assert_loose_size(a) != scr_assert_loose_size(b)) return false;
+  ScrAssertDynList av = scr_assert_loose_list(a, false);
+  ScrAssertDynList bv = scr_assert_loose_list(b, false);
+  bool *used = calloc(av.len ? av.len : 1, sizeof *used);
+  if (!used) scr_trap("scriptc: out of memory\n");
+  bool same = true;
+  for (size_t i = 0; same && i < bv.len; i++) {
+    if (scr_map_dyn_has(a, bv.items[i], false)) continue;
+    bool matched = false;
+    for (size_t j = 0; !matched && j < av.len; j++) {
+      if (used[j]) continue;
+      if (!scr_assert_dyn_deep_eq(av.items[j], bv.items[i])) continue;
+      used[j] = true;
+      matched = true;
+    }
+    if (scr_exc_pending()) same = false;
+    else if (!matched) same = false;
+  }
+  free(used);
+  scr_assert_loose_list_free(&av);
+  scr_assert_loose_list_free(&bv);
+  return same;
+}
+
+static bool scr_assert_strict_map(ScrMap *a, ScrMap *b) {
+  if (scr_assert_loose_size(a) != scr_assert_loose_size(b)) return false;
+  ScrAssertDynList ak = scr_assert_loose_list(a, false);
+  ScrAssertDynList av = scr_assert_loose_list(a, true);
+  ScrAssertDynList bk = scr_assert_loose_list(b, false);
+  ScrAssertDynList bv = scr_assert_loose_list(b, true);
+  bool *used = calloc(ak.len ? ak.len : 1, sizeof *used);
+  if (!used) scr_trap("scriptc: out of memory\n");
+  bool same = true;
+  for (size_t i = 0; same && i < bk.len; i++) {
+    if (scr_map_dyn_has(a, bk.items[i], false)) {
+      ScrDyn *item = scr_map_dyn_get(a, bk.items[i]);
+      same = item && scr_assert_dyn_deep_eq(item, bv.items[i]);
+      if (item) scr_dyn_release(item);
+      continue;
+    }
+    bool matched = false;
+    for (size_t j = 0; !matched && j < ak.len; j++) {
+      if (used[j]) continue;
+      if (!scr_assert_dyn_deep_eq(ak.items[j], bk.items[i])) continue;
+      if (!scr_assert_dyn_deep_eq(av.items[j], bv.items[i])) continue;
+      used[j] = true;
+      matched = true;
+    }
+    if (scr_exc_pending() || !matched) same = false;
+  }
+  free(used);
+  scr_assert_loose_list_free(&ak);
+  scr_assert_loose_list_free(&av);
+  scr_assert_loose_list_free(&bk);
+  scr_assert_loose_list_free(&bv);
+  return same;
+}
+
+/* The intrinsic arms. Same-handle was answered before, so a kind that
+ * reaches here is two distinct handles: Node answers false for two weak
+ * collections, and a native kind without an arm has no own enumerable
+ * properties this runtime models, so identity (false) is its answer too. */
+static bool scr_assert_strict_handle(const ScrDyn *a, const ScrDyn *b) {
+  if (a->v.handle.tag != b->v.handle.tag) return false;
+  switch (a->v.handle.tag) {
+    case SCR_DYNH_DATE: {
+      double x = scr_dyn_native_date_value(a), y = scr_dyn_native_date_value(b);
+      return x == y || (x != x && y != y);
+    }
+    case SCR_DYNH_REGEXP:
+      return scr_assert_loose_regex(a, b);
+    case SCR_DYNH_SET:
+      return scr_assert_strict_set(a->v.handle.ptr, b->v.handle.ptr);
+    case SCR_DYNH_MAP:
+      return scr_assert_strict_map(a->v.handle.ptr, b->v.handle.ptr);
+    case SCR_DYNH_WEAK_MAP:
+    case SCR_DYNH_WEAK_SET:
+      return false;
+    case SCR_DYNH_SEARCH_PARAMS:
+      return true; /* no own enumerable properties */
+    case SCR_DYNH_URL: {
+      ScrDyn *x = scr_assert_loose_regex_prop(a, "href");
+      ScrDyn *y = scr_assert_loose_regex_prop(b, "href");
+      bool same = scr_dyn_strict_eq(x, y);
+      scr_dyn_release(x);
+      scr_dyn_release(y);
+      return same;
+    }
+    case SCR_DYNH_ARRAY_BUFFER:
+    case SCR_DYNH_SHARED_ARRAY_BUFFER: {
+      const ScrBytes *x = a->v.handle.ptr, *y = b->v.handle.ptr;
+      if (scr_bytes_byte_len(x) != scr_bytes_byte_len(y)) return false;
+      SCR_BYTES_SNAPSHOT(x);
+      SCR_BYTES_SNAPSHOT(y);
+      size_t length = (size_t)scr_bytes_byte_len(x);
+      return length == 0 || !memcmp(x->data, y->data, length);
+    }
+    default:
+      return a->v.handle.ptr == b->v.handle.ptr;
+  }
+}
+
 /* ── partial deep equality (Node's isPartialStrictEqual) ────────────────
  * comparisons.js in kPartial mode: the expected value (b) must be
  * contained in the actual one (a). Primitives compare by Object.is, with
@@ -2144,6 +2505,14 @@ static bool scr_assert_partial_bytes(const ScrBytes *x, const ScrBytes *y) {
 static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
   size_t la = a->v.arr.len, lb = b->v.arr.len;
   if (la < lb) return false;
+  /* Equal-length arrays pair element by element: a hole on one side and an
+   * own undefined on the other are different key sets (Node's aligned key
+   * check). The unequal-length forms below keep Node's subsequence match. */
+  if (la == lb) {
+    for (size_t i = 0; i < la; i++) {
+      if (scr_dyn_arr_has_index(a, i) != scr_dyn_arr_has_index(b, i)) return false;
+    }
+  }
   const ScrDyn *pb = b->v.arr.properties;
   if (pb) {
     const ScrDyn *pa = a->v.arr.properties;

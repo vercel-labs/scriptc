@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assert-error-construction-and-instances.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'operator' does not exist on type 'Error'.",
+   "loc": {
+    "file": "<repo>/tests/corpus/assert-error-construction-and-instances.ts",
+    "start": 1671,
+    "end": 1679
+   }
+  }
+ ]
+}

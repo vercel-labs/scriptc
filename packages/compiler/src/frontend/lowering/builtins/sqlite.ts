@@ -10,7 +10,7 @@ import { builtinImportOf } from "./module-bindings.js";
  * the handle, their methods dispatch through it, and these helpers lower the
  * uses a dyn value cannot answer by itself (construction and instanceof). */
 
-type SqliteClass = "DatabaseSync" | "StatementSync";
+type SqliteClass = "DatabaseSync" | "StatementSync" | "Session";
 
 /** The sqlite class `node` names, in any module spelling. */
 export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClass | null {
@@ -20,7 +20,9 @@ export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClas
       ? lowerer.builtinMemberOf(node)
       : null;
   if (builtin?.module !== "sqlite") return null;
-  return builtin.member === "DatabaseSync" || builtin.member === "StatementSync"
+  return builtin.member === "DatabaseSync" ||
+    builtin.member === "StatementSync" ||
+    builtin.member === "Session"
     ? builtin.member
     : null;
 }
@@ -72,10 +74,11 @@ export function lowerSqliteInstanceof(lowerer: Lowerer, expr: ts.BinaryExpressio
   if (cls === null) return null;
   const loc = locOf(expr);
   const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+  const kind = cls === "DatabaseSync" ? 0 : cls === "StatementSync" ? 1 : 3;
   return {
     kind: "libCall",
     fn: "sqlite.is",
-    args: [value, numLit(cls === "DatabaseSync" ? 0 : 1, loc)],
+    args: [value, numLit(kind, loc)],
     type: BOOL,
     loc,
   };

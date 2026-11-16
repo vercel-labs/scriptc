@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webcrypto-get-public-key-arguments.mjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,14 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-export-star/impl-prod.cjs",
+  "<repo>/tests/corpus/cjs-export-star/impl-dev.cjs",
+  "<repo>/tests/corpus/cjs-export-star/runtime.cjs",
+  "<repo>/tests/corpus/cjs-export-star/shim.ts",
+  "<repo>/tests/corpus/cjs-export-star/shadow.ts",
+  "<repo>/tests/corpus/cjs-export-star/a.cjs",
+  "<repo>/tests/corpus/cjs-export-star/b.cjs",
+  "<repo>/tests/corpus/cjs-export-star/two.ts",
+  "<repo>/tests/corpus/cjs-export-star/main.ts"
+ ],
+ "diags": []
+}

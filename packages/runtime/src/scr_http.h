@@ -146,6 +146,13 @@ void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *v
  * may throw ERR_HTTP_INVALID_HEADER_VALUE. */
 void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
+/* setHeaders(headers): a Map (or Headers object) of names to values, every
+ * set-cookie value collected into one array, as Node applies it. */
+void scr_http_res_set_headers_dyn(ScrHttpRes *r, const ScrDyn *headers /*borrowed*/);
+/* OutgoingMessage.pipe: emits ERR_STREAM_CANNOT_PIPE on the message's error
+ * list (an unhandled 'error' exits, Node's throw of that error). */
+void scr_http_outgoing_cannot_pipe(ScrNetLs *l, void *self, ScrDynHandleTag tag);
+void scr_http_res_cannot_pipe(ScrHttpRes *r);
 void scr_http_res_write_head(ScrHttpRes *r, double status);
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/, ScrArr *values /*borrowed*/);
 void scr_http_res_write_continue(ScrHttpRes *r);
@@ -155,8 +162,8 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [na
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */
 void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *headers);
-void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
-void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
+bool scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
+bool scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_end(ScrHttpRes *r);
 /* socket.pipe(res): raw source chunks become response body writes; EOF
  * ends the response (the extended-CONNECT bridge leg). Borrows both. */
@@ -165,7 +172,7 @@ void scr_http_res_end_str(ScrHttpRes *r, ScrStr *data /*borrowed*/);
 void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
-void scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
+bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
@@ -194,6 +201,9 @@ void scr_http_res_remove_header(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* 'prefinish': inside end(), once the last bytes are handed to the socket. */
 void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
+/* 'drain': Node's OutgoingMessage event, fired once a write() that answered
+ * false has its bytes out. */
+void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
@@ -256,6 +266,10 @@ void scr_http_res_flush_headers(ScrHttpRes *r);
 void scr_http_res_cork(ScrHttpRes *r);
 void scr_http_res_uncork(ScrHttpRes *r);
 double scr_http_res_writable_corked(ScrHttpRes *r);
+/* Node's OutgoingMessage.writableLength (corked bytes + chunk framing + a
+ * held head + the socket's unsent bytes) and writableNeedDrain. */
+double scr_http_res_writable_length(ScrHttpRes *r);
+bool scr_http_res_writable_need_drain(ScrHttpRes *r);
 double scr_http_res_writable_high_water_mark(ScrHttpRes *r);
 bool scr_http_res_writable_object_mode(ScrHttpRes *r);
 bool scr_http_res_destroyed_flag(ScrHttpRes *r);
@@ -289,8 +303,8 @@ ScrHttpClientReq *scr_http_request(ScrStr *host /*borrowed*/, double port,
 /* The createConnection form: conn_cb (a `() => net.Socket` closure) runs
  * once, synchronously, and supplies the exchange's socket. */
 ScrHttpClientReq *scr_http_request_conn(ScrClosure *conn_cb /*moves*/, ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/, double timeout_ms, ScrArr *header_pairs /*borrowed*/, bool auto_end, ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
-void scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
-void scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
+bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
+bool scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
 void scr_http_client_end(ScrHttpClientReq *c);
 void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
@@ -318,8 +332,12 @@ void scr_http_client_add_trailers(ScrHttpClientReq *c, ScrArr *pairs /*borrowed*
 void scr_http_client_cork(ScrHttpClientReq *c);
 void scr_http_client_uncork(ScrHttpClientReq *c);
 double scr_http_client_writable_corked(ScrHttpClientReq *c);
+double scr_http_client_writable_length(ScrHttpClientReq *c);
+bool scr_http_client_writable_need_drain(ScrHttpClientReq *c);
+void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
+void scr_http_client_cannot_pipe(ScrHttpClientReq *c);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
-void scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
+bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);

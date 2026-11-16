@@ -57,11 +57,13 @@ import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
 import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { stringPropertyKey } from "../lower-exprs.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
@@ -659,6 +661,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const sqlite = lowerSqliteInstanceof(lowerer, expr);
+    if (sqlite) return sqlite;
     const perfClass = lowerPerfInstanceof(lowerer, expr);
     if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
@@ -2693,6 +2697,16 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // A mutable-buffer member name on the left of `in` in a JavaScript source
+  // is the mutableBuffers fact as well: `"transfer" in ab` asks for the
+  // buffer classes' method values, which only the fact's object-model build
+  // models (`"resize" in ab` must not answer false). Same name match and
+  // same bargain as a read of the member: a false positive costs only the
+  // invariant metadata of that one program.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const probe = lowerer.foldedStringKeyOf(expr.left);
+    if (probe !== null && MUTABLE_BUFFER_MEMBERS.has(probe)) lowerer.buffersMutable = true;
   }
   // `key in value` on an instance whose prototype may have been replaced
   // (reprototyped-reads.ts). The key is evaluated first: one that can run

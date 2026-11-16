@@ -48,6 +48,12 @@ void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
 /* t.log(message[, data]): the ℹ line prints at once, at the test's depth;
  * the data payload rides the test:log event only. */
 void scr_test_ctx_log(ScrTestCtx *t, ScrStr *msg);
+/* t.signal: the test's AbortSignal handle (+1), made on the first read and
+ * aborted when the test times out, is cancelled, or finishes; undefined
+ * when the abort unit is absent (it links only for a program reading one).
+ * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
+ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
+ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 /* t.plan(count[, { wait }]): `has_wait` says whether the options object
  * carried the property; a shortfall then waits that many ms for the

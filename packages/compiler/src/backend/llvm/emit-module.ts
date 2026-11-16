@@ -632,11 +632,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // A program that can register an 'error' listener on a child installs
   // the builder of a failed spawn's error object (runtime-features.ts).
   const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
-  const usesFsWatch = runtimeFeatures.fsWatch;
+  // fsPromises.watch iterates over the watcher unit, so it installs the
+  // same loop hooks.
+  const usesFsWatch = runtimeFeatures.fsWatch || runtimeFeatures.fsWatchEvents;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
   // the same predicate).
   const usesFsWatchFile = runtimeFeatures.fsWatchFile;
+  // fsPromises.watch programs register the iterator unit's exit cleanup —
+  // the same one-line gating (native/executable.ts links scr_watch_async.c
+  // on the same predicate).
+  const usesFsWatchEvents = runtimeFeatures.fsWatchEvents;
   // Programs that call into Node record the libnode pack and its Node
   // version before %main (scr_node_island.c).
   const usesNodeIsland = runtimeFeatures.nodeIsland;
@@ -724,6 +730,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (usesFsWatchFile) emitter.declare(`declare void @scr_watch_file_install()`);
+  if (usesFsWatchEvents) emitter.declare(`declare void @scr_watch_events_install()`);
   if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
   // Interned now: the C-string constants flush before main assembles.
   const nodeIslandConfig = usesNodeIsland
@@ -1536,6 +1543,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watchFile programs register the poller unit's atexit cleanup the
     // same way — scr_watch_file.c links only when this line is emitted.
     ...(usesFsWatchFile ? [`  call void @scr_watch_file_install()`] : []),
+    ...(usesFsWatchEvents ? [`  call void @scr_watch_events_install()`] : []),
     ...(nodeIslandConfig
       ? [
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,

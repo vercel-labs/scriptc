@@ -46809,6 +46809,7 @@
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-promises-constants.ts",
+          "tests/corpus/fs-promises-watch.ts",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
@@ -48659,8 +48660,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.watch",
+        "tests": [
+          "tests/corpus/fs-promises-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },

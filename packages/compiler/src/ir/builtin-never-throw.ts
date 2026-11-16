@@ -41,6 +41,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // flag; a closed watcher ignores them, and nothing user-visible runs.
   "watcher.ref",
   "watcher.unref",
+  // watchEvents.wait builds a promise or answers a settled one, and
+  // scr_watch_events_close closes an already-open watcher (a closed one
+  // returns at once). Neither runs program code. watchEvents.take and
+  // fsp.watch are deliberately absent: a queue over its bound raises
+  // ERR_FS_WATCH_QUEUE_OVERFLOW, and opening the path throws Node's fs
+  // error.
+  "watchEvents.wait",
+  "watchEvents.close",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   // scr_sqlite_is compares a handle's tag.

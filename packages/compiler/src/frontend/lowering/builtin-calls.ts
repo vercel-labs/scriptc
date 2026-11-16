@@ -1,5 +1,5 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
-import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
+import { lowerFsPromisesWatchCall, lowerFsWatchFileCall } from "./builtins/filesystem.js";
 import {
   lowerEventLoopUtilizationCall,
   lowerMonitorEventLoopDelayCall,
@@ -228,6 +228,18 @@ export function lowerBuiltinCall(
   if (bi.module === "fs" && (bi.member === "watchFile" || bi.member === "unwatchFile")) {
     const polling = lowerFsWatchFileCall(lowerer, expr, loc, bi.member === "unwatchFile");
     if (polling) return polling;
+  }
+  // fsPromises.watch: the async iterator a `for await` drains (the
+  // lowering of that loop drives it; any other use has no lowering and is
+  // refused where it stands).
+  if (bi.module === "fs/promises" && bi.member === "watch") {
+    const watching = lowerFsPromisesWatchCall(lowerer, expr, loc);
+    if (watching) return watching;
+    lowerer.noLowering(
+      "fsPromises.watch outside a for await",
+      expr,
+      "the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape",
+    );
   }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;

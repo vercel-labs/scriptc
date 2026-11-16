@@ -14277,7 +14277,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     lowerer.unsupported(
       "SC1070",
       stmt,
-      "'for await' over this value (supported: typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
+      "'for await' over this value (supported: fsPromises.watch, typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
     );
   }
   if (awaitArray && !lowerer.ctx.isAsync) {

@@ -1231,6 +1231,8 @@ export function formatIrType(
         return append("Hmac");
       case "fsWatcher":
         return append("FSWatcher");
+      case "watchEvents":
+        return append("FSWatchEvents");
       case "childStream":
         return append("Readable");
       case "childWriter":

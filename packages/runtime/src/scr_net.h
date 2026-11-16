@@ -63,6 +63,10 @@ typedef void (*ScrNetNativeDataFn)(void *ctx, const char *buf, size_t n);
 typedef void (*ScrNetNativeEventFn)(void *ctx);
 typedef bool (*ScrNetNativeTimeoutHandledFn)(void *ctx);
 typedef bool (*ScrNetNativeErrFn)(void *ctx, ScrStr *msg); /* true = consumed */
+/* The same claim for an Error the program itself queued (destroy(err)):
+ * the protocol layer answers with the object Node hands its own
+ * handler. */
+typedef bool (*ScrNetNativeErrObjFn)(void *ctx, ScrError *err);
 void scr_net_server_set_native_conn(ScrNetServer *s, ScrNetNativeConnFn fn, void *ctx, void (*ctx_free)(void *));
 /* The HTTP-parser ctx ALIAS: scr_http.c stamps its server ctx here so
  * late 'request' listener installs (scr_http_server_on_request) can
@@ -104,6 +108,7 @@ bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
+void scr_net_sock_set_native_error_obj(ScrNetSocket *s, ScrNetNativeErrObjFn fn);
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn);
 void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
 /* Several protocol-layer slices in order as one write: a single vectored
@@ -229,6 +234,9 @@ enum {
   SCR_NET_OFF_DROP = 6,
   SCR_NET_OFF_NEW_LISTENER = 7,
   SCR_NET_OFF_CLIENT_ERROR = 8,
+  /* The TLS handshake-complete list ('secureConnection'), which fires
+   * beside the 'connection' list but is a separate registry. */
+  SCR_NET_OFF_SECURE_CONNECTION = 9,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 /* server.listeners(event): a +1 closure array of the event's listeners in

@@ -1,0 +1,26 @@
+test-expect-failure-matcher.ts:6:41 - error SC2020: 'test(...) with an expectFailure matcher' is part of the standard library types but has no scriptc lowering yet
+
+  5 | 
+  6 | test("regexp matcher", { expectFailure: /boom/ as any }, () => {});
+    |                                         ^~~~~~~~~~~~~
+  7 | test("function matcher", { expectFailure: ((): boolean => true) as any }, () => {});
+
+  hint: expectFailure takes true, false or a string reason; Node's matcher forms (RegExp, function, object, Error, { label, match }) have no lowering
+
+test-expect-failure-matcher.ts:7:43 - error SC2020: 'test(...) with an expectFailure matcher' is part of the standard library types but has no scriptc lowering yet
+
+  6 | test("regexp matcher", { expectFailure: /boom/ as any }, () => {});
+  7 | test("function matcher", { expectFailure: ((): boolean => true) as any }, () => {});
+    |                                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 | test("object matcher", { expectFailure: { code: "E_X" } as any }, () => {});
+
+  hint: expectFailure takes true, false or a string reason; Node's matcher forms (RegExp, function, object, Error, { label, match }) have no lowering
+
+test-expect-failure-matcher.ts:8:41 - error SC2020: 'test(...) with an expectFailure matcher' is part of the standard library types but has no scriptc lowering yet
+
+  7 | test("function matcher", { expectFailure: ((): boolean => true) as any }, () => {});
+  8 | test("object matcher", { expectFailure: { code: "E_X" } as any }, () => {});
+    |                                         ^~~~~~~~~~~~~~~~~~~~~~
+  9 | // End with a nonblank context line so diagnostic snapshots carry no trailing whitespace.
+
+  hint: expectFailure takes true, false or a string reason; Node's matcher forms (RegExp, function, object, Error, { label, match }) have no lowering

@@ -434,6 +434,10 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
+  /** The program uses fsPromises.watch (moduleUsesFsWatchEvents on the IR):
+   * compiles scr_watch_async.c into the binary, and with it scr_watch.c
+   * (the iterator is a queue over that unit's watcher). */
+  watchEvents?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

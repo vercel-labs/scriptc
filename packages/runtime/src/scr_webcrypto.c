@@ -226,6 +226,42 @@ static int scr_wc_usage_index(const ScrStr *s) {
 }
 
 /* sequence<KeyUsage> over an array: the usage mask (-1 on failure). */
+/* The keyUsages sequence KeyObject.toCryptoKey takes: Node's messages name
+ * the value "Value" rather than an argument position. */
+long scr_wc_value_usages(ScrDyn *value) {
+  ScrDyn *plain = scr_wc_plain(value);
+  if (!plain) return -1;
+  if (plain->kind != SCR_DYN_ARR) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "Value cannot be converted to sequence.");
+    scr_dyn_release(plain);
+    return -1;
+  }
+  long mask = 0;
+  double n = scr_dyn_arr_len(plain);
+  for (double i = 0; i < n; i++) {
+    ScrDyn *item = scr_dyn_arr_at(plain, i);
+    ScrStr *s = scr_wc_dom_string(item);
+    scr_dyn_release(item);
+    if (!s) {
+      scr_dyn_release(plain);
+      return -1;
+    }
+    int k = scr_wc_usage_index(s);
+    if (k < 0) {
+      scr_wc_type_error("ERR_INVALID_ARG_VALUE",
+                        "Value[%.0f] '%.*s' is not a valid enum value of type KeyUsage.", i,
+                        (int)(s->len > 200 ? 200 : s->len), s->data);
+      scr_str_release(s);
+      scr_dyn_release(plain);
+      return -1;
+    }
+    scr_str_release(s);
+    mask |= 1L << k;
+  }
+  scr_dyn_release(plain);
+  return mask;
+}
+
 long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value) {
   ScrDyn *plain = scr_wc_plain(value);
   if (!plain) return -1;
@@ -326,13 +362,13 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
   return out;
 }
 
-/* The SHA-3 digests Node reports as experimental the first time a program
- * uses each one. The warning is delivered on the next tick, as Node's
- * process warning is: to the 'warning' listeners when the process-warning
- * unit is linked, and otherwise to the default report. It does not go
- * through scr_emit_warning, which would make every WebCrypto program link
- * that unit. */
-static SCR_TL bool scr_wc_sha3_warned[3];
+/* The algorithms Node reports as experimental the first time a program
+ * normalizes each one. The warning is delivered on the next tick, as
+ * Node's process warning is: to the 'warning' listeners when the
+ * process-warning unit is linked, and otherwise to the default report. It
+ * does not go through scr_emit_warning, which would make every WebCrypto
+ * program link that unit. */
+static SCR_TL bool scr_wc_experimental_warned[5];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -355,12 +391,13 @@ static void scr_wc_warning_tick(ScrClosure *self) {
   scr_str_release(message);
 }
 
-static void scr_wc_warn_sha3(const char *canonical) {
-  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512"};
+static void scr_wc_warn_experimental_algorithm(const char *canonical) {
+  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512", "AES-OCB",
+                                      "ChaCha20-Poly1305"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
-    if (scr_wc_sha3_warned[i]) return;
-    scr_wc_sha3_warned[i] = true;
+    if (scr_wc_experimental_warned[i]) return;
+    scr_wc_experimental_warned[i] = true;
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, "The ");
@@ -388,7 +425,7 @@ const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return NULL;
   }
-  scr_wc_warn_sha3(canonical);
+  scr_wc_warn_experimental_algorithm(canonical);
   if (!scr_wc_native_hash(canonical)) {
     scr_wc_unsupported_algorithm(method, canonical);
     return NULL;
@@ -502,6 +539,17 @@ static bool scr_wc_is_aes(const char *name) {
          strcmp(name, "AES-GCM") == 0 || strcmp(name, "AES-KW") == 0;
 }
 
+static bool scr_wc_is_ocb(const char *name) { return strcmp(name, "AES-OCB") == 0; }
+
+static bool scr_wc_is_chacha(const char *name) {
+  return strcmp(name, "ChaCha20-Poly1305") == 0;
+}
+
+/* The key algorithms whose cipher runs in scr_webcrypto_aes.c. */
+static bool scr_wc_is_cipher_key(const char *name) {
+  return scr_wc_is_aes(name) || scr_wc_is_ocb(name) || scr_wc_is_chacha(name);
+}
+
 static bool scr_wc_is_kdf(const char *name) {
   return strcmp(name, "PBKDF2") == 0 || strcmp(name, "HKDF") == 0;
 }
@@ -527,12 +575,13 @@ static bool scr_wc_normalize(ScrDyn *identifier, const char *const *names, size_
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return false;
   }
+  scr_wc_warn_experimental_algorithm(out->name);
   bool hmac = strcmp(out->name, "HMAC") == 0;
   if (op == SCR_WC_OP_IMPORT && hmac)
     return scr_wc_hmac_params(identifier, "HmacImportParams", "DataError", "importKey", out);
   if (op == SCR_WC_OP_GENERATE && hmac)
     return scr_wc_hmac_params(identifier, "HmacKeyGenParams", "OperationError", "generateKey", out);
-  if (op == SCR_WC_OP_GENERATE && scr_wc_is_aes(out->name))
+  if (op == SCR_WC_OP_GENERATE && (scr_wc_is_aes(out->name) || scr_wc_is_ocb(out->name)))
     return scr_wc_aes_length_params(identifier, "AesKeyGenParams", out);
   return true;
 }
@@ -613,7 +662,7 @@ static ScrDyn *scr_crypto_key_algorithm(ScrCryptoKey *key) {
   if (!key->algorithm) {
     ScrDyn *algorithm = scr_dyn_new_obj();
     scr_dyn_obj_set(algorithm, "name", 4, scr_wc_cstr(key->name));
-    if (!scr_wc_is_kdf(key->name))
+    if (!scr_wc_is_kdf(key->name) && !scr_wc_is_chacha(key->name))
       scr_dyn_obj_set(algorithm, "length", 6, scr_dyn_new_num(key->length));
     if (key->hash) {
       ScrDyn *hash = scr_dyn_new_obj();
@@ -776,6 +825,11 @@ static const char *scr_wc_jwk_alg(const char *name, const char *hash, double len
     if (strcmp(hash, "SHA-512") == 0) return "HS512";
     return NULL;
   }
+  if (scr_wc_is_ocb(name)) {
+    snprintf(buf, size, "A%.0fOCB", length);
+    return buf;
+  }
+  if (scr_wc_is_chacha(name)) return "C20P";
   if (!scr_wc_is_aes(name)) return NULL;
   snprintf(buf, size, "A%.0f%s", length, name + 4);
   return buf;
@@ -1098,6 +1152,11 @@ static ScrDyn *scr_wc_import_aes(const char *format, ScrBytes *data, const ScrWc
                                  const char *name, bool extractable, long usages,
                                  bool *unsupported) {
   if (!scr_wc_check_usages(name, usages)) return NULL;
+  bool ocb = scr_wc_is_ocb(name), chacha = scr_wc_is_chacha(name);
+  if ((ocb || chacha) && strcmp(format, "raw") == 0) {
+    *unsupported = true;
+    return NULL;
+  }
   ScrBytes *bytes = NULL;
   bool from_jwk = strcmp(format, "jwk") == 0;
   if (strcmp(format, "raw") == 0 || strcmp(format, "raw-secret") == 0) {
@@ -1115,7 +1174,8 @@ static ScrDyn *scr_wc_import_aes(const char *format, ScrBytes *data, const ScrWc
     SCR_BYTES_SNAPSHOT(view);
     size_t len = (size_t)scr_bytes_byte_len(view);
     double length = (double)len * 8;
-    if (length != 128 && length != 192 && length != 256) {
+    if ((chacha && length != 256) ||
+        (!chacha && length != 128 && length != 192 && length != 256)) {
       scr_throw_domex("DataError", "Invalid key length");
       goto done;
     }
@@ -1162,7 +1222,7 @@ static ScrDyn *scr_wc_import_key_sync(const char *format, ScrBytes *data, const 
   ScrDyn *key;
   if (strcmp(algorithm->name, "HMAC") == 0)
     key = scr_wc_import_hmac(format, data, jwk, algorithm, extractable, usages, &unsupported);
-  else if (scr_wc_is_aes(algorithm->name))
+  else if (scr_wc_is_cipher_key(algorithm->name))
     key = scr_wc_import_aes(format, data, jwk, algorithm->name, extractable, usages, &unsupported);
   else if (scr_wc_is_kdf(algorithm->name))
     key = scr_wc_import_kdf(format, data, algorithm->name, extractable, usages, &unsupported);
@@ -1232,6 +1292,119 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
   return scr_wc_resolved(key);
 }
 
+/* ── KeyObject.toCryptoKey and KeyObject.from ─────────────────────────
+ * node:crypto's KeyObject converts to a CryptoKey with toCryptoKey, and a
+ * CryptoKey converts to a KeyObject with KeyObject.from. The key material
+ * is the same native key: a secret key's bytes go through the import path,
+ * and the pki unit builds the asymmetric CryptoKey and KeyObject. */
+
+static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn *algorithm,
+                                                      ScrDyn *extractable_value,
+                                                      ScrDyn *usages_value) {
+  bool asymmetric = key && key->kind == SCR_DYN_HANDLE &&
+                    (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
+                     key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
+  if (asymmetric) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
+      scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
+      return NULL;
+    }
+    const ScrDyn *args[3] = {algorithm, extractable_value, usages_value};
+    return scr_wc_asymmetric->to_crypto_key(key, args, 3);
+  }
+  static const char *const names[] = {"AES-CBC", "AES-CTR", "AES-GCM", "AES-KW", "AES-OCB",
+                                      "ChaCha20-Poly1305", "HMAC", "HKDF", "PBKDF2"};
+  ScrWcAlgorithm alg;
+  if (!scr_wc_normalize(algorithm, names, SCR_WC_COUNT(names), SCR_WC_OP_IMPORT, &alg))
+    return NULL;
+  long usages = scr_wc_value_usages(usages_value);
+  if (usages < 0) return NULL;
+  size_t len = 0;
+  const unsigned char *bytes = scr_key_object_bytes(key, &len);
+  if (!bytes) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "value is not a KeyObject.");
+    return NULL;
+  }
+  ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  if (len) memcpy(view->data, bytes, len);
+  ScrDyn *out = scr_wc_import_key_sync("raw-secret", view, NULL, &alg,
+                                       scr_dyn_truthy(extractable_value), usages);
+  scr_bytes_release(view);
+  return out;
+}
+
+/* KeyObject.prototype.toCryptoKey(algorithm, extractable, keyUsages) as a
+ * compiler call: the argument vector is one dyn array. */
+ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *key = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *algorithm = argc > 1 ? scr_dyn_arr_at(args, 1) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 2 ? scr_dyn_arr_at(args, 2) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 3 ? scr_dyn_arr_at(args, 3) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(key);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+/* The CryptoKey's key material as a KeyObject (secret bytes, or the pki
+ * unit's asymmetric key), or NULL with the TypeError pending. */
+static ScrDyn *scr_wc_key_object_from_value(const ScrDyn *value) {
+  if (!scr_webcrypto_is_crypto_key(value)) {
+    scr_dyn_arg_type_fail("key", "an instance of CryptoKey", value);
+    return NULL;
+  }
+  if (scr_crypto_key_of(value)) {
+    const unsigned char *bytes = NULL;
+    size_t len = 0;
+    if (!scr_crypto_crypto_key_info || scr_crypto_crypto_key_info(value, &bytes, &len) != 1) {
+      scr_wc_unsupported("KeyObject.from", "this secret CryptoKey");
+      return NULL;
+    }
+    return scr_crypto_secret_key_object_from_bytes(bytes, len);
+  }
+  if (scr_wc_asymmetric && scr_wc_asymmetric->key_object_from)
+    return scr_wc_asymmetric->key_object_from(value);
+  scr_wc_unsupported("KeyObject.from", "an asymmetric CryptoKey from a computed algorithm");
+  return NULL;
+}
+
+/* KeyObject.from(key) as a compiler call: the argument vector is one dyn
+ * array. */
+ScrDyn *scr_wc_key_object_from(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *value = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *out = scr_wc_key_object_from_value(value);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* The KeyObject handles reach the two conversions through these hooks. */
+static ScrDyn *scr_wc_to_crypto_key_hook(const ScrDyn *key, const ScrDyn *const *args,
+                                         size_t argc) {
+  ScrDyn *algorithm = argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 1 ? scr_dyn_retain(args[1]) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 2 ? scr_dyn_retain(args[2]) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+static ScrDyn *scr_wc_key_object_from_hook(const ScrDyn *crypto_key) {
+  return scr_wc_key_object_from_value(crypto_key);
+}
+
+__attribute__((constructor)) static void scr_wc_install_key_object_hooks(void) {
+  scr_crypto_to_crypto_key = scr_wc_to_crypto_key_hook;
+  scr_crypto_key_object_from = scr_wc_key_object_from_hook;
+}
+
 /* generateKey(algorithm, extractable, keyUsages) for HMAC and AES keys:
  * random bytes of the requested length (an HMAC key defaults to its
  * hash's block size; a length that is not a whole number of bytes clears
@@ -1258,7 +1431,7 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
                         SCR_WC_OP_GENERATE, &algorithm))
     goto done;
   bool hmac = strcmp(algorithm.name, "HMAC") == 0;
-  if (!hmac && !scr_wc_is_aes(algorithm.name)) {
+  if (!hmac && !scr_wc_is_cipher_key(algorithm.name)) {
     scr_wc_unsupported_algorithm("generateKey", algorithm.name);
     goto done;
   }
@@ -1273,10 +1446,15 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
     scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
     goto done;
   }
-  double length = algorithm.has_length ? algorithm.length
-                  : strcmp(algorithm.hash, "SHA-384") == 0 || strcmp(algorithm.hash, "SHA-512") == 0
-                      ? 1024
-                      : 512;
+  double length = hmac
+                      ? (algorithm.has_length ? algorithm.length
+                             : strcmp(algorithm.hash, "SHA-384") == 0 ||
+                                       strcmp(algorithm.hash, "SHA-512") == 0
+                                 ? 1024
+                                 : 512)
+                  : scr_wc_is_chacha(algorithm.name) ? 256
+                  : algorithm.has_length              ? algorithm.length
+                                                      : 512;
   size_t len = scr_wc_bits_to_bytes(length);
   unsigned char *bytes = malloc(len ? len : 1);
   if (!bytes) scr_trap("scriptc: out of memory\n");
@@ -1304,6 +1482,15 @@ static bool scr_wc_exportable(const char *format, const ScrCryptoKey *key) {
   }
   if (!key->extractable) {
     scr_throw_domex("InvalidAccessError", "key is not extractable");
+    return false;
+  }
+  /* Node exports these keys as raw-secret (and JWK) but not as raw. */
+  if ((scr_wc_is_ocb(key->name) || scr_wc_is_chacha(key->name)) &&
+      strcmp(format, "raw") == 0) {
+    char message[96];
+    snprintf(message, sizeof message, "Unable to export %s secret key using %s format", key->name,
+             format);
+    scr_throw_domex("NotSupportedError", message);
     return false;
   }
   if (strcmp(format, "raw") != 0 && strcmp(format, "raw-secret") != 0 &&
@@ -1711,7 +1898,8 @@ static const char *scr_wc_normalize_cipher(ScrDyn *identifier, const char *metho
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return NULL;
   }
-  if (!scr_wc_is_aes(canonical)) {
+  scr_wc_warn_experimental_algorithm(canonical);
+  if (!scr_wc_is_cipher_key(canonical)) {
     scr_wc_unsupported_algorithm(method, canonical);
     return NULL;
   }
@@ -1730,6 +1918,39 @@ static const char *scr_wc_normalize_cipher(ScrDyn *identifier, const char *metho
                              &params->counter_bits);
     if (ok && (params->counter_bits == 0 || params->counter_bits > 128)) {
       scr_throw_domex("OperationError", "AES-CTR algorithm.length must be between 1 and 128");
+      ok = false;
+    }
+  } else if (scr_wc_is_ocb(canonical)) {
+    ok = scr_wc_member_buffer(dict, "AeadParams", "additionalData", false, &params->aad) &&
+         (!params->aad || scr_wc_max_length(params->aad, "algorithm.additionalData")) &&
+         scr_wc_member_buffer(dict, "AeadParams", "iv", true, &params->iv) &&
+         scr_wc_max_length(params->iv, "algorithm.iv") &&
+         scr_wc_member_octet(dict, "AeadParams", "tagLength", false, &present, &params->tag_bits);
+    if (ok && !present) params->tag_bits = 128;
+    if (ok && scr_bytes_byte_len(params->iv) > 15) {
+      scr_throw_domex("OperationError", "AES-OCB algorithm.iv must be no more than 15 bytes");
+      ok = false;
+    }
+    double t = params->tag_bits;
+    if (ok && t != 64 && t != 96 && t != 128) {
+      char message[64];
+      snprintf(message, sizeof message, "%.0f is not a valid AES-OCB tag length", t);
+      scr_throw_domex("OperationError", message);
+      ok = false;
+    }
+  } else if (scr_wc_is_chacha(canonical)) {
+    ok = scr_wc_member_buffer(dict, "AeadParams", "additionalData", false, &params->aad) &&
+         (!params->aad || scr_wc_max_length(params->aad, "algorithm.additionalData")) &&
+         scr_wc_member_buffer(dict, "AeadParams", "iv", true, &params->iv) &&
+         scr_wc_max_length(params->iv, "algorithm.iv") &&
+         scr_wc_member_octet(dict, "AeadParams", "tagLength", false, &present, &params->tag_bits);
+    if (ok && !present) params->tag_bits = 128;
+    if (ok) ok = scr_wc_exact_length(params->iv, "algorithm.iv", 12);
+    double t = params->tag_bits;
+    if (ok && t != 128) {
+      char message[64];
+      snprintf(message, sizeof message, "%.0f is not a valid ChaCha20-Poly1305 tag length", t);
+      scr_throw_domex("OperationError", message);
       ok = false;
     }
   } else {
@@ -2323,11 +2544,15 @@ static bool scr_wc_derived_length(ScrDyn *identifier, const ScrWcAlgorithm *impo
     return false;
   }
   *null_length = false;
-  if (scr_wc_is_aes(canonical)) {
+  if (scr_wc_is_aes(canonical) || scr_wc_is_ocb(canonical)) {
     ScrWcAlgorithm aes;
     memset(&aes, 0, sizeof aes);
     if (!scr_wc_aes_length_params(identifier, "AesDerivedKeyParams", &aes)) return false;
     *length = aes.length;
+    return true;
+  }
+  if (scr_wc_is_chacha(canonical)) {
+    *length = 256;
     return true;
   }
   if (strcmp(canonical, "HMAC") == 0 && imported->hash) {
@@ -2380,7 +2605,7 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   bool null_length;
   double length;
   if (!scr_wc_derived_length(a.v[2], &imported, &null_length, &length)) goto done;
-  if (strcmp(imported.name, "HMAC") != 0 && !scr_wc_is_aes(imported.name) &&
+  if (strcmp(imported.name, "HMAC") != 0 && !scr_wc_is_cipher_key(imported.name) &&
       !scr_wc_is_kdf(imported.name)) {
     scr_wc_unsupported_algorithm("deriveKey", imported.name);
     goto done;

@@ -11890,7 +11890,17 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
   if (value->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
-    if (member || scr_exc_pending()) return member;
+    if (member || scr_exc_pending()) {
+      /* A class's own Symbol.iterator answers when it is a native function
+       * (the statement iterator answering itself). A foreign function a
+       * Node island handle carries cannot be called by the native iterator
+       * protocol, so that value keeps the generic iterable answer below, as
+       * it did before an own member was consulted. */
+      bool iterator_key =
+          scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value;
+      if (!iterator_key || member == NULL || member->kind == SCR_DYN_FUNC) return member;
+      scr_dyn_release(member);
+    }
   }
   bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
   if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);

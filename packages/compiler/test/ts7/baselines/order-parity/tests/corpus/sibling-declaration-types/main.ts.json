@@ -1,0 +1,15 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sibling-declaration-types/greet.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/label.d.mts",
+  "<repo>/tests/corpus/sibling-declaration-types/math.d.cts",
+  "<repo>/tests/corpus/sibling-declaration-types/format.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/widget.d.cts",
+  "<repo>/tests/corpus/sibling-declaration-types/panel.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/link.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/spread.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/table.d.cts",
+  "<repo>/tests/corpus/sibling-declaration-types/main.ts"
+ ],
+ "diags": []
+}

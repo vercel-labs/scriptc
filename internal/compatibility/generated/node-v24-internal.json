@@ -20319,6 +20319,9 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-signer-encodings.ts",
           "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/node-crypto-cipher-aad-state.cjs",
           "tests/corpus/node-crypto-cipher-key-arguments.cjs",
           "tests/corpus/node-crypto-hash-arguments.cjs",
@@ -20334,6 +20337,7 @@
           "tests/fixtures/node-types/crypto-spkac-certificate.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/fenced.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
@@ -24507,8 +24511,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.keyObject.toCryptoKey",
+        "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/fixtures/node-types/fenced.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34526,6 +34536,7 @@
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-value-types.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -39275,8 +39286,11 @@
       "anchor": "err_load_sqlite_extension",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_LOAD_SQLITE_EXTENSION"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_LOAD_SQLITE_EXTENSION",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46795,6 +46809,7 @@
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-promises-constants.ts",
+          "tests/corpus/fs-promises-watch.ts",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
@@ -48645,8 +48660,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.watch",
+        "tests": [
+          "tests/corpus/fs-promises-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91052,6 +91070,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
@@ -91059,7 +91078,11 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-limits.ts",
           "tests/corpus/sqlite-named-parameters.ts",
-          "tests/corpus/sqlite-return-arrays.ts"
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-serialize.ts",
+          "tests/corpus/sqlite-sessions.ts",
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-user-functions.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -91133,8 +91156,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.aggregate",
+        "tests": [
+          "tests/corpus/sqlite-user-functions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91184,8 +91210,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.loadExtension",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91207,8 +91236,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.enableLoadExtension",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91314,8 +91346,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.function",
+        "tests": [
+          "tests/corpus/sqlite-user-functions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91337,8 +91372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.setAuthorizer",
+        "tests": [
+          "tests/corpus/sqlite-authorizer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91388,8 +91426,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.serialize",
+        "tests": [
+          "tests/corpus/sqlite-serialize.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91411,8 +91452,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.deserialize",
+        "tests": [
+          "tests/corpus/sqlite-serialize.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91462,8 +91506,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.createTagStore",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91485,8 +91532,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.createSession",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91508,8 +91558,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.applyChangeset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91641,8 +91694,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:Session",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91664,8 +91720,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.changeset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91687,8 +91746,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.patchset",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91710,8 +91772,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session.close",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91733,8 +91798,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:session",
+        "tests": [
+          "tests/corpus/sqlite-sessions.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92199,8 +92267,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:SQLTagStore",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92222,8 +92293,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.all",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92245,8 +92319,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.get",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92268,8 +92345,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.iterate",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92291,8 +92371,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.run",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92314,8 +92397,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlTagStore.clear",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92337,8 +92423,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:size",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -92360,8 +92449,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:capacity",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -92383,8 +92475,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:db",
+        "tests": [
+          "tests/corpus/sqlite-tag-store.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -92575,8 +92670,10 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/2100-stream-default-hwm.ts",
           "tests/corpus/2861-readable-iterator-close.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
@@ -92619,8 +92716,11 @@
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
+          "tests/corpus/stream-writable-from-web.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -93249,10 +93349,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-writable-from-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93443,10 +93543,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93943,10 +94044,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-writable-from-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -94137,10 +94238,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -97404,8 +97506,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "supported",
+        "evidence": "compiler-feature:stream.highWaterMark",
+        "tests": [
+          "tests/corpus/stream-set-encoding-hwm.ts",
+          "tests/corpus/1744-stream-set-encoding.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97573,6 +97679,7 @@
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
@@ -99217,9 +99324,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.enable",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99252,7 +99360,6 @@
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -99304,9 +99411,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.tick",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99380,9 +99488,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.runAll",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99415,7 +99524,6 @@
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -102263,34 +102371,27 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2500-net-autosel-timeout.ts",
           "tests/corpus/2557-tls-ca-store.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
           "tests/corpus/6721-tls-alpn-protocols.ts",
           "tests/corpus/6722-tls-min-max-version.ts",
           "tests/corpus/7087-tls-socket-wrap.ts",
-          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
           "tests/corpus/7095-tls-peer-certificates.ts",
           "tests/corpus/7096-tls-peer-certificates.mjs",
-          "tests/corpus/7097-tls-client-certificates.ts",
-          "tests/corpus/7098-tls-client-certificates-paths.ts",
-          "tests/corpus/7099-tls-client-certificates.mjs",
           "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/fixtures/node-types/tls-client-certificates.ts",
-          "tests/fixtures/node-types/tls-peer-certificates.ts",
-          "tests/fixtures/node-types/tls-server-contexts.ts",
-          "tests/fixtures/node-types/tls-socket-wrap.ts"
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -102658,13 +102759,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.addContext",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.addContext",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
-          "tests/fixtures/node-types/tls-server-contexts.ts"
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102687,17 +102804,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.address",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.address",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102720,17 +102849,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102776,17 +102917,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102809,13 +102962,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.setSecureContext",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.setSecureContext",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
-          "tests/fixtures/node-types/tls-server-contexts.ts"
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102861,11 +103030,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.'connection'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102980,11 +103167,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.'secureConnection'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103007,13 +103212,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:'tlsClientError'",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.'tlsClientError'",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7441-tls-client-error.ts",
           "tests/corpus/7442-tls-server-contexts.mjs",
-          "tests/fixtures/node-types/tls-server-contexts.ts"
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103036,12 +103257,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tls.TLSSocket",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
           "tests/corpus/7087-tls-socket-wrap.ts",
-          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
-          "tests/fixtures/node-types/tls-socket-wrap.ts"
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103064,11 +103302,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.address",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103091,8 +103347,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.disableRenegotiation",
+        "tests": [
+          "tests/corpus/tls-socket-extras.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103160,12 +103419,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:tlsSocket.getCertificate",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.getCertificate",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
           "tests/corpus/7095-tls-peer-certificates.ts",
           "tests/corpus/7096-tls-peer-certificates.mjs",
-          "tests/fixtures/node-types/tls-peer-certificates.ts"
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103188,11 +103464,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.getCipher",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103261,12 +103555,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:tlsSocket.getPeerCertificate",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.getPeerCertificate",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
           "tests/corpus/7095-tls-peer-certificates.ts",
           "tests/corpus/7096-tls-peer-certificates.mjs",
-          "tests/fixtures/node-types/tls-peer-certificates.ts"
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103335,12 +103646,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:tlsSocket.getPeerX509Certificate",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.getPeerX509Certificate",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
           "tests/corpus/7095-tls-peer-certificates.ts",
           "tests/corpus/7096-tls-peer-certificates.mjs",
-          "tests/fixtures/node-types/tls-peer-certificates.ts"
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103363,10 +103691,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.getProtocol",
         "tests": [
-          "tests/corpus/6722-tls-min-max-version.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103389,8 +103736,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.getSession",
+        "tests": [
+          "tests/corpus/tls-socket-extras.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -103458,12 +103808,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:tlsSocket.getX509Certificate",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.getX509Certificate",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
           "tests/corpus/7095-tls-peer-certificates.ts",
           "tests/corpus/7096-tls-peer-certificates.mjs",
-          "tests/fixtures/node-types/tls-peer-certificates.ts"
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103486,11 +103853,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.isSessionReused",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103582,10 +103967,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.alpnProtocol",
         "tests": [
-          "tests/corpus/6721-tls-alpn-protocols.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103608,13 +104012,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:tlsSocket.authorizationError",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tlsSocket.authorizationError",
         "tests": [
-          "tests/corpus/7097-tls-client-certificates.ts",
-          "tests/corpus/7098-tls-client-certificates-paths.ts",
-          "tests/corpus/7099-tls-client-certificates.mjs",
-          "tests/fixtures/node-types/tls-client-certificates.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103637,13 +104057,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.authorized",
         "tests": [
-          "tests/corpus/7097-tls-client-certificates.ts",
-          "tests/corpus/7098-tls-client-certificates-paths.ts",
-          "tests/corpus/7099-tls-client-certificates.mjs",
-          "tests/fixtures/node-types/tls-client-certificates.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103666,11 +104102,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.encrypted",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103693,11 +104147,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.localAddress",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103720,11 +104192,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.localPort",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103747,11 +104237,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.remoteAddress",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103774,11 +104282,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.remoteFamily",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103801,11 +104327,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.remotePort",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -103828,8 +104372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.servername",
+        "tests": [
+          "tests/corpus/tls-socket-extras.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103897,12 +104444,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.'secure'",
         "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
           "tests/corpus/7087-tls-socket-wrap.ts",
-          "tests/corpus/7088-tls-socket-connect-tunnel.ts",
-          "tests/fixtures/node-types/tls-socket-wrap.ts"
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103925,11 +104489,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.'secureConnect'",
         "tests": [
-          "tests/corpus/compat-tls-socket-members.mjs",
-          "tests/corpus/compat-tls-socket-members.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103998,12 +104580,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:tls.tls.connect",
         "tests": [
-          "tests/corpus/7097-tls-client-certificates.ts",
-          "tests/corpus/7098-tls-client-certificates-paths.ts",
-          "tests/corpus/7099-tls-client-certificates.mjs"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104026,8 +104625,30 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.tls.connect"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.connect",
+        "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104049,8 +104670,30 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.tls.connect"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.connect",
+        "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104072,8 +104715,30 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.tls.createSecureContext"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.createSecureContext",
+        "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104095,8 +104760,30 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.createServer",
+        "tests": [
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104118,11 +104805,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls.setDefaultCACertificates",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.setDefaultCACertificates",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2557-tls-ca-store.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104145,11 +104850,29 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls.getCACertificates",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.getCACertificates",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
-          "tests/corpus/2557-tls-ca-store.ts"
+          "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-socket-audit.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7087-tls-socket-wrap.ts",
+          "tests/corpus/6721-tls-alpn-protocols.ts",
+          "tests/corpus/6722-tls-min-max-version.ts",
+          "tests/corpus/6416-tls-session-reused.ts",
+          "tests/corpus/2557-tls-ca-store.ts",
+          "tests/corpus/7454-tls-peer-embedded-pem.ts",
+          "tests/corpus/8176-tls-empty-context-ca.ts",
+          "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-unix-connect.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104218,10 +104941,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls.rootCertificates",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.rootCertificates",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/5651-tls-socket-protocol.ts",
           "tests/corpus/2557-tls-ca-store.ts"
         ]
       },
@@ -104268,10 +104992,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls.DEFAULT_MAX_VERSION",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.DEFAULT_MAX_VERSION",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/5651-tls-socket-protocol.ts",
           "tests/corpus/2557-tls-ca-store.ts"
         ]
       },
@@ -104295,10 +105020,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.tls.DEFAULT_MIN_VERSION",
+        "status": "supported",
+        "evidence": "compiler-feature:tls.DEFAULT_MIN_VERSION",
         "tests": [
-          "tests/corpus/2331-tls-server-options-typed.ts",
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/5651-tls-socket-protocol.ts",
           "tests/corpus/2557-tls-ca-store.ts"
         ]
       },
@@ -114749,11 +115475,16 @@
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
           "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
@@ -115302,9 +116033,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.AeadParams",
         "tests": [
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
@@ -115329,11 +116062,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.additionalData",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115356,11 +116091,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.iv",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115383,11 +116120,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115410,11 +116149,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.tagLength",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115437,9 +116178,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.AesDerivedKeyParams",
         "tests": [
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
@@ -115464,11 +116207,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115491,11 +116236,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116435,6 +117182,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -116941,6 +117691,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117090,6 +117843,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117210,6 +117966,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117330,6 +118089,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117941,6 +118703,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -118089,6 +118854,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -118178,6 +118946,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -118326,6 +119097,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",

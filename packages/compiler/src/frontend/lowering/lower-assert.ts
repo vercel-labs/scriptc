@@ -2243,7 +2243,12 @@ function assertThrowsHelper(
             ? "shape:" + expected.keys.map((k) => `${k.id}${k.kind}:${k.enameBake ?? ""}`).join(",")
             : expected.form === "errValue"
               ? "errval"
-              : "bare";
+              : // The message form carries the ambiguity check its catch body
+                // runs, so it cannot share the bare form's helper: whichever
+                // call site lowered first would decide the other's body.
+                expected.form === "message"
+                ? "message"
+                : "bare";
   const key = `assert.${mode}:${recvIsPromise ? "p" : "f"}:${typeKey(recvType)}:${sig}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;

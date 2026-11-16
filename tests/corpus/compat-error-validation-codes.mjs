@@ -89,6 +89,13 @@ report("fileurl.host", () => url.fileURLToPath("file://example.com/x"));
 report("fileurl.path", () => url.fileURLToPath("file:///a%2Fb"));
 // ERR_INCOMPATIBLE_OPTION_PAIR: two spellings of the same option.
 report("scrypt.options", () => crypto.scryptSync("a", "b", 32, { N: 2, cost: 1 }));
+// A bare assertion lowered before any string-message assertion must not
+// decide the message form's catch body: each form runs its own check.
+report("assert.throws.bare-early", () => {
+  assert.throws(() => {
+    throw new Error("dup");
+  });
+});
 // ERR_AMBIGUOUS_ARGUMENT: assert.throws whose matcher message is also
 // the message of the error the callback throws.
 report("assert.throws.ambiguous", () => {
@@ -107,6 +114,44 @@ report("assert.throws.message-only", () => {
   assert.throws(() => {
     throw new Error("other");
   }, "dup");
+});
+// The message is an ordinary property read: an inherited one counts, a
+// getter runs, and a getter that throws propagates its own error.
+function Thrown() {}
+Thrown.prototype.message = "dup";
+report("assert.throws.inherited", () => {
+  assert.throws(() => {
+    throw new Thrown();
+  }, "dup");
+});
+report("assert.throws.getter", () => {
+  assert.throws(() => {
+    throw {
+      get message() {
+        return "dup";
+      },
+    };
+  }, "dup");
+});
+report("assert.throws.getter-throws", () => {
+  assert.throws(() => {
+    throw {
+      get message() {
+        throw new Error("exploded");
+      },
+    };
+  }, "dup");
+});
+// A bare assertion and a string-message assertion of the same callback type
+// are different checks: the bare one must not hide the ambiguous one.
+const shared = () => {
+  throw new Error("dup");
+};
+report("assert.throws.bare-first", () => {
+  assert.throws(shared);
+});
+report("assert.throws.message-after-bare", () => {
+  assert.throws(shared, "dup");
 });
 // The same check guards a rejection whose reason carries the matcher
 // message (assert.rejects shares expectsError).

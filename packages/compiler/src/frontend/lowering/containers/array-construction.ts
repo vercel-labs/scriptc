@@ -43,6 +43,7 @@ import {
   arrayValueStore,
   arrayValueType,
   optionalElementValue,
+  optionalSlotValue,
   primitiveElement,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
@@ -559,9 +560,32 @@ export function lowerArrayConstructor(
       loc,
     };
   }
+  if (result.optionalElements === true) return lowerOptionalElementArgs(lowerer, args, result, loc);
   return {
     kind: "arrayLit",
     elems: args.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)),
+    type: result,
+    loc,
+  };
+}
+
+/** The elements of an array that admits a present undefined (`(T |
+ * undefined)[]` of a primitive T): an argument that can be undefined at run
+ * time, a union with an undefined arm or a checked-dynamic value that can
+ * hold one (a member read on an indexed object; optionalSlotValue), is
+ * stored as a present undefined rather than converted to T. */
+function lowerOptionalElementArgs(
+  lowerer: Lowerer,
+  nodes: readonly ts.Expression[],
+  result: IrType & { kind: "array" },
+  loc: SrcLoc,
+): IrExpr {
+  const values = nodes.map((node) => optionalSlotValue(lowerer, lowerer.lowerExpr(node), result));
+  if (values.some((value) => optionalElementValue(lowerer, value, result.elem)))
+    return lowerArrayValueItems(lowerer, values, result.elem, result, loc);
+  return {
+    kind: "arrayLit",
+    elems: values.map((value, i) => lowerer.coerceInto(nodes[i]!, value, result.elem)),
     type: result,
     loc,
   };
@@ -597,16 +621,7 @@ export function lowerArrayOfCall(
   // A `(T | undefined)[]` (primitiveElement) stores undefined arguments as
   // present undefined elements.
   if (result.optionalElements === true) {
-    const nodes = call.arguments.nodes;
-    const values = nodes.map((arg) => lowerer.lowerExpr(arg));
-    if (values.some((value) => optionalElementValue(lowerer, value, result.elem)))
-      return lowerArrayValueItems(lowerer, values, result.elem, result, locOf(call));
-    return {
-      kind: "arrayLit",
-      elems: values.map((value, i) => lowerer.coerceInto(nodes[i]!, value, result.elem)),
-      type: result,
-      loc: locOf(call),
-    };
+    return lowerOptionalElementArgs(lowerer, call.arguments.nodes, result, locOf(call));
   }
   return {
     kind: "arrayLit",

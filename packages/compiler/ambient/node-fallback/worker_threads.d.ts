@@ -34,6 +34,19 @@ declare module "worker_threads" {
     stdin?: boolean;
     [option: string]: unknown;
   }
+  /* worker.performance.eventLoopUtilization: the worker thread's own event
+   * loop utilization, read from the thread's last loop turn. */
+  export interface WorkerEventLoopUtilization {
+    idle: number;
+    active: number;
+    utilization: number;
+  }
+  export interface WorkerPerformance {
+    eventLoopUtilization(
+      utilization1?: WorkerEventLoopUtilization,
+      utilization2?: WorkerEventLoopUtilization,
+    ): WorkerEventLoopUtilization;
+  }
   /* A Worker extends EventEmitter, not the EventTarget shape a port has: the
    * full EventEmitter surface (emit, eventNames, the meta events, duplicate
    * registrations, multi-argument emit) is present, and the seeded
@@ -43,6 +56,8 @@ declare module "worker_threads" {
     readonly threadId: number;
     readonly resourceLimits?: ResourceLimits;
     readonly threadName: string | null;
+    /* an object holding the worker thread's eventLoopUtilization */
+    readonly performance: WorkerPerformance;
     /* with the stdout/stderr options: the worker's writes to those streams */
     readonly stdout: import("stream").Readable;
     readonly stderr: import("stream").Readable;

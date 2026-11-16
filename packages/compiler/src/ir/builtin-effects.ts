@@ -70,6 +70,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generatePrimeCb",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
+  // t.error builds Node's wrapper over the failure through the inspect
+  // unit's rendering, which can raise.
+  "test.ctxError",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
@@ -94,6 +97,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.label",
   "console.countReset",
   "console.table",
+  // Console construction validates its options in the runtime, and the
+  // instance twins of the throwing members share their fences.
+  "console.new",
+  "console.instCount",
+  "console.instCountReset",
+  "console.instTable",
+  "console.instTrace",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",
@@ -202,6 +212,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "atomics.opDyn",
   "atomics.waitDyn",
   "atomics.notifyDyn",
+  // The typed-array builtins' detached-receiver guard (t262-dc2): Node's
+  // TypeError, raised at the entry of sort/toSorted and the iterator
+  // factories. Emitted only under the mutableBuffers fact, but the check
+  // belongs to the call like every other runtime error.
+  "bytes.requireLive",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",
@@ -338,6 +353,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
   // non-function subscribers.
+  // trace_events.createTracing validates its options object.
+  "te.createTracing",
   "dc.publish",
   "dc.subscribe",
   "dc.unsubscribe",
@@ -418,6 +435,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.createSecureServerDynCb",
   "tls.connect",
   "tls.connectCb",
+  // tls.connect(path...) dials and validates like the other forms.
+  "tls.connectPath",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
   // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
@@ -472,6 +491,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockEndDyn",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // setHeaders walks the argument (a Map's entries) and throws Node's
+  // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
+  // head is out, and the header name/value checks. pipe() emits
+  // ERR_STREAM_CANNOT_PIPE, whose unhandled 'error' is the throw at the
+  // call.
+  "http.resSetHeaders",
+  "http.resPipe",
+  "http.clientPipe",
   "http.resAddTrailers",
   "http.resFlushHeaders",
   "http.resUncork",
@@ -615,6 +642,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+  "stream.setDefaultHwm",
+  "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -874,6 +903,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.throttle",
   "mime.typeNew",
   "mime.typeParse",
+  // node:sqlite opens (or validates) a connection; every option it reads
+  // can refuse the call, as can sqlite.backup's arguments.
+  "sqlite.dbNew",
+  "sqlite.backup",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws
@@ -1117,6 +1150,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  "fs.readdirTypesRecursiveSync",
+  "fsp.readdirTypesRecursive",
+  "fs.readdirBytesSync",
+  "fs.readdirEncodedSync",
+  "fsp.readdirBytes",
+  "fsp.readdirRecursive",
+  "fsp.readdirEncoded",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",
@@ -1236,6 +1276,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hkdfCb",
   "crypto.scrypt",
   "crypto.scryptCb",
+  "buffer.resolveObjectURL",
   "buffer.concat",
   "buffer.concatLen",
   "buffer.concatDyn",
@@ -1253,6 +1294,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
   "buffer.poolFromDynRange",
+  "buffer.copyBytesFrom",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
@@ -1299,6 +1341,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.appendFileData",
   "fsp.writeFileDataFlags",
   "fileHandle.writeFileData",
+  // fchown(2) over the handle raises for a closed descriptor and for an id
+  // outside Node's range.
+  "fileHandle.chown",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",
@@ -1583,6 +1628,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "watcher.off",
   "fs.watchFile",
   "fs.unwatchFile",
+  // fsPromises.watch opens the path now and throws Node's fs error
+  // (ENOENT, EACCES, a null byte) from scr_watch_events_new.
+  "fsp.watch",
+  // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
+  // overflowed under overflow: "error".
+  "watchEvents.take",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",
@@ -1593,6 +1644,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // getPublicKey converts its keyUsages sequence (whose strings' conversions
+  // run program code) and reads the key's members through the handle.
+  "webcrypto.getPublicKey",
+  // The KeyObject conversions normalize their algorithm (reading its members)
+  // and convert the keyUsages sequence.
+  "webcrypto.keyObjectToCryptoKey",
+  "webcrypto.keyObjectFrom",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",

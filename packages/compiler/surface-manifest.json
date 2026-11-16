@@ -1717,7 +1717,7 @@
       "kind": "node-builtin",
       "name": "fs.watchFile",
       "status": "static",
-      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
+      "note": "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",
@@ -2908,6 +2908,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.sqlite",
+      "kind": "node-builtin",
+      "name": "node:sqlite",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
       "id": "node-builtin.stream",
       "kind": "node-builtin",
       "name": "stream",
@@ -3052,6 +3059,25 @@
       "name": "tls.setDefaultCACertificates",
       "status": "static",
       "note": "replaces the default set and the client trust anchors for the rest of the process"
+    },
+    {
+      "id": "node-builtin.trace_events",
+      "kind": "node-builtin",
+      "name": "trace_events",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.trace_events.createTracing",
+      "kind": "node-builtin",
+      "name": "trace_events.createTracing",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.trace_events.getEnabledCategories",
+      "kind": "node-builtin",
+      "name": "trace_events.getEnabledCategories",
+      "status": "static"
     },
     {
       "id": "node-builtin.tty",

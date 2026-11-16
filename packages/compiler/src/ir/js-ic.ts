@@ -65,7 +65,7 @@ const CAPSULE_TESTS = new Set<IrLibFn>([
 ]);
 
 /** A class table's branches in the order a receiver that matches none of
- * them reaches their guards: the body's statements, with a `dyn.classHash`
+ * them reaches their guards: the body's statements, with a `dyn.classKeySlot`
  * switch replaced by its cases' branches. The switch selects one of those
  * branches by the receiver's class key and each branch keeps its own key
  * test, so a reader treats the switch's cases as the capsule branches they
@@ -88,7 +88,7 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
   return (
     stmt.kind === "switch" &&
     stmt.disc.kind === "libCall" &&
-    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+    (stmt.disc.fn === "dyn.classKeySlot" || stmt.disc.fn === "dyn.classValueHash")
   );
 }
 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-class-in-generic-closure.ts"
+ ],
+ "diags": []
+}

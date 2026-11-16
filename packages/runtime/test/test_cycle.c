@@ -154,6 +154,71 @@ static void check_age_reset_when_last_mature_root_dies(void) {
         "age reset ring was not collected at configured boundary");
 }
 
+/* An event-loop turn is not a measure of garbage: young candidates wait for
+ * the release path's rules, for a quarter of a nursery's worth of turns, or
+ * for the loop's idle moment. */
+static void check_turn_defers_young_candidates(void) {
+  size_t age = configured_nursery_threshold() / 4;
+  scr_collect_cycles();
+  size_t before = freed;
+  if (age < 2) return; /* a pinned trigger this small collects on every turn */
+
+  release_live(make_ring(8)); /* a dead young ring, buffered by its release */
+  for (size_t i = 1; i < age; i++) scr_cyc_collect_turn();
+  check(freed == before, "a turn collected young candidates before they had aged");
+  scr_cyc_collect_turn();
+  check(freed == before + 8, "aged young candidates were not collected at a turn");
+
+  check(!scr_cyc_collect_idle(), "an idle moment collected with nothing deferred");
+  release_live(make_ring(8));
+  scr_cyc_collect_turn();
+  check(freed == before + 8, "a single turn collected young candidates");
+  check(scr_cyc_collect_idle(), "the idle moment did not collect what a turn deferred");
+  check(freed == before + 16, "the idle moment left a deferred young ring");
+  check(!scr_cyc_collect_idle(), "a second idle moment collected again");
+}
+
+/* A scheduled-age full pass that freed nothing doubles the age the next one
+ * needs while that age is below the live heap's size; a productive one
+ * starts over. */
+static void check_unproductive_age_pass_backs_off(void) {
+  size_t threshold = configured_nursery_threshold();
+  scr_collect_cycles();
+  size_t before = freed;
+  size_t heap = 4 * threshold + 64;
+  Node *live = make_ring(heap); /* a live heap larger than the doubled age */
+  Node *ring = make_ring(32);
+  ring->rc++;
+  release_live(ring);
+  scr_collect_cycles(); /* the ring is mature, live and unbuffered */
+  check(freed == before, "setup full pass freed a live object");
+
+  ring->rc++;
+  release_live(ring); /* a live older candidate waits */
+  for (size_t i = 0; i < threshold; i++) scr_cyc_collect_scheduled();
+  check(freed == before, "the age pass freed a live ring");
+
+  release_live(ring); /* now dead: only the age rule collects it */
+  for (size_t i = 1; i < 2 * threshold; i++) scr_cyc_collect_scheduled();
+  check(freed == before, "an unproductive age pass did not double the next one's age");
+  scr_cyc_collect_scheduled();
+  check(freed == before + 32, "the doubled age did not collect the waiting ring");
+
+  ring = make_ring(32);
+  ring->rc++;
+  release_live(ring);
+  scr_collect_cycles();
+  release_live(ring); /* the productive pass put the age back */
+  for (size_t i = 1; i < threshold; i++) scr_cyc_collect_scheduled();
+  check(freed == before + 32, "a productive age pass did not restore the age");
+  scr_cyc_collect_scheduled();
+  check(freed == before + 64, "the restored age did not collect the waiting ring");
+
+  release_live(live);
+  scr_collect_cycles();
+  check(freed == before + 64 + heap, "the live heap was not collected at the end");
+}
+
 static void check_dead_backlog_rearms_release_trigger(void) {
   enum { BACKLOG = 32 };
   size_t threshold = configured_nursery_threshold();
@@ -2049,6 +2114,8 @@ int main(void) {
   check_sparse_mature_backlog(1);
   check_sparse_mature_backlog(2);
   check_age_reset_when_last_mature_root_dies();
+  check_turn_defers_young_candidates();
+  check_unproductive_age_pass_backs_off();
   check_dead_backlog_rearms_release_trigger();
   check_empty_turn_keeps_growth_rule();
   check_deep_ring();

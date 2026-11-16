@@ -171,6 +171,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",
+  // Pointer tests of a capsule's key: no runtime function is called.
+  "dyn.typedRefKeyIn",
+  // Emitted inline: the value's tag and its key pointer's place in the
+  // module's class key table; a key from elsewhere is compared with the
+  // table's keys byte by byte.
+  "dyn.classKeySlot",
   // Emitted inline but for scr_dyn_typed_ref_brand_is_key, which compares a
   // capsule's type key with a string and allocates nothing.
   "dyn.typedRefBrandIs",

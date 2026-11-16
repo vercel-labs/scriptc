@@ -5082,6 +5082,14 @@ export class Lowerer {
   readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
+  /** Member chains on an untyped binding narrowed to a class, while their
+   * two arms lower (narrowed-class-chains.ts): `active` holds the chains in
+   * hand, `dynamicArm` the bindings whose dynamic arm is being lowered, so
+   * chains on them inside it stay dynamic. */
+  readonly narrowedClassChains = {
+    active: new Set<ts.Node>(),
+    dynamicArm: new Set<ts.Symbol>(),
+  };
   /** One arm's narrowed value for a spread source while a distributed
    * union spread lowers that arm (lowerDistributedUnionSpread). */
   readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
@@ -6405,6 +6413,9 @@ export class Lowerer {
     // caches made when first needed
     "programSourceFiles",
     "classHierarchyCache",
+    // A pure function of an alias's or interface's declarations: the same
+    // answer whichever unit asks first.
+    "conditionalTypeParamPositions",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
@@ -6613,6 +6624,8 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    "narrowedClassChains.active",
+    "narrowedClassChains.dynamicArm",
     // Refused probes are held only while the expression or statement that
     // probed is being lowered, so a unit begins and ends with none; the
     // closure-name count is only compared across one probe.
@@ -7036,6 +7049,8 @@ export class Lowerer {
       this.chainRecvByNode.size +
       this.chainHandled.size +
       this.chainNarrowedType.size +
+      this.narrowedClassChains.active.size +
+      this.narrowedClassChains.dynamicArm.size +
       this.runtimeOptionalBindingTypes.size +
       this.stagedArguments.size +
       this.receiverTypeOverrides.size +
@@ -14098,6 +14113,9 @@ export class Lowerer {
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
             ...(this.weakKeys.size > 0 ? { weakKeys: [...this.weakKeys].sort() } : {}),
+            ...(dispatch !== undefined && dispatch.classKeys().length > 0
+              ? { classKeys: [...dispatch.classKeys()] }
+              : {}),
             ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
@@ -21197,6 +21215,9 @@ export class Lowerer {
    * instance table. Filled by collectClassShapeInner's family mode;
    * consulted by mapType's genericClassInstance hook. */
   readonly genericClassByDecl = new Map<ts.ClassLikeDeclaration, GenericClassInfo>();
+  /** A type alias or interface → the positions of its own type parameters
+   * that a conditional type in it depends on (literalSensitiveTypeParams). */
+  readonly conditionalTypeParamPositions = new Map<ts.Symbol, ReadonlySet<number>>();
   /** The ERASED instantiations of generic classes taken as values
    * (erasedGenericClassType), by class name, with their family's
    * declaration: `instanceof` through such a class value answers for

@@ -134,7 +134,7 @@ test("a class table's indexed dispatch reads as the branches it selects", () => 
     kind: "switch",
     disc: {
       kind: "libCall",
-      fn: "dyn.classHash",
+      fn: "dyn.classKeySlot",
       args: [ref(receiver)],
       type: F64,
       loc,

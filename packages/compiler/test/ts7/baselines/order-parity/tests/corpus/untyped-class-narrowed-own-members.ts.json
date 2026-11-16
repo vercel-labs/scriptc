@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-class-narrowed-own-members.ts"
+ ],
+ "diags": []
+}

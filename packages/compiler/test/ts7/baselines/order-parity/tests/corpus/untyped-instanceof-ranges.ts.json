@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-instanceof-ranges.ts"
+ ],
+ "diags": []
+}

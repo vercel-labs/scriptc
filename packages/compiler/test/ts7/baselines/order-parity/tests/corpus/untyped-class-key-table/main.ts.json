@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-class-key-table/shapes.ts",
+  "<repo>/tests/corpus/untyped-class-key-table/main.ts"
+ ],
+ "diags": []
+}

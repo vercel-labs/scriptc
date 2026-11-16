@@ -420,7 +420,7 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
 
 /** A class table's branches in the order a receiver that matches none of
  * them reaches their guards: the statements of the body, with a
- * `dyn.classHash` switch replaced by its cases' branches. A capsule whose
+ * `dyn.classKeySlot` switch replaced by its cases' branches. A capsule whose
  * key is a branch's selects that case, whose guard is then true, so the
  * site can treat the branches as the chain they were lowered from. */
 function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
@@ -442,7 +442,7 @@ function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
   return (
     stmt.kind === "switch" &&
     stmt.disc.kind === "libCall" &&
-    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+    (stmt.disc.fn === "dyn.classKeySlot" || stmt.disc.fn === "dyn.classValueHash")
   );
 }
 

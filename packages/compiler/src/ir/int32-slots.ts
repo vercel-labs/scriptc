@@ -551,7 +551,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.arrLen",
   "dyn.bagGet",
   "dyn.bitwise",
-  "dyn.classHash",
+  "dyn.classKeySlot",
   "dyn.classValueHash",
   "dyn.compare",
   // Adoption reads the native value it was built into and turns shared
@@ -620,6 +620,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.typedRefIs",
   "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
+  "dyn.typedRefKeyIn",
   "dyn.typeof",
   // error.ctorOptions runs scr_error_init_options, the initializer
   // error.newOptions also runs: it stamps the receiver's runtime-owned

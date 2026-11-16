@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-class-cast-keys.ts"
+ ],
+ "diags": []
+}

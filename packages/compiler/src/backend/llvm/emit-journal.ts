@@ -112,6 +112,7 @@ export interface ChunkResult {
     readonly needsBadTag: boolean;
     readonly needsBadKey: boolean;
     readonly needsRetainBox: boolean;
+    readonly needsClassKeyFind: boolean;
   };
   readonly publishedNamesSym: string | null;
   readonly rcHelpers: readonly string[];

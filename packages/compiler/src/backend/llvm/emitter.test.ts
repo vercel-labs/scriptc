@@ -440,26 +440,28 @@ const text = (obj: IrExpr): IrExpr => ({
   loc: receiverLoc,
 });
 
-test("class dispatch indexes on the key's last four bytes inline", () => {
+test("class dispatch reads a capsule's slot in the class key table inline", () => {
   const dyn: IrType = { kind: "dyn" };
-  const hash: IrExpr = {
+  const slot: IrExpr = {
     kind: "libCall",
-    fn: "dyn.classHash",
+    fn: "dyn.classKeySlot",
     args: [ref(dyn)],
     type: F64,
     loc: receiverLoc,
   };
-  const llvm = work(hash, dyn);
-  // The selector is the word at the end of the key plus the key's length
-  // times an odd constant: the two fields a class branch's guards read, one
-  // subtract, one load, one multiply, no runtime call.
+  const llvm = work(slot, dyn, false, false, ["Shape", "Circle"]);
+  // A capsule this program boxed carries a slot's address: its slot is the
+  // key pointer's distance from the table, one subtract, one unsigned
+  // compare with the table's size (two slots of 64 bytes) and one divide by
+  // the slot size.
   expect(llvm).toContain("; ->v.typed_ref.type_key");
+  expect(llvm).toMatch(/sub i64 %t\d+, ptrtoint \(ptr @sc_class_keys_\w+ to i64\)/);
+  expect(llvm).toMatch(/icmp ult i64 %t\d+, 128\n/);
+  expect(llvm).toMatch(/udiv i64 %t\d+, 64\n/);
+  // A class key that lives outside the table is looked up by its length and
+  // bytes; the table's own lookup function, no runtime call.
   expect(llvm).toContain("; ->v.typed_ref.type_key_len");
-  expect(llvm).toMatch(/load i32, ptr %t\d+, align 1/);
-  expect(llvm).toContain("mul i32 %t");
-  expect(llvm).toContain(", -1640531535");
-  expect(llvm).toContain("and i32 %t");
-  expect(llvm).toContain(", 2147483647");
+  expect(llvm).toMatch(/call i32 @sc_class_keys_\w+_find\(ptr %t\d+, i32 %t\d+\)/);
   // A value that is not a capsule answers the -1 sentinel, which no case
   // matches.
   expect(llvm).toContain("store i32 -1, ptr");
@@ -467,11 +469,18 @@ test("class dispatch indexes on the key's last four bytes inline", () => {
   expect(llvm).not.toContain("call ptr @scr_dyn_retain_v(");
 });
 
-function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
+function work(
+  expr: IrExpr,
+  parameter: IrType,
+  boxed = false,
+  tdz = false,
+  classKeys?: string[],
+): string {
   const module: IrModule = {
     irVersion: 17,
     sourceFile: receiverLoc.file,
     entry: "main",
+    ...(classKeys === undefined ? {} : { classKeys }),
     records: [
       { id: "leaf", fields: [{ name: "text", type: STRING }] },
       { id: "root", fields: [{ name: "child", type: leaf }] },

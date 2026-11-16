@@ -337,13 +337,19 @@ export function lowerAsyncResourceMethodCall(
       loc,
     });
   }
-  if (name === "bind" && call.arguments.nodes.length === 1) {
+  if (name === "bind" && call.arguments.nodes.length >= 1 && call.arguments.nodes.length <= 2) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    // The instance form takes the same optional receiver Node's does (it
+    // binds runInAsyncScope with it when given).
+    const thisArg: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
     return asyncLocalStorageResult(lowerer, call, {
       kind: "libCall",
       fn: "ar.bind",
-      args: [receiver, fn, dynUndefinedExpr(loc)],
+      args: [receiver, fn, thisArg],
       type: DYN,
       loc,
     });

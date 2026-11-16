@@ -643,7 +643,11 @@ ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn 
 /* The bound function: caps[0] the function (owned), caps[1] its receiver
  * (owned; an absent receiver is the undefined value), caps[2] the resource
  * handle. Node names the result "bound", or "bound runInAsyncScope" when
- * the receiver is given, and gives it the bound function's length. */
+ * the receiver is given, and gives it the bound function's length. Its
+ * no-receiver form is a plain function Node calls with the receiver the
+ * bound function was INVOKED with (ArrayPrototypeUnshift(args, fn, this)),
+ * so `obj.f()` runs fn with `this` === obj; the receiver-given form always
+ * runs it with that receiver instead. */
 static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
   ScrDyn *fn = scr_box_get_ref(self->caps[0]);
   ScrDyn *this_arg = scr_box_get_ref(self->caps[1]);
@@ -652,7 +656,9 @@ static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t a
   if (!scr_dyn_is_callable(fn)) {
     scr_ar_apply_type_error(fn);
   } else if (r != NULL) {
-    result = scr_ar_call_in_scope(r, fn, this_arg, args, argc);
+    ScrDyn *call_this = this_arg->kind == SCR_DYN_UNDEF ? scr_dyn_this_get() : NULL;
+    result = scr_ar_call_in_scope(r, fn, call_this != NULL ? call_this : this_arg, args, argc);
+    if (call_this != NULL) scr_dyn_release(call_this);
   }
   scr_dyn_release(fn);
   scr_dyn_release(this_arg);

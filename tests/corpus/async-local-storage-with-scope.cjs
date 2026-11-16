@@ -47,6 +47,12 @@ als.run('outer', () => {
   show('after using');
 });
 
+// A store established only by withScope still reaches the callbacks
+// scheduled after it: the runtime's *_als scheduling entry points carry
+// the active stores into each callback.
+als.withScope('scheduled');
+setImmediate(() => console.log('withScope immediate:', als.getStore()));
+
 // dispose() during an ordinary store: the store before the scope returns.
 als.run('ordinary', () => {
   const scope = als.withScope('temporary');

@@ -63,6 +63,19 @@ console.log('defaulted type:', arithmetic(3), arithmetic.name, arithmetic.length
 const three = AsyncResource.bind(function abc(a, b, c) {});
 console.log('anonymous name:', three.name, three.length);
 
+// A bound function without a thisArg runs its callback with the receiver it
+// was invoked with (Node's bound function forwards its own `this`); an
+// explicit thisArg always wins.
+const holder = { tag: 'holder' };
+holder.f = res.bind(function (x) {
+  return [this === undefined ? 'undefined-receiver' : this.tag, x];
+});
+console.log('bound receiver:', JSON.stringify(holder.f(1)));
+const fixedThis = res.bind(function () {
+  return this.tag;
+}, { tag: 'fixed' });
+console.log('bound explicit thisArg:', fixedThis());
+
 // Instance bind, and emitDestroy answering the same resource every call.
 const plus = res.bind(function (x) {
   return x + 1;

@@ -80,6 +80,8 @@ import {
 import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  cjsAbsentMemberValue,
+  cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerInlineRequireValue,
   lowerUncompiledRequireCall,
@@ -758,9 +760,12 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
     const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
-      // Node calls the member with `this` bound to the module's exports.
+      // Node calls the member with `this` bound to the module's exports. A
+      // member the module does not carry is undefined, so no `this` is
+      // ever bound: the call is Node's "is not a function" TypeError.
       if (
         ts.isIdentifier(expr.expression.name) &&
+        !cjsModuleLacksExport(lowerer, req.dep, expr.expression.name.text, expr.expression.name) &&
         !cjsExportCallIgnoresThis(lowerer, req.dep, expr.expression.name.text)
       ) {
         lowerer.unsupported(
@@ -1902,6 +1907,25 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const nameId = expr.expression.name;
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
+    }
+    // A member the module's exports object does not carry is undefined;
+    // Node evaluates the arguments and then throws its "is not a function"
+    // TypeError (the checked-dynamic call's answer for a non-callable).
+    {
+      const recv = expr.expression.expression;
+      const dep = ts.isIdentifier(recv)
+        ? lowerer.cjsModuleBindingDepOf(recv)
+        : lowerer.cjsModuleRefDepOf(recv);
+      if (dep !== null && cjsModuleLacksExport(lowerer, dep, nameId.text, nameId)) {
+        const callee: IrExpr = {
+          kind: "dynFrom",
+          value: cjsAbsentMemberValue(lowerer, expr.expression, nameId),
+          type: DYN,
+          loc,
+        };
+        const missing = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+        if (missing) return missing;
+      }
     }
     // A conditional whole export answers below through a slot; the receiver
     // check comes first so that path cannot invoke a receiver-dependent

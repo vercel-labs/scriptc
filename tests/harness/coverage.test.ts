@@ -1286,8 +1286,9 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
 
 test("Node islands (report-only): one package per class, gap islands first", async () => {
   // ni-gap (a fence inside the native subset), ni-eval (new Function),
-  // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
-  // compilable as shipped), ni-typed (native, also reached from ni-ctor).
+  // ni-ctor (a class prototype grown at run time, carrying ni-dep),
+  // ni-bundled (not compilable as shipped), ni-typed (native, also reached
+  // from ni-ctor).
   const entry = fixture("node-islands/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-node-islands.txt");
   const { coverage, sourceTexts } = analyze(entry);
@@ -1314,7 +1315,7 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(envelope.nodeIslands?.islands.map((i) => [i.package, i.class, i.at?.line])).toEqual([
     ["ni-gap", "gap", 7],
     ["ni-eval", "runtime", 4],
-    ["ni-ctor", "object-model", 9],
+    ["ni-ctor", "object-model", 26],
     ["ni-bundled", "packaging", undefined],
   ]);
   // The gates: the blocker gate is today's build (which refuses
@@ -1490,12 +1491,11 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
   expect(analyze(entry).coverage.nodeIslands).toBeUndefined();
   const { coverage } = analyze(entry, { nodeIslands: { strictUserJs: true } });
   expect(coverage.diagnostics.map((d) => d.code).filter((c) => c.startsWith("SC81"))).toEqual([
+    "SC8103",
     "SC8101",
     "SC8102",
-    "SC8103",
     "SC8104",
     "SC8105",
-    "SC8101",
   ]);
   await expect(
     renderCoverage(

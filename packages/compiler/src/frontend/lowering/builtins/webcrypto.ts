@@ -36,7 +36,7 @@ const SUBTLE_LOWERED: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 const SUBTLE_HINT =
-  "the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
+  "the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC, AES-CTR or RSA-OAEP, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2, HKDF, ECDH or X25519, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, generateKey, importKey and exportKey for ECDH, X25519 and RSA-OAEP, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
 
 /** Whether `node` is a SubtleCrypto object: `subtle` on a WebCrypto
  * Crypto object (the global, globalThis.crypto or node:crypto's

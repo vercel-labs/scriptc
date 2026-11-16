@@ -370,71 +370,92 @@ export function receiverPrototypeView(
   const name = `%class.prototypeView:${start.def.name}`;
   lowerer.shareHelper(name);
   if (lowerer.liftedFnNamed(name) === undefined) {
-    const instanceId = "%prototype.instance";
-    const params = [{ localId: "value", name: "value", type: DYN }];
-    const instance: IrExpr = {
-      kind: "varRef",
-      localId: instanceId,
-      type: { kind: "object", className: start.def.name },
+    // Claim the name before lowering the members: a member body's typed read
+    // of a reflected member of this chain asks for this same view while it is
+    // being built, and its call must name this one helper rather than push a
+    // second function of the same name.
+    const reserved: IrFunction = {
+      name,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      returnType: DYN,
+      locals: [],
+      body: [],
       loc,
     };
-    const body: IrStmt[] = [
+    lowerer.liftedFns.push(reserved);
+    // The members of the classes below `start` all refused a view: the
+    // helper still answers `start`'s own prototype, which is what a caller
+    // that cannot select a descendant gets.
+    reserved.body = buildPrototypeView(lowerer, start, descendants, staticView, loc) ?? [
+      { kind: "return", value: staticView, loc },
+    ];
+    reserved.locals = [
+      { id: "value", name: "value", type: DYN, mutable: false },
       {
-        kind: "varDecl",
-        localId: instanceId,
-        init: {
-          kind: "dynCheck",
-          value: varRef("value", DYN, loc),
-          type: { kind: "object", className: start.def.name },
-          loc,
-        },
-        loc,
+        id: "%prototype.instance",
+        name: "%prototype.instance",
+        type: { kind: "object", className: start.def.name },
+        mutable: false,
       },
     ];
-    for (const descendant of descendants) {
-      const view = reflectClassPrototype(lowerer, descendant, loc, {
+  }
+  return { prototype: { kind: "call", callee: name, args: [value], type: DYN, loc }, start };
+}
+
+/** The body of the helper that selects a constructible descendant's
+ * prototype at run time; null when every descendant refused a view. */
+function buildPrototypeView(
+  lowerer: Lowerer,
+  start: ClassInfo,
+  descendants: readonly ClassInfo[],
+  staticView: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  const instanceId = "%prototype.instance";
+  const instance: IrExpr = {
+    kind: "varRef",
+    localId: instanceId,
+    type: { kind: "object", className: start.def.name },
+    loc,
+  };
+  const body: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: instanceId,
+      init: {
         kind: "dynCheck",
         value: varRef("value", DYN, loc),
-        type: { kind: "object", className: descendant.def.name },
+        type: { kind: "object", className: start.def.name },
         loc,
-      });
-      if (!view || descendant.prototypeReflectionRefusal !== undefined) continue;
-      body.push({
-        kind: "if",
-        cond: {
-          kind: "instanceOf",
-          value: instance,
-          className: descendant.def.name,
-          type: BOOL,
-          loc,
-        },
-        then: [{ kind: "return", value: view, loc }],
-        else_: null,
+      },
+      loc,
+    },
+  ];
+  for (const descendant of descendants) {
+    const view = reflectClassPrototype(lowerer, descendant, loc, {
+      kind: "dynCheck",
+      value: varRef("value", DYN, loc),
+      type: { kind: "object", className: descendant.def.name },
+      loc,
+    });
+    if (!view || descendant.prototypeReflectionRefusal !== undefined) continue;
+    body.push({
+      kind: "if",
+      cond: {
+        kind: "instanceOf",
+        value: instance,
+        className: descendant.def.name,
+        type: BOOL,
         loc,
-      });
-    }
-    if (body.length > 1) {
-      body.push({ kind: "return", value: staticView, loc });
-      lowerer.liftedFns.push({
-        name,
-        params,
-        locals: [
-          { id: "value", name: "value", type: DYN, mutable: false },
-          {
-            id: instanceId,
-            name: instanceId,
-            type: { kind: "object", className: start.def.name },
-            mutable: false,
-          },
-        ],
-        returnType: DYN,
-        body,
-        loc,
-      });
-    }
+      },
+      then: [{ kind: "return", value: view, loc }],
+      else_: null,
+      loc,
+    });
   }
-  if (lowerer.liftedFnNamed(name) === undefined) return { prototype: staticView, start };
-  return { prototype: { kind: "call", callee: name, args: [value], type: DYN, loc }, start };
+  if (body.length === 1) return null;
+  body.push({ kind: "return", value: staticView, loc });
+  return body;
 }
 
 export function hasClassPrototypeData(info: ClassInfo): boolean {

@@ -8029,7 +8029,8 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
    * out-of-bounds view first (t262-dc); Node names the method. */
   if (!scr_js_bytes_live(bytes)) {
     char label[96];
-    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+    snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+             scr_js_typed_detached_method(method));
     scr_js_bytes_throw_detached(label);
     return NULL;
   }
@@ -10274,11 +10275,25 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
   scr_dyn_stamp_prototype_name(prototype, name->data, name->len);
 }
 
+/* The Function constructor's refusal, shared by `Function(...)`,
+ * `new Function(...)` and `new (fn.constructor)(...)`: V8 converts every
+ * parameter and the body to a string in order before it checks, so the
+ * program sees its toString calls and their exceptions first (defined with
+ * the constructor values below). */
+static bool scr_function_constructor_refuse(ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (scr_ni_dyn_handle(callee))
     return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
+  /* Constructing the Function constructor refuses as calling it does:
+   * `new (fn.constructor)("return 1")` is the same code generation. */
+  if (callee->kind == SCR_DYN_FUNC && callee->v.fn.thunk == scr_function_constructor_call) {
+    (void)scr_function_constructor_refuse(args->v.arr.items, args->v.arr.len);
+    return NULL;
+  }
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
@@ -11501,6 +11516,17 @@ static ScrDyn *scr_native_iterator_drain(const ScrDyn *src) {
 
 static ScrDyn *scr_builtin_iterator_checked(int kind) {
   ScrDyn *self = scr_dyn_this_get();
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The typed-array iterator factory re-validates its receiver (V8 labels
+   * it %TypedArray%.prototype.values, for Symbol.iterator too): a detached
+   * view throws rather than hand back an iterator that is already done. */
+  if (kind == SCR_DYN_BYTES && self->kind == SCR_DYN_BYTES &&
+      !scr_js_bytes_live(self->v.bytes)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.values");
+    scr_dyn_release(self);
+    return NULL;
+  }
+#endif
   ScrDyn *result = NULL;
   if (self->kind == kind || (kind == SCR_DYN_ARR && self->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(self)))
     result = scr_native_iterator_new(self);
@@ -19086,10 +19112,22 @@ static void scr_function_constructors_cleanup(void) {
   }
 }
 
+static bool scr_function_constructor_refuse(ScrDyn *const *args, size_t argc) {
+  for (size_t i = 0; i < argc; i++) {
+    ScrStr *text = scr_dyn_string_coerce_js(args[i]);
+    if (!text) return false; /* the conversion threw */
+    scr_str_release(text);
+  }
+  static const char message[] = "Code generation from strings disallowed for this context";
+  scr_throw_error_msg(SCR_ERR_EVAL, message, sizeof message - 1);
+  return false;
+}
+
 static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)closure; (void)args; (void)argc;
-  static const char message[] = "constructing functions from source text is not supported in static code";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2010");
+  (void)closure;
+  /* Function(...) is the Function constructor itself, which a compiled
+   * program answers as `node --disallow-code-generation-from-strings` does. */
+  (void)scr_function_constructor_refuse(args, argc);
   return NULL;
 }
 
@@ -25629,7 +25667,10 @@ void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool ski
     scr_error_release(error);
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_ARR) {
+  /* An object, an array, or a function: all three carry the own property
+   * table the captured `stack` is installed on, and a function's heading is
+   * its name (scr_dyn_error_string reads it from the target). */
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_FUNC) {
     static const char msg[] = "Error.captureStackTrace on this object is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     scr_str_release(frames);

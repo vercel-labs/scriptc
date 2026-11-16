@@ -1770,9 +1770,11 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for
@@ -2541,6 +2543,11 @@ function buildLibFnSignatures() {
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    // t.signal: the test's AbortSignal handle (created on first read; the
+    // abortSignal runtime feature links the unit), and t.error: Node's
+    // ERR_TEST_FAILURE wrapper over the failure, or null.
+    "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
+    "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -6870,6 +6877,16 @@ function buildLibFnSignatures() {
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
      * result (map and filter of a Buffer return a Buffer). */
     "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },
+    /** The typed-array callback methods' entry guard (t262-dc2), for a
+     * mutableBuffers program: Node's ValidateTypedArray throws for a
+     * detached or out-of-bounds receiver before the visit starts. The
+     * second argument names the method in Node's message (%TypedArray%.prototype.<name>).
+     * Borrowed args; VOID, may throw. */
+    "bytes.requireLive": { argTypes: [null, STRING], result: VOID },
+    /** The element at an index as a JavaScript value (t262-dc2): undefined
+     * past the live length, where a visit's captured bound can run past a
+     * shrink. Owned (+1) checked-dynamic result; never throws. */
+    "bytes.itemDyn": { argTypes: [null, F64], result: DYN },
     "text.decodeBufferSource": { argTypes: [DYN], result: STRING },
     "text.decodeOptions": { argTypes: [BYTES_U8, BOOL, BOOL], result: STRING },
     "text.decodeStream": { argTypes: [DYN, BYTES_U8, F64, BOOL, BOOL, BOOL], result: STRING },

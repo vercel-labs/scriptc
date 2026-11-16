@@ -37,6 +37,44 @@ async function main(): Promise<void> {
     });
   });
   log.push(`destroyed ${broken.destroyed}`);
+
+  // destroy() without an error closes the sink; destroy(err) aborts it, and
+  // the stream reports the destroy's own error even when abort() rejects.
+  const closedSink: string[] = [];
+  const closing = Writable.fromWeb(
+    new WritableStream<Uint8Array>({
+      write(): void {},
+      close(): void {
+        closedSink.push("close");
+      },
+      abort(): void {
+        closedSink.push("abort");
+      },
+    }),
+  );
+  closing.on("error", (error: Error) => closedSink.push(`error ${error.message}`));
+  closing.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  log.push(`close-only ${closedSink.join(",")} destroyed ${closing.destroyed}`);
+
+  const abortLog: string[] = [];
+  const aborting = Writable.fromWeb(
+    new WritableStream<Uint8Array>({
+      write(): void {},
+      abort(reason): void {
+        abortLog.push(`abort ${(reason as Error).message}`);
+        throw new Error("abort failed");
+      },
+    }),
+  );
+  aborting.on("error", (error: Error) => abortLog.push(`error ${error.message}`));
+  aborting.destroy(new Error("boom"));
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  log.push(`abort-path ${abortLog.join(",")} errored ${aborting.errored?.message}`);
+
+  // An identity TransformStream's writable side is a WritableStream too.
+  const fromTransform = Writable.fromWeb(new TransformStream().writable);
+  log.push(`transform ${fromTransform instanceof Writable}`);
 }
 
 main().then(() => {

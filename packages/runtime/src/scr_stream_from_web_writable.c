@@ -1,9 +1,11 @@
 /* Writable.fromWeb (Node's newStreamWritableFromWritableStream in
  * lib/internal/webstreams/adapters.js): a native Writable over a web
  * WritableStream's writer. write() awaits writer.write(chunk), final() awaits
- * writer.close() and destroy() awaits writer.abort(reason); a writer that
- * closes before end() destroys the writable with ERR_STREAM_PREMATURE_CLOSE,
- * and a rejected writer.closed destroys it with that reason. */
+ * writer.close(), and destroy() closes the writer when it has no error and
+ * aborts it with the error otherwise (reporting that error, not the abort's);
+ * a writer that closes before end() destroys the writable with
+ * ERR_STREAM_PREMATURE_CLOSE, and a rejected writer.closed destroys it with
+ * that reason. */
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
@@ -12,6 +14,12 @@ struct SfwwCtx {
   size_t rc;
   ScrStream *writable; /* +1 until teardown */
   ScrDyn *writer;      /* +1 */
+  /* The writer has closed (its closed promise settled): destroy completes
+   * without closing or aborting it again, Node's `closed` flag. */
+  bool closed;
+  /* The error the destroy settles with: Node reports the ORIGINAL error
+   * even when abort() rejects with its own. +1 while the destroy runs. */
+  ScrError *destroy_error;
 };
 
 static SfwwCtx *sfww_ref(SfwwCtx *c) {
@@ -23,6 +31,7 @@ static void sfww_unref(SfwwCtx *c) {
   if (--c->rc > 0) return;
   if (c->writable) scr_stream_release(c->writable);
   if (c->writer) scr_dyn_release(c->writer);
+  if (c->destroy_error) scr_error_release(c->destroy_error);
   free(c);
 }
 
@@ -49,7 +58,10 @@ static void sfww_settle(SfwwCtx *c, int which, ScrDyn *err) {
     switch (which) {
     case 0: scr_stream_write_done(s, moved); break;
     case 1: scr_stream_final_done(s, moved); break;
-    default: scr_stream_destroy_done(s, moved); break;
+    default:
+      /* destroy reports the destroy's own error, not the abort rejection */
+      scr_stream_destroy_done(s, c->destroy_error ? scr_error_retain(c->destroy_error) : NULL);
+      break;
     }
   }
   if (error) scr_error_release(error);
@@ -118,19 +130,28 @@ static ScrDyn *sfww_final_err(ScrClosure *cl, ScrDyn *const *args, size_t argc) 
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+static void sfww_destroy_finish(SfwwCtx *c) {
+  sfww_settle(c, 2, NULL);
+  if (c->destroy_error) {
+    scr_error_release(c->destroy_error);
+    c->destroy_error = NULL;
+  }
+  sfww_unref(c);
+}
+
 static ScrDyn *sfww_destroy_ok(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SfwwCtx *c = sfww_of(cl);
-  sfww_settle(c, 2, NULL);
-  sfww_unref(c);
+  sfww_destroy_finish(c);
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
 static ScrDyn *sfww_destroy_err(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
   SfwwCtx *c = sfww_of(cl);
-  sfww_settle(c, 2, argc > 0 ? args[0] : NULL);
-  sfww_unref(c);
+  sfww_destroy_finish(c);
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -138,6 +159,7 @@ static ScrDyn *sfww_destroy_err(ScrClosure *cl, ScrDyn *const *args, size_t argc
  * rejection is the writer's error. */
 static void sfww_closed_settle(SfwwCtx *c, ScrDyn *reason) {
   ScrStream *s = c->writable;
+  c->closed = true;
   if (s && scr_stream_prop(s, "destroyed") == 0) {
     ScrError *err = NULL;
     if (reason) {
@@ -185,23 +207,38 @@ static void sfww_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   sfww_unref(c);
 }
 
-/* _final: writer.close() */
+/* _final: writer.close() (a writer that already closed needs nothing) */
 static void sfww_final_inv(ScrClosure *cb, ScrStream *s) {
   (void)s;
   SfwwCtx *c = sfww_of(cb);
+  if (c->closed) {
+    scr_stream_final_done(c->writable, NULL);
+    sfww_unref(c);
+    return;
+  }
   ScrDyn *result = scr_dyn_invoke(c->writer, "close", NULL, 0, "writer.close");
   sfww_await(c, result, 1);
   if (result) scr_dyn_release(result);
   sfww_unref(c);
 }
 
-/* _destroy: writer.abort(reason) */
+/* _destroy: Node's adapter closes a writer destroyed without an error and
+ * aborts it with the error otherwise; a writer that already closed (or
+ * errored) just completes, and the destroy reports the error it was given. */
 static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   (void)s;
   SfwwCtx *c = sfww_of(cb);
+  if (c->destroy_error) scr_error_release(c->destroy_error);
+  c->destroy_error = err ? scr_error_retain(err) : NULL;
+  if (c->closed) {
+    sfww_destroy_finish(c);
+    return;
+  }
   ScrDyn *reason = err ? scr_dyn_from_error(err) : scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *args[1] = {reason};
-  ScrDyn *result = scr_dyn_invoke(c->writer, "abort", args, 1, "writer.abort");
+  ScrDyn *result = err
+      ? scr_dyn_invoke(c->writer, "abort", args, 1, "writer.abort")
+      : scr_dyn_invoke(c->writer, "close", NULL, 0, "writer.close");
   scr_dyn_release(reason);
   sfww_await(c, result, 2);
   if (result) scr_dyn_release(result);
@@ -214,7 +251,10 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
  * lowering. */
 ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
   (void)flags;
-  if (web->kind != SCR_DYN_HANDLE || web->v.handle.tag != SCR_DYNH_WS_WRITABLE) {
+  /* The checked-dynamic WritableStream, or the fetch unit's compact one (an
+   * identity TransformStream's writable side) — Node accepts either. */
+  if (web->kind != SCR_DYN_HANDLE || (web->v.handle.tag != SCR_DYNH_WS_WRITABLE &&
+                                      web->v.handle.tag != SCR_DYNH_WEB_WRITABLE)) {
     static const char message[] = "The \"writableStream\" argument must be a WritableStream";
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
     return NULL;

@@ -2100,7 +2100,7 @@ export function lowerPropertyAccessExpr(
   // dev-only members exactly this way (`Scheduler.log` in react-dom's
   // startup, which its production build does not export).
   if (recvLowered.type.kind === "moduleNs") {
-    const read = lowerModuleNamespaceMember(lowerer, expr, recvLowered.type);
+    const read = lowerModuleNamespaceMember(lowerer, expr, recvLowered);
     if (read !== null) return read;
   }
   // The lowered receiver is a RECORD the checker spelled wider —

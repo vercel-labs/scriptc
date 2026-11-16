@@ -1,6 +1,7 @@
 
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_stream.h"
 #include "scr_system_errors.h"
 
 #include <errno.h>
@@ -591,6 +592,10 @@ struct ScrNetSocket {
    * shutdown request). */
   ScrAlsCtx *als, *end_ctx;
   int fd; /* -1 once closed */
+  /* read/write highWaterMark: stream.getDefaultHighWaterMark(false) as it
+   * was when the socket was created (Node's getHighWaterMark at
+   * construction). */
+  double hwm;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
@@ -1342,6 +1347,7 @@ static ScrNetSocket *scr_net_sock_new(void) {
   s->kind = SCR_NET_K_SOCKET;
   s->rc = 1;
   s->fd = -1;
+  s->hwm = scr_stream_get_default_hwm(false);
   s->adopt_fd = -1;
   s->autosel = scr_net_get_default_autosel();
   s->attempt_ms = scr_net_get_autosel_timeout();
@@ -1499,10 +1505,6 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len, s
   s->wpending += counted;
 }
 
-/* Node's net.Socket writableHighWaterMark (the Writable default,
- * getDefaultHighWaterMark()). */
-#define SCR_NET_WRITE_HWM 65536
-
 /* 'drain' once a false write's bytes are all out: Node's afterWrite emits
  * it when needDrain is set and nothing is pending, unless the stream is
  * ending or destroyed. */
@@ -1569,7 +1571,7 @@ static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t le
   }
   scr_net_sock_write_raw(s, data, len);
   if (!scr_net_sock_write_open(w)) return false;
-  bool ok = w->wpending < SCR_NET_WRITE_HWM;
+  bool ok = w->wpending < w->hwm;
   if (!ok) w->need_drain = true;
   return ok;
 }
@@ -9755,8 +9757,8 @@ static ScrDyn *scr_net_dynh_sock_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_net_sock_writable_need_drain(s));
   if (strcmp(key, "writableHighWaterMark") == 0 || strcmp(key, "readableHighWaterMark") == 0) {
-    /* Node's default stream highWaterMark (getDefaultHighWaterMark()) */
-    return scr_dyn_new_num(SCR_NET_WRITE_HWM);
+    /* The stream default the socket took at construction. */
+    return scr_dyn_new_num(s->hwm);
   }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;

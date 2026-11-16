@@ -2174,13 +2174,15 @@ void scr_http_res_uncork(ScrHttpRes *r) {
 
 double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
 
-/* res.writableHighWaterMark and res.writableObjectMode: Node's default
- * high-water mark of a byte stream (getDefaultHighWaterMark(), 64 KiB
- * since Node 22) and false. createServer's highWaterMark option, which
- * would change the first, is not accepted. */
+/* res.writableHighWaterMark and res.writableObjectMode: the server's
+ * highWaterMark, which createServer takes from the stream default at that
+ * moment (Node's ServerResponse), and false. createServer's highWaterMark
+ * option is not accepted. */
+static double scr_http_conn_hwm(struct ScrHttpConn *conn);
+
 double scr_http_res_writable_high_water_mark(ScrHttpRes *r) {
-  (void)r;
-  return 65536;
+  double hwm = scr_http_conn_hwm(r->conn);
+  return hwm > 0 ? hwm : scr_stream_get_default_hwm(false);
 }
 
 bool scr_http_res_writable_object_mode(ScrHttpRes *r) {
@@ -3368,7 +3370,18 @@ typedef struct ScrHttpSrvCtx {
   bool join_dup; /* createServer({ joinDuplicateHeaders: true }) */
   size_t max_header_size; /* createServer({ maxHeaderSize }); 0 = the default */
   bool require_host_header; /* HTTP/1.1 Host is required by default */
+  /* The response streams' highWaterMark: stream.getDefaultHighWaterMark(false)
+   * as it was when the server was created (Node's ServerResponse takes the
+   * server's value, which createServer defaults to that). */
+  double hwm;
 } ScrHttpSrvCtx;
+
+/* The server highWaterMark a connection's responses take (0: client mode
+ * or no context, where the caller falls back to the current default). */
+static double scr_http_conn_hwm(struct ScrHttpConn *conn) {
+  if (conn == NULL || conn->srv == NULL) return 0;
+  return conn->srv->hwm;
+}
 
 static ScrHttpSrvCtx *scr_http_srv_ctx_retain(ScrHttpSrvCtx *ctx) {
   ctx->rc++;
@@ -4566,6 +4579,7 @@ ScrNetServer *scr_http_create_server(ScrClosure *handler /*moves, nullable*/, Sc
   ctx->rc = 1;
   ctx->server = s;
   ctx->require_host_header = true;
+  ctx->hwm = scr_stream_get_default_hwm(false);
   if (handler != NULL) scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
   scr_net_server_set_native_conn(s, &scr_http_on_connection, ctx, &scr_http_srv_ctx_free);
   scr_net_server_set_http_ctx(s, ctx);

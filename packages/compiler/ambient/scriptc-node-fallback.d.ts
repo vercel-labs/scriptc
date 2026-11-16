@@ -989,7 +989,7 @@ interface CryptoKeyPair {
  * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1007,12 +1007,13 @@ interface SubtleCrypto {
   ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
   exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
+  getPublicKey(key: CryptoKey, keyUsages: readonly KeyUsage[]): Promise<CryptoKey>;
   generateKey(
     algorithm:
       | EcKeyGenParams
@@ -1025,7 +1026,11 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
   generateKey(
-    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    algorithm:
+      | AesKeyGenParams
+      | HmacKeyGenParams
+      | "ChaCha20-Poly1305"
+      | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
@@ -1979,6 +1984,24 @@ declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
 declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
 declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
 declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
+
+/* Node 24's navigator global (no import needed): the platform facts a
+ * browser exposes, over Node's own values. hardwareConcurrency is
+ * os.availableParallelism(), language the default locale as a BCP 47 tag,
+ * languages the one frozen array of it, platform Node's name for the
+ * process platform and architecture, and userAgent `Node.js/<major>`.
+ * Every member is a getter, so the object owns no properties.
+ * navigator.locks (the Web Locks API) has no lowering and is not declared;
+ * @types/node's own declaration stands in when adopted, and the lowered
+ * surface is the same either way. */
+interface Navigator {
+  readonly hardwareConcurrency: number;
+  readonly language: string;
+  readonly languages: readonly string[];
+  readonly platform: string;
+  readonly userAgent: string;
+}
+declare var navigator: Navigator;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and

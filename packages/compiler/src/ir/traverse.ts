@@ -227,6 +227,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "childWriter":
     case "procStream":
     case "fsWatcher":
+    case "watchEvents":
     case "secureCtx":
     case "cryptoHash":
     case "cryptoHmac":

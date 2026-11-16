@@ -244,6 +244,21 @@ declare module "fs/promises" {
     path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
+  /** One entry of fsPromises.watch's iteration: the event kind and the
+   * entry name the platform reported. */
+  export interface FileChangeInfo {
+    eventType: string;
+    filename: string | null;
+  }
+  export interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+  }
+  export function watch(
+    filename: string | URL,
+    options?: WatchOptions,
+  ): AsyncIterable<FileChangeInfo>;
 }
 
 declare module "node:fs/promises" {

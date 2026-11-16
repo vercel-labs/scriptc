@@ -433,6 +433,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.createSecureServerDynCb",
   "tls.connect",
   "tls.connectCb",
+  // tls.connect(path...) dials and validates like the other forms.
+  "tls.connectPath",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
   // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
@@ -487,6 +489,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockEndDyn",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // setHeaders walks the argument (a Map's entries) and throws Node's
+  // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
+  // head is out, and the header name/value checks. pipe() emits
+  // ERR_STREAM_CANNOT_PIPE, whose unhandled 'error' is the throw at the
+  // call.
+  "http.resSetHeaders",
+  "http.resPipe",
+  "http.clientPipe",
   "http.resAddTrailers",
   "http.resFlushHeaders",
   "http.resUncork",
@@ -630,6 +640,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+  "stream.setDefaultHwm",
+  "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -1254,6 +1266,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hkdfCb",
   "crypto.scrypt",
   "crypto.scryptCb",
+  "buffer.resolveObjectURL",
   "buffer.concat",
   "buffer.concatLen",
   "buffer.concatDyn",
@@ -1605,6 +1618,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "watcher.off",
   "fs.watchFile",
   "fs.unwatchFile",
+  // fsPromises.watch opens the path now and throws Node's fs error
+  // (ENOENT, EACCES, a null byte) from scr_watch_events_new.
+  "fsp.watch",
+  // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
+  // overflowed under overflow: "error".
+  "watchEvents.take",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",
@@ -1615,6 +1634,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // getPublicKey converts its keyUsages sequence (whose strings' conversions
+  // run program code) and reads the key's members through the handle.
+  "webcrypto.getPublicKey",
+  // The KeyObject conversions normalize their algorithm (reading its members)
+  // and convert the keyUsages sequence.
+  "webcrypto.keyObjectToCryptoKey",
+  "webcrypto.keyObjectFrom",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",

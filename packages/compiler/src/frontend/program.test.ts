@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
 import {
   checkModuleOrder,
@@ -826,4 +826,39 @@ if (cond) { exports.now = function () { return 1; }; }
 else { exports.later = function () { return 2; }; }
 `),
   ).toBe(false);
+});
+
+test("`export *` over a CommonJS module re-exports the names Node's lexer finds", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-cjs-star-"));
+  const write = (name: string, text: string): void => {
+    mkdirSync(join(dir, dirname(name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  };
+  write("package.json", '{"type":"module"}');
+  write(
+    "tsconfig.json",
+    '{"compilerOptions":{"target":"es2022","module":"nodenext","moduleResolution":"nodenext","strict":true,"allowJs":true,"noEmit":true}}',
+  );
+  write(
+    "impl.cjs",
+    "'use strict';\nfunction jsx() { return 1; }\nconst Fragment = 'f';\nmodule.exports = { jsx, Fragment };\n",
+  );
+  // The conditional whole export React ships: the names live on the table
+  // the taken branch required, not on this module's own statements.
+  write(
+    "runtime.cjs",
+    "'use strict';\nif (true) {\n  module.exports = require('./impl.cjs');\n} else {\n  module.exports = require('./impl.cjs');\n}\n",
+  );
+  write("main.ts", 'export const local = 1;\nexport * from "./runtime.cjs";\n');
+  const load = loadProgram(join(dir, "main.ts"));
+  try {
+    const sf = load.program.getSourceFile(join(dir, "main.ts"));
+    expect(sf?.text).toContain('import "./runtime.cjs";');
+    expect(sf?.text).toContain('export { "jsx", "Fragment" } from "./runtime.cjs";');
+    expect(sf?.text).toContain('as "module.exports"');
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

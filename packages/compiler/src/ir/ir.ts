@@ -278,6 +278,11 @@ export type IrType =
    * header. Same container rules as child: union arms fine (the
    * `FSWatcher | null` polling-fallback local), arrays/maps/JSON fenced. */
   | { kind: "fsWatcher" }
+  /** An fsPromises.watch iterator (scr_watch_async.c — linked only when the
+   * IR uses it): the queue over an fs.watch handle that the `for await`
+   * lowering awaits and drains. Heap, refcounted; consumed only as a
+   * for-await source, so it stays out of unions, arrays, maps and JSON. */
+  | { kind: "watchEvents" }
   /** A tls.SecureContext handle (scr_tls.c): heap, refcounted, IMMUTABLE —
    * a parsed cert/key pair (tls.createSecureContext({ cert, key })) that
    * an SNI callback answers per-servername. Holds no references — never
@@ -441,6 +446,7 @@ const POINTER_HANDLE_KINDS = [
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
   "childStream",
   "childWriter",
 ] as const satisfies readonly IrType["kind"][];
@@ -526,6 +532,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   childWriter: "scr_child_writer",
   procStream: "",
   fsWatcher: "scr_watcher",
+  watchEvents: "scr_watch_events",
   secureCtx: "scr_secure_ctx",
   cryptoHash: "scr_crypto_hash",
   cryptoHmac: "scr_crypto_hash",
@@ -594,6 +601,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
   "childStream",
   "childWriter",
   "procStream",
@@ -639,6 +647,7 @@ export const SECURECTX_T: IrType = { kind: "secureCtx" };
 export const CRYPTOHASH_T: IrType = { kind: "cryptoHash" };
 export const CRYPTOHMAC_T: IrType = { kind: "cryptoHmac" };
 export const FSWATCHER_T: IrType = { kind: "fsWatcher" };
+export const WATCHEVENTS_T: IrType = { kind: "watchEvents" };
 export const CHILDSTREAM_T: IrType = { kind: "childStream" };
 export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };

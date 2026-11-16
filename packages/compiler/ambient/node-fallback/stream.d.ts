@@ -355,6 +355,10 @@ declare module "stream" {
     constructor(opts: ObjectWritableOptions);
     constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
+    /* A Writable over a web WritableStream's writer: a write completes when
+     * the writer's write() settles, end() closes the writer and destroy()
+     * aborts it. The options have no lowering yet. */
+    static fromWeb(writableStream: WritableStream<Uint8Array>, options?: {}): Writable;
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
     _writev(
@@ -607,9 +611,13 @@ declare module "stream" {
     options: FinishedOptions | null,
     callback: (err?: Error | null) => void,
   ): () => void;
-  /* Folds to the TARGET platform's default at compile time (win32 16384,
-   * else 65536 — Node's own state.js split); literal argument only. */
+  /* The runtime's default for new streams: 65536 bytes on every platform
+   * but a win32 target (16384), and 16 objects — Node's own state.js
+   * split — which setDefaultHighWaterMark changes. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  /* Sets the default for streams created after the call; a negative or
+   * fractional value throws ERR_OUT_OF_RANGE. */
+  function setDefaultHighWaterMark(objectMode: boolean, value: number): void;
   /* Node's duck-typed state predicates. A native stream answers from its
    * state, and a primitive as Node's property reads do; isDestroyed,
    * isReadable and isWritable answer null for a value without that side.
@@ -655,6 +663,7 @@ declare module "stream" {
     compose,
     finished,
     getDefaultHighWaterMark,
+    setDefaultHighWaterMark,
     isDestroyed,
     isErrored,
     isReadable,

@@ -1573,6 +1573,15 @@ export function cjsRequireSnapshotBindingsOf(
   return bindings.size === 0 ? null : { dep, bindings };
 }
 
+/** Whether export global `g` belongs to a module other than `dep` — a
+ * member slot some other file registered for the checker's synthesized
+ * member symbol both files share. */
+function foreignExportGlobal(lowerer: Lowerer, dep: ts.SourceFile, g: IrGlobal): boolean {
+  const raw = lowerer.fileTag.get(dep) ?? "";
+  const ownPrefix = `%g.${raw === "" ? "e." : raw.replace(/^%/, "")}%`;
+  return g.id.startsWith("%g.") && g.id.includes("%export.") && !g.id.startsWith(ownPrefix);
+}
+
 /** The value of `dep`'s export `key` read from another module: its export
  * global, or the function/class declaration it aliases. Null when it has no
  * static value. */
@@ -1595,11 +1604,22 @@ export function cjsExportValueByName(
   let sym = lowerer.cjsModuleExportSymbol(dep, key);
   if (sym !== undefined && sym.flags & ts.SymbolFlags.Alias)
     sym = lowerer.checker.getAliasedSymbol(sym);
-  const direct = sym === undefined ? undefined : lowerer.globalsBySymbol.get(sym);
+  let direct = sym === undefined ? undefined : lowerer.globalsBySymbol.get(sym);
+  // A module whose whole export is chosen at run time between statically
+  // known tables (react/index.js's conditional `module.exports = require(…)`)
+  // registers one slot per member and claims the checker's synthesized
+  // member symbol, which every table it can select shares. When `dep` is one
+  // of those tables, its own value is what its export statement wrote; the
+  // wrapper's slot is only a copy of it, filled AT the wrapper's conditional
+  // statement. Reading the wrapper's slot here made that copy statement read
+  // itself — the slot stayed unset, and its readers trapped on null — so a
+  // global another module owns falls through to this module's declarations.
+  if (direct !== undefined && foreignExportGlobal(lowerer, dep, direct)) direct = undefined;
   if (direct) return { kind: "varRef", localId: direct.id, type: direct.type, loc: locOf(blame) };
   for (const d of sym?.declarations ?? []) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
-    if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
+    if (byDecl !== undefined && !foreignExportGlobal(lowerer, dep, byDecl))
+      return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
     // A getter is a function Node runs on every read, so it keeps its call.
     if (ts.isGetAccessorDeclaration(d)) return cjsAccessorCall(lowerer, d, locOf(blame));
   }

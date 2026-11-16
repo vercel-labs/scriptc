@@ -304,7 +304,7 @@ function lowerBoundedWorkerNew(
 
 /** `create` after the worker-stdio capture: the streams unit is entered
  * before the worker starts. */
-function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
+export function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "seqExpr",
     stmts: [

@@ -266,6 +266,50 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
   );
 };
 
+/** TS2684 names a call whose supplied receiver the checker's `this` type
+ * rejects, and marks the receiver expression (`base.get` in
+ * `base.get.call(el)`). JavaScript makes the call anyway: `.call` and
+ * `.apply` hand the callee whatever receiver the expression produced, and a
+ * function that never reads its receiver ignores it. Admitting the call is
+ * Node-exact when the callee's type declares no `this` parameter at all: a
+ * function that declares no receiver never reads one, and a value whose
+ * runtime form is checked-dynamic — a property descriptor's `get`/`set`, an
+ * extracted method value — takes the receiver from the ambient slot the
+ * dynamic call binds. A callee whose type does declare `this` keeps the
+ * refusal: its static call checks the receiver against that type, while Node
+ * reads whatever fields the object happens to have. */
+const untypedReceiverCall = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  // The marked expression is the callee the `.call`/`.apply` access names.
+  let context: ts.Node = node;
+  while (
+    context.parent !== undefined &&
+    (ts.isParenthesizedExpression(context.parent) ||
+      ts.isNonNullExpression(context.parent) ||
+      ts.isAsExpression(context.parent) ||
+      ts.isTypeAssertion(context.parent) ||
+      ts.isSatisfiesExpression(context.parent))
+  )
+    context = context.parent;
+  const access = context.parent;
+  if (
+    access === undefined ||
+    !ts.isPropertyAccessExpression(access) ||
+    access.expression !== context
+  )
+    return false;
+  const member = access.name.text;
+  if (member !== "call" && member !== "apply") return false;
+  const call = access.parent;
+  if (call === undefined || !ts.isCallExpression(call) || call.expression !== access) return false;
+  const checker = program.getTypeChecker();
+  const target = checker.getNonNullableType(checker.getTypeAtLocation(node));
+  const signatures = checker.getCallSignatures(target);
+  return (
+    signatures.length > 0 &&
+    signatures.every((signature) => signature.getThisParameter() === undefined)
+  );
+};
+
 /** TS17013 inside a method or accessor body (including an arrow nested in
  * one): `new.target` is legal there and always undefined, because a method is
  * not constructable. The path must enter the member through its body or a
@@ -1500,6 +1544,20 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // 2684, a `.call`/`.apply` whose receiver the checker's `this` type
+  // rejects (an untyped JavaScript descriptor's `base.get.call(el)`). Every
+  // other site — a direct call, and a callee whose type declares a `this` —
+  // keeps the triage's refusal.
+  [
+    2684,
+    at(
+      untypedReceiverCall,
+      CHECKER(
+        "JavaScript passes whatever receiver the expression produces: a callee type that declares no 'this' never reads one, and a checked-dynamic callable takes it from the call",
+        ["tests/corpus/descriptor-accessor-call.js"],
+      ),
+    ),
+  ],
   // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
   // Each row below is a `checker` row: at the admitted site the checker's
   // type is still a truthful bound on every runtime value, so the ordinary
@@ -1967,11 +2025,13 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [2660, KEEP(KEEP_GRAMMAR)],
   [2662, KEEP(KEEP_GRAMMAR)],
+  // 2684 has a JS_OPINIONS row for a `.call`/`.apply` on a callee type that
+  // declares no `this`; every other site keeps this refusal.
   [
     2684,
     REWRITE(
       "a call whose 'this' type the checker rejects",
-      "JavaScript passes whatever receiver the expression produces; the this-context lowering is the remaining gap (W6)",
+      "JavaScript passes whatever receiver the expression produces; a callee whose type declares a 'this' keeps the this-context gap (W6)",
     ),
   ],
   [

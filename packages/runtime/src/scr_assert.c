@@ -2355,8 +2355,19 @@ static bool scr_assert_strict_error(const ScrDyn *a, const ScrDyn *b) {
   return true;
 }
 
+/* Node's primitive-key branch: a member or key that is not an object can
+ * only match the map's own SameValueZero identity, so the hash lookup
+ * answers it without a scan (functions included: typeof is "function"
+ * there). */
+static bool scr_assert_primitive_key(const ScrDyn *key) {
+  return key->kind == SCR_DYN_NULL || !scr_assert_loose_object(key);
+}
+
 /* Sets and Maps match their entries member by member in any order: each
- * entry of `b` pairs with a distinct deeply equal entry of `a`. */
+ * entry of `b` pairs with a distinct deeply equal entry of `a`. Primitive
+ * members pair through the map's own lookup (linear for a whole set of
+ * primitives); object members pair structurally and consume their partner
+ * once (Node's setObjectEquiv/mapObjectEquiv). */
 static bool scr_assert_strict_set(ScrMap *a, ScrMap *b) {
   if (scr_assert_loose_size(a) != scr_assert_loose_size(b)) return false;
   ScrAssertDynList av = scr_assert_loose_list(a, false);
@@ -2365,9 +2376,14 @@ static bool scr_assert_strict_set(ScrMap *a, ScrMap *b) {
   if (!used) scr_trap("scriptc: out of memory\n");
   bool same = true;
   for (size_t i = 0; same && i < bv.len; i++) {
-    /* Every entry pairs structurally, consuming its partner once: a member
-     * already matched cannot stand in for another (Node's setObjectEquiv
-     * marks the matched slot the same way). */
+    /* A primitive member pairs only with the identical member: Node
+     * answers it from the map's own lookup and fails otherwise. */
+    if (scr_assert_primitive_key(bv.items[i])) {
+      if (!scr_map_dyn_has(a, bv.items[i], false)) same = false;
+      continue;
+    }
+    /* Object members pair structurally, consuming their partner once: a
+     * member already matched cannot stand in for another. */
     bool matched = false;
     for (size_t j = 0; !matched && j < av.len; j++) {
       if (used[j]) continue;
@@ -2394,10 +2410,21 @@ static bool scr_assert_strict_map(ScrMap *a, ScrMap *b) {
   if (!used) scr_trap("scriptc: out of memory\n");
   bool same = true;
   for (size_t i = 0; same && i < bk.len; i++) {
-    /* Keys pair structurally and each pair is consumed once. An identity
-     * shortcut would both pair a key twice and reject a Map whose
-     * structurally equal keys hold each other's values (Node's
-     * mapObjectEquiv matches object keys by structure, not identity). */
+    /* A primitive key pairs only with the identical key, whose value must
+     * then compare equal (Node's primitive branch resolves it from `b`). */
+    if (scr_assert_primitive_key(bk.items[i])) {
+      if (!scr_map_dyn_has(a, bk.items[i], false)) {
+        same = false;
+        continue;
+      }
+      ScrDyn *item = scr_map_dyn_get(a, bk.items[i]);
+      same = item && scr_assert_dyn_deep_eq(item, bv.items[i]);
+      if (item) scr_dyn_release(item);
+      continue;
+    }
+    /* Object keys pair structurally and each pair is consumed once: an
+     * identity shortcut would both pair a key twice and reject a Map whose
+     * structurally equal keys hold each other's values. */
     bool matched = false;
     for (size_t j = 0; !matched && j < ak.len; j++) {
       if (used[j]) continue;

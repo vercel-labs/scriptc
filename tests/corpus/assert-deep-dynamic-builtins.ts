@@ -109,3 +109,25 @@ console.log("T", outcome(() => assert.deepStrictEqual(permutedA, permutedB)));
 const setShared1: unknown = new Set<any>([sharedKey, { k: 9 }]);
 const setShared2: unknown = new Set<any>([{ k: 1 }, { k: 2 }]);
 console.log("U", outcome(() => assert.deepStrictEqual(setShared1, setShared2)));
+
+// Primitive members and keys pair through the map's own lookup: order does
+// not matter, and a Map with permuted primitive values is unequal.
+const primSet1: unknown = new Set([1, "a", true]);
+const primSet2: unknown = new Set([true, 1, "a"]);
+const primSet3: unknown = new Set([1, "a", false]);
+console.log("V", outcome(() => assert.deepStrictEqual(primSet1, primSet2)));
+console.log("W", outcome(() => assert.deepStrictEqual(primSet1, primSet3)));
+const primMap1: unknown = new Map<unknown, string>([
+  [1, "x"],
+  ["a", "y"],
+]);
+const primMap2: unknown = new Map<unknown, string>([
+  ["a", "y"],
+  [1, "x"],
+]);
+const primMap3: unknown = new Map<unknown, string>([
+  ["a", "x"],
+  [1, "y"],
+]);
+console.log("X", outcome(() => assert.deepStrictEqual(primMap1, primMap2)));
+console.log("Y", outcome(() => assert.deepStrictEqual(primMap1, primMap3)));

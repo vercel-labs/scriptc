@@ -67,10 +67,11 @@ struct ScrWorkerThread {
   ScrStr *name; /* threadName: immortal copy shared by both threads */
   unsigned capture; /* 1 stdout, 2 stderr: writes go to the parent as events */
   /* worker.performance: the loop snapshot this thread publishes for its
-   * creator (scr_worker_publish_loop_metrics), behind a seqlock */
+   * creator (scr_worker_publish_loop_metrics), behind a seqlock; the values
+   * travel as their bit patterns so every access is atomic */
   _Atomic uint64_t metrics_seq;
-  double metrics_loop_start_ms;
-  double metrics_idle_ms;
+  _Atomic uint64_t metrics_loop_start_bits;
+  _Atomic uint64_t metrics_idle_bits;
   int argc;
   char **argv;
   bool joined;
@@ -268,10 +269,14 @@ bool scr_worker_post_parent(ScrMessage *message) {
 static void scr_worker_publish_loop_metrics(double loop_start_ms, double idle_ms) {
   ScrWorkerThread *worker = scr_worker_current;
   if (!worker) return;
+  uint64_t start_bits;
+  uint64_t idle_bits;
+  memcpy(&start_bits, &loop_start_ms, sizeof start_bits);
+  memcpy(&idle_bits, &idle_ms, sizeof idle_bits);
   uint64_t seq = atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed);
   atomic_store_explicit(&worker->metrics_seq, seq + 1, memory_order_release);
-  worker->metrics_loop_start_ms = loop_start_ms;
-  worker->metrics_idle_ms = idle_ms;
+  atomic_store_explicit(&worker->metrics_loop_start_bits, start_bits, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_idle_bits, idle_bits, memory_order_relaxed);
   atomic_store_explicit(&worker->metrics_seq, seq + 2, memory_order_release);
 }
 
@@ -280,12 +285,13 @@ bool scr_worker_thread_metrics(ScrWorkerThread *worker, double *loop_start_ms, d
     uint64_t before = atomic_load_explicit(&worker->metrics_seq, memory_order_acquire);
     if (before & 1) continue; /* the thread is writing; it never waits on us */
     if (before == 0) return false; /* its loop has not turned yet */
-    double start = worker->metrics_loop_start_ms;
-    double idle = worker->metrics_idle_ms;
+    uint64_t start_bits =
+        atomic_load_explicit(&worker->metrics_loop_start_bits, memory_order_relaxed);
+    uint64_t idle_bits = atomic_load_explicit(&worker->metrics_idle_bits, memory_order_relaxed);
     atomic_thread_fence(memory_order_acquire);
     if (atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed) == before) {
-      *loop_start_ms = start;
-      *idle_ms = idle;
+      memcpy(loop_start_ms, &start_bits, sizeof start_bits);
+      memcpy(idle_ms, &idle_bits, sizeof idle_bits);
       return true;
     }
   }

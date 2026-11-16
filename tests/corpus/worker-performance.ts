@@ -14,6 +14,13 @@ if (isMainThread) {
     `${keys(elu)} zero=${elu.idle === 0 && elu.active === 0 && elu.utilization === 0}`;
   console.log("before online", zeros(worker.performance.eventLoopUtilization()));
 
+  // The parent blocks before it can deliver the worker's 'online' event, so the
+  // worker's loop has surely published by the read: Node still answers the zero
+  // object until the event is delivered.
+  const until = Date.now() + 100;
+  while (Date.now() < until) {}
+  console.log("before delivery", zeros(worker.performance.eventLoopUtilization()));
+
   const first = { idle: 10, active: 30, utilization: 0.75 };
   const second = { idle: 4, active: 16, utilization: 0.8 };
   let turns = 0;

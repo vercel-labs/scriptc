@@ -46,8 +46,11 @@ typedef struct ScrWorkerView {
   ScrStream *stdin_stream;
   ScrDyn *stdin_box;
   bool stdin_captured;
-  /* worker.performance: { eventLoopUtilization }, made on first read */
+  /* worker.performance: { eventLoopUtilization }, made on first read, and
+   * whether the worker's 'online' event has been delivered: Node answers the
+   * zero object until then, even when the thread already published metrics */
   ScrDyn *performance_box;
+  bool online;
   struct ScrWorkerView *next;
 } ScrWorkerView;
 
@@ -438,10 +441,10 @@ static ScrDyn *scr_worker_perf_elu_call(ScrClosure *closure, ScrDyn *const *args
   while (view && (double)scr_worker_thread_id(view->thread) != id) view = view->next;
   double loop_start = 0;
   double idle = 0;
-  /* Node answers zeros before the worker's online event and after it exits:
-   * the thread has published nothing until its loop turns, and a stopped
-   * worker's view has left its creator's registry. */
-  bool live = view && !view->closed &&
+  /* Node answers zeros before the worker's online event has been delivered —
+   * its own metrics may already be published by then — and after the worker
+   * exits, when its view has left this thread's registry. */
+  bool live = view && view->online && !view->closed &&
               scr_worker_thread_metrics(view->thread, &loop_start, &idle) && loop_start > 0;
   /* Node answers a literal zero object, never a 0/0 utilization. */
   if (!live) {
@@ -1064,6 +1067,7 @@ static void scr_worker_dispatch(void) {
     scr_mail_event_free(event);
     return;
   }
+  if (event->kind == SCR_WORKER_ONLINE) view->online = true;
   const char *event_name = event->kind == SCR_WORKER_ONLINE ? "online" :
     event->kind == SCR_WORKER_EXIT ? "exit" : event->kind == SCR_WORKER_ERROR ? "error" : "message";
   ScrDyn *argument = event->message ? scr_message_decode(event->message) :

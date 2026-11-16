@@ -80,6 +80,10 @@ typedef struct {
   const ScrDyn *input;
   ScrDyn *view;
   ScrDyn *keys;
+  /* A Map or Set node's children in encoding order (key, value per entry for
+   * a Map; one per entry for a Set), snapshotted at the node so the walk is
+   * iterative: a nested collection becomes a node of its own on the stack. */
+  ScrDyn *parts;
   ScrStr *text; /* a STRING or BIGINT node's text, until the message is packed */
   size_t cursor;
   bool uncaught; /* an Error encoded as an uncaught exception */
@@ -344,48 +348,42 @@ static int scr_message_collection_kind(const ScrDyn *value) {
   return 0;
 }
 
-/* A collection's entries are encoded here, not through the visit stack: the
- * handle's own get answers the collection's members, never its entries. Each
- * child is reached in insertion order and its property carries the decimal
- * index, so aliasing and cycles still come from the identity table. */
-static bool scr_message_collection(ScrMessageEncoder *encoder, size_t id, ScrDyn *value, int kind,
-                                   const ScrDyn *input) {
-  ScrMessageNode *node = &encoder->nodes[id];
+/* A collection's entries are snapshotted here, not encoded from here: the
+ * handle's own get answers the collection's members, never its entries, so
+ * the walk reads them once into the visit and lets the stack encode each
+ * child exactly as it encodes an object's or an array's. Nothing recurses on
+ * the C stack, so a deeply nested Map or Set cannot exhaust it, and no node
+ * pointer is held across an encode (the node table may move). */
+static bool scr_message_collection(ScrMessageEncoder *encoder, size_t id, ScrDyn *value, int kind) {
   ScrMap *map = value->v.handle.ptr;
   bool is_map = kind == SCR_MESSAGE_MAP;
-  node->kind = (unsigned char)kind;
+  encoder->nodes[id].kind = (unsigned char)kind;
   ScrDyn *keys = scr_dyn_new_arr();
+  ScrDyn *parts = scr_dyn_new_arr();
   encoder->visits[id].keys = keys;
-  size_t base = encoder->depth;
-  size_t child = 0;
+  encoder->visits[id].parts = parts;
   char digits[32];
   bool ok = true;
+  size_t per_entry = is_map ? 2 : 1;
   scr_map_iter_enter(map);
   for (double i = 0; ok && i < scr_map_iter_count(map); i++) {
     if (!scr_map_iter_live(map, i)) continue;
-    ScrDyn *entry_key = scr_map_dyn_key(map, i);          /* +1 */
-    ScrDyn *entry_value = is_map ? scr_map_dyn_value(map, i) : NULL; /* +1 */
-    ScrDyn *children[2] = {entry_key, entry_value};
-    size_t parts = is_map ? 2 : 1;
-    for (size_t p = 0; ok && p < parts; p++) {
-      int length = snprintf(digits, sizeof digits, "%zu", child++);
+    for (size_t part = 0; part < per_entry; part++) {
+      ScrDyn *child = part == 0 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i);
+      if (!child) { ok = false; break; }
+      size_t index = parts->v.arr.len;
+      int length = snprintf(digits, sizeof digits, "%zu", index);
       ScrStr *key = scr_str_new(digits, (size_t)length);
-      ScrDyn *key_dyn = scr_dyn_new_str(key);
-      scr_dyn_arr_push(keys, key_dyn);
-      size_t next = children[p] ? scr_message_value(encoder, children[p]) : SIZE_MAX;
-      if (next == SIZE_MAX) ok = false;
-      /* The key's text lives in the keys array until the message is packed
-       * (the property borrows the bytes). */
-      else scr_message_property(encoder, id, key_dyn->v.str, next, false);
+      scr_dyn_arr_push(keys, scr_dyn_new_str(key));
       scr_str_release(key);
+      scr_dyn_arr_push(parts, child); /* moves the reference */
     }
-    scr_dyn_release(entry_key);
-    scr_dyn_release(entry_value);
   }
   scr_map_iter_exit(map);
-  node->v.length = child;
-  if (ok) ok = scr_message_drain(encoder, base);
-  return ok;
+  if (!ok) return false;
+  encoder->nodes[id].v.length = parts->v.arr.len;
+  scr_message_push(encoder, id);
+  return true;
 }
 
 static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input) {
@@ -565,7 +563,7 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     if (value->kind == SCR_DYN_HANDLE) {
       int collection = scr_message_collection_kind(value);
       if (collection) {
-        if (!scr_message_collection(encoder, id, value, collection, input)) return SIZE_MAX;
+        if (!scr_message_collection(encoder, id, value, collection)) return SIZE_MAX;
         return id;
       }
     }
@@ -910,6 +908,21 @@ static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base) {
   while (encoder->depth > base && !scr_exc_pending()) {
     size_t id = encoder->stack[encoder->depth - 1];
     ScrMessageVisit *visit = &encoder->visits[id];
+    unsigned char node_kind = encoder->nodes[id].kind;
+    if (node_kind == SCR_MESSAGE_MAP || node_kind == SCR_MESSAGE_SET) {
+      /* The snapshot's next child: what it is, if a container, goes on the
+       * stack and comes back here after this node's next child. Both tables
+       * may move while a child is encoded, so every read of the visit goes
+       * through the encoder again. */
+      size_t index = encoder->visits[id].cursor++;
+      if (index == encoder->visits[id].parts->v.arr.len) { encoder->depth--; continue; }
+      ScrDyn *child = encoder->visits[id].parts->v.arr.items[index];
+      size_t next = scr_message_value(encoder, child);
+      if (next == SIZE_MAX) return false;
+      const ScrDyn *key = encoder->visits[id].keys->v.arr.items[index];
+      scr_message_property(encoder, id, key->v.str, next, false);
+      continue;
+    }
     if (visit->cursor == visit->keys->v.arr.len) { encoder->depth--; continue; }
     ScrDyn *key = visit->keys->v.arr.items[visit->cursor++];
     bool error = encoder->nodes[id].kind == SCR_MESSAGE_ERROR;
@@ -941,6 +954,7 @@ static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrD
   for (size_t i = 0; i < encoder->count; i++) {
     ScrMessageVisit *visit = &encoder->visits[i];
     scr_dyn_release(visit->keys);
+    scr_dyn_release(visit->parts);
     if (visit->view != visit->input) scr_dyn_release(visit->view);
     scr_dyn_release((ScrDyn *)visit->input);
     scr_str_release(visit->text);

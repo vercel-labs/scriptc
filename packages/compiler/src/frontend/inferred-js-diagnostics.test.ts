@@ -520,3 +520,67 @@ test("a JavaScript descriptor's get and set are callable with an explicit receiv
     ),
   ).toEqual([]);
 });
+
+/* A JavaScript binding an operator reads holds whatever the program last
+ * stored, not the shape one assignment gave it: shipped JavaScript reuses one
+ * `var` for a record, an array of lines and a count. Node converts the stored
+ * value in every operator, so the binding takes checked-dynamic storage and
+ * the ordinary arithmetic and comparison lowering applies the conversion. */
+const RETYPED_OPERATOR = `var line = { name: "frame" };
+var index = { step: 0 };
+for (index = 0; index < 3; index++) {}
+line = index;
+export const answer = [1 <= line, line < 4, line, line--];`;
+
+test("an unchecked JavaScript operator reads the value the binding holds", () => {
+  expect(
+    diagnostics(
+      RETYPED_OPERATOR,
+      'import { answer } from "./library.js"; console.log(answer.join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript operator keeps the checker's operand types", () => {
+  const kept = diagnostics(
+    `// @ts-check\n${RETYPED_OPERATOR}`,
+    'import { answer } from "./library.js"; console.log(answer.join());',
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("Operator '<='"))).toBe(true);
+  expect(kept.some((message) => message.includes("arithmetic on an operand"))).toBe(true);
+});
+
+test("an operator over a static record operand keeps the refusal", () => {
+  // Both operands are values the widening prepass cannot reach: a literal and
+  // an object read at the operator itself. Their conversion has no lowering.
+  const kept = diagnostics(
+    `export const answer = 1 <= { k: 1 };`,
+    'import { answer } from "./library.js"; console.log(String(answer));',
+  );
+  expect(kept.some((diagnostic) => diagnostic.message.includes("Operator '<='"))).toBe(true);
+});
+
+test("a hoisted JavaScript var read before its assignment answers undefined", () => {
+  expect(
+    diagnostics(
+      `export function install(flag) {
+  var callback;
+  if (flag) callback = function () { return "called"; };
+  return [callback && callback(), typeof callback];
+}`,
+      'import { install } from "./library.js"; console.log(install(true).join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a let read above its declaration keeps the temporal-dead-zone refusal", () => {
+  const kept = diagnostics(
+    `export function read() {
+  const first = later;
+  let later = 1;
+  return first + later;
+}`,
+    'import { read } from "./library.js"; console.log(read());',
+  );
+  expect(kept.some((diagnostic) => diagnostic.code === "SC1090")).toBe(true);
+});

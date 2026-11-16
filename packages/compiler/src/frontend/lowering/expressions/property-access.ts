@@ -291,6 +291,7 @@ import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
 import { builtinConstructorNames } from "../held-constructors.js";
+import { lowerModuleNamespaceMember } from "../module-namespace-elements.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -2090,6 +2091,17 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // The lowered receiver is a module namespace object the checker could not
+  // resolve (`(ns as any).name`): Node reads the namespace object like any
+  // other object, so an exported name answers the export and a name the
+  // module does not export answers undefined. Only an import of a missing
+  // name is a load-time error, and shipped JavaScript probes for a package's
+  // dev-only members exactly this way (`Scheduler.log` in react-dom's
+  // startup, which its production build does not export).
+  if (recvLowered.type.kind === "moduleNs") {
+    const read = lowerModuleNamespaceMember(lowerer, expr, recvLowered.type);
+    if (read !== null) return read;
   }
   // The lowered receiver is a RECORD the checker spelled wider —
   // `s.match(re).groups.key` in a JS file: the checker says

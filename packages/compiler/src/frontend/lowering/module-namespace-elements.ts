@@ -721,3 +721,37 @@ export function utilTypesNamespaceAnswer(
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(other), loc: locOf(other) });
   return stmts.length === 0 ? answer : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
 }
+
+/** A static member read on a module namespace object whose value the checker
+ * cannot resolve (`(ns as any).name`): the export the module ships under that
+ * name, read live, or `undefined` for a name it does not export. Node reads a
+ * namespace object like any other object — only an import of a missing name
+ * is a load-time error — and shipped JavaScript probes a package's dev-only
+ * members exactly this way (`Scheduler.log` in react-dom's startup). Null for
+ * a builtin's namespace, which the standard-library lowering answers. */
+export function lowerModuleNamespaceMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  namespace: IrType & { kind: "moduleNs" },
+): IrExpr | null {
+  if (namespace.moduleId.startsWith("builtin:")) return null;
+  const source = lowerer.sourceFileOfModuleNamespace(namespace);
+  if (!source) return null;
+  const loc = locOf(expr);
+  const name = expr.name.text;
+  const symbol = lowerer.checker.getSymbolAtLocation(source);
+  const runtimeNames = lowerer.runtimeExportNames(source);
+  for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
+    if (ts.symbolName(exported) !== name) continue;
+    // A name a type-only export forwards has no runtime binding.
+    if (!runtimeNames.has(name)) break;
+    const target =
+      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+    if (!(target.flags & ts.SymbolFlags.Value)) break;
+    const identifier = target.valueDeclaration?.name as ts.Node | undefined;
+    if (identifier !== undefined && ts.isIdentifier(identifier))
+      return lowerer.lowerExprExpecting(identifier, DYN);
+    break;
+  }
+  return dynUndefinedExpr(loc);
+}

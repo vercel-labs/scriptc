@@ -1,0 +1,7 @@
+{
+  "order": [
+    "<repo>/tests/corpus/js-namespace-missing-member/lib.ts",
+    "<repo>/tests/corpus/js-namespace-missing-member/main.ts"
+  ],
+  "diags": []
+}
